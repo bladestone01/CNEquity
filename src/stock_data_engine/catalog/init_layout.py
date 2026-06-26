@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+from stock_data_engine.config import Config
+from stock_data_engine.duckdb.views import ensure_duckdb_views
+from stock_data_engine.orchestrator.manifest import Manifest
+
+
+def init_data_layout(config: Config) -> None:
+    dirs = [
+        config.staging_root,
+        config.curated_root,
+        config.derived_root,
+        config.meta_root,
+        config.meta_root / "quality" / "findings",
+        config.meta_root / "quality" / "source_diffs",
+        config.meta_root / "source_snapshots",
+        config.meta_root / "on_demand",
+        config.data_root / "duckdb",
+        config.data_root / "raw",
+    ]
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+    Manifest(config.manifest_path)
+    ensure_duckdb_views(config)

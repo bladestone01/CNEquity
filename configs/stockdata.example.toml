@@ -1,0 +1,93 @@
+[data]
+root = "./data/stock-data-engine"
+
+[orchestrator]
+workers = 8
+batch_size = 100
+date_chunk_days = 30
+max_retries = 3
+retry_backoff_seconds = 5
+
+[tdx_protocol]
+enabled = true
+min_interval_ms = 50
+servers = "auto"
+connect_timeout_sec = 10
+
+[sources.eastmoney]
+enabled = true
+min_interval_seconds = 1.0
+
+[sources.cninfo]
+enabled = true
+
+[sources.akshare]
+enabled = false
+
+[sources.sina]
+enabled = true
+min_interval_seconds = 0.2
+
+[adj_factors]
+source = "sina"
+adjust_types = ["qfq"]
+
+[universe]
+default = "all_a"
+
+# Wave DAG for daily job (see docs/PRD.md)
+[[job.daily.waves]]
+name = "reference"
+parallel = true
+steps = ["instruments", "trading_calendar", "trading_status"]
+
+[[job.daily.waves]]
+name = "corp_actions_to_bars"
+parallel = false
+steps = ["corporate_actions", "daily_bars"]
+
+[[job.daily.waves]]
+name = "parallel_core"
+parallel = true
+steps = ["index_bars"]
+
+[[job.daily.waves]]
+name = "finalize"
+parallel = false
+steps = ["compact", "derive_adj_factors", "audit"]
+
+[job.daily.groups.core]
+at = "16:00"
+steps = [
+  "instruments", "trading_calendar", "trading_status",
+  "corporate_actions", "daily_bars", "index_bars",
+  "compact", "derive_adj_factors",
+]
+
+# M3: uncomment when capital/signals steps are registered
+# [job.daily.groups.capital]
+# at = "16:30"
+# steps = ["fund_flow", "northbound_holdings", "northbound_flows", "margin_trading"]
+#
+# [job.daily.groups.signals]
+# at = "17:00"
+# steps = ["dragon_tiger", "block_trades"]
+
+[job.init.phases]
+names = [
+  "phase1_reference",
+  "phase2a_corporate_actions",
+  "phase2b_daily_bars_incremental",
+  "phase2c_daily_bars_backfill",
+  "phase3_index_and_status",
+  "phase4_finalize",
+]
+
+[on_demand]
+enabled = true
+datasets = ["announcement_body", "stock_news", "research_reports", "financial_reports"]
+
+[duckdb]
+path = "{data.root}/duckdb/stockdata.duckdb"
+memory_limit = "2GB"
+threads = 4

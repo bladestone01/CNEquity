@@ -1,0 +1,35 @@
+# Byte-compiled / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+.venv-test/
+venv/
+env/
+
+# Secrets & local config
+.env
+configs/*.local.toml
+configs/stockdata.toml
+
+# Data lake artifacts (never commit generated data)
+data/
+*.duckdb
+*.duckdb.wal
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
