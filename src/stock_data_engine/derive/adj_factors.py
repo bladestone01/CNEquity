@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
+from pathlib import Path
 
 import httpx
 import polars as pl
@@ -42,39 +44,124 @@ def _align_factors_to_bars(
     )
 
 
-def compute_adj_factors(config: Config, adjust_type: str | None = None) -> int:
+def _cache_path(config: Config, symbol: str, adjust_type: str) -> Path:
+    cache_dir = config.meta_root / "adj_factors_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    safe = symbol.replace(".", "_")
+    return cache_dir / f"{safe}_{adjust_type}.parquet"
+
+
+def _load_cache(config: Config, symbol: str, adjust_type: str) -> pl.DataFrame | None:
+    path = _cache_path(config, symbol, adjust_type)
+    if not path.exists():
+        return None
+    return pl.read_parquet(path).select(["trade_date", "factor"])
+
+
+def _save_cache(config: Config, symbol: str, adjust_type: str, factors: pl.DataFrame) -> None:
+    if factors.is_empty():
+        return
+    path = _cache_path(config, symbol, adjust_type)
+    factors.write_parquet(path, compression="zstd")
+
+
+def _needs_refresh(
+    sym_bars: pl.DataFrame,
+    cached: pl.DataFrame | None,
+    force: bool,
+) -> bool:
+    if force:
+        return True
+    if cached is None or cached.is_empty():
+        return True
+    return sym_bars["trade_date"].max() > cached["trade_date"].max()
+
+
+def _resolve_factors(
+    config: Config,
+    symbol: str,
+    adjust_type: str,
+    sym_bars: pl.DataFrame,
+    *,
+    force: bool,
+    client: httpx.Client,
+) -> pl.DataFrame | None:
+    cached = _load_cache(config, symbol, adjust_type)
+    if not _needs_refresh(sym_bars, cached, force):
+        return cached
+
+    source = config.adj_factors_source
+    interval = config.source_intervals.get(source, 0.2)
+    rate_state_dir = config.meta_root / "rate_limits"
+    try:
+        wait_source(rate_state_dir, source, interval)
+        if source != "sina":
+            logger.warning("Unknown adj_factors source %s; skipping %s", source, symbol)
+            return cached
+        factors = fetch_adj_factor_series(symbol, adjust_type, client=client)
+        _save_cache(config, symbol, adjust_type, factors)
+        return factors
+    except Exception as exc:
+        logger.warning("External adj factors failed for %s (%s): %s", symbol, adjust_type, exc)
+        return cached
+
+
+def compute_adj_factors(
+    config: Config,
+    adjust_type: str | None = None,
+    *,
+    refresh_symbols: list[str] | None = None,
+) -> int:
     bars = _load_daily_bar_dates(config)
     if bars.is_empty():
         return 0
 
     adjust_types = [adjust_type] if adjust_type else list(config.adj_factors_types)
-    source = config.adj_factors_source
-    interval = config.source_intervals.get(source, 0.2)
-    rate_state_dir = config.meta_root / "rate_limits"
+    refresh_set = set(refresh_symbols or [])
     symbols = bars["symbol"].unique().to_list()
+    workers = max(1, min(config.workers, 16))
+
+    tasks = [
+        (sym, adj, bars.filter(pl.col("symbol") == sym), sym in refresh_set)
+        for sym in symbols
+        for adj in adjust_types
+    ]
 
     frames: list[pl.DataFrame] = []
-    with httpx.Client(timeout=20.0) as client:
-        for sym in symbols:
-            for adj in adjust_types:
-                try:
-                    wait_source(rate_state_dir, source, interval)
-                    if source == "sina":
-                        factors = fetch_adj_factor_series(sym, adj, client=client)
-                    else:
-                        logger.warning("Unknown adj_factors source %s; skipping %s", source, sym)
-                        continue
-                    aligned = _align_factors_to_bars(bars, sym, factors, adj)
-                    if aligned.height:
-                        frames.append(aligned)
-                except Exception as exc:
-                    logger.warning("External adj factors failed for %s (%s): %s", sym, adj, exc)
+
+    def _align_task(args: tuple) -> pl.DataFrame | None:
+        sym, adj, sym_bars, force = args
+        with httpx.Client(timeout=20.0) as client:
+            factors = _resolve_factors(config, sym, adj, sym_bars, force=force, client=client)
+        if factors is None or factors.is_empty():
+            return None
+        aligned = _align_factors_to_bars(bars, sym, factors, adj)
+        return aligned if aligned.height else None
+
+    if workers <= 1 or len(tasks) == 1:
+        with httpx.Client(timeout=20.0) as client:
+            for sym, adj, sym_bars, force in tasks:
+                factors = _resolve_factors(config, sym, adj, sym_bars, force=force, client=client)
+                if factors is None:
+                    continue
+                aligned = _align_factors_to_bars(bars, sym, factors, adj)
+                if aligned.height:
+                    frames.append(aligned)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_align_task, t) for t in tasks]
+            for fut in as_completed(futures):
+                aligned = fut.result()
+                if aligned is not None and aligned.height:
+                    frames.append(aligned)
 
     if not frames:
         return 0
 
-    out = pl.concat(frames, how="diagonal_relaxed")
-    out = with_provenance(out, source=source, data_version="v1")
+    out = pl.concat(frames, how="diagonal_relaxed").unique(
+        subset=["symbol", "trade_date", "adjust_type"], keep="last"
+    )
+    out = with_provenance(out, source=config.adj_factors_source, data_version="v1")
 
     total = 0
     for key, group in out.partition_by("trade_date", as_dict=True).items():
