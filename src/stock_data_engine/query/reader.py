@@ -1,0 +1,270 @@
+"""Python read API — load curated datasets with adjustment, universe, and PIT filters."""
+
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+from typing import Literal
+
+import polars as pl
+
+from stock_data_engine.config import Config, load_config
+from stock_data_engine.domain.schemas import DATASET_SCHEMAS, validate_dataframe
+from stock_data_engine.query.universe import apply_universe_filter
+
+AdjustType = Literal["qfq", "hfq"]
+UniverseType = Literal["all_a"]
+
+CURATED_DATASETS = frozenset(
+    {
+        "instruments",
+        "trading_calendar",
+        "trading_status",
+        "daily_bars",
+        "index_bars",
+        "corporate_actions",
+        "financial_statement_items",
+        "fund_flow",
+        "margin_trading",
+        "northbound_holdings",
+        "northbound_flows",
+        "valuation_metrics",
+        "sector_members",
+        "announcement_index",
+        "dragon_tiger",
+        "block_trades",
+        "index_constituents",
+        "industry_members",
+        "macro_indicators",
+        "market_breadth",
+        "share_unlock_schedule",
+        "regulatory_events",
+        "institutional_holdings",
+        "analyst_consensus",
+        "sentiment_scores",
+    }
+)
+DERIVED_DATASETS = frozenset({"adj_factors"})
+
+DATE_COLUMNS: dict[str, str] = {
+    "daily_bars": "trade_date",
+    "index_bars": "trade_date",
+    "trading_calendar": "trade_date",
+    "trading_status": "trade_date",
+    "corporate_actions": "ex_date",
+    "adj_factors": "trade_date",
+    "fund_flow": "trade_date",
+    "margin_trading": "trade_date",
+    "northbound_holdings": "trade_date",
+    "northbound_flows": "trade_date",
+    "valuation_metrics": "trade_date",
+    "sector_members": "as_of_date",
+    "announcement_index": "announce_date",
+    "dragon_tiger": "trade_date",
+    "block_trades": "trade_date",
+    "index_constituents": "as_of_date",
+    "industry_members": "as_of_date",
+    "macro_indicators": "obs_date",
+    "market_breadth": "trade_date",
+    "share_unlock_schedule": "unlock_date",
+    "regulatory_events": "event_date",
+    "institutional_holdings": "report_period",
+    "analyst_consensus": "forecast_date",
+    "sentiment_scores": "trade_date",
+}
+
+PIT_DATASETS = frozenset({"financial_statement_items", "announcement_index"})
+PRICE_COLS = ("open", "high", "low", "close")
+
+
+class ReaderError(ValueError):
+    """Raised when load() arguments or dataset state are invalid."""
+
+
+def _parse_date(value: str | date | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
+
+
+def resolve_config(
+    *,
+    config: Config | None = None,
+    data_root: str | Path | None = None,
+) -> Config:
+    if config is not None:
+        return config
+    if data_root is not None:
+        return Config(data_root=Path(data_root).expanduser().resolve())
+    for path in (Path("configs/stockdata.toml"), Path("configs/stockdata.example.toml")):
+        if path.exists():
+            return load_config(path)
+    raise ReaderError(
+        "No config found: pass config= or data_root=, or create configs/stockdata.toml"
+    )
+
+
+def _dataset_files(config: Config, dataset: str) -> list[Path]:
+    if dataset in DERIVED_DATASETS:
+        root = config.derived_root / dataset
+    elif dataset in CURATED_DATASETS:
+        root = config.curated_root / dataset
+    else:
+        raise ReaderError(f"unknown dataset {dataset!r}")
+
+    if not root.exists():
+        return []
+    return sorted(root.glob("**/*.parquet"))
+
+
+def _read_dataset(config: Config, dataset: str) -> pl.DataFrame:
+    files = _dataset_files(config, dataset)
+    if not files:
+        schema = DATASET_SCHEMAS.get(dataset)
+        return pl.DataFrame(schema=schema) if schema else pl.DataFrame()
+
+    df = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+    if dataset in DATASET_SCHEMAS:
+        return validate_dataframe(df, dataset)
+    return df
+
+
+def _apply_date_range(
+    df: pl.DataFrame,
+    dataset: str,
+    start: date | None,
+    end: date | None,
+) -> pl.DataFrame:
+    col = DATE_COLUMNS.get(dataset)
+    if col is None or col not in df.columns or df.is_empty():
+        return df
+    if start is not None:
+        df = df.filter(pl.col(col) >= start)
+    if end is not None:
+        df = df.filter(pl.col(col) <= end)
+    return df
+
+
+def _apply_symbol_filter(df: pl.DataFrame, symbols: list[str] | None) -> pl.DataFrame:
+    if not symbols or df.is_empty() or "symbol" not in df.columns:
+        return df
+    return df.filter(pl.col("symbol").is_in(symbols))
+
+
+def _apply_adjustment(
+    bars: pl.DataFrame,
+    config: Config,
+    adjust: AdjustType,
+    start: date | None,
+    end: date | None,
+) -> pl.DataFrame:
+    if bars.is_empty():
+        return bars
+
+    factors = _read_dataset(config, "adj_factors")
+    if factors.is_empty():
+        return bars.with_columns(
+            *[
+                pl.col(c).alias(f"adj_{c}")
+                for c in PRICE_COLS
+                if c in bars.columns
+            ]
+        )
+
+    factors = factors.filter(pl.col("adjust_type") == adjust)
+    factors = _apply_date_range(factors, "adj_factors", start, end)
+    factors = factors.select(["symbol", "trade_date", "factor"])
+
+    joined = bars.join(factors, on=["symbol", "trade_date"], how="left")
+    joined = joined.with_columns(pl.col("factor").fill_null(1.0))
+    adj_exprs = [
+        (pl.col(c) * pl.col("factor")).alias(f"adj_{c}") for c in PRICE_COLS if c in joined.columns
+    ]
+    return joined.with_columns(adj_exprs).drop("factor")
+
+
+def _apply_pit_filters(
+    df: pl.DataFrame,
+    *,
+    as_of: date,
+    items: list[str] | None,
+) -> pl.DataFrame:
+    if df.is_empty():
+        return df
+    if "announce_date" not in df.columns:
+        raise ReaderError("financial_statement_items requires announce_date column (PIT contract)")
+    df = df.filter(pl.col("announce_date") <= as_of)
+    if items and "item_code" in df.columns:
+        df = df.filter(pl.col("item_code").is_in(items))
+    return df
+
+
+def load(
+    dataset: str,
+    *,
+    start: str | date | None = None,
+    end: str | date | None = None,
+    adjust: AdjustType | None = None,
+    universe: UniverseType | None = None,
+    as_of: str | date | None = None,
+    items: list[str] | None = None,
+    symbols: list[str] | None = None,
+    config: Config | None = None,
+    data_root: str | Path | None = None,
+) -> pl.DataFrame:
+    """Load a curated dataset with optional adjustment, universe, and PIT filters.
+
+    Parameters
+    ----------
+    dataset:
+        Curated dataset name (e.g. ``daily_bars``, ``financial_statement_items``).
+    start, end:
+        Inclusive date window on the dataset's primary date column.
+    adjust:
+        ``qfq`` or ``hfq`` — joins ``adj_factors`` and adds ``adj_open`` … ``adj_close``.
+        Only applies to ``daily_bars`` / ``index_bars``.
+    universe:
+        ``all_a`` — drop ST, suspended, unlisted, and delisted rows per day.
+    as_of:
+        Point-in-time date for ``financial_statement_items`` (filters ``announce_date``).
+    items:
+        ``item_code`` filter for ``financial_statement_items``.
+    symbols:
+        Restrict to these symbols when the dataset has a ``symbol`` column.
+    config, data_root:
+        Lake location; auto-detects ``configs/stockdata.toml`` when omitted.
+    """
+    cfg = resolve_config(config=config, data_root=data_root)
+    if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
+        raise ReaderError(f"unknown dataset {dataset!r}")
+
+    start_d = _parse_date(start)
+    end_d = _parse_date(end)
+    as_of_d = _parse_date(as_of)
+
+    if dataset in PIT_DATASETS:
+        if as_of_d is None:
+            raise ReaderError(f"{dataset} requires as_of= for point-in-time queries")
+        df = _read_dataset(cfg, dataset)
+        df = _apply_pit_filters(df, as_of=as_of_d, items=items)
+        df = _apply_symbol_filter(df, symbols)
+        sort_cols = [c for c in ("announce_date", "symbol", "report_period", "item_code") if c in df.columns]
+        return df.sort(sort_cols) if sort_cols else df
+
+    df = _read_dataset(cfg, dataset)
+    df = _apply_date_range(df, dataset, start_d, end_d)
+    df = _apply_symbol_filter(df, symbols)
+
+    if universe and dataset in {"daily_bars", "index_bars"}:
+        date_col = DATE_COLUMNS[dataset]
+        df = apply_universe_filter(df, cfg, universe=universe, date_col=date_col)
+
+    if adjust and dataset in {"daily_bars", "index_bars"}:
+        df = _apply_adjustment(df, cfg, adjust, start_d, end_d)
+
+    sort_cols = [c for c in (DATE_COLUMNS.get(dataset), "symbol") if c and c in df.columns]
+    if sort_cols:
+        df = df.sort(sort_cols)
+    return df
