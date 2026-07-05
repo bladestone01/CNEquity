@@ -7,13 +7,30 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **Documentation consolidation:** `docs/schema.md`, `docs/datasets.md`, and
+  `docs/operations.md` merged into `docs/PRD.md` (v2.1) as appendices A/B/C —
+  one requirements document as the single source of truth. README rewritten
+  in Chinese as an end-state usage guide (data layers, three consumption
+  paths, data-trust principles) with an actionable phased roadmap.
+- **Package reorganization** (no behavior change, import paths updated):
+  - `duckdb/` → `query/` (consumption layer: views, on-demand, future read
+    API; also stops shadowing the third-party `duckdb` module name).
+  - `catalog/init_layout.py` → `storage/layout.py`; `catalog/on_demand.py` →
+    `query/on_demand.py`; `catalog/` removed.
+  - `workers/pool.py` → `orchestrator/worker_pool.py`; `workers/` removed.
+  - `adapters/rate_limit.py` → `adapters/throttle.py` (avoids duplicate module
+    name with `domain/rate_limit.py`).
+  - `steps/builtin.py` split by PRD data layer: `reference.py` (L0),
+    `bars.py` (L1), `events.py` (L2), `finalize.py`, shared helpers in
+    `common.py`; importing `stock_data_engine.steps` registers everything.
 - **Breaking (data trust):** TDX adapters no longer fall back to fabricated
   mock data on failure. They raise `TdxSourceError` and fail the batch unless
   `[tdx_protocol].allow_mock = true` (tests/demo only); mock rows are labeled
   `source="mock"` and audit reports an error finding when they reach curated.
 - **Breaking (schema):** `fetched_at` is now a real UTC timestamp
-  (`Datetime("us", "UTC")`) instead of an ISO string, matching
-  `docs/schema.md`. `compact` normalizes previously written files on read;
+  (`Datetime("us", "UTC")`) instead of an ISO string, matching the schema
+  contract (now `docs/PRD.md` appendix A). `compact` normalizes previously
+  written files on read;
   regenerating the lake (`sde init` + backfill) is recommended.
 - Manifest SQLite connections enable WAL and `busy_timeout` in preparation
   for batch-level writes from worker processes.

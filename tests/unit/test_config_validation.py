@@ -1,7 +1,7 @@
 from pathlib import Path
 
+import stock_data_engine.steps  # noqa: F401 — register steps
 from stock_data_engine.config import Config, ScheduleGroup, WaveConfig, load_config, validate_config
-from stock_data_engine.steps import builtin  # noqa: F401
 
 
 def test_validate_config_rejects_unknown_group_step(tmp_path):

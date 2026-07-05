@@ -20,8 +20,14 @@ pytest tests/integration
 ## Conventions
 
 - **Package layout:** all code under `src/stock_data_engine/`; one concern per
-  subpackage (`adapters`, `orchestrator`, `steps`, `storage`, `domain`,
-  `derive`, `quality`, `duckdb`, `catalog`, `cli`).
+  subpackage (`domain` contracts, `adapters` source I/O, `orchestrator`
+  engine/manifest/worker pool, `steps` one module per data layer, `storage`
+  lake writes + layout, `derive`, `quality`, `query` views/on-demand/read API,
+  `config`, `cli`).
+- **Steps by data layer:** step modules under `steps/` follow the PRD §4.0
+  layering (`reference.py` = L0, `bars.py` = L1, `events.py` = L2, …,
+  `finalize.py`); a new dataset's step goes into its layer module (create it
+  if missing) and must be imported in `steps/__init__.py` to register.
 - **Data contract first:** new datasets must declare schema + primary key in
   `domain/schemas.py` and a partition key, and carry provenance columns
   (`source`, `data_version`, `fetched_at`).
@@ -38,4 +44,4 @@ pytest tests/integration
 2. `@register_step` with correct `depends_on` / `group` / `requires_workers`.
 3. Write-time schema validation passes.
 4. Unit test covering normalization + at least one edge case.
-5. Entry added to `docs/datasets.md`.
+5. Entry added to the dataset catalog (`docs/PRD.md` appendix B).

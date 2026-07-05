@@ -1,8 +1,8 @@
 # StockDataEngine 产品需求文档（PRD）
 
-版本：v2.0
+版本：v2.1（统一文档：原 schema.md / datasets.md / operations.md 已并入附录 A/B/C）
 状态：Draft（Living Document）
-日期：2026-06-28
+日期：2026-07-06
 产品定位：整合多方数据源的 A 股辅助数据平台 —— 采集、编排、标准化，交付可直接查询的 Parquet 数据湖
 
 > 阅读约定：本文每条能力都标注**实现状态**，避免「愿景当现状」。
@@ -22,8 +22,8 @@ StockDataEngine 在 mootdx（TDX 协议）与多个 HTTP 数据源之上，提�
 | 痛点 | 解法 | 状态 |
 |------|------|------|
 | 单个数据源（mootdx 等）只能「调接口」，不能「跑全市场、可恢复」 | Orchestrator：Job → Wave → Step → Task → Batch → Manifest | 🟡 |
-| 单进程拉数慢 | 多进程按 symbol batch 并行 + 全局限速 | 🟡（并行已有，限速未实现） |
-| 数据散落、口径不一、来源不可追溯 | 统一 schema 契约 + 分区 + provenance 列（source/data_version/fetched_at） | 🟡（契约定义有，写入未强校验） |
+| 单进程拉数慢 | 多进程按 symbol batch 并行 + 全局限速 | 🟢 |
+| 数据散落、口径不一、来源不可追溯 | 统一 schema 契约 + 分区 + provenance 列（source/data_version/fetched_at） | 🟢（写前强校验 + mock 门控） |
 | 单一数据源不稳定、口径有偏差 | 多源采集 + canonical/snapshot 分离 + 跨源审计 | 🔴 |
 | 研究方被迫自建并维护数据库 | curated Parquet 即交付物 + 可选 DuckDB 视图 | 🟢 |
 
@@ -65,9 +65,9 @@ StockDataEngine 在 mootdx（TDX 协议）与多个 HTTP 数据源之上，提�
 | 默认 data root | `./data/stock-data-engine`（可配置，生产建议绝对路径） |
 | DuckDB 文件 | `{data_root}/duckdb/stockdata.duckdb` |
 | Symbol 格式 | `{code}.{SH\|SZ\|BJ}`，另设独立 `exchange` 列 |
-| 时区 | 业务日期/时间一律 `Asia/Shanghai`；`fetched_at` 用 UTC ISO8601 |
+| 时区 | 业务日期/时间一律 `Asia/Shanghai`；`fetched_at` 为 UTC timestamp（`Datetime(us, UTC)`） |
 
-详见 [schema.md](schema.md) / [datasets.md](datasets.md) / [operations.md](operations.md)。
+详见附录 A（Schema 契约）/ 附录 B（数据集目录）/ 附录 C（运维手册）。
 
 ---
 
@@ -95,7 +95,7 @@ CLI (sde):  init | config validate | servers test | run | backfill
 | 组件 | 选型 | 说明 |
 |------|------|------|
 | 语言 | Python ≥ 3.11 | 内置 `tomllib`，无需 `tomli` |
-| TDX 协议 | mootdx ≥ 0.11（可选 extra `[tdx]`） | 默认源，无则降级 mock |
+| TDX 协议 | mootdx ≥ 0.11（可选 extra `[tdx]`） | 默认源；缺失/失败即判 batch failed（mock 仅限 `allow_mock` 测试开关） |
 | HTTP | httpx | 同步 client |
 | 清洗 | Polars ≥ 1.0 | 所有 DataFrame 操作 |
 | 列式存储 | Parquet（PyArrow，zstd） | 交付格式 |
@@ -108,17 +108,15 @@ CLI (sde):  init | config validate | servers test | run | backfill
 
 | 模块 | 职责 |
 |------|------|
-| `config/` | TOML 加载 + 校验（待加强：step/group 引用校验） |
-| `domain/` | symbol 解析、universe 规则、schema 契约与 provenance |
-| `adapters/` | 各数据源协议封装（tdx_protocol/sina/eastmoney/...） |
-| `orchestrator/` | engine（wave 执行）、manifest（运行清单）、registry（step 注册） |
-| `steps/` | 内置 step 定义（数据集采集单元） |
-| `workers/` | 多进程 symbol-batch 并行抓取 |
-| `storage/` | staging 写入、compact 去重、curated 分区写入 |
+| `config/` | TOML 加载 + 校验（含 step/group 引用校验） |
+| `domain/` | symbol 解析、universe 规则、schema 契约与 provenance、限速原语 |
+| `adapters/` | 各数据源协议封装（tdx_protocol/sina/eastmoney/...）+ `throttle.py` 按源限速调度 |
+| `orchestrator/` | engine（wave 执行）、manifest（运行清单）、registry（step 注册）、deps（拓扑排序）、worker_pool（多进程 symbol-batch 并行） |
+| `steps/` | 内置 step 定义，**按 §4.0 数据层次一层一模块**：reference(L0)/bars(L1)/events(L2)/finalize；后续 capital(L4)/fundamentals(L3)/... 按层新增 |
+| `storage/` | staging 写入、compact 去重、curated 分区写入、数据湖目录布局（layout） |
 | `derive/` | 派生数据集（adj_factors） |
 | `quality/` | 审计与质量 findings |
-| `duckdb/` | 视图维护 |
-| `catalog/` | 目录初始化、on-demand 服务 |
+| `query/` | 消费层：DuckDB 视图、on-demand 服务；后续 Python 读取 API（reader）落此处 |
 | `cli/` | 命令入口 |
 
 ### 3.4 数据湖目录契约
@@ -144,7 +142,7 @@ CLI (sde):  init | config validate | servers test | run | backfill
 
 ## 4. 综合数据清单
 
-> 完整字段见 [schema.md](schema.md)，逐源限制见 [datasets.md](datasets.md)。
+> 完整字段见附录 A，逐源限制见附录 B。
 > 本章按**选股分析**所需的数据层次组织；每条数据集标注 ingestion 模式（batch / on-demand / derived）与目标里程碑。
 
 ### 4.0 数据分层与选股用途
@@ -525,3 +523,430 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
   - 存储用 Parquet 数据湖而非数据库 → 交付物即文件、零运维、DuckDB/Polars 直查。
   - curated 单 PK canonical + 多源 snapshot 分离 → 杜绝静默切源、保证可审计。
   - 编排自研而非引入 Airflow/Prefect → v1 规模下降低依赖与部署成本；若未来调度复杂度上升再评估。
+
+---
+
+## 附录 A：Schema 契约
+
+StockDataEngine curated datasets share provenance columns and explicit primary keys.
+
+### Global conventions
+
+| Rule | Value |
+|------|-------|
+| Timezone | `Asia/Shanghai` for all `trade_date` and business timestamps |
+| Symbol | `{code}.{SH\|SZ\|BJ}` e.g. `600519.SH` |
+| Exchange column | `SH`, `SZ`, or `BJ` |
+| Provenance columns | `source`, `data_version`, `fetched_at` (UTC timestamp) on every curated row |
+| Null semantics | Suspended days: OHLCV present, `volume=0`, `amount=0` |
+| Schema evolution | Additive columns only; breaking changes bump `dataset_schema_version` |
+
+### Partition keys (curated)
+
+| Dataset | Partition |
+|---------|-----------|
+| daily_bars | `trade_date` |
+| index_bars | `trade_date` |
+| minute_bars | `frequency`, `trade_date`, `symbol_bucket` |
+| trading_status | `trade_date` |
+| corporate_actions | `ex_date` (year-month) |
+| adj_factors | `trade_date` |
+| financial_statement_items | `report_period` |
+| industry_members | `as_of_date` |
+| northbound_flows | `trade_date` |
+
+Multi-source snapshots: `meta/source_snapshots/{dataset}/source={source}/data_version={ver}/`
+
+### Primary keys
+
+| Dataset | Primary key |
+|---------|-------------|
+| instruments | `(symbol)` |
+| trading_calendar | `(trade_date)` |
+| trading_status | `(symbol, trade_date)` |
+| daily_bars | `(symbol, trade_date)` |
+| index_bars | `(symbol, trade_date, frequency)` |
+| minute_bars | `(symbol, trade_date, bar_time, frequency)` |
+| corporate_actions | `(symbol, ex_date, action_type)` |
+| adj_factors | `(symbol, trade_date, adjust_type)` |
+| fund_flow | `(symbol, trade_date)` |
+| northbound_holdings | `(symbol, trade_date, channel)` |
+| northbound_flows | `(trade_date, channel)` |
+| margin_trading | `(symbol, trade_date)` |
+| sector_members | `(symbol, sector_code, as_of_date)` |
+| valuation_metrics | `(symbol, trade_date)` |
+| announcement_index | `(announcement_id)` |
+| financial_statement_items | `(symbol, report_period, statement_type, item_code)` |
+| industry_members | `(symbol, classification_system, as_of_date)` |
+
+### MVP-P0 column definitions
+
+#### instruments
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | PK |
+| name | string | |
+| exchange | string | SH/SZ/BJ |
+| asset_type | string | stock/etf/index |
+| list_date | date | nullable |
+| delist_date | date | nullable |
+| prev_symbol | string | nullable |
+| source | string | |
+| data_version | string | |
+| fetched_at | timestamp | |
+
+#### trading_calendar
+
+| Column | Type | Notes |
+|--------|------|-------|
+| trade_date | date | PK |
+| is_trading | bool | |
+| source | string | |
+| data_version | string | |
+| fetched_at | timestamp | |
+
+#### trading_status
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| is_trading | bool | |
+| status | string | normal/suspended/st/*st |
+| source | string | |
+| data_version | string | |
+| fetched_at | timestamp | |
+
+#### daily_bars
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| open | float64 | unadjusted |
+| high | float64 | |
+| low | float64 | |
+| close | float64 | |
+| volume | int64 | shares |
+| amount | float64 | CNY |
+| source | string | |
+| data_version | string | |
+| fetched_at | timestamp | |
+
+#### index_bars
+
+Same as daily_bars plus `frequency` (default `1d`), `asset_type=index`.
+
+#### corporate_actions
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| ex_date | date | |
+| action_type | string | cash_dividend/bonus/transfer/allotment |
+| cash_dividend | float64 | per share |
+| bonus_ratio | float64 | per 10 shares |
+| transfer_ratio | float64 | per 10 shares |
+| allotment_ratio | float64 | nullable |
+| allotment_price | float64 | nullable |
+| source | string | |
+| data_version | string | |
+| fetched_at | timestamp | |
+
+#### adj_factors
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| adjust_type | string | qfq/hfq |
+| factor | float64 | cumulative factor; qfq: `1/sina_qfq_factor`, hfq: `sina_hfq_factor` |
+| source | string | sina (default) |
+| data_version | string | |
+| fetched_at | timestamp | |
+
+### Compact deduplication
+
+On compact: group by primary key, keep row with max(`fetched_at`).
+
+### DuckDB views
+
+```sql
+CREATE VIEW daily_bars_view AS
+SELECT * FROM read_parquet('{root}/curated/daily_bars/**/*.parquet', hive_partitioning=true);
+
+CREATE VIEW daily_bars_adj AS
+SELECT b.*, b.close * a.factor AS adj_close
+FROM daily_bars_view b
+LEFT JOIN read_parquet('{root}/derived/adj_factors/**/*.parquet', hive_partitioning=true) a
+  ON b.symbol = a.symbol AND b.trade_date = a.trade_date AND a.adjust_type = 'qfq';
+```
+
+---
+
+## 附录 B：数据集目录（逐源限制与更新频率）
+
+Per-dataset source, update frequency, and known limitations (ashare-data-warehouse style).
+
+### Legend
+
+- **Wave:** daily batch step name
+- **On-demand:** fetched by `OnDemandService` on first query
+
+---
+
+### MVP-P0
+
+#### instruments
+
+| Item | Value |
+|------|-------|
+| Wave | `instruments` (Wave 0) |
+| Primary source | tdx_protocol (mootdx security_list) |
+| Backup | akshare |
+| Frequency | daily |
+| PK | symbol |
+| Universe | SH/SZ/BJ prefix whitelist 60/68/00/30/92 |
+| Known limits | list_date may be null from TDX |
+
+#### trading_calendar
+
+| Item | Value |
+|------|-------|
+| Wave | `trading_calendar` (Wave 0) |
+| Primary source | tdx_protocol |
+| Backup | exchange CSV |
+| Frequency | yearly refresh + daily check |
+| PK | trade_date |
+
+#### trading_status
+
+| Item | Value |
+|------|-------|
+| Wave | `trading_status` (Wave 0) |
+| Primary source | tdx_protocol |
+| Backup | eastmoney |
+| Frequency | daily |
+| PK | (symbol, trade_date) |
+
+#### daily_bars
+
+| Item | Value |
+|------|-------|
+| Wave | `daily_bars` (Wave 1, after corporate_actions) |
+| Primary source | tdx_protocol (unadjusted) |
+| Backup | eastmoney |
+| Frequency | daily incremental; full backfill on init Phase 2c |
+| PK | (symbol, trade_date) |
+| Rebackfill | symbols from corporate_actions same-day ex_date |
+| Known limits | TDX rate limit; use ≤8 workers |
+
+#### index_bars
+
+| Item | Value |
+|------|-------|
+| Wave | `index_bars` (Wave 2) |
+| Primary source | tdx_protocol |
+| Backup | eastmoney |
+| Frequency | daily |
+| PK | (symbol, trade_date, frequency) |
+
+#### corporate_actions
+
+| Item | Value |
+|------|-------|
+| Wave | `corporate_actions` (Wave 1, before daily_bars) |
+| Primary source | tdx_protocol ex_rights |
+| Backup | eastmoney datacenter |
+| Frequency | daily |
+| PK | (symbol, ex_date, action_type) |
+| Output | `symbols_to_rebackfill` manifest metadata |
+
+#### adj_factors (derived)
+
+| Item | Value |
+|------|-------|
+| Step | `derive_adj_factors` (Wave finalize) |
+| Primary source | sina (qfq/hfq factor series) |
+| Input | daily_bars trade dates + external factor API |
+| Frequency | daily after compact |
+| PK | (symbol, trade_date, adjust_type) |
+| Note | External cumulative factors aligned to daily_bars; `adj_close = close * factor` |
+
+---
+
+### v1.0-full (batch 2)
+
+#### fund_flow
+
+| Item | Value |
+|------|-------|
+| Group | core@16:30 |
+| Primary source | eastmoney |
+| PK | (symbol, trade_date) |
+
+#### northbound_holdings / northbound_flows
+
+| Item | Value |
+|------|-------|
+| Group | capital@16:30 |
+| Primary source | eastmoney |
+| PK | 见附录 A |
+
+#### margin_trading
+
+| Item | Value |
+|------|-------|
+| Group | signals@17:00 |
+| Primary source | eastmoney / akshare |
+| PK | (symbol, trade_date) |
+
+#### valuation_metrics
+
+| Item | Value |
+|------|-------|
+| Primary source | eastmoney |
+| Backup | tencent |
+| PK | (symbol, trade_date) |
+
+#### announcement_index
+
+| Item | Value |
+|------|-------|
+| Primary source | cninfo |
+| PK | announcement_id |
+| Note | Full text via on-demand `announcement_body` |
+
+---
+
+### On-demand datasets
+
+Not in daily Wave. Cached under `meta/on_demand/` and optional DuckDB tables.
+
+| Dataset | Source | Trigger |
+|---------|--------|---------|
+| announcement_body | cninfo | `sde query --dataset announcement_body --symbol` |
+| stock_news | eastmoney / akshare | per symbol |
+| research_reports | eastmoney reportapi | per symbol |
+| financial_reports | sina / gpcw | per symbol |
+
+---
+
+### Meta datasets
+
+| Dataset | Storage |
+|---------|---------|
+| ingestion_runs | manifest.db |
+| ingestion_batches | manifest.db |
+| quality_findings | meta/quality/findings/ |
+| source_diffs | meta/quality/source_diffs/ |
+| data_catalog | generated by `sde catalog` |
+
+---
+
+### Source availability matrix
+
+| Source | Protocol | MVP usage | Backup | Degrade |
+|--------|----------|-----------|--------|---------|
+| tdx_protocol | TCP | bars, instruments, calendar | eastmoney | audit alert only |
+| sina | HTTP | adj_factors (qfq/hfq) | — | skip symbol + quality finding |
+| eastmoney | HTTP | corp actions backup, capital | akshare | skip + quality finding |
+| cninfo | HTTP | announcement_index | — | on-demand only |
+| akshare | HTTP | optional | — | disabled by default |
+
+调度与 failover 运维见附录 C。
+
+---
+
+## 附录 C：运维手册
+
+### Directory layout
+
+After `sde init`:
+
+```
+{data.root}/
+  staging/
+  curated/
+  derived/
+  meta/manifest.db
+  meta/quality/
+  meta/source_snapshots/
+  meta/on_demand/
+  duckdb/stockdata.duckdb
+```
+
+### T+1 daily schedule (cron example)
+
+```cron
+# Core reference + bars + derive (Mon-Fri 16:05)
+5 16 * * 1-5 cd /path/to/StockDataEngine && sde run daily --group core --config configs/stockdata.example.toml
+
+# Capital tables (16:35)
+35 16 * * 1-5 sde run daily --group capital --config configs/stockdata.example.toml
+
+# Signals (17:05)
+5 17 * * 1-5 sde run daily --group signals --config configs/stockdata.example.toml
+```
+
+### Init phases
+
+```bash
+sde init --config configs/stockdata.example.toml
+```
+
+Runs phases in order; Phase 2c (daily_bars backfill) may take 15–20 minutes.
+
+### Failure recovery
+
+```bash
+sde status --config configs/stockdata.example.toml
+sde retry --run-id <id> --config configs/stockdata.example.toml
+```
+
+Only failed batches are re-executed; successful batches are skipped.
+
+### Audit
+
+```bash
+sde audit --config configs/stockdata.example.toml
+```
+
+Writes findings to `meta/quality/findings/{run_id}.json`. Cross-source diffs go to `meta/quality/source_diffs/`. **No automatic source switching.**
+
+### Backup
+
+```bash
+tar czf backup-$(date +%Y%m%d).tar.gz data/stock-data-engine/curated data/stock-data-engine/meta
+cp data/stock-data-engine/duckdb/stockdata.duckdb backup/
+```
+
+### Source failover policy
+
+1. Primary source fails → batch retry with backoff (max 3).
+2. Still failing → mark batch failed; optional backup fetch writes to `meta/source_snapshots`.
+3. `sde audit` compares primary vs snapshot; human decides source switch.
+4. Never silently overwrite curated canonical rows from backup.
+
+### EastMoney HTTP
+
+Engine applies NID auth patch at startup (`adapters/eastmoney/em_auth.py`). Ensure outbound HTTPS to `*.eastmoney.com`.
+
+### Docker (optional)
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install -e ".[tdx]"
+CMD ["sde", "run", "daily", "--config", "configs/stockdata.example.toml"]
+```
+
+Mount `{data.root}` as a volume for persistence.
+
+### Monitoring
+
+- `sde status`: latest run, batch counts, failed batches
+- manifest.db tables: `ingestion_runs`, `ingestion_batches`
+- Optional: export `.progress.json` from status for external dashboards

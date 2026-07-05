@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 
+import stock_data_engine.steps  # noqa: F401 — register steps
 from stock_data_engine.orchestrator.deps import (
     CyclicDependencyError,
     UnknownStepError,
@@ -9,7 +10,6 @@ from stock_data_engine.orchestrator.deps import (
     validate_steps_registered,
 )
 from stock_data_engine.orchestrator.registry import register_step
-from stock_data_engine.steps import builtin  # noqa: F401
 
 
 def test_reference_wave_steps_are_single_parallel_level():

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from stock_data_engine.config import Config
-from stock_data_engine.duckdb.views import ensure_duckdb_views
 from stock_data_engine.orchestrator.manifest import Manifest
+from stock_data_engine.query.views import ensure_duckdb_views
 
 
 def init_data_layout(config: Config) -> None:

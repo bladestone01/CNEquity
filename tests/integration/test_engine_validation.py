@@ -2,10 +2,10 @@ from datetime import date
 
 import pytest
 
-from stock_data_engine.catalog.init_layout import init_data_layout
+import stock_data_engine.steps  # noqa: F401 — register steps
 from stock_data_engine.orchestrator.deps import UnknownStepError
 from stock_data_engine.orchestrator.engine import JobEngine
-from stock_data_engine.steps import builtin  # noqa: F401
+from stock_data_engine.storage.layout import init_data_layout
 
 
 def test_run_job_rejects_unknown_steps(config):

@@ -5,16 +5,16 @@ import json
 import click
 import polars as pl
 
-from stock_data_engine.catalog.init_layout import init_data_layout
-from stock_data_engine.catalog.on_demand import OnDemandService
+import stock_data_engine.steps  # noqa: F401 — register steps
 from stock_data_engine.config import load_config, validate_config
 from stock_data_engine.derive.adj_factors import compute_adj_factors
-from stock_data_engine.duckdb.views import ensure_duckdb_views
 from stock_data_engine.orchestrator.engine import JobEngine
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.quality.audit import run_audit
-from stock_data_engine.steps import builtin  # noqa: F401 — register steps
+from stock_data_engine.query.on_demand import OnDemandService
+from stock_data_engine.query.views import ensure_duckdb_views
 from stock_data_engine.storage import compact_dataset
+from stock_data_engine.storage.layout import init_data_layout
 
 DEFAULT_CONFIG = "configs/stockdata.example.toml"
 

@@ -58,7 +58,7 @@ class Config:
 
     def rate_limit(self, source: str) -> None:
         if self._rate_limiters is None:
-            from stock_data_engine.adapters.rate_limit import SourceRateLimiters
+            from stock_data_engine.adapters.throttle import SourceRateLimiters
 
             self._rate_limiters = SourceRateLimiters(self)
         self._rate_limiters.wait(source)  # type: ignore[union-attr]
@@ -178,8 +178,8 @@ def load_config(path: str | Path) -> Config:
 
 
 def validate_config(cfg: Config) -> list[str]:
+    import stock_data_engine.steps  # noqa: F401 — register steps
     from stock_data_engine.orchestrator.registry import STEP_REGISTRY
-    from stock_data_engine.steps import builtin  # noqa: F401 — register steps
 
     errors: list[str] = []
     if cfg.workers < 1:
