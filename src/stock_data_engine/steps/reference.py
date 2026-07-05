@@ -28,8 +28,16 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
     start = trade_date - timedelta(days=30)
     end = trade_date + timedelta(days=365)
     rl = config.tdx_rate_limit_spec()
-    df = fetch_trading_calendar(start, end, rate_limit=rl, allow_mock=config.tdx_allow_mock)
-    df = normalize_with_source(df)
+    seed_path = config.meta_root / "seeds" / "trading_calendar.csv"
+    df = fetch_trading_calendar(
+        start,
+        end,
+        rate_limit=rl,
+        allow_mock=config.tdx_allow_mock,
+        curated_root=config.curated_root,
+        seed_path=seed_path if seed_path.exists() else None,
+    )
+    df = normalize_with_source(df, source="exchange_calendar")
     return write_simple(config, run_id, "trading_calendar", df)
 
 
@@ -37,8 +45,11 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
 def step_trading_status(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     symbols = context.get("symbols") or load_symbols(config)
     rl = config.tdx_rate_limit_spec()
-    df = fetch_trading_status(
-        symbols[:500], trade_date, rate_limit=rl, allow_mock=config.tdx_allow_mock
-    )
-    df = normalize_with_source(df)
+    df = fetch_trading_status(symbols, trade_date, rate_limit=rl, allow_mock=config.tdx_allow_mock)
+    if "source" not in df.columns:
+        df = normalize_with_source(df)
+    else:
+        from stock_data_engine.domain.schemas import with_provenance
+
+        df = with_provenance(df, source="eastmoney", data_version="v1")
     return write_simple(config, run_id, "trading_status", df)

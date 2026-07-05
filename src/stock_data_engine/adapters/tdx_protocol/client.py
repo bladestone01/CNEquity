@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from pathlib import Path
 
 import polars as pl
 
+from stock_data_engine.adapters.calendar.exchange_calendar import (
+    build_trading_calendar,
+    ensure_seed_csv,
+)
+from stock_data_engine.adapters.eastmoney.corporate_actions import fetch_corporate_actions_eastmoney
+from stock_data_engine.adapters.eastmoney.trading_status import fetch_trading_status_eastmoney
+from stock_data_engine.adapters.tdx_protocol.bars import fetch_bars_paginated
+from stock_data_engine.adapters.tdx_protocol.corporate_actions import fetch_corporate_actions_tdx
 from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
 from stock_data_engine.domain.schemas import MOCK_SOURCE, with_provenance
 from stock_data_engine.domain.symbols import format_symbol, is_all_a_symbol
@@ -146,16 +155,21 @@ def fetch_trading_calendar(
     *,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
+    curated_root: Path | None = None,
+    seed_path: Path | None = None,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
-    # mootdx does not expose a trading calendar; a real source (exchange CSV /
-    # derived from index bars) lands in M2. Until then this dataset is mock-only.
-    return _fail_or_mock(
-        "trading_calendar",
-        "no real calendar source implemented yet (M2)",
-        allow_mock,
-        _mock_calendar(start, end),
-    )
+    try:
+        ensure_seed_csv(seed_path)
+        return build_trading_calendar(
+            start,
+            end,
+            seed_path=seed_path,
+            curated_root=curated_root,
+        )
+    except Exception as exc:
+        reason = f"calendar seed load failed: {exc}"
+        return _fail_or_mock("trading_calendar", reason, allow_mock, _mock_calendar(start, end))
 
 
 def fetch_daily_bars(
@@ -170,35 +184,7 @@ def fetch_daily_bars(
         client = _quotes_client()
         rows = []
         for sym in symbols:
-            wait_spec(rate_limit)
-            code, exch = sym.split(".")
-            market = 1 if exch == "SH" else (0 if exch == "SZ" else 2)
-            try:
-                raw = client.bars(symbol=code, frequency=9, market=market, start=start, offset=800)
-            except Exception:
-                continue
-            if raw is None or len(raw) == 0:
-                continue
-            pdf = pl.from_pandas(raw) if hasattr(raw, "columns") else pl.DataFrame(raw)
-            date_col = "datetime" if "datetime" in pdf.columns else "date"
-            for row in pdf.iter_rows(named=True):
-                td = row[date_col]
-                if hasattr(td, "date"):
-                    td = td.date()
-                if td < start or td > end:
-                    continue
-                rows.append(
-                    {
-                        "symbol": sym,
-                        "trade_date": td,
-                        "open": float(row.get("open", 0)),
-                        "high": float(row.get("high", 0)),
-                        "low": float(row.get("low", 0)),
-                        "close": float(row.get("close", 0)),
-                        "volume": int(row.get("volume", 0)),
-                        "amount": float(row.get("amount", 0)),
-                    }
-                )
+            rows.extend(fetch_bars_paginated(client, sym, start, end, rate_limit=rate_limit))
         if rows:
             return pl.DataFrame(rows)
         reason = "TDX returned no bars"
@@ -224,12 +210,12 @@ def fetch_index_bars(
 def fetch_corporate_actions(
     trade_date: date,
     *,
+    symbols: list[str] | None = None,
+    backfill: bool = False,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
-    # mootdx xdxr integration lands in M2; an empty frame here would silently
-    # disable ex-date rebackfill, so treat "not implemented" as a failure.
     empty = pl.DataFrame(
         schema={
             "symbol": pl.Utf8,
@@ -242,9 +228,49 @@ def fetch_corporate_actions(
             "allotment_price": pl.Float64,
         }
     )
+
+    frames: list[pl.DataFrame] = []
+    try:
+        if symbols:
+            tdx_df = fetch_corporate_actions_tdx(
+                symbols,
+                trade_date=trade_date,
+                backfill=backfill,
+                client_factory=_quotes_client,
+                rate_limit=rate_limit,
+            )
+            if tdx_df.height:
+                frames.append(tdx_df.with_columns(pl.lit("tdx_protocol").alias("source")))
+    except ImportError:
+        logger.debug("mootdx not installed for corporate_actions")
+    except Exception as exc:
+        logger.warning("TDX corporate_actions failed: %s", exc)
+
+    try:
+        em_df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill)
+        if em_df.height:
+            frames.append(em_df.with_columns(pl.lit("eastmoney").alias("source")))
+    except Exception as exc:
+        logger.warning("EastMoney corporate_actions backup failed: %s", exc)
+
+    if frames:
+        out = pl.concat(frames, how="diagonal_relaxed")
+        if "source" not in out.columns:
+            out = out.with_columns(pl.lit("tdx_protocol").alias("source"))
+        else:
+            out = out.with_columns(
+                pl.when(pl.col("source").is_null())
+                .then(pl.lit("tdx_protocol"))
+                .otherwise(pl.col("source"))
+                .alias("source")
+            )
+        if not backfill:
+            out = out.filter(pl.col("ex_date") == trade_date)
+        return out.unique(subset=["symbol", "ex_date", "action_type"], keep="last")
+
     return _fail_or_mock(
         "corporate_actions",
-        "TDX xdxr fetch not implemented yet (M2)",
+        "no corporate actions from TDX or EastMoney",
         allow_mock,
         empty,
     )
@@ -258,7 +284,14 @@ def fetch_trading_status(
     allow_mock: bool = False,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
-    # No real suspension/ST source yet (M2); the all-normal frame is fabricated.
+    try:
+        df = fetch_trading_status_eastmoney(symbols, trade_date)
+        if df.height:
+            return df
+        reason = "EastMoney returned no trading status rows"
+    except Exception as exc:
+        reason = f"EastMoney trading_status failed: {exc}"
+
     rows = [
         {
             "symbol": sym,
@@ -270,7 +303,7 @@ def fetch_trading_status(
     ]
     return _fail_or_mock(
         "trading_status",
-        "no real suspension/ST source implemented yet (M2)",
+        reason,
         allow_mock,
         _mark_mock(pl.DataFrame(rows)),
     )

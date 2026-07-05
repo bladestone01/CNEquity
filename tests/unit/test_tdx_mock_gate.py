@@ -6,6 +6,7 @@ source="mock" so audit can reject them downstream.
 
 from datetime import date
 
+import polars as pl
 import pytest
 
 from stock_data_engine.adapters.tdx_protocol import client as tdx
@@ -33,9 +34,11 @@ def test_daily_bars_raises_without_allow_mock():
         tdx.fetch_daily_bars(["600519.SH"], START, END)
 
 
-def test_trading_calendar_raises_without_allow_mock():
-    with pytest.raises(tdx.TdxSourceError, match="trading_calendar"):
-        tdx.fetch_trading_calendar(START, END)
+def test_trading_calendar_uses_seed_without_mock():
+    cal = tdx.fetch_trading_calendar(START, END, allow_mock=False)
+    assert cal.height == (END - START).days + 1
+    assert "is_trading" in cal.columns
+    assert cal.filter(pl.col("trade_date") == date(2024, 6, 28))["is_trading"][0] is True
 
 
 def test_corporate_actions_raises_without_allow_mock():
