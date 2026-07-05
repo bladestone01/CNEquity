@@ -10,8 +10,24 @@ from stock_data_engine.domain.schemas import MOCK_SOURCE, PRIMARY_KEYS
 from stock_data_engine.quality.source_diff import run_source_diffs
 
 
-def run_audit(config: Config, run_id: str, trade_date: date) -> int:
+def run_audit(config: Config, run_id: str, trade_date: date, context: dict | None = None) -> int:
     findings: list[dict] = []
+    context = context or {}
+
+    for skip in context.get("compact_skipped_datasets") or []:
+        findings.append(
+            {
+                "dataset": skip["dataset"],
+                "severity": "warning",
+                "check": "compact_skipped",
+                "message": (
+                    f"{skip['failed_batches']} failed batch(es) in run; "
+                    "staging not merged and watermark not advanced"
+                ),
+                "failed_batches": skip["failed_batches"],
+            }
+        )
+
     datasets = ["daily_bars", "instruments", "trading_calendar", "index_bars"]
 
     for ds in datasets:

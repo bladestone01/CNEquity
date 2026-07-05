@@ -180,7 +180,7 @@ sde run daily --group research --config configs/stockdata.toml       # 18:30（�
 |--------|------|--------|
 | P0 | 分组 run 自动追加 compact→audit（修「数据滞留 staging」与「audit 先于 compact 执行」） | R-15/R-23 ✅ |
 | P0 | corporate_actions daily 主源修复（daily=EM canonical，backfill=TDX xdxr） | R-17 ✅ |
-| P0 | 部分批失败时不推水位 + retry 后自动 compact（消除永久数据空洞） | R-18 |
+| P0 | 部分批失败时不推水位 + retry 后自动 compact（消除永久数据空洞） | R-18 ✅ |
 | P0 | instruments 合并式 compact，保留退市股（消除幸存者偏差）+ 补 list/delist_date | R-16 |
 | P0 | TDX 日线分页早停（当前每日增量翻全历史，请求放大 ~8 倍） | R-19 |
 | P1 | 分页失败退避重试而非静默截断；EM 接入跨进程限速；curated 原子写；audit 全数据集覆盖 | R-21/22/24/25 |

@@ -1,0 +1,101 @@
+from datetime import date
+
+import polars as pl
+
+import stock_data_engine.steps  # noqa: F401
+from stock_data_engine.config import Config
+from stock_data_engine.orchestrator.manifest import Manifest
+from stock_data_engine.steps.finalize import step_compact, step_audit
+from stock_data_engine.storage import StagingWriter
+from stock_data_engine.storage.state import StateStore
+
+
+def _daily_bar_row(symbol: str, trade_date: date) -> dict:
+    return {
+        "symbol": symbol,
+        "trade_date": trade_date,
+        "open": 10.0,
+        "high": 11.0,
+        "low": 9.0,
+        "close": 10.5,
+        "volume": 1000,
+        "amount": 10_500.0,
+        "source": "mock",
+        "data_version": "v1",
+        "fetched_at": f"{trade_date.isoformat()}T00:00:00+00:00",
+    }
+
+
+def test_compact_skips_dataset_with_failed_batches(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    run_id = "run-gate"
+    trade_date = date(2024, 6, 28)
+    manifest = Manifest(cfg.manifest_path)
+
+    manifest.start_batch(run_id, "batch-ok", "daily_bars", "daily_bars", symbols=["000001.SZ"])
+    manifest.finish_batch(run_id, "batch-ok", "success", rows_written=1)
+    manifest.start_batch(run_id, "batch-fail", "daily_bars", "daily_bars", symbols=["600519.SH"])
+    manifest.finish_batch(run_id, "batch-fail", "failed", error_message="simulated")
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-ok",
+        pl.DataFrame([_daily_bar_row("000001.SZ", trade_date)]),
+    )
+
+    state = StateStore(cfg.meta_root)
+    state.set_date("daily_bars", date(2024, 6, 27))
+
+    result = step_compact(cfg, trade_date, run_id, {})
+    skipped = result.get("context_updates", {}).get("compact_skipped_datasets", [])
+    assert skipped == [{"dataset": "daily_bars", "failed_batches": 1}]
+    assert state.get_date("daily_bars") == date(2024, 6, 27)
+    assert not (cfg.curated_root / "daily_bars" / "trade_date=2024-06-28").exists()
+
+
+def test_compact_advances_watermark_when_all_batches_succeed(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    run_id = "run-ok"
+    trade_date = date(2024, 6, 28)
+    manifest = Manifest(cfg.manifest_path)
+
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars", symbols=["000001.SZ"])
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_daily_bar_row("000001.SZ", trade_date)]),
+    )
+
+    state = StateStore(cfg.meta_root)
+    state.set_date("daily_bars", date(2024, 6, 27))
+
+    step_compact(cfg, trade_date, run_id, {})
+    assert state.get_date("daily_bars") == trade_date
+    assert (cfg.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet").exists()
+
+
+def test_audit_emits_compact_skipped_warning(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    run_id = "run-audit"
+    trade_date = date(2024, 6, 28)
+    context = {"compact_skipped_datasets": [{"dataset": "daily_bars", "failed_batches": 2}]}
+
+    step_audit(cfg, trade_date, run_id, context)
+
+    findings_path = cfg.meta_root / "quality" / "findings" / f"{run_id}.json"
+    assert findings_path.exists()
+    import json
+
+    payload = json.loads(findings_path.read_text(encoding="utf-8"))
+    warnings = [f for f in payload["findings"] if f.get("check") == "compact_skipped"]
+    assert len(warnings) == 1
+    assert warnings[0]["severity"] == "warning"
+    assert warnings[0]["failed_batches"] == 2

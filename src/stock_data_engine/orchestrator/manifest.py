@@ -196,6 +196,19 @@ class Manifest:
             )
             return cur.fetchall()
 
+    def failed_batch_counts_by_dataset(self, run_id: str) -> dict[str, int]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT dataset, COUNT(*) AS cnt
+                FROM ingestion_batches
+                WHERE run_id = ? AND status = 'failed'
+                GROUP BY dataset
+                """,
+                (run_id,),
+            )
+            return {row["dataset"]: row["cnt"] for row in cur.fetchall()}
+
     def get_batches_for_run(self, run_id: str) -> list[sqlite3.Row]:
         with self._connect() as conn:
             cur = conn.execute(

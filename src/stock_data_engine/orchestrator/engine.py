@@ -193,6 +193,17 @@ class JobEngine:
             results.append(self._run_step(dataset, trade_date, run_id, context))
 
         summary = self.manifest.run_summary(run_id)
+        failed_count = summary["batch_counts"].get("failed", 0)
+
+        if failed_count == 0:
+            for step_name in ("compact", "derive_adj_factors", "audit"):
+                result = self._run_step(step_name, trade_date, run_id, context)
+                updates = result.get("context_updates")
+                if updates:
+                    context.update(updates)
+                results.append(result)
+            summary = self.manifest.run_summary(run_id)
+
         status = "failed" if summary["batch_counts"].get("failed", 0) else "success"
         self.manifest.finish_run(run_id, status)
         return {"run_id": run_id, "status": status, "retried": len(failed), "results": results}

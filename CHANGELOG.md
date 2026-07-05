@@ -7,6 +7,10 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **R-18 — compact gate and watermark protection**
+  - Skip compact/watermark advance for datasets with failed batches in the run;
+    audit emits `compact_skipped` warnings. `sde retry` runs compact→derive→audit
+    when all batches succeed.
 - **R-17 — corporate_actions daily canonical source**
   - Daily incremental uses EastMoney ex-date API (`source=eastmoney`); backfill
     uses TDX xdxr per symbol (`source=tdx_protocol`). TDX snapshot on ex-date

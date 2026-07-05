@@ -79,6 +79,8 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
     engine = JobEngine(worker_config)
     result = engine.run_job("daily", date(2024, 6, 28), steps=["daily_bars"])
     assert result["status"] == "failed"
+    assert list(worker_config.staging_root.glob("daily_bars/**/*.parquet"))
+    assert not list(worker_config.curated_root.glob("daily_bars/**/*.parquet"))
 
     retry = engine.run_job(
         "daily",
@@ -87,4 +89,8 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
         retry_failed_only=True,
     )
     assert retry["retried"] >= 1
+    assert retry["status"] == "success"
     assert calls[-1] == ["600519.SH"]
+    curated = worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
+    assert curated.exists()
+    assert any(r.get("step") == "compact" for r in retry["results"])
