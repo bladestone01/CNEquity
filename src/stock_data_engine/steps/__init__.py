@@ -2,7 +2,12 @@
 # data layer; new datasets add a module here and import it below).
 from stock_data_engine.steps import (  # noqa: F401
     bars,
+    capital,
     events,
     finalize,
+    fundamentals,
+    macro_risk,
     reference,
+    research,
+    structure,
 )

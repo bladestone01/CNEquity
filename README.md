@@ -17,13 +17,13 @@
 |------|------|----------|------------|------|
 | L0 基础参考 | Universe、交易日历、停复牌/ST | 可交易过滤、回测窗口 | instruments, trading_calendar, trading_status | ✅ M2 |
 | L1 行情 | 未复权日线 + 复权因子 | 动量、波动、量价因子 | daily_bars, index_bars, adj_factors | ✅ M2 |
-| L2 公司事件 | 除权除息、公告索引 | 事件驱动、除权回补 | corporate_actions, announcement_index | ✅ M2 / 🔜 M3 |
-| L3 基本面 | 财报科目、估值、一致预期 | 价值/质量/成长因子 | financial_statement_items, valuation_metrics | 🔜 M3+ |
-| L4 资金面 | 北向、融资、主力、龙虎榜 | 聪明钱、杠杆情绪 | fund_flow, northbound_*, margin_trading, dragon_tiger | 🔜 M3 |
-| L5 结构行业 | 板块、指数成分、行业分类 | 行业中性、板块轮动 | sector_members, index_constituents, industry_members | 🔜 M3+ |
-| L6 宏观 | 利率、货币、景气指标 | 宏观择时、风格切换 | macro_indicators | 🔜 v1.1 |
-| L7 舆情文本 | 新闻、研报、情绪得分 | NLP 特征、事件挖掘 | stock_news, research_reports, sentiment_scores | 🔜 v1.1 |
-| L8 风险合规 | 解禁、监管处罚 | 负面清单、风控过滤 | share_unlock_schedule, regulatory_events | 🔜 v1.1 |
+| L2 公司事件 | 除权除息、公告索引 | 事件驱动、除权回补 | corporate_actions, announcement_index | ✅ M2/M3 |
+| L3 基本面 | 财报科目、估值、一致预期 | 价值/质量/成长因子 | financial_statement_items, valuation_metrics, analyst_consensus | ✅ v1.1 |
+| L4 资金面 | 北向、融资、主力、龙虎榜 | 聪明钱、杠杆情绪 | fund_flow, northbound_*, margin_trading, dragon_tiger, institutional_holdings | ✅ v1.1 |
+| L5 结构行业 | 板块、指数成分、行业分类 | 行业中性、板块轮动 | sector_members, index_constituents, industry_members | ✅ M3+ |
+| L6 宏观 | 利率、货币、景气指标 | 宏观择时、风格切换 | macro_indicators | ✅ v1.1 |
+| L7 舆情文本 | 新闻、研报、情绪得分 | NLP 特征、事件挖掘 | stock_news, research_reports, sentiment_scores | ✅ v1.1 |
+| L8 风险合规 | 解禁、监管处罚 | 负面清单、风控过滤 | share_unlock_schedule, regulatory_events | ✅ v1.1 |
 
 完整字段契约、主键、分区键与逐源限制见 [docs/PRD.md](docs/PRD.md)（附录 A/B）。
 
@@ -56,7 +56,7 @@ sde retry  --run-id <id> --config configs/stockdata.toml   # 只重跑失败部�
 
 ## 使用数据（三种方式，任选）
 
-### 1. Python API（推荐，🔜 Phase 2）
+### 1. Python API（推荐，✅ Phase 2）
 
 选股/因子项目 `import` 即用，复权、Universe 过滤、PIT 对齐等口径逻辑内置：
 
@@ -132,16 +132,33 @@ mock 静默兜底改为显式失败（新增 `allow_mock` 门控 + 审计拦截�
 
 **出口标准**：P0 七数据集全部真实源、连续两周日更成功率 ≥99%、同窗口重复 run 结果幂等、PK 唯一率 100%。
 
-### Phase 2 消费层（Python API + PIT 契约）
+### Phase 2 消费层（Python API + PIT 契约）✅ 已完成
 
-1. `query/reader.py`：`load(dataset, start, end, adjust, universe, as_of)`（DuckDB/Polars 实现）。
+1. `query/reader.py`：`load(dataset, start, end, adjust, universe, as_of)`（Polars 实现，DuckDB 视图仍可用于 SQL）。
 2. 复权组合、universe 过滤（instruments + trading_status）内置。
-3. **提前锁定 PIT 契约**：财报类 schema 必须含 `announce_date`，写入 PRD 附录 A。
+3. **PIT 契约**：`financial_statement_items` schema 含 `announce_date`，PRD 附录 A 已锁定；`load(..., as_of=)` 按公告日过滤。
 
-### Phase 3 数据面铺开（M3 → v1.1）
+### Phase 3 数据面铺开（M3 → v1.1，✅ M3 + M3+ 已完成）
 
-按 PRD §4.2/§4.4 顺序，每个数据集走 CONTRIBUTING 的 definition-of-done（schema+PK+step+测试+文档）：
-资金面/估值/公告（fund_flow, valuation_metrics, northbound_*, margin_trading, sector_members, announcement_index, dragon_tiger, block_trades）→ 基本面/结构（financial_statement_items 含公告日, index_constituents, industry_members）→ 宏观/情绪/风控（macro_indicators, market_breadth, share_unlock_schedule, 新闻先 on-demand 后 batch）。
+**M3 batch**：fund_flow、northbound_*、margin_trading、valuation_metrics、sector_members、announcement_index、dragon_tiger、block_trades
+
+**M3+ batch**：financial_statement_items（PIT/`announce_date`）、index_constituents、industry_members
+
+**v1.1 宏观/风控 batch**：macro_indicators、market_breadth（自算）、share_unlock_schedule、regulatory_events
+
+**v1.1 P2 research batch**：institutional_holdings、analyst_consensus、sentiment_scores（公告关键词 + 个股新闻 NLP）
+
+```bash
+pip install -e ".[macro]"   # 可选：akshare 补充 PMI/M2/社融 等月度宏观指标
+pip install -e ".[nlp]"     # 可选：SnowNLP 增强 stock_news / sentiment 打分
+
+sde query --dataset stock_news --symbol 600519.SH --config configs/stockdata.toml
+sde run daily --group fundamentals --config configs/stockdata.toml   # 17:30
+sde run daily --group macro_risk --config configs/stockdata.toml     # 18:00
+sde run daily --group research --config configs/stockdata.toml       # 18:30
+```
+
+**待办**：Phase 4 多源审计
 
 ### Phase 4 多源健壮性（M4）
 

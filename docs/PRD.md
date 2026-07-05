@@ -209,7 +209,7 @@ Meta：`ingestion_runs`, `ingestion_batches`（🟢）、`quality_findings`（�
 | ID | 名称 | 层次 | 主源 | 选股用途 | 状态 |
 |----|------|------|------|----------|------|
 | announcement_body | 公告正文 | L2 | cninfo | 事件 NLP、关键词挖掘 | 🟡 |
-| stock_news | 个股新闻 | L7 | eastmoney / akshare | 舆情事件、主题关联 | 🟡 |
+| stock_news | 个股新闻 | L7 | eastmoney / akshare | 舆情事件、主题关联 | 🟢 on-demand |
 | research_reports | 研报摘要 | L7 | eastmoney reportapi | 分析师观点、评级变化 | 🟡 |
 | financial_reports | 财报原文/PDF | L3 | sina / gpcw | 深度基本面解析 | 🟡 |
 
@@ -228,7 +228,7 @@ PRD 新增规划；schema 与 step 待 M3 完成后迭代。**优先级高于 on
 | regulatory_events | 监管处罚/立案 | L8 | 事件驱动 | cninfo / 交易所 | 负面清单、合规风控 | (event_id) | P2 |
 | institutional_holdings | 机构持股（基金/QFII 等） | L4 | 季报 | eastmoney | 机构共识、持仓变化 | (symbol, holder_type, report_period) | P2 |
 | analyst_consensus | 一致预期盈利 | L3 | 日更/周更 | eastmoney | EPS 修正、预期差因子 | (symbol, forecast_date) | P2 |
-| sentiment_scores | 结构化情绪得分 | L7 | 日更 | NLP on stock_news | 情绪因子、舆情反转 | (symbol, trade_date, source) | P2 |
+| sentiment_scores | 结构化情绪得分 | L7 | 日更 | NLP on stock_news + announcements | 情绪因子、舆情反转 | (symbol, trade_date, score_channel) | P2 |
 
 **macro_indicators 首批指标（建议）**
 
@@ -665,6 +665,252 @@ Same as daily_bars plus `frequency` (default `1d`), `asset_type=index`.
 | source | string | sina (default) |
 | data_version | string | |
 | fetched_at | timestamp | |
+
+#### financial_statement_items
+
+Point-in-time (PIT) queries **must** filter on `announce_date <= as_of` at read time
+(`load(..., as_of=)`); never align fundamentals by `report_period` alone.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| report_period | string | e.g. ``2024Q1`` |
+| statement_type | string | income / balance / cashflow |
+| item_code | string | e.g. ``roe``, ``revenue`` |
+| item_value | float64 | |
+| announce_date | date | **PIT axis** — public disclosure date |
+| source | string | |
+| data_version | string | |
+| fetched_at | timestamp | |
+
+#### fund_flow
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| main_net_inflow | float64 | CNY |
+| super_large_net_inflow | float64 | |
+| large_net_inflow | float64 | |
+| medium_net_inflow | float64 | |
+| small_net_inflow | float64 | |
+| source / data_version / fetched_at | | provenance |
+
+#### margin_trading
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| margin_balance | float64 | |
+| margin_buy | float64 | |
+| short_balance | float64 | |
+| short_sell_volume | float64 | |
+| source / data_version / fetched_at | | provenance |
+
+#### northbound_holdings
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| channel | string | SH / SZ connect |
+| holding_shares | float64 | |
+| holding_mv | float64 | |
+| holding_ratio | float64 | |
+| source / data_version / fetched_at | | provenance |
+
+#### northbound_flows
+
+| Column | Type | Notes |
+|--------|------|-------|
+| trade_date | date | |
+| channel | string | SH / SZ |
+| net_buy | float64 | |
+| buy_amount | float64 | |
+| sell_amount | float64 | |
+| source / data_version / fetched_at | | provenance |
+
+#### valuation_metrics
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| pe_ttm | float64 | |
+| pb | float64 | |
+| ps_ttm | float64 | |
+| total_mv | float64 | |
+| float_mv | float64 | |
+| source / data_version / fetched_at | | provenance |
+
+#### sector_members
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| sector_code | string | |
+| sector_name | string | |
+| as_of_date | date | snapshot date |
+| source / data_version / fetched_at | | provenance |
+
+#### announcement_index
+
+PIT queries filter `announce_date <= as_of`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| announcement_id | string | PK |
+| symbol | string | |
+| title | string | |
+| announce_date | date | **PIT axis** |
+| category | string | |
+| url | string | |
+| source / data_version / fetched_at | | provenance |
+
+#### dragon_tiger
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| reason | string | |
+| buy_amount | float64 | |
+| sell_amount | float64 | |
+| net_amount | float64 | |
+| source / data_version / fetched_at | | provenance |
+
+#### block_trades
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| price | float64 | |
+| volume | float64 | |
+| amount | float64 | |
+| premium_ratio | float64 | discount vs close |
+| source / data_version / fetched_at | | provenance |
+
+#### index_constituents
+
+| Column | Type | Notes |
+|--------|------|-------|
+| index_symbol | string | e.g. ``000300.SH`` |
+| symbol | string | constituent |
+| as_of_date | date | snapshot / rebalance date |
+| weight | float64 | index weight (percent or ratio per source) |
+| source / data_version / fetched_at | | provenance |
+
+#### industry_members
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| classification_system | string | e.g. ``sw``, ``eastmoney`` |
+| industry_code | string | |
+| industry_name | string | |
+| as_of_date | date | classification snapshot |
+| source / data_version / fetched_at | | provenance |
+
+#### macro_indicators
+
+| Column | Type | Notes |
+|--------|------|-------|
+| indicator_id | string | e.g. ``shibor_3m``, ``cnbond_yield_10y``, ``lpr_1y`` |
+| obs_date | date | observation / release date |
+| value | float64 | |
+| frequency | string | ``daily`` / ``monthly`` |
+| source / data_version / fetched_at | | provenance |
+
+#### market_breadth
+
+Computed from curated ``daily_bars`` vs prior trading day.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| trade_date | date | |
+| metric_id | string | ``advance_count``, ``decline_count``, ``limit_up_count``, … |
+| value | float64 | |
+| source / data_version / fetched_at | | provenance |
+
+#### share_unlock_schedule
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| unlock_date | date | scheduled unlock |
+| unlock_shares | float64 | |
+| unlock_ratio | float64 | fraction of float/total per source |
+| unlock_type | string | e.g. IPO lock-up, private placement |
+| source / data_version / fetched_at | | provenance |
+
+#### regulatory_events
+
+| Column | Type | Notes |
+|--------|------|-------|
+| event_id | string | PK |
+| symbol | string | |
+| event_date | date | announcement date |
+| event_type | string | ``penalty``, ``investigation``, ``regulatory_letter``, … |
+| title | string | |
+| source / data_version / fetched_at | | provenance |
+
+#### institutional_holdings
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| holder_type | string | ``fund``, ``qfii``, ``social_security``, … |
+| report_period | string | e.g. ``2024Q1`` |
+| holding_shares | float64 | holder count or share volume per source |
+| holding_ratio | float64 | pct of float/total |
+| holding_mv | float64 | market value |
+| source / data_version / fetched_at | | provenance |
+
+#### analyst_consensus
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| forecast_date | date | publish / update date |
+| forecast_year | int64 | target fiscal year |
+| eps_forecast | float64 | consensus EPS |
+| pe_forecast | float64 | implied PE |
+| target_price | float64 | avg target price |
+| rating | string | e.g. 买入/增持 |
+| analyst_count | int64 | covering institutions |
+| source / data_version / fetched_at | | provenance |
+
+#### sentiment_scores
+
+Dual channels: ``announcement_keywords`` (公告标题) and ``stock_news_nlp`` (EastMoney 个股新闻 + keyword/SnowNLP).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | |
+| score_channel | string | PK axis; ``announcement_keywords`` / ``stock_news_nlp`` |
+| sentiment_score | float64 | [-1, 1] |
+| headline_count | int64 | headlines scored |
+| source / data_version / fetched_at | | provenance |
+
+#### stock_news (on-demand cache)
+
+Cached JSON at ``meta/on_demand/stock_news/{symbol}.json``; fetched via ``sde query --dataset stock_news --symbol``.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| symbol | string | |
+| items[].news_id | string | |
+| items[].title | string | |
+| items[].publish_time | string | |
+| items[].publish_date | string | ISO date when parseable |
+| items[].sentiment_score | float64 | per-headline NLP score |
+| items[].sentiment_method | string | ``keyword`` / ``snownlp`` / ``keyword+snownlp`` |
+| aggregate_sentiment | float64 | mean of item scores |
+| headline_count | int64 | |
+| source / data_version / fetched_at | | provenance |
 
 ### Compact deduplication
 

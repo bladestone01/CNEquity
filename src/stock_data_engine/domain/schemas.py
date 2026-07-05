@@ -81,6 +81,224 @@ ADJ_FACTORS_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+FINANCIAL_STATEMENT_ITEMS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "report_period": pl.Utf8,
+    "statement_type": pl.Utf8,
+    "item_code": pl.Utf8,
+    "item_value": pl.Float64,
+    "announce_date": pl.Date,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+FUND_FLOW_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "main_net_inflow": pl.Float64,
+    "super_large_net_inflow": pl.Float64,
+    "large_net_inflow": pl.Float64,
+    "medium_net_inflow": pl.Float64,
+    "small_net_inflow": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+MARGIN_TRADING_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "margin_balance": pl.Float64,
+    "margin_buy": pl.Float64,
+    "short_balance": pl.Float64,
+    "short_sell_volume": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+NORTHBOUND_HOLDINGS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "channel": pl.Utf8,
+    "holding_shares": pl.Float64,
+    "holding_mv": pl.Float64,
+    "holding_ratio": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+NORTHBOUND_FLOWS_SCHEMA = {
+    "trade_date": pl.Date,
+    "channel": pl.Utf8,
+    "net_buy": pl.Float64,
+    "buy_amount": pl.Float64,
+    "sell_amount": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+VALUATION_METRICS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "pe_ttm": pl.Float64,
+    "pb": pl.Float64,
+    "ps_ttm": pl.Float64,
+    "total_mv": pl.Float64,
+    "float_mv": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+SECTOR_MEMBERS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "sector_code": pl.Utf8,
+    "sector_name": pl.Utf8,
+    "as_of_date": pl.Date,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+ANNOUNCEMENT_INDEX_SCHEMA = {
+    "announcement_id": pl.Utf8,
+    "symbol": pl.Utf8,
+    "title": pl.Utf8,
+    "announce_date": pl.Date,
+    "category": pl.Utf8,
+    "url": pl.Utf8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+DRAGON_TIGER_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "reason": pl.Utf8,
+    "buy_amount": pl.Float64,
+    "sell_amount": pl.Float64,
+    "net_amount": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+BLOCK_TRADES_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "price": pl.Float64,
+    "volume": pl.Float64,
+    "amount": pl.Float64,
+    "premium_ratio": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+INDEX_CONSTITUENTS_SCHEMA = {
+    "index_symbol": pl.Utf8,
+    "symbol": pl.Utf8,
+    "as_of_date": pl.Date,
+    "weight": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+INDUSTRY_MEMBERS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "classification_system": pl.Utf8,
+    "industry_code": pl.Utf8,
+    "industry_name": pl.Utf8,
+    "as_of_date": pl.Date,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+MACRO_INDICATORS_SCHEMA = {
+    "indicator_id": pl.Utf8,
+    "obs_date": pl.Date,
+    "value": pl.Float64,
+    "frequency": pl.Utf8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+MARKET_BREADTH_SCHEMA = {
+    "trade_date": pl.Date,
+    "metric_id": pl.Utf8,
+    "value": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+SHARE_UNLOCK_SCHEDULE_SCHEMA = {
+    "symbol": pl.Utf8,
+    "unlock_date": pl.Date,
+    "unlock_shares": pl.Float64,
+    "unlock_ratio": pl.Float64,
+    "unlock_type": pl.Utf8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+REGULATORY_EVENTS_SCHEMA = {
+    "event_id": pl.Utf8,
+    "symbol": pl.Utf8,
+    "event_date": pl.Date,
+    "event_type": pl.Utf8,
+    "title": pl.Utf8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+INSTITUTIONAL_HOLDINGS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "holder_type": pl.Utf8,
+    "report_period": pl.Utf8,
+    "holding_shares": pl.Float64,
+    "holding_ratio": pl.Float64,
+    "holding_mv": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+ANALYST_CONSENSUS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "forecast_date": pl.Date,
+    "forecast_year": pl.Int64,
+    "eps_forecast": pl.Float64,
+    "pe_forecast": pl.Float64,
+    "target_price": pl.Float64,
+    "rating": pl.Utf8,
+    "analyst_count": pl.Int64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+SENTIMENT_SCORES_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "score_channel": pl.Utf8,
+    "sentiment_score": pl.Float64,
+    "headline_count": pl.Int64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 DATASET_SCHEMAS = {
     "instruments": INSTRUMENTS_SCHEMA,
     "trading_calendar": TRADING_CALENDAR_SCHEMA,
@@ -89,6 +307,25 @@ DATASET_SCHEMAS = {
     "index_bars": {**DAILY_BARS_SCHEMA, "frequency": pl.Utf8},
     "corporate_actions": CORPORATE_ACTIONS_SCHEMA,
     "adj_factors": ADJ_FACTORS_SCHEMA,
+    "financial_statement_items": FINANCIAL_STATEMENT_ITEMS_SCHEMA,
+    "fund_flow": FUND_FLOW_SCHEMA,
+    "margin_trading": MARGIN_TRADING_SCHEMA,
+    "northbound_holdings": NORTHBOUND_HOLDINGS_SCHEMA,
+    "northbound_flows": NORTHBOUND_FLOWS_SCHEMA,
+    "valuation_metrics": VALUATION_METRICS_SCHEMA,
+    "sector_members": SECTOR_MEMBERS_SCHEMA,
+    "announcement_index": ANNOUNCEMENT_INDEX_SCHEMA,
+    "dragon_tiger": DRAGON_TIGER_SCHEMA,
+    "block_trades": BLOCK_TRADES_SCHEMA,
+    "index_constituents": INDEX_CONSTITUENTS_SCHEMA,
+    "industry_members": INDUSTRY_MEMBERS_SCHEMA,
+    "macro_indicators": MACRO_INDICATORS_SCHEMA,
+    "market_breadth": MARKET_BREADTH_SCHEMA,
+    "share_unlock_schedule": SHARE_UNLOCK_SCHEDULE_SCHEMA,
+    "regulatory_events": REGULATORY_EVENTS_SCHEMA,
+    "institutional_holdings": INSTITUTIONAL_HOLDINGS_SCHEMA,
+    "analyst_consensus": ANALYST_CONSENSUS_SCHEMA,
+    "sentiment_scores": SENTIMENT_SCORES_SCHEMA,
 }
 
 PRIMARY_KEYS = {
@@ -99,6 +336,25 @@ PRIMARY_KEYS = {
     "index_bars": ["symbol", "trade_date", "frequency"],
     "corporate_actions": ["symbol", "ex_date", "action_type"],
     "adj_factors": ["symbol", "trade_date", "adjust_type"],
+    "financial_statement_items": ["symbol", "report_period", "statement_type", "item_code"],
+    "fund_flow": ["symbol", "trade_date"],
+    "margin_trading": ["symbol", "trade_date"],
+    "northbound_holdings": ["symbol", "trade_date", "channel"],
+    "northbound_flows": ["trade_date", "channel"],
+    "valuation_metrics": ["symbol", "trade_date"],
+    "sector_members": ["symbol", "sector_code", "as_of_date"],
+    "announcement_index": ["announcement_id"],
+    "dragon_tiger": ["symbol", "trade_date", "reason"],
+    "block_trades": ["symbol", "trade_date", "price", "volume"],
+    "index_constituents": ["index_symbol", "symbol", "as_of_date"],
+    "industry_members": ["symbol", "classification_system", "as_of_date"],
+    "macro_indicators": ["indicator_id", "obs_date"],
+    "market_breadth": ["trade_date", "metric_id"],
+    "share_unlock_schedule": ["symbol", "unlock_date"],
+    "regulatory_events": ["event_id"],
+    "institutional_holdings": ["symbol", "holder_type", "report_period"],
+    "analyst_consensus": ["symbol", "forecast_date"],
+    "sentiment_scores": ["symbol", "trade_date", "score_channel"],
 }
 
 

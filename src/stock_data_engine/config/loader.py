@@ -52,6 +52,8 @@ class Config:
     duckdb_threads: int = 4
     adj_factors_source: str = "sina"
     adj_factors_types: list[str] = field(default_factory=lambda: ["qfq"])
+    sentiment_use_snownlp: bool = True
+    sentiment_news_symbol_limit: int = 300
     config_path: Path | None = None
     _backfill: bool = False
     _rate_limiters: object | None = field(default=None, repr=False)
@@ -146,6 +148,7 @@ def load_config(path: str | Path) -> Config:
 
     on_demand = raw.get("on_demand", {})
     adj_raw = raw.get("adj_factors", {})
+    sentiment_raw = raw.get("sentiment", {})
 
     cfg = Config(
         data_root=data_root,
@@ -172,6 +175,8 @@ def load_config(path: str | Path) -> Config:
         duckdb_threads=int(duckdb_raw.get("threads", 4)),
         adj_factors_source=str(adj_raw.get("source", "sina")),
         adj_factors_types=list(adj_raw.get("adjust_types", ["qfq"])),
+        sentiment_use_snownlp=bool(sentiment_raw.get("use_snownlp", True)),
+        sentiment_news_symbol_limit=int(sentiment_raw.get("news_symbol_limit", 300)),
         config_path=config_path,
     )
     return cfg

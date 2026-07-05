@@ -9,11 +9,11 @@ def test_validate_config_rejects_unknown_group_step(tmp_path):
         data_root=tmp_path / "data",
         daily_waves=[WaveConfig(name="core", parallel=True, steps=["instruments"])],
         schedule_groups={
-            "capital": ScheduleGroup(at="16:30", steps=["fund_flow"]),
+            "capital": ScheduleGroup(at="16:30", steps=["not_a_dataset_step"]),
         },
     )
     errors = validate_config(cfg)
-    assert any("unknown step 'fund_flow'" in err for err in errors)
+    assert any("unknown step 'not_a_dataset_step'" in err for err in errors)
 
 
 def test_validate_config_accepts_registered_waves(tmp_path):

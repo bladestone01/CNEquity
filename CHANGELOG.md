@@ -7,6 +7,53 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **stock_news on-demand + NLP sentiment chain**
+  - EastMoney `np-anotice-stock` adapter with per-headline NLP scoring.
+  - `OnDemandService` real fetch + cache; `sde query --dataset stock_news --symbol`.
+  - Batch `sentiment_scores` adds `stock_news_nlp` channel (news for announcement
+    symbols + top turnover); warms on-demand cache.
+  - `domain/sentiment.py` keyword lexicon + optional SnowNLP (`pip install -e ".[nlp]"`).
+  - Config `[sentiment]` (`use_snownlp`, `news_symbol_limit`); tests added.
+- **v1.1 P2 — research / sentiment batch**
+  - `institutional_holdings` + EastMoney `RPT_MAIN_ORGHOLD` (NOTICE_DATE incremental).
+  - `analyst_consensus` + EastMoney `RPTA_WEB_RES_PROFIT`.
+  - `sentiment_scores` derived from `announcement_index` keyword lexicon v1.
+  - Schedule group `research` at 18:30; schemas, compact, `load()` wired.
+  - Tests: `tests/unit/test_v11_p2.py`; PRD appendix A column defs.
+  - Optional extra `[macro]` (`akshare`) enabled in example config for PMI/M2/社融.
+- **v1.1 — macro / risk batch (P1 + regulatory P2)**
+  - `macro_indicators` step + EastMoney datacenter adapter (`shibor_3m`, `cnbond_yield_10y`,
+    `lpr_1y`; optional akshare for PMI/M2/社融 when installed).
+  - `market_breadth` derived from curated `daily_bars` (advance/decline/limit counts).
+  - `share_unlock_schedule` + EastMoney `RPTA_WEB_XSJJMX` adapter.
+  - `regulatory_events` + CNINFO keyword filter adapter.
+  - Schedule group `macro_risk` at 18:00; schemas, compact, `load()` wired.
+  - Tests: `tests/unit/test_v11_macro_risk.py`; PRD appendix A column defs.
+- **Phase 3+ (M3+) — fundamentals & structure batch**
+  - `financial_statement_items` step + EastMoney `RPT_LICO_FN_CPD` adapter (PIT via
+    `announce_date`; empty trading days allowed).
+  - `index_constituents` + `industry_members` schemas, adapters, steps.
+  - Schedule group `fundamentals` at 17:30; `load()` + compact wired.
+  - Tests: `tests/unit/test_m3plus.py`; PRD appendix A column defs.
+- **Phase 3 (M3) — batch 数据集 §4.2**
+  - Schemas + PKs for `fund_flow`, `margin_trading`, `northbound_holdings`,
+    `northbound_flows`, `valuation_metrics`, `sector_members`, `announcement_index`,
+    `dragon_tiger`, `block_trades`.
+  - EastMoney adapters (`adapters/eastmoney/capital.py`, `valuation.py`, `sectors.py`)
+    and CNINFO `announcement_index` adapter.
+  - Steps: `steps/capital.py`, `fundamentals.py`, `structure.py`; `announcement_index`
+    in `events.py`.
+  - `compact` / `load()` / config schedule groups `capital` + `signals` wired.
+  - PRD appendix A column definitions for all M3 datasets.
+  - Unit tests: `tests/unit/test_m3_steps.py`, `test_m3_adapters.py`.
+- **Phase 2 — Python read API (`query/reader.py`)**
+  - `load(dataset, start, end, adjust, universe, as_of, items, symbols)` with Polars backend.
+  - Built-in qfq/hfq adjustment (joins `adj_factors`, emits `adj_open` … `adj_close`).
+  - Universe filter `all_a` (instruments list/delist dates + trading_status ST/suspended).
+  - PIT queries for `financial_statement_items` via `announce_date <= as_of`.
+  - `financial_statement_items` schema + PK registered in `domain/schemas.py`; PRD appendix A
+    documents the PIT contract.
+  - Unit tests in `tests/unit/test_reader.py`.
 - **Phase 1 (M2) — P0 真实化 + 稳定日更**
   - `trading_calendar`: bundled exchange seed CSV (2016–2027) + index-bars fallback
     (`adapters/calendar/`).

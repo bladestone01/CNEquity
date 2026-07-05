@@ -18,7 +18,29 @@ _PARTITION_COLS = {
     "daily_bars": "trade_date",
     "index_bars": "trade_date",
     "corporate_actions": "ex_date",
+    "fund_flow": "trade_date",
+    "margin_trading": "trade_date",
+    "northbound_holdings": "trade_date",
+    "northbound_flows": "trade_date",
+    "valuation_metrics": "trade_date",
+    "sector_members": "as_of_date",
+    "announcement_index": "announce_date",
+    "dragon_tiger": "trade_date",
+    "block_trades": "trade_date",
+    "financial_statement_items": "report_period",
+    "index_constituents": "as_of_date",
+    "industry_members": "as_of_date",
+    "macro_indicators": "obs_date",
+    "market_breadth": "trade_date",
+    "share_unlock_schedule": "unlock_date",
+    "regulatory_events": "event_date",
+    "institutional_holdings": "report_period",
+    "analyst_consensus": "forecast_date",
+    "sentiment_scores": "trade_date",
 }
+
+# Datasets partitioned by non-date keys — skip date-based watermarks.
+_WATERMARK_SKIP = frozenset({"financial_statement_items", "institutional_holdings"})
 
 
 def _max_partition_date(config: Config, dataset: str, partition_col: str) -> date | None:
@@ -37,7 +59,7 @@ def _max_partition_date(config: Config, dataset: str, partition_col: str) -> dat
 def _update_watermarks(config: Config) -> None:
     state = StateStore(config.meta_root)
     for dataset, pcol in _PARTITION_COLS.items():
-        if pcol is None:
+        if pcol is None or dataset in _WATERMARK_SKIP:
             continue
         max_dt = _max_partition_date(config, dataset, pcol)
         if max_dt is not None:

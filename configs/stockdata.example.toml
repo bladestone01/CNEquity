@@ -25,7 +25,7 @@ min_interval_seconds = 1.0
 enabled = true
 
 [sources.akshare]
-enabled = false
+enabled = true
 
 [sources.sina]
 enabled = true
@@ -34,6 +34,10 @@ min_interval_seconds = 0.2
 [adj_factors]
 source = "sina"
 adjust_types = ["qfq"]
+
+[sentiment]
+use_snownlp = true
+news_symbol_limit = 300
 
 [universe]
 default = "all_a"
@@ -67,14 +71,28 @@ steps = [
   "compact", "derive_adj_factors",
 ]
 
-# M3: uncomment when capital/signals steps are registered
-# [job.daily.groups.capital]
-# at = "16:30"
-# steps = ["fund_flow", "northbound_holdings", "northbound_flows", "margin_trading"]
-#
-# [job.daily.groups.signals]
-# at = "17:00"
-# steps = ["dragon_tiger", "block_trades"]
+[job.daily.groups.capital]
+at = "16:30"
+steps = [
+  "fund_flow", "northbound_holdings", "northbound_flows", "margin_trading",
+  "valuation_metrics", "sector_members", "announcement_index",
+]
+
+[job.daily.groups.signals]
+at = "17:00"
+steps = ["dragon_tiger", "block_trades"]
+
+[job.daily.groups.fundamentals]
+at = "17:30"
+steps = ["financial_statement_items", "index_constituents", "industry_members"]
+
+[job.daily.groups.macro_risk]
+at = "18:00"
+steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events"]
+
+[job.daily.groups.research]
+at = "18:30"
+steps = ["institutional_holdings", "analyst_consensus", "sentiment_scores"]
 
 [job.init.phases]
 names = [
