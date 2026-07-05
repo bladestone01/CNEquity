@@ -9,6 +9,7 @@ import polars as pl
 from stock_data_engine.config import Config
 from stock_data_engine.orchestrator.registry import register_step
 from stock_data_engine.storage import StagingWriter, compact_dataset
+from stock_data_engine.storage.instruments import compact_instruments
 from stock_data_engine.storage.state import StateStore
 
 _PARTITION_COLS = {
@@ -97,14 +98,15 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
 
         pcol = _PARTITION_COLS[ds]
         if ds == "instruments":
-            files = StagingWriter(config.staging_root).list_run_files(ds, run_id)
-            if files:
-                combined = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
-                out = config.curated_root / ds / "part-merged.parquet"
-                out.parent.mkdir(parents=True, exist_ok=True)
-                combined.write_parquet(out, compression="zstd")
-                total += combined.height
+            rows = compact_instruments(
+                config.staging_root,
+                config.curated_root,
+                run_id,
+                trade_date,
+            )
+            if rows:
                 compacted.add(ds)
+            total += rows
         elif pcol:
             rows = compact_dataset(
                 config.staging_root,

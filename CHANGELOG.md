@@ -7,6 +7,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **R-16 — instruments merge compact and list/delist dates**
+  - Compact merges with existing curated rows; symbols missing from TDX fetch are
+    retained with `delist_date` inferred. EastMoney clist (`f26`) enriches `list_date`.
 - **R-18 — compact gate and watermark protection**
   - Skip compact/watermark advance for datasets with failed batches in the run;
     audit emits `compact_skipped` warnings. `sde retry` runs compact→derive→audit

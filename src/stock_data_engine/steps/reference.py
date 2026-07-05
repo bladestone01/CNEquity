@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from stock_data_engine.adapters.eastmoney.instruments import enrich_instrument_list_dates
 from stock_data_engine.adapters.tdx_protocol.client import (
     fetch_instruments,
     fetch_trading_calendar,
@@ -20,6 +21,7 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
     rl = config.tdx_rate_limit_spec()
     df = fetch_instruments(rate_limit=rl, allow_mock=config.tdx_allow_mock)
     df = normalize_with_source(df)
+    df = enrich_instrument_list_dates(config, df)
     return write_simple(config, run_id, "instruments", df)
 
 

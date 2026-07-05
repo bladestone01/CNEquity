@@ -172,7 +172,7 @@ CLI (sde):  init | config validate | servers test | run | backfill
 
 | ID | 名称 | 层次 | 模式 | 主源 | 备源 | 选股用途 | 状态 |
 |----|------|------|------|------|------|----------|------|
-| instruments | 证券主数据 | L0 | batch | tdx_protocol | akshare | Universe 定义、上市/退市过滤 | 🟡 真实拉取；list_date/delist_date 恒空 + compact 整表覆盖丢退市股（R-16） |
+| instruments | 证券主数据 | L0 | batch | tdx_protocol | eastmoney（list_date） | Universe 定义、上市/退市过滤 | 🟢 merge compact 保留退市股；EM 回填 list_date |
 | trading_calendar | 交易日历 | L0 | batch | 交易所种子 CSV（2016–2027） | 指数 bars 推导 | 交易日对齐、特征窗口 | 🟢 M2 真实化 |
 | trading_status | 停复牌/ST | L0 | batch | eastmoney（ST 板 + 停牌接口） | — | ST/*ST/停牌剔除 | 🟢 M2 真实化 |
 | daily_bars | 股票未复权日线 | L1 | batch | tdx_protocol | eastmoney（snapshot） | 动量、波动、量价因子 | 🟡 分页回填可用，但增量无早停、每日翻全历史（R-19） |
@@ -450,7 +450,7 @@ steps = ["dragon_tiger","block_trades"]
 - 市场：SH / SZ / BJ
 - 前缀白名单：沪 `60/68`、深 `00/30`、北交所 `92`（⚠️ 北交所历史还含 `43/83/87/88` 等前缀，当前白名单仅 `92`，可能漏覆盖——待确认，见 R-12）
 - 排除债券/转债前缀 `81–89`
-- 全量覆盖 instruments；退市 symbol 保留历史 bars，标记 `delist_date`
+- 🟢 merge compact instruments：退市 symbol 保留于 curated 并标记 `delist_date`；历史 bars 可 PIT 查询
 
 Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 
@@ -510,7 +510,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | ID | 风险 | 影响 | 缓解 | 状态 |
 |----|------|------|------|------|
 | R-15 | **分组运行不 compact**（…） | **高**：… | engine finalize 延后 + 各组 append compact | 🟢 P0 已修复 |
-| R-16 | instruments compact 用本次抓取**整表覆盖** curated，不与旧数据合并；TDX 只返回在市股票且 list/delist_date 恒空 | **高**：退市股从 universe 消失 → **幸存者偏差**；「保留退市 symbol」契约未实现；list/delist 过滤空转 | compact 改 merge+PK 去重保留旧行；用 EM/交易所数据回填 list_date/delist_date | 🔴 P0 |
+| R-16 | instruments compact 整表覆盖丢退市股（…） | **高**：… | merge compact + EM list_date + TDX 缺席推断 delist_date | 🟢 P0 已修复 |
 | R-17 | corporate_actions daily 路径自相矛盾（…） | **高**：… | daily canonical=EM、backfill=TDX；per-dataset 主源见 ADR-0003 | 🟢 P0 已修复 |
 | R-18 | 部分批失败仍推进（…） | **高**：… | compact manifest 门禁 + per-dataset 水位 + retry 自动 compact | 🟢 P0 已修复 |
 | R-19 | TDX 日线分页无早停：只在页 <800 行时停止，不看日期是否已越过 start | 中：**每日增量也翻每只股票全历史**（~8 页/股，请求量放大约 8 倍），拉长运行时间、加大封禁风险 | 页内最老日期 < start 即 break | 🔴 P0 |
@@ -530,7 +530,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 |------|------|------|
 | M0 | 脚手架、`sde init`、manifest、Orchestrator 骨架 | 🟢 已完成 |
 | M1 | 编排收敛：真依赖解析 + wave 并行 + 全局限速 + 写前 schema 校验 + config 引用校验 + 去 `verify=False` + mock 门控（R-14） | 🟢 已完成（修复 R-01/02/04/09/10/11/14） |
-| M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 🟢 已完成（遗留 R-16/19） |
+| M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 🟢 已完成（遗留 R-19） |
 | M3 | HTTP 第二批（capital/valuation/announcement）+ adj_factors 并行化 + dragon_tiger/block_trades | 🟢 已完成（遗留 R-15/20/21/22） |
 | M4 | failover/snapshot/source_diffs + 跨源一致性审计 | 🟢 已完成（遗留 R-23；「连续 2 周稳定日更」未验证） |
 | v1.1 | §4.4 扩展 batch（financial_statement_items、index_constituents、macro、market_breadth 等） | 🟢 step/schema 已完成 |
@@ -549,7 +549,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | 1 | engine 每个 run 末尾自动追加 compact→audit（或 compact 动态依赖本 run 全部数据集 step；audit 声明 depends_on） | R-15/R-23 | 分组 run 后 curated 有当日分区；audit findings 反映本 run 数据 |
 | 2 | corporate_actions daily 主源明确化：EM 按日接口作 daily canonical（ADR-0003 增补「per-dataset 主源」），TDX xdxr 仅 backfill/除权日核对 | R-17 | 🟢 已修复 |
 | 3 | compact 门禁 + 水位保护：dataset 本 run 有 failed batch → 不推该 dataset 水位并产 warning finding；retry 成功后自动 compact | R-18 | 🟢 已修复 |
-| 4 | instruments 合并式 compact（merge + PK 去重，保留退市行）；补 list_date/delist_date 数据源 | R-16 | 人工删一行后重跑，旧 symbol 仍在；delist 过滤生效 |
+| 4 | instruments 合并式 compact（merge + PK 去重，保留退市行）；补 list_date/delist_date 数据源 | R-16 | 🟢 已修复 |
 | 5 | TDX 分页早停（页内最老日期 < start 即停） | R-19 | 日增量单 symbol 请求数 ≤2 页 |
 
 **P1 契约与健壮性（约 1 周）**
@@ -1029,7 +1029,7 @@ Per-dataset source, update frequency, and known limitations (ashare-data-warehou
 | Frequency | daily |
 | PK | symbol |
 | Universe | SH/SZ/BJ prefix whitelist 60/68/00/30/92 |
-| Known limits | list_date may be null from TDX |
+| Known limits | `delist_date` inferred when symbol absent from TDX snapshot; EM enriches `list_date` |
 
 #### trading_calendar
 
