@@ -53,6 +53,10 @@ class Manifest:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
+        # Concurrent writers (worker processes + engine) need WAL and a
+        # bounded wait instead of immediate "database is locked" errors.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def _ensure_schema(self) -> None:
