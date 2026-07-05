@@ -196,6 +196,14 @@ class Manifest:
             )
             return cur.fetchall()
 
+    def get_batches_for_run(self, run_id: str) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT * FROM ingestion_batches WHERE run_id = ? ORDER BY batch_id",
+                (run_id,),
+            )
+            return cur.fetchall()
+
     def latest_run(self, job_name: str | None = None) -> sqlite3.Row | None:
         with self._connect() as conn:
             if job_name:

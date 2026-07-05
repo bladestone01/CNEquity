@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -130,19 +131,23 @@ class JobEngine:
         self, name: str, trade_date: date, run_id: str, context: dict[str, Any]
     ) -> dict[str, Any]:
         entry = get_step(name)
+        uses_worker_batches = entry.requires_workers
         batch_id = str(uuid.uuid4())
-        self.manifest.start_batch(run_id, batch_id, task_id=name, dataset=name)
+        if not uses_worker_batches:
+            self.manifest.start_batch(run_id, batch_id, task_id=name, dataset=name)
+
         t0 = time.perf_counter()
         try:
             out = entry.fn(self.config, trade_date, run_id, context)
             elapsed = time.perf_counter() - t0
-            self.manifest.finish_batch(
-                run_id,
-                batch_id,
-                "success",
-                rows_read=out.get("rows_read", 0),
-                rows_written=out.get("rows_written", 0),
-            )
+            if not uses_worker_batches:
+                self.manifest.finish_batch(
+                    run_id,
+                    batch_id,
+                    "success",
+                    rows_read=out.get("rows_read", 0),
+                    rows_written=out.get("rows_written", 0),
+                )
             logger.info("Step %s OK in %.1fs (%s rows)", name, elapsed, out.get("rows_written", 0))
             return {
                 "step": name,
@@ -152,12 +157,13 @@ class JobEngine:
             }
         except Exception as exc:
             elapsed = time.perf_counter() - t0
-            self.manifest.finish_batch(
-                run_id,
-                batch_id,
-                "failed",
-                error_message=str(exc),
-            )
+            if not uses_worker_batches:
+                self.manifest.finish_batch(
+                    run_id,
+                    batch_id,
+                    "failed",
+                    error_message=str(exc),
+                )
             logger.exception("Step %s failed after %.1fs", name, elapsed)
             return {"step": name, "status": "failed", "error": str(exc), "elapsed": elapsed}
 
@@ -166,16 +172,25 @@ class JobEngine:
         if not failed:
             return {"run_id": run_id, "status": "success", "retried": 0}
 
-        context = {"run_id": run_id, "trade_date": trade_date}
+        context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
         context.update(self.manifest.get_run_metadata(run_id))
-        results = []
-        for batch in failed:
+
+        worker_batches = [b for b in failed if b["dataset"] == "daily_bars"]
+        step_batches = [b for b in failed if b["dataset"] != "daily_bars"]
+
+        results: list[dict[str, Any]] = []
+
+        if worker_batches:
+            batch_specs = []
+            for batch in worker_batches:
+                symbols = json.loads(batch["symbols_json"] or "[]")
+                batch_specs.append((batch["batch_id"], symbols))
+            context["_retry_batch_specs"] = batch_specs
+            results.append(self._run_step("daily_bars", trade_date, run_id, context))
+
+        for batch in step_batches:
             dataset = batch["dataset"]
-            r = self._run_step(dataset, trade_date, run_id, context)
-            results.append(r)
-            updates = r.get("context_updates")
-            if updates:
-                context.update(updates)
+            results.append(self._run_step(dataset, trade_date, run_id, context))
 
         summary = self.manifest.run_summary(run_id)
         status = "failed" if summary["batch_counts"].get("failed", 0) else "success"
