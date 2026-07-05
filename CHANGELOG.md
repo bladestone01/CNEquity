@@ -6,6 +6,23 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Phase 1 (M2) — P0 真实化 + 稳定日更**
+  - `trading_calendar`: bundled exchange seed CSV (2016–2027) + index-bars fallback
+    (`adapters/calendar/`).
+  - `corporate_actions`: mootdx xdxr primary + EastMoney datacenter backup; same-day
+    ex_date drives `symbols_to_rebackfill`.
+  - `daily_bars`: TDX pagination (`offset`/`start` in 800-bar pages) for full backfill
+    to 2016.
+  - Incremental watermarks in `meta/state/{dataset}.json`; daily runs resume from
+    last-success trade_date.
+  - Symbol-batch manifest entries from worker pool; `sde retry` re-runs only failed
+    batches.
+  - `adj_factors`: parallel Sina fetch (ThreadPoolExecutor) + per-symbol cache under
+    `meta/adj_factors_cache/`; refresh on ex-date symbols only.
+  - `trading_status`: EastMoney ST board + suspension datacenter API.
+  - Unit tests for calendar, state, bars pagination, and batch-level retry.
+
 ### Changed
 - **Documentation consolidation:** `docs/schema.md`, `docs/datasets.md`, and
   `docs/operations.md` merged into `docs/PRD.md` (v2.1) as appendices A/B/C —

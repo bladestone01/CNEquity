@@ -15,9 +15,9 @@
 
 | 层次 | 内容 | 选股用途 | 代表数据集 | 状态 |
 |------|------|----------|------------|------|
-| L0 基础参考 | Universe、交易日历、停复牌/ST | 可交易过滤、回测窗口 | instruments, trading_calendar, trading_status | 🚧 M2 |
-| L1 行情 | 未复权日线 + 复权因子 | 动量、波动、量价因子 | daily_bars, index_bars, adj_factors | 🚧 M2 |
-| L2 公司事件 | 除权除息、公告索引 | 事件驱动、除权回补 | corporate_actions, announcement_index | 🚧 M2/M3 |
+| L0 基础参考 | Universe、交易日历、停复牌/ST | 可交易过滤、回测窗口 | instruments, trading_calendar, trading_status | ✅ M2 |
+| L1 行情 | 未复权日线 + 复权因子 | 动量、波动、量价因子 | daily_bars, index_bars, adj_factors | ✅ M2 |
+| L2 公司事件 | 除权除息、公告索引 | 事件驱动、除权回补 | corporate_actions, announcement_index | ✅ M2 / 🔜 M3 |
 | L3 基本面 | 财报科目、估值、一致预期 | 价值/质量/成长因子 | financial_statement_items, valuation_metrics | 🔜 M3+ |
 | L4 资金面 | 北向、融资、主力、龙虎榜 | 聪明钱、杠杆情绪 | fund_flow, northbound_*, margin_trading, dragon_tiger | 🔜 M3 |
 | L5 结构行业 | 板块、指数成分、行业分类 | 行业中性、板块轮动 | sector_members, index_constituents, industry_members | 🔜 M3+ |
@@ -118,7 +118,7 @@ df = bars.filter(pl.col("symbol") == "600519.SH").collect()
 
 mock 静默兜底改为显式失败（新增 `allow_mock` 门控 + 审计拦截）、`fetched_at` 统一 UTC timestamp、manifest 开 WAL、包结构按数据层重组。
 
-### Phase 1 P0 真实化 + 稳定日更（对应里程碑 M2，🚧 当前阶段）
+### Phase 1 P0 真实化 + 稳定日更（对应里程碑 M2，✅ 已完成）
 
 | # | 任务 | 关键文件 | 验收 |
 |---|------|----------|------|
