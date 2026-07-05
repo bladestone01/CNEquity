@@ -1,0 +1,65 @@
+"""EastMoney push2 clist pagination."""
+
+from __future__ import annotations
+
+import logging
+from urllib.parse import urlencode
+
+from stock_data_engine.adapters.eastmoney.common import ALL_A_FS, PUSH2_CLIST, symbol_from_em
+from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
+
+logger = logging.getLogger(__name__)
+
+
+def fetch_clist_pages(
+    client: EastMoneyClient,
+    *,
+    fields: str,
+    fs: str = ALL_A_FS,
+    page_size: int = 5000,
+) -> list[dict]:
+    rows: list[dict] = []
+    page = 1
+    total = None
+    while True:
+        params = urlencode(
+            {
+                "pn": page,
+                "pz": page_size,
+                "po": 1,
+                "np": 1,
+                "fltt": 2,
+                "invt": 2,
+                "fid": "f12",
+                "fs": fs,
+                "fields": fields,
+            }
+        )
+        url = f"{PUSH2_CLIST}?{params}"
+        try:
+            resp = client.get(url)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            logger.warning("EastMoney clist page %s failed: %s", page, exc)
+            break
+
+        data = payload.get("data") or {}
+        diff = data.get("diff") or []
+        if not diff:
+            break
+        rows.extend(diff)
+        total = int(data.get("total") or 0)
+        if page * page_size >= total:
+            break
+        page += 1
+    return rows
+
+
+def clist_rows_to_symbols(rows: list[dict]) -> list[tuple[str, dict]]:
+    out: list[tuple[str, dict]] = []
+    for item in rows:
+        sym = symbol_from_em(str(item.get("f12", "")), int(item.get("f13", 0)))
+        if sym:
+            out.append((sym, item))
+    return out
