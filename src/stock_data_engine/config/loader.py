@@ -36,6 +36,9 @@ class Config:
     tdx_min_interval_ms: int = 50
     tdx_servers: str = "auto"
     tdx_connect_timeout_sec: int = 10
+    # Test/demo escape hatch only: lets TDX adapters return fabricated rows
+    # (labeled source="mock") instead of failing the batch.
+    tdx_allow_mock: bool = False
     sources: dict[str, bool] = field(default_factory=dict)
     source_intervals: dict[str, float] = field(default_factory=dict)
     universe_default: str = "all_a"
@@ -155,6 +158,7 @@ def load_config(path: str | Path) -> Config:
         tdx_min_interval_ms=int(tdx.get("min_interval_ms", 50)),
         tdx_servers=str(tdx.get("servers", "auto")),
         tdx_connect_timeout_sec=int(tdx.get("connect_timeout_sec", 10)),
+        tdx_allow_mock=bool(tdx.get("allow_mock", False)),
         sources=sources,
         source_intervals=source_intervals,
         universe_default=str(raw.get("universe", {}).get("default", "all_a")),

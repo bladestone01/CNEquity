@@ -1,0 +1,66 @@
+"""The TDX adapter must fail loudly instead of fabricating data.
+
+Mock rows are only allowed behind allow_mock=True and must be labeled
+source="mock" so audit can reject them downstream.
+"""
+
+from datetime import date
+
+import pytest
+
+from stock_data_engine.adapters.tdx_protocol import client as tdx
+from stock_data_engine.domain.schemas import MOCK_SOURCE, with_provenance
+
+START = date(2024, 6, 24)
+END = date(2024, 6, 28)
+
+
+@pytest.fixture(autouse=True)
+def _no_mootdx(monkeypatch):
+    def _boom():
+        raise RuntimeError("simulated TDX outage")
+
+    monkeypatch.setattr(tdx, "_quotes_client", _boom)
+
+
+def test_instruments_raises_without_allow_mock():
+    with pytest.raises(tdx.TdxSourceError, match="instruments"):
+        tdx.fetch_instruments()
+
+
+def test_daily_bars_raises_without_allow_mock():
+    with pytest.raises(tdx.TdxSourceError, match="daily_bars"):
+        tdx.fetch_daily_bars(["600519.SH"], START, END)
+
+
+def test_trading_calendar_raises_without_allow_mock():
+    with pytest.raises(tdx.TdxSourceError, match="trading_calendar"):
+        tdx.fetch_trading_calendar(START, END)
+
+
+def test_corporate_actions_raises_without_allow_mock():
+    with pytest.raises(tdx.TdxSourceError, match="corporate_actions"):
+        tdx.fetch_corporate_actions(END)
+
+
+def test_trading_status_raises_without_allow_mock():
+    with pytest.raises(tdx.TdxSourceError, match="trading_status"):
+        tdx.fetch_trading_status(["600519.SH"], END)
+
+
+def test_mock_rows_are_labeled_and_survive_normalization():
+    df = tdx.fetch_daily_bars(["600519.SH"], START, END, allow_mock=True)
+    assert df.height > 0
+    assert set(df["source"].unique().to_list()) == {MOCK_SOURCE}
+
+    normalized = tdx.normalize_with_source(df)
+    assert set(normalized["source"].unique().to_list()) == {MOCK_SOURCE}
+
+
+def test_real_rows_get_real_source_label():
+    df = with_provenance(
+        tdx._mock_bars(["600519.SH"], START, END).drop("source"),
+        source="tdx_protocol",
+        data_version="v1",
+    )
+    assert set(df["source"].unique().to_list()) == {"tdx_protocol"}

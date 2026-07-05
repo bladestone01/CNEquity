@@ -16,6 +16,9 @@ root = "{tmp_path / "data"}"
 workers = 1
 batch_size = 2
 
+[tdx_protocol]
+allow_mock = true
+
 [[job.daily.waves]]
 name = "reference"
 parallel = true

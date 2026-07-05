@@ -14,11 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
-    symbols, start_iso, end_iso, staging_root, dataset, run_id, batch_id, rate_limit = args
+    symbols, start_iso, end_iso, staging_root, dataset, run_id, batch_id, rate_limit, allow_mock = (
+        args
+    )
     start = date.fromisoformat(start_iso)
     end = date.fromisoformat(end_iso)
     rl = RateLimitSpec(*rate_limit) if rate_limit else None
-    df = fetch_daily_bars(symbols, start, end, rate_limit=rl)
+    df = fetch_daily_bars(symbols, start, end, rate_limit=rl, allow_mock=allow_mock)
     df = normalize_with_source(df)
     writer = StagingWriter(staging_root)
     writer.write_batch(dataset, run_id, batch_id, df)
@@ -47,7 +49,9 @@ def fetch_daily_bars_parallel(
     if config.workers <= 1 or len(batches) == 1:
         writer = StagingWriter(staging_root)
         for i, batch in enumerate(batches):
-            df = fetch_daily_bars(batch, start, end, rate_limit=rl)
+            df = fetch_daily_bars(
+                batch, start, end, rate_limit=rl, allow_mock=config.tdx_allow_mock
+            )
             df = normalize_with_source(df)
             writer.write_batch(dataset, run_id, f"batch-{i}", df)
             total_read += df.height
@@ -66,6 +70,7 @@ def fetch_daily_bars_parallel(
                 run_id,
                 f"batch-{i}",
                 rate_limit_tuple,
+                config.tdx_allow_mock,
             )
         )
 

@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import polars as pl
 
 from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
-from stock_data_engine.domain.schemas import with_provenance
+from stock_data_engine.domain.schemas import MOCK_SOURCE, with_provenance
 from stock_data_engine.domain.symbols import format_symbol, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
@@ -17,6 +17,26 @@ INDEX_SYMBOLS = [
     ("399006", "SZ"),
     ("000688", "SH"),
 ]
+
+
+class TdxSourceError(RuntimeError):
+    """Raised when the TDX source cannot deliver real data.
+
+    Fabricated fallback data is only allowed behind an explicit
+    `allow_mock=True` (config `[tdx_protocol].allow_mock`), and is then
+    labeled `source="mock"` so audit can reject it.
+    """
+
+
+def _quotes_client():
+    """Build a mootdx client; isolated so tests can monkeypatch it."""
+    from mootdx.quotes import Quotes
+
+    return Quotes.factory(market="std")
+
+
+def _mark_mock(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns(pl.lit(MOCK_SOURCE).alias("source"))
 
 
 def _mock_instruments() -> pl.DataFrame:
@@ -33,7 +53,7 @@ def _mock_instruments() -> pl.DataFrame:
                 "prev_symbol": None,
             }
         )
-    return pl.DataFrame(rows)
+    return _mark_mock(pl.DataFrame(rows))
 
 
 def _mock_calendar(start: date, end: date) -> pl.DataFrame:
@@ -43,7 +63,7 @@ def _mock_calendar(start: date, end: date) -> pl.DataFrame:
         is_trading = d.weekday() < 5
         rows.append({"trade_date": d, "is_trading": is_trading})
         d += timedelta(days=1)
-    return pl.DataFrame(rows)
+    return _mark_mock(pl.DataFrame(rows))
 
 
 def _mock_bars(symbols: list[str], start: date, end: date) -> pl.DataFrame:
@@ -66,15 +86,24 @@ def _mock_bars(symbols: list[str], start: date, end: date) -> pl.DataFrame:
                     }
                 )
         d += timedelta(days=1)
-    return pl.DataFrame(rows)
+    return _mark_mock(pl.DataFrame(rows))
 
 
-def fetch_instruments(*, rate_limit: RateLimitSpec | None = None) -> pl.DataFrame:
+def _fail_or_mock(
+    dataset: str, reason: str, allow_mock: bool, mock_df: pl.DataFrame
+) -> pl.DataFrame:
+    if not allow_mock:
+        raise TdxSourceError(f"{dataset}: {reason} (set [tdx_protocol].allow_mock for tests)")
+    logger.warning("%s: %s; returning mock rows labeled source=%s", dataset, reason, MOCK_SOURCE)
+    return mock_df
+
+
+def fetch_instruments(
+    *, rate_limit: RateLimitSpec | None = None, allow_mock: bool = False
+) -> pl.DataFrame:
     wait_spec(rate_limit)
     try:
-        from mootdx.quotes import Quotes
-
-        client = Quotes.factory(market="std")
+        client = _quotes_client()
         frames = []
         for market, exch in (("SH", "SH"), ("SZ", "SZ"), ("BJ", "BJ")):
             try:
@@ -103,26 +132,30 @@ def fetch_instruments(*, rate_limit: RateLimitSpec | None = None) -> pl.DataFram
                 )
         if frames:
             return pl.DataFrame(frames)
+        reason = "TDX returned no instruments"
     except ImportError:
-        logger.info("mootdx not installed; using mock instruments")
+        reason = "mootdx not installed"
     except Exception as exc:
-        logger.warning("TDX instruments failed: %s; using mock", exc)
-    return _mock_instruments()
+        reason = f"TDX fetch failed: {exc}"
+    return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
 
 
 def fetch_trading_calendar(
-    start: date, end: date, *, rate_limit: RateLimitSpec | None = None
+    start: date,
+    end: date,
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    allow_mock: bool = False,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
-    try:
-        from mootdx.quotes import Quotes
-
-        client = Quotes.factory(market="std")
-        # mootdx may not expose calendar directly; fall through to mock/weekday
-        _ = client
-    except Exception:
-        pass
-    return _mock_calendar(start, end)
+    # mootdx does not expose a trading calendar; a real source (exchange CSV /
+    # derived from index bars) lands in M2. Until then this dataset is mock-only.
+    return _fail_or_mock(
+        "trading_calendar",
+        "no real calendar source implemented yet (M2)",
+        allow_mock,
+        _mock_calendar(start, end),
+    )
 
 
 def fetch_daily_bars(
@@ -131,11 +164,10 @@ def fetch_daily_bars(
     end: date,
     *,
     rate_limit: RateLimitSpec | None = None,
+    allow_mock: bool = False,
 ) -> pl.DataFrame:
     try:
-        from mootdx.quotes import Quotes
-
-        client = Quotes.factory(market="std")
+        client = _quotes_client()
         rows = []
         for sym in symbols:
             wait_spec(rate_limit)
@@ -169,56 +201,64 @@ def fetch_daily_bars(
                 )
         if rows:
             return pl.DataFrame(rows)
+        reason = "TDX returned no bars"
     except ImportError:
-        logger.info("mootdx not installed; using mock daily bars")
+        reason = "mootdx not installed"
     except Exception as exc:
-        logger.warning("TDX daily bars failed: %s; using mock", exc)
-    return _mock_bars(symbols, start, end)
+        reason = f"TDX fetch failed: {exc}"
+    return _fail_or_mock("daily_bars", reason, allow_mock, _mock_bars(symbols, start, end))
 
 
 def fetch_index_bars(
-    start: date, end: date, *, rate_limit: RateLimitSpec | None = None
+    start: date,
+    end: date,
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    allow_mock: bool = False,
 ) -> pl.DataFrame:
     symbols = [format_symbol(c, e) for c, e in INDEX_SYMBOLS]
-    df = fetch_daily_bars(symbols, start, end, rate_limit=rate_limit)
+    df = fetch_daily_bars(symbols, start, end, rate_limit=rate_limit, allow_mock=allow_mock)
     return df.with_columns(pl.lit("1d").alias("frequency"))
 
 
 def fetch_corporate_actions(
-    trade_date: date, *, rate_limit: RateLimitSpec | None = None
+    trade_date: date,
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    allow_mock: bool = False,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
-    rows = []
-    try:
-        from mootdx.quotes import Quotes
-
-        client = Quotes.factory(market="std")
-        _ = client
-    except Exception:
-        pass
-    # Mock: no corporate actions on most days
-    return (
-        pl.DataFrame(rows)
-        if rows
-        else pl.DataFrame(
-            schema={
-                "symbol": pl.Utf8,
-                "ex_date": pl.Date,
-                "action_type": pl.Utf8,
-                "cash_dividend": pl.Float64,
-                "bonus_ratio": pl.Float64,
-                "transfer_ratio": pl.Float64,
-                "allotment_ratio": pl.Float64,
-                "allotment_price": pl.Float64,
-            }
-        )
+    # mootdx xdxr integration lands in M2; an empty frame here would silently
+    # disable ex-date rebackfill, so treat "not implemented" as a failure.
+    empty = pl.DataFrame(
+        schema={
+            "symbol": pl.Utf8,
+            "ex_date": pl.Date,
+            "action_type": pl.Utf8,
+            "cash_dividend": pl.Float64,
+            "bonus_ratio": pl.Float64,
+            "transfer_ratio": pl.Float64,
+            "allotment_ratio": pl.Float64,
+            "allotment_price": pl.Float64,
+        }
+    )
+    return _fail_or_mock(
+        "corporate_actions",
+        "TDX xdxr fetch not implemented yet (M2)",
+        allow_mock,
+        empty,
     )
 
 
 def fetch_trading_status(
-    symbols: list[str], trade_date: date, *, rate_limit: RateLimitSpec | None = None
+    symbols: list[str],
+    trade_date: date,
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    allow_mock: bool = False,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
+    # No real suspension/ST source yet (M2); the all-normal frame is fabricated.
     rows = [
         {
             "symbol": sym,
@@ -228,7 +268,12 @@ def fetch_trading_status(
         }
         for sym in symbols
     ]
-    return pl.DataFrame(rows)
+    return _fail_or_mock(
+        "trading_status",
+        "no real suspension/ST source implemented yet (M2)",
+        allow_mock,
+        _mark_mock(pl.DataFrame(rows)),
+    )
 
 
 def normalize_with_source(df: pl.DataFrame, source: str = "tdx_protocol") -> pl.DataFrame:

@@ -6,6 +6,7 @@ from datetime import date
 import polars as pl
 
 from stock_data_engine.config import Config
+from stock_data_engine.domain.schemas import MOCK_SOURCE
 
 
 def run_audit(config: Config, run_id: str, trade_date: date) -> int:
@@ -37,8 +38,26 @@ def run_audit(config: Config, run_id: str, trade_date: date) -> int:
             )
             continue
 
-        df = pl.concat([pl.read_parquet(f) for f in files[:20]], how="diagonal_relaxed")
-        row_count = sum(pl.read_parquet(f).height for f in files)
+        frames = [pl.read_parquet(f) for f in files]
+        df = pl.concat(frames[:20], how="diagonal_relaxed")
+        row_count = sum(f.height for f in frames)
+        mock_rows = sum(
+            f.filter(pl.col("source") == MOCK_SOURCE).height
+            for f in frames
+            if "source" in f.columns
+        )
+        if mock_rows:
+            findings.append(
+                {
+                    "dataset": ds,
+                    "severity": "error",
+                    "check": "mock_source",
+                    "message": (
+                        f"{mock_rows} fabricated rows (source={MOCK_SOURCE!r}) in curated {ds}; "
+                        "regenerate with a real source before using downstream"
+                    ),
+                }
+            )
         findings.append(
             {
                 "dataset": ds,

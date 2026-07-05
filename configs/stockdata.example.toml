@@ -13,6 +13,9 @@ enabled = true
 min_interval_ms = 50
 servers = "auto"
 connect_timeout_sec = 10
+# Test/demo only: return fabricated rows (labeled source="mock") instead of
+# failing when the TDX source is unavailable. Never enable in production.
+allow_mock = false
 
 [sources.eastmoney]
 enabled = true

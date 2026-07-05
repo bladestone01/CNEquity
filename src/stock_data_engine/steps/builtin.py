@@ -27,7 +27,7 @@ def _write_simple(config: Config, run_id: str, dataset: str, df: pl.DataFrame) -
 @register_step("instruments", group="core", requires_workers=False)
 def step_instruments(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     rl = config.tdx_rate_limit_spec()
-    df = fetch_instruments(rate_limit=rl)
+    df = fetch_instruments(rate_limit=rl, allow_mock=config.tdx_allow_mock)
     df = normalize_with_source(df)
     return _write_simple(config, run_id, "instruments", df)
 
@@ -37,7 +37,7 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
     start = trade_date - timedelta(days=30)
     end = trade_date + timedelta(days=365)
     rl = config.tdx_rate_limit_spec()
-    df = fetch_trading_calendar(start, end, rate_limit=rl)
+    df = fetch_trading_calendar(start, end, rate_limit=rl, allow_mock=config.tdx_allow_mock)
     df = normalize_with_source(df)
     return _write_simple(config, run_id, "trading_calendar", df)
 
@@ -46,7 +46,9 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
 def step_trading_status(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     symbols = context.get("symbols") or _load_symbols(config)
     rl = config.tdx_rate_limit_spec()
-    df = fetch_trading_status(symbols[:500], trade_date, rate_limit=rl)
+    df = fetch_trading_status(
+        symbols[:500], trade_date, rate_limit=rl, allow_mock=config.tdx_allow_mock
+    )
     df = normalize_with_source(df)
     return _write_simple(config, run_id, "trading_status", df)
 
@@ -54,7 +56,7 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
 @register_step("corporate_actions", group="core", depends_on=["instruments"])
 def step_corporate_actions(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     rl = config.tdx_rate_limit_spec()
-    df = fetch_corporate_actions(trade_date, rate_limit=rl)
+    df = fetch_corporate_actions(trade_date, rate_limit=rl, allow_mock=config.tdx_allow_mock)
     df = normalize_with_source(df)
     rebackfill = []
     if df.height and "symbol" in df.columns:
@@ -95,7 +97,7 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
         else date(2016, 1, 1)
     )
     rl = config.tdx_rate_limit_spec()
-    df = fetch_index_bars(start, trade_date, rate_limit=rl)
+    df = fetch_index_bars(start, trade_date, rate_limit=rl, allow_mock=config.tdx_allow_mock)
     df = normalize_with_source(df)
     return _write_simple(config, run_id, "index_bars", df)
 
@@ -167,5 +169,7 @@ def _load_symbols(config: Config) -> list[str]:
     if staging_glob:
         latest = max(staging_glob, key=lambda p: p.stat().st_mtime)
         return pl.read_parquet(latest)["symbol"].to_list()
-    df = fetch_instruments(rate_limit=config.tdx_rate_limit_spec())
+    df = fetch_instruments(
+        rate_limit=config.tdx_rate_limit_spec(), allow_mock=config.tdx_allow_mock
+    )
     return df["symbol"].to_list()

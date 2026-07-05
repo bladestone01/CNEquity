@@ -38,3 +38,26 @@ def test_daily_job_mock(config):
     result = engine.run_job("daily", date(2024, 6, 28))
     assert result["run_id"]
     assert result["status"] in ("success", "failed")
+
+
+def test_daily_job_fails_loudly_without_allow_mock(config, monkeypatch):
+    """With allow_mock off, an unreachable TDX source must fail the batch —
+    never silently fall back to fabricated data."""
+    from stock_data_engine.adapters.tdx_protocol import client as tdx
+
+    def _boom():
+        raise RuntimeError("simulated TDX outage")
+
+    monkeypatch.setattr(tdx, "_quotes_client", _boom)
+    config.tdx_allow_mock = False
+
+    init_data_layout(config)
+    engine = JobEngine(config)
+    result = engine.run_job("daily", date(2024, 6, 28))
+
+    assert result["status"] == "failed"
+    fetch_results = {r["step"]: r for r in result["results"] if r["step"] == "instruments"}
+    assert fetch_results["instruments"]["status"] == "failed"
+    # Nothing fabricated may reach staging.
+    staged = list(config.staging_root.glob("instruments/**/*.parquet"))
+    assert staged == []
