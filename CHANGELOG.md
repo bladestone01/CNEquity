@@ -6,6 +6,20 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **R-15 / R-23 — schedule groups land data in curated**
+  - Finalize steps defer until all fetch steps in the same run complete.
+  - `audit` depends on `compact` + `derive_adj_factors`.
+  - All schedule groups append `compact`; compact only merges datasets staged in the
+    current `run_id`.
+
+### Changed
+- **PRD v2.2 — 2026-07-06 全库架构评审**：状态标注与代码全面同步（M2–M4/v1.1
+  已实现项从 🔴 更正为 🟢/🟡）；新增风险 R-15–R-26（分组运行不落 curated、
+  audit 先于 compact 执行、corporate_actions daily 路径失效、部分失败仍推水位、
+  instruments 覆盖丢退市股、TDX 分页无早停、分页静默截断等）；新增 §11.1
+  v1.2 修复计划（P0/P1/P2）。README 同步标注已知缺陷与 Phase 5 修复批次。
+
 ### Added
 - **Phase 4 (M4) — multi-source snapshots and cross-source audit**
   - `SnapshotStore` writes backup captures to `meta/source_snapshots/` (ADR-0003).

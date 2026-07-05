@@ -27,13 +27,17 @@
 
 完整字段契约、主键、分区键与逐源限制见 [docs/PRD.md](docs/PRD.md)（附录 A/B）。
 
+> ⚠️ 上表 ✅ 指 **step/schema/adapter 已实现**。分组运行（`--group`）各组末尾含
+> `compact`，抓取完成后写入 curated（R-15/R-23 已修复）。其余已知缺陷见
+> [docs/PRD.md §10 风险登记册 / §11.1 v1.2 修复计划](docs/PRD.md)。
+
 ## 数据可信原则
 
 1. **永不伪造**：数据源失败即判 batch failed，绝不静默返回假数据（mock 仅限测试开关 `allow_mock`，且强制标记 `source="mock"`，审计自动拦截）。✅
 2. **可溯源**：每行 curated 数据带 `source / data_version / fetched_at` 三列。✅
 3. **口径可重算**：日线存**未复权**价 + 独立复权因子，qfq/hfq 在查询期组合，不污染原始数据。✅
 4. **多源不打架**：curated 每主键一行 canonical；备源进 snapshot，审计出 diff，永不自动切源。✅ M4
-5. **无前视偏差**：财报等低频数据带公告日 `announce_date` 双时间轴，按「截至当日已公告」对齐。🔜 M3+
+5. **无前视偏差**：财报等低频数据带公告日 `announce_date` 双时间轴，按「截至当日已公告」对齐（`load(..., as_of=)`）。✅ M3+
 
 ---
 
@@ -154,17 +158,33 @@ pip install -e ".[nlp]"     # 可选：SnowNLP 增强 stock_news / sentiment 打
 
 sde query --dataset stock_news --symbol 600519.SH --config configs/stockdata.toml
 sde run daily --group fundamentals --config configs/stockdata.toml   # 17:30
-sde run daily --group macro_risk --config configs/stockdata.toml     # 18:00
-sde run daily --group research --config configs/stockdata.toml       # 18:30
+sde run daily --group macro_risk --config configs/stockdata.toml     # 18:00（同上）
+sde run daily --group research --config configs/stockdata.toml       # 18:30（同上）
 ```
 
-**待办**：连续两周生产日更稳定性观察
+**待办**：先完成 Phase 5 正确性修复，再做连续两周生产日更稳定性观察
 
 ### Phase 4 多源健壮性（M4）✅ 已实现
 
 - 备源 snapshot → `meta/source_snapshots/`（主源 batch 失败时 EastMoney 日线；`corporate_actions` 每 run 备源快照）
 - `audit` 产出 `meta/quality/source_diffs/{run_id}.json`（价格 ±10bps 抽样比对）
 - ADR-0003：**永不自动切源**，canonical 仅写主源
+
+### Phase 5 正确性修复批次（v1.2）🚧 当前最高优先级
+
+2026-07-06 全库架构评审结论：架构方向（四层湖 / schema 契约 / 自研编排）不变，但存在会
+污染下游选股结论的正确性缺陷，须先于任何新数据集修复。完整清单与验收标准见
+[docs/PRD.md §11.1](docs/PRD.md)，摘要：
+
+| 优先级 | 内容 | 风险号 |
+|--------|------|--------|
+| P0 | 分组 run 自动追加 compact→audit（修「数据滞留 staging」与「audit 先于 compact 执行」） | R-15/R-23 |
+| P0 | corporate_actions daily 主源修复（默认配置下每日必失败/为空，除权回补失效） | R-17 |
+| P0 | 部分批失败时不推水位 + retry 后自动 compact（消除永久数据空洞） | R-18 |
+| P0 | instruments 合并式 compact，保留退市股（消除幸存者偏差）+ 补 list/delist_date | R-16 |
+| P0 | TDX 日线分页早停（当前每日增量翻全历史，请求放大 ~8 倍） | R-19 |
+| P1 | 分页失败退避重试而非静默截断；EM 接入跨进程限速；curated 原子写；audit 全数据集覆盖 | R-21/22/24/25 |
+| P2 | 消费层 lazy scan + 分区裁剪；adj_factors 改 append-only；calendar 去按日分区 | R-20/25 |
 
 ---
 

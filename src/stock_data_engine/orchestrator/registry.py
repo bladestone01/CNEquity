@@ -9,6 +9,9 @@ from stock_data_engine.config import Config
 
 StepFn = Callable[[Config, date, str, dict], dict]
 
+# Steps in these groups always run after all other steps in the same wave/group.
+FINALIZE_STEP_GROUPS = frozenset({"finalize"})
+
 
 @dataclass
 class StepEntry:

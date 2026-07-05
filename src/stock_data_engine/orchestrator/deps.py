@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from stock_data_engine.orchestrator.registry import STEP_REGISTRY, get_step
+from stock_data_engine.orchestrator.registry import FINALIZE_STEP_GROUPS, STEP_REGISTRY, get_step
 
 
 class CyclicDependencyError(ValueError):
@@ -17,17 +17,14 @@ def validate_steps_registered(step_names: list[str]) -> None:
         raise UnknownStepError(f"Unknown steps: {', '.join(unknown)}")
 
 
-def step_execution_levels(step_names: list[str]) -> list[list[str]]:
-    """Group steps into dependency levels that may run in parallel within each level.
-
-    Dependencies on steps outside *step_names* are treated as already satisfied
-    (typically fulfilled by earlier waves).
-    """
-    validate_steps_registered(step_names)
-
-    names_set = set(step_names)
+def _levels_for(
+    step_names: list[str],
+    *,
+    names_set: set[str],
+    already_done: set[str],
+) -> list[list[str]]:
     remaining = set(step_names)
-    done: set[str] = set()
+    done = set(already_done)
     levels: list[list[str]] = []
 
     while remaining:
@@ -46,5 +43,34 @@ def step_execution_levels(step_names: list[str]) -> list[list[str]]:
         levels.append(ready)
         done.update(ready)
         remaining -= set(ready)
+
+    return levels
+
+
+def step_execution_levels(step_names: list[str]) -> list[list[str]]:
+    """Group steps into dependency levels that may run in parallel within each level.
+
+    Dependencies on steps outside *step_names* are treated as already satisfied
+    (typically fulfilled by earlier waves or schedule groups).
+
+    Steps in finalize groups (``compact``, ``derive_adj_factors``, ``audit``) are
+    deferred until every non-finalize step in *step_names* has completed, so
+    ``compact`` never runs against an empty staging run.
+    """
+    validate_steps_registered(step_names)
+
+    names_set = set(step_names)
+    fetch_steps = [n for n in step_names if get_step(n).group not in FINALIZE_STEP_GROUPS]
+    finalize_steps = [n for n in step_names if get_step(n).group in FINALIZE_STEP_GROUPS]
+
+    levels: list[list[str]] = []
+    if fetch_steps:
+        levels.extend(_levels_for(fetch_steps, names_set=names_set, already_done=set()))
+
+    if finalize_steps:
+        prerequisite = set(fetch_steps)
+        levels.extend(
+            _levels_for(finalize_steps, names_set=names_set, already_done=prerequisite)
+        )
 
     return levels

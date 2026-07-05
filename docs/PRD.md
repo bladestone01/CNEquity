@@ -1,6 +1,6 @@
 # StockDataEngine 产品需求文档（PRD）
 
-版本：v2.1（统一文档：原 schema.md / datasets.md / operations.md 已并入附录 A/B/C）
+版本：v2.2（v2.1 基础上完成 2026-07-06 全库架构评审：状态标注与代码同步；新增风险 R-15–R-25 与 §11.1 v1.2 修复计划）
 状态：Draft（Living Document）
 日期：2026-07-06
 产品定位：整合多方数据源的 A 股辅助数据平台 —— 采集、编排、标准化，交付可直接查询的 Parquet 数据湖
@@ -24,7 +24,7 @@ StockDataEngine 在 mootdx（TDX 协议）与多个 HTTP 数据源之上，提�
 | 单个数据源（mootdx 等）只能「调接口」，不能「跑全市场、可恢复」 | Orchestrator：Job → Wave → Step → Task → Batch → Manifest | 🟡 |
 | 单进程拉数慢 | 多进程按 symbol batch 并行 + 全局限速 | 🟢 |
 | 数据散落、口径不一、来源不可追溯 | 统一 schema 契约 + 分区 + provenance 列（source/data_version/fetched_at） | 🟢（写前强校验 + mock 门控） |
-| 单一数据源不稳定、口径有偏差 | 多源采集 + canonical/snapshot 分离 + 跨源审计 | 🔴 |
+| 单一数据源不稳定、口径有偏差 | 多源采集 + canonical/snapshot 分离 + 跨源审计 | 🟢 M4（snapshot + source_diffs 已实现；corporate_actions daily 主源路径有缺陷，见 R-17） |
 | 研究方被迫自建并维护数据库 | curated Parquet 即交付物 + 可选 DuckDB 视图 | 🟢 |
 
 ### 1.3 目标用户与使用场景
@@ -129,9 +129,10 @@ CLI (sde):  init | config validate | servers test | run | backfill
   raw/       可选原始响应留存
   meta/
     manifest.db                                                    # 运行/批次清单
-    state/                                       🔴 每数据集增量水位（待实现）
-    source_snapshots/{dataset}/source=.../data_version=.../        🔴 多源快照
-    quality/findings/ ; quality/source_diffs/                      🟡 findings 有，diffs 待实现
+    state/{dataset}.json                         🟢 每数据集增量水位（部分失败仍推进，见 R-18）
+    source_snapshots/{dataset}/source=.../data_version=.../        🟢 多源快照（M4）
+    quality/findings/ ; quality/source_diffs/                      🟢 audit 每 run 产出两者
+    adj_factors_cache/                                             🟢 复权因子逐 symbol 缓存
     on_demand/{dataset}/{symbol}.json                              🟢 on-demand 缓存
   duckdb/stockdata.duckdb
 ```
@@ -171,36 +172,38 @@ CLI (sde):  init | config validate | servers test | run | backfill
 
 | ID | 名称 | 层次 | 模式 | 主源 | 备源 | 选股用途 | 状态 |
 |----|------|------|------|------|------|----------|------|
-| instruments | 证券主数据 | L0 | batch | tdx_protocol | akshare | Universe 定义、上市/退市过滤 | 🟡 真实拉取，list_date 缺失 |
-| trading_calendar | 交易日历 | L0 | batch | tdx_protocol | 交易所 CSV | 交易日对齐、特征窗口 | 🔴 当前为 weekday mock |
-| trading_status | 停复牌/ST | L0 | batch | tdx_protocol | eastmoney | ST/*ST/停牌剔除 | 🔴 当前为 mock |
-| daily_bars | 股票未复权日线 | L1 | batch | tdx_protocol | eastmoney | 动量、波动、量价因子 | 🟡 单源真实，无分页/无全量回填 |
-| index_bars | 指数日线 | L1 | batch | tdx_protocol | eastmoney | 市场状态、Beta、相对强度基准 | 🟡 |
-| corporate_actions | 分红送转/除权 | L2 | batch | tdx_protocol | eastmoney | 除权回补、股息因子 | 🔴 当前返回空 |
-| adj_factors | 复权因子 | L1 | derived | sina | — | 前/后复权价、长期动量 | 🟡 串行 HTTP，性能瓶颈 |
+| instruments | 证券主数据 | L0 | batch | tdx_protocol | akshare | Universe 定义、上市/退市过滤 | 🟡 真实拉取；list_date/delist_date 恒空 + compact 整表覆盖丢退市股（R-16） |
+| trading_calendar | 交易日历 | L0 | batch | 交易所种子 CSV（2016–2027） | 指数 bars 推导 | 交易日对齐、特征窗口 | 🟢 M2 真实化 |
+| trading_status | 停复牌/ST | L0 | batch | eastmoney（ST 板 + 停牌接口） | — | ST/*ST/停牌剔除 | 🟢 M2 真实化 |
+| daily_bars | 股票未复权日线 | L1 | batch | tdx_protocol | eastmoney（snapshot） | 动量、波动、量价因子 | 🟡 分页回填可用，但增量无早停、每日翻全历史（R-19） |
+| index_bars | 指数日线 | L1 | batch | tdx_protocol | eastmoney | 市场状态、Beta、相对强度基准 | 🟢 |
+| corporate_actions | 分红送转/除权 | L2 | batch | tdx_protocol（backfill）/ eastmoney（daily） | eastmoney snapshot | 除权回补、股息因子 | 🔴 daily 路径失效：failover 开启必抛错、关闭则被 source 过滤清空（R-17） |
+| adj_factors | 复权因子 | L1 | derived | sina | — | 前/后复权价、长期动量 | 🟡 已并行 + 缓存，但每日全量刷新并重写全部历史分区（R-20） |
 
-Meta：`ingestion_runs`, `ingestion_batches`（🟢）、`quality_findings`（🟡）
+Meta：`ingestion_runs`, `ingestion_batches`（🟢，daily_bars 批级）、`quality_findings` + `source_diffs`（🟢，audit 仅覆盖 4 个数据集，见 §9）
 
-### 4.2 v1.0-full 第二批（batch）🔴
+### 4.2 v1.0-full 第二批（batch）🟡
 
-目标里程碑 **M3**。config 已引用部分 step 名，但 step 尚未注册，运行时会被静默 skip——见 §10 风险 R-11。
+目标里程碑 **M3**——adapter/schema/step 均已实现并注册（config 校验通过）。
+⚠️ 但所有分组运行（capital/signals 等）不含 compact step，抓到的数据滞留 staging、
+**不会进入 curated**，`load()` 读不到——见 §10 风险 R-15，v1.2 P0 修复。
 
 | ID | 名称 | 层次 | 主源 | 备源 | 选股用途 | PK（摘要） | 状态 |
 |----|------|------|------|------|----------|------------|------|
-| fund_flow | 个股资金流向 | L4 | eastmoney | akshare | 主力净流入、资金动量 | (symbol, trade_date) | 🔴 |
-| northbound_holdings | 北向持股 | L4 | eastmoney | — | 外资偏好、持股变化 | (symbol, trade_date, channel) | 🔴 |
-| northbound_flows | 北向净流入 | L4 | eastmoney | — | 外资流向、市场宽度 | (trade_date, channel) | 🔴 |
-| margin_trading | 融资融券 | L4 | eastmoney | akshare | 杠杆情绪、融资买入 | (symbol, trade_date) | 🔴 |
-| sector_members | 板块成分 | L5 | eastmoney | tdx_protocol | 板块归属、主题选股 | (symbol, sector_code, as_of_date) | 🔴 |
-| valuation_metrics | 估值指标 | L3 | eastmoney | tencent | PE/PB/PS、价值因子 | (symbol, trade_date) | 🔴 |
-| announcement_index | 公告索引 | L2 | cninfo | — | 事件触发、公告类型过滤 | (announcement_id) | 🔴 |
+| fund_flow | 个股资金流向 | L4 | eastmoney | akshare | 主力净流入、资金动量 | (symbol, trade_date) | 🟡 已实现，受 R-15 |
+| northbound_holdings | 北向持股 | L4 | eastmoney | — | 外资偏好、持股变化 | (symbol, trade_date, channel) | 🟡 已实现，受 R-15 |
+| northbound_flows | 北向净流入 | L4 | eastmoney | — | 外资流向、市场宽度 | (trade_date, channel) | 🟡 已实现，受 R-15 |
+| margin_trading | 融资融券 | L4 | eastmoney | akshare | 杠杆情绪、融资买入 | (symbol, trade_date) | 🟡 已实现，受 R-15 |
+| sector_members | 板块成分 | L5 | eastmoney | tdx_protocol | 板块归属、主题选股 | (symbol, sector_code, as_of_date) | 🟡 已实现，受 R-15 |
+| valuation_metrics | 估值指标 | L3 | eastmoney | tencent | PE/PB/PS、价值因子 | (symbol, trade_date) | 🟡 已实现，受 R-15 |
+| announcement_index | 公告索引 | L2 | cninfo | — | 事件触发、公告类型过滤 | (announcement_id) | 🟡 已实现，受 R-15 |
 
-**schedule_groups 引用但未纳入上表的 step**（同属 M3，优先于 v1.1）：
+**schedule_groups 同批 step（signals 组）：**
 
 | ID | 名称 | 层次 | 主源 | 选股用途 | 状态 |
 |----|------|------|------|----------|------|
-| dragon_tiger | 龙虎榜 | L4 | eastmoney | 机构/游资席位、短线情绪 | 🔴 config 已引用，step 未注册 |
-| block_trades | 大宗交易 | L4 | eastmoney | 折价率、大股东减持信号 | 🔴 config 已引用，step 未注册 |
+| dragon_tiger | 龙虎榜 | L4 | eastmoney | 机构/游资席位、短线情绪 | 🟡 已实现，受 R-15；BJ 市场行被误过滤 |
+| block_trades | 大宗交易 | L4 | eastmoney | 折价率、大股东减持信号 | 🟡 已实现，受 R-15 |
 
 ### 4.3 On-demand 层 🟡
 
@@ -213,9 +216,11 @@ Meta：`ingestion_runs`, `ingestion_batches`（🟢）、`quality_findings`（�
 | research_reports | 研报摘要 | L7 | eastmoney reportapi | 分析师观点、评级变化 | 🟡 |
 | financial_reports | 财报原文/PDF | L3 | sina / gpcw | 深度基本面解析 | 🟡 |
 
-### 4.4 v1.1 扩展 batch（选股导向）🔴
+### 4.4 v1.1 扩展 batch（选股导向）🟡
 
-PRD 新增规划；schema 与 step 待 M3 完成后迭代。**优先级高于 on-demand 同类数据的 batch 化**——全市场因子计算依赖 batch curated。
+schema/adapter/step 已全部实现（fundamentals/macro_risk/research 三个 schedule group）。
+⚠️ 同受 R-15 影响：分组运行不 compact，数据滞留 staging。此外 macro_indicators 的
+akshare 月度指标仅在发布日恰为运行日时才入库（几乎取不到，见 R-22 备注）。
 
 | ID | 名称 | 层次 | 更新频率 | 主源 | 选股用途 | PK（摘要） | 优先级 |
 |----|------|------|----------|------|----------|------------|--------|
@@ -307,8 +312,11 @@ PRD 新增规划；schema 与 step 待 M3 完成后迭代。**优先级高于 on
 **现状**
 
 - 🟢 `depends_on` 由 engine 消费：wave 内按 `step_execution_levels` 拓扑分层执行（`orchestrator/deps.py`），未注册 step 直接报错（`validate_steps_registered`）。
+  ⚠️ 但 `compact`/`audit` 未声明 `depends_on`，拓扑排序按字母序把它们排进第 0 层：
+  finalize wave 中 **audit 先于 compact 执行**（本次 run 数据从未被审计），分组运行中
+  compact 在抓取 step 之前空跑——见 R-15 / R-23。
 - 🟢 `parallel` wave 内同层 step 走 `ThreadPoolExecutor` 真并发，`context_updates` 加锁合并；`daily_bars` step 内部另有 `ProcessPoolExecutor` symbol-batch 并行。
-- 🔴 worker batch **不写 manifest**，manifest 粒度是「1 step = 1 batch」，因此 `retry` 实为「整 step 重跑」，达不到批级续跑（M2 工作项，见 R-03）。
+- 🟡 worker batch **已写 manifest**（daily_bars symbol-batch 粒度，含 symbols/window），`retry` 对 daily_bars 只重跑失败 batch；其余 step 仍是「1 step = 1 batch」整步重跑。遗留缺口：dataset 名单硬编码 `daily_bars`、retry 成功后不触发 compact（重抓数据滞留 staging）、`retry_count` 恒为 0——见 R-18。
 
 ### 5.3 Wave DAG 配置（daily job）
 
@@ -338,8 +346,8 @@ steps = ["compact", "derive_adj_factors", "audit"]
 
 - `daily_bars` 依赖 `instruments`（取 universe）与 `corporate_actions`（除权日 rebackfill）
 - `derive_adj_factors` 依赖 `daily_bars` + `compact`（从 Sina 拉因子并对齐交易日）
-- `corporate_actions` 输出 `symbols_to_rebackfill`，`daily_bars` 优先回补这些 symbol
-- `compact` 仅在同一 dataset 全部 batch SUCCESS 后触发
+- `corporate_actions` 输出 `symbols_to_rebackfill`，`daily_bars` 优先回补这些 symbol（⚠️ daily 路径当前失效，见 R-17）
+- `compact` 仅在同一 dataset 全部 batch SUCCESS 后触发（⚠️ 目标态；当前无门禁，见 R-18）
 
 ### 5.4 schedule_groups（错峰分组）
 
@@ -363,17 +371,21 @@ steps = ["dragon_tiger","block_trades"]
 
 | Phase | 内容 | 状态 |
 |-------|------|------|
-| 1 | trading_calendar + instruments | 🟡 |
-| 2a | corporate_actions backfill | 🔴 |
-| 2b | daily_bars 增量（近 5 日） | 🟡 |
-| 2c | daily_bars 全量历史 | 🔴 受 mootdx `offset=800` 限制，需实现分页才能真正回填 |
-| 3 | index_bars + trading_status | 🟡 |
-| 4 | compact + derive_adj_factors + audit | 🟡 |
+| 1 | trading_calendar + instruments | 🟢 |
+| 2a | corporate_actions backfill（mootdx xdxr 逐 symbol） | 🟢 |
+| 2b | daily_bars 增量（水位续抓） | 🟢 |
+| 2c | daily_bars 全量历史（800 条分页） | 🟢 分页已实现 |
+| 3 | index_bars + trading_status | 🟢 |
+| 4 | compact + derive_adj_factors + audit | 🟡 audit 排序缺陷（R-23）；phase 间 context 不传递，init 期间 rebackfill 信号丢失 |
+
+注：`run_init_phases` 各 phase 复用同一 run_id 但逐 phase 调 `finish_run`（状态被反复覆盖），
+且 phase2c 的 `backfill=True` 元数据会被首个 phase 的元数据覆盖（仅记录错误，不影响实际回填行为）。
 
 ### 5.6 Manifest Schema（SQLite）
 
 `ingestion_runs`（run_id, job_name, status, started/finished_at, rows, metadata_json）与 `ingestion_batches`（run_id, batch_id, task_id, dataset, status, symbols_json, window, rows, retry_count）。
-🟡 现已建表与索引；待加：worker batch 入库、WAL 模式 + `busy_timeout`（多进程并发写）。见 `orchestrator/manifest.py`。
+🟢 建表 + 索引 + WAL + `busy_timeout=5000` 均已实现；daily_bars worker batch 入库。
+遗留：`retry_count` 从未累计（`start_batch` INSERT OR REPLACE 归零）；retry 收尾的 `finish_run` 会把 rows_read/written 覆盖为 0。见 `orchestrator/manifest.py`。
 
 ---
 
@@ -384,14 +396,21 @@ steps = ["dragon_tiger","block_trades"]
 ### 6.1 限速与反封禁 🟡
 
 - 🟢 每数据源跨进程限速：文件锁 + 状态文件（`domain/rate_limit.py`），参数来自 `[sources.*].min_interval_*` / `[tdx_protocol].min_interval_ms`，已接入 tdx adapter 与 worker pool。
-- 🔴 指数退避重试（已有 `max_retries`/`retry_backoff_seconds` 配置项，需在 adapter 层真正使用）。
+  ⚠️ 但 EastMoney 各 step 走 `EastMoneyClient` 的**进程内 per-实例**节流，未接入跨进程限速；
+  capital 组 7 个 step 同层并发时对 EM 实际是 7 req/s 叠加——见 R-21。
+- 🔴 指数退避重试（已有 `max_retries`/`retry_backoff_seconds` 配置项，adapter 层从未使用）。
 - 🔴 失败分类：可重试（超时/限流/5xx） vs 不可重试（参数错/4xx）。
+- 🔴 HTTP 分页中途失败被静默截断（`fetch_datacenter`/`fetch_clist_pages`/`fetch_bars_paginated`
+  遇错 `break`），半截数据仍判 batch success——违反「永不伪造」原则的同族问题，见 R-22。
 
-### 6.2 增量与幂等 🔴（v1 必做）
+### 6.2 增量与幂等 🟡
 
-- `meta/state/` 记录每数据集「上次成功覆盖到的 trade_date / report_period」水位。
-- 增量 run 从水位续抓，而非写死 `trade_date - 5天`。
-- 同一窗口重复 run 结果一致（compact 已按 PK + max(fetched_at) 去重，幂等性基本满足）。
+- 🟢 `meta/state/{dataset}.json` 水位已实现；增量 run 从水位 +1 续抓（`steps/common.py`）。
+- 🟢 同一窗口重复 run 结果一致（compact 按 PK + max(fetched_at) 去重）。
+- 🔴 **部分失败仍推进水位**：compact 不检查本 run 是否有 failed batch，成功批次把
+  max(trade_date) 推到今天 → 失败 symbol 当日数据形成**永久空洞**（除非人工 `sde retry`）。
+  「compact 仅在同一 dataset 全部 batch SUCCESS 后触发」的契约未实现——见 R-18。
+- ⚠️ 水位计算方式为「读整个 curated 数据集求 max(分区列)」，随湖增长每日全量扫描——见 R-25。
 
 ### 6.3 数据契约强校验 🟢（data_version 语义除外）
 
@@ -400,11 +419,13 @@ steps = ["dragon_tiger","block_trades"]
 - 🟢 **mock 数据门控**：数据源失败默认抛 `TdxSourceError` 判 batch failed，**永不静默伪造数据**；仅 `[tdx_protocol].allow_mock = true`（测试/演示）时返回 mock，且标记 `source="mock"`，audit 对 curated 中 mock 行产 error finding。
 - 🔴 `data_version` 应反映源接口版本/抓取契约版本，而非恒为 `"v1"`。
 
-### 6.4 多源 failover 与审计 🔴
+### 6.4 多源 failover 与审计 🟢（M4 已实现，遗留缺口见下）
 
-- 主源失败 → 退避重试 → 仍失败标 batch failed → 可选备源抓取写入 `meta/source_snapshots`（不进 curated）。
-- `audit` 比对 primary vs snapshot 产出 `source_diffs`，人工决策是否切源。
-- 抽样跨源一致性检查（价格/成交量），偏差超阈值产 finding。
+- 🟢 daily_bars batch 失败 → EastMoney 备源写入 `meta/source_snapshots`（不进 curated）；corporate_actions 每 run 备源快照。
+- 🟢 `audit` 比对 primary vs snapshot 产出 `meta/quality/source_diffs/{run_id}.json`（close ±10bps 抽样）。
+- 遗留：主源失败**无退避重试**直接判 failed；worker 进程内的 failover 逻辑与
+  `quality/failover.py` 重复实现且不读 `[failover.datasets]` 配置、不限速；
+  snapshot 目录按 run_id 无限累积，`read_latest` 全量 concat 越跑越慢。
 
 ### 6.5 可观测性 🟡
 
@@ -444,9 +465,9 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | `sde init` | 初始化目录、manifest、DuckDB 视图 | 🟢 |
 | `sde config validate` | 校验配置（待加强引用校验） | 🟡 |
 | `sde servers test` | TDX 连通性测试 | 🟢 |
-| `sde run daily [--group] [--backfill]` | 日更（Wave 或分组） | 🟡 |
-| `sde backfill <dataset>` | 历史回填 | 🟡 |
-| `sde compact` | staging → curated | 🟢 |
+| `sde run daily [--group] [--backfill]` | 日更（Wave 或分组） | 🟡 分组模式产出不落 curated（R-15） |
+| `sde backfill <dataset>` | 历史回填 | 🟡 回填后不 compact（R-26） |
+| `sde compact` | staging → curated | 🟡 CLI 版仅处理 daily_bars（R-26） |
 | `sde derive <name>` | 派生数据集 | 🟡 |
 | `sde audit` | 质量审计 | 🟡 |
 | `sde status` | 运行状态 | 🟢 |
@@ -460,10 +481,10 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 
 | 项 | 现状 | 目标 |
 |----|------|------|
-| 单元测试 | 🟡 3 文件，mock 烟雾测试 | compact 去重正确性、因子对齐、symbol 规则、config 校验、retry 语义均需覆盖 |
-| 集成测试 | 🔴 | mock 数据跑通 daily 全链路 + 断言 curated 分区/行数 |
-| 数据质量 | 🟡 行数/空值检查 | PK 唯一性、分区完整性、跨源一致性 |
-| CI | 🔴 | ruff + pytest 作为合并门禁 |
+| 单元测试 | 🟡 18 文件（M2–M4/v1.1 各批次均有），但多为 mock 烟测 | 补：分组 run→curated 端到端、部分失败水位不推进、audit 执行顺序、compact 幂等 |
+| 集成测试 | 🟡 有 mock 全链路，但断言弱（`status in ("success","failed")` 恒真） | 断言 curated 分区/行数/来源列 |
+| 数据质量 | 🟡 audit 仅覆盖 4 个数据集，PK 检查仅取前 20 个文件 | 全部 25 个数据集 + 全量 PK/分区完整性/跨源一致性 |
+| CI | 🟢 GitHub Actions：ruff check/format + pytest（3.11/3.12） | 增加 coverage 门槛 |
 
 ---
 
@@ -473,18 +494,35 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 |----|------|------|------|------|
 | R-01 | "Wave DAG" 无依赖解析 | 配置顺序错即数据错 | `depends_on` 拓扑排序（`orchestrator/deps.py`） | 🟢 已修复 |
 | R-02 | parallel wave 实为串行且漏传 context | 性能不达标、context 丢失 | engine ThreadPool 并发 + context 加锁合并 | 🟢 已修复 |
-| R-03 | 批级 retry/续跑缺失 | 大 run 失败需整 step 重跑 | M2 worker batch 入 manifest | 🔴 |
-| R-04 | 无全局限速 | 被数据源封禁 | 跨进程文件锁限速（`domain/rate_limit.py`） | 🟢 已修复 |
-| R-05 | 无增量水位 | 重跑全量、效率低 | M2 `meta/state/` 水位 | 🔴 |
-| R-06 | mootdx `offset=800` 无分页 | 全量历史回填不可达 | M2 分页抓取 | 🔴 |
-| R-07 | adj_factors 串行 HTTP | 全市场分钟级跑不完 | M3 并行 + 缓存 | 🔴 |
-| R-08 | failover/snapshot/diff 未实现 | 单源故障即断更 | M4 | 🔴 |
-| R-09 | 写入无 schema 强校验 | 脏数据进湖 | 写前 `validate_dataframe` 强校验 | 🟢 已修复 |
+| R-03 | 批级 retry/续跑缺失 | 大 run 失败需整 step 重跑 | worker batch 入 manifest（M2） | 🟡 daily_bars 批级已实现；dataset 硬编码、retry 不 compact、retry_count 不累计（并入 R-18） |
+| R-04 | 无全局限速 | 被数据源封禁 | 跨进程文件锁限速（`domain/rate_limit.py`） | 🟢 已修复（EM 侧缺口另见 R-21） |
+| R-05 | 无增量水位 | 重跑全量、效率低 | `meta/state/` 水位（M2） | 🟢 已实现（部分失败推进缺陷另见 R-18） |
+| R-06 | mootdx `offset=800` 无分页 | 全量历史回填不可达 | 分页抓取（M2） | 🟢 已实现（增量无早停另见 R-19） |
+| R-07 | adj_factors 串行 HTTP | 全市场分钟级跑不完 | 并行 + 缓存（M3） | 🟡 已并行 + 缓存；但缓存每日必失效、qfq 全历史重写（并入 R-20） |
+| R-08 | failover/snapshot/diff 未实现 | 单源故障即断更 | M4 | 🟢 已实现（遗留缺口见 §6.4） |
+| R-09 | 写入无 schema 强校验 | 脏数据进湖 | 写前 `validate_dataframe` 强校验 | 🟢 已修复（cast `strict=False` 会把脏值静默置 null，注意） |
 | R-10 | `verify=False` | TLS 中间人风险 | 已移除 | 🟢 已修复 |
-| R-11 | capital/signals 等 step 未注册被静默 skip | 数据集悄悄缺失 | `validate_config`/`validate_steps_registered` 报错 | 🟢 校验已修复；step 待 M3 实现 |
-| R-12 | 北交所前缀白名单可能漏覆盖 | universe 不全 | 确认 BSE 编码规则后修正 | 🔴 |
+| R-11 | capital/signals 等 step 未注册被静默 skip | 数据集悄悄缺失 | `validate_config`/`validate_steps_registered` 报错 | 🟢 已修复；step 已全部注册 |
+| R-12 | 北交所前缀白名单可能漏覆盖（仅 `92`，历史含 `43/83/87/88`） | universe 不全 | 确认 BSE 编码规则后修正 | 🔴 |
 | R-13 | 第三方数据 ToS/版权 | 合规风险 | 保守限速默认值 | 🟡 持续 |
 | R-14 | 数据源失败静默返回 mock 假数据入湖 | 下游选股被投毒 | 默认 fail-loud；mock 仅限 `allow_mock` 且标记 `source="mock"` + audit 拦截 | 🟢 已修复 |
+
+**2026-07-06 架构评审新增（修复计划见 §11.1）：**
+
+| ID | 风险 | 影响 | 缓解 | 状态 |
+|----|------|------|------|------|
+| R-15 | **分组运行不 compact**：capital/signals/fundamentals/macro_risk/research 组无 compact step；core 组虽含 compact 但其无 `depends_on` 被拓扑排到第 0 层先空跑。compact 只处理当前 run_id 的 staging，跨 run 无法补救 | **高**：M3/v1.1 全部数据集滞留 staging，curated 不更新，`load()` 读空；README 推荐的生产 cron 全部失效 | engine 对每个 run 在末尾自动追加 compact（+audit），或给 compact 动态注入对本 run 全部数据集 step 的依赖 | 🔴 P0 |
+| R-16 | instruments compact 用本次抓取**整表覆盖** curated，不与旧数据合并；TDX 只返回在市股票且 list/delist_date 恒空 | **高**：退市股从 universe 消失 → **幸存者偏差**；「保留退市 symbol」契约未实现；list/delist 过滤空转 | compact 改 merge+PK 去重保留旧行；用 EM/交易所数据回填 list_date/delist_date | 🔴 P0 |
+| R-17 | corporate_actions daily 路径自相矛盾：daily 模式不传 symbols（跳过 TDX 分支），failover 开启时 `primary_only=True` 又跳过 EM 分支 → 必抛错；failover 关闭时 EM 行被 `source=="tdx_protocol"` 过滤清空 | **高**：默认配置下 daily run 每天失败；除权日 `symbols_to_rebackfill` 永远为空，除权回补失效 | 明确 per-dataset 主源：daily 用 EM 按日接口作 canonical（改 ADR-0003 为「每数据集声明主源」），backfill 用 TDX xdxr；或 daily 对当日除权 symbol 补 TDX 拉取 | 🔴 P0 |
+| R-18 | 部分批失败仍推进：engine 波次失败后继续执行 finalize，compact 无「全部 batch SUCCESS」门禁，水位照推 | **高**：失败 symbol 当日数据永久空洞且无告警；retry 成功后也不 compact | compact 前查 manifest：该 dataset 本 run 有 failed batch 则跳过推水位；retry 收尾自动 compact | 🔴 P0 |
+| R-19 | TDX 日线分页无早停：只在页 <800 行时停止，不看日期是否已越过 start | 中：**每日增量也翻每只股票全历史**（~8 页/股，请求量放大约 8 倍），拉长运行时间、加大封禁风险 | 页内最老日期 < start 即 break | 🔴 P0 |
+| R-20 | adj_factors 缓存判定 `bars.max > cache.max` 每日必真 → 全市场每日重抓（sina 全局 5 req/s ≈ 18 分钟）；qfq 因子锚定最新价，每日重写全部历史分区；抓取失败静默沿用旧缓存 | 中：性能 + 静默陈旧因子导致复权口径不一致 | 改存 hfq/事件累积比率（append-only），qfq 查询期换算；刷新改为除权日/新股驱动；失败产 finding 而非静默 | 🔴 P1 |
+| R-21 | EastMoney 限速为进程内 per-client 实例，未走跨进程 `SourceRateLimiters`；并行组 7 step 叠加 ≈7 req/s | 中：封禁风险 | 各 EM adapter 统一走 `config.rate_limit("eastmoney")` | 🔴 P1 |
+| R-22 | HTTP 分页中途失败静默截断仍判 success（datacenter/clist/TDX bars）；EM corporate_actions backfill 只拉第 1 页（5000 行封顶）；akshare 月度宏观仅当发布日=运行日才入库 | **高**：半截数据无告警进湖，与 R-14 同族 | 分页失败→退避重试（用上 `max_retries`）→仍失败抛错判 batch failed；backfill 走分页 helper；宏观改「取最近 N 期 + compact 去重」 | 🔴 P1 |
+| R-23 | compact/audit/finalize 依赖缺失，拓扑按字母序：finalize wave 实际执行顺序为 audit → compact → derive_adj_factors | **高**：当日数据永远审计不到；source_diffs 比对的是昨日 curated | audit 声明 `depends_on=["compact","derive_adj_factors"]`；compact 依赖见 R-15 | 🔴 P0 |
+| R-24 | curated 分区文件原地覆盖（无 tmp+rename）；写一半崩溃即损坏分区，DuckDB 并发读可读到坏文件 | 中：数据损坏需重建 | 同目录写 tmp 后 `os.replace` 原子替换 | 🔴 P1 |
+| R-25 | 全量 eager 读取遍布：reader `load()`、水位 `_max_partition_date`、universe、audit、catalog 均「读整个数据集再过滤」；trading_calendar 按日分区产生 396 个单行小文件 | 中：数据量到全市场十年规模后每次查询/每日 run 都全湖扫描 | 统一 `pl.scan_parquet` + hive 分区裁剪；水位从分区目录名推导；calendar 改单文件或按年分区 | 🔴 P1/P2 |
+| R-26 | 配置/CLI 缝隙：`[job.init.phases] names` 键 loader 读不到（读的是 `job.init.names`，静默回退默认值）；CLI 默认 `--config configs/stockdata.example.toml` 与 README「复制为 stockdata.toml」矛盾；`sde compact` 只处理 daily_bars；`sde backfill <dataset>` 不 compact | 低-中：行为与文档预期不符 | 修 loader 键名 + 校验；CLI 默认改 stockdata.toml（缺失时报错提示）；compact/backfill 全数据集化 | 🔴 P1 |
 
 ---
 
@@ -494,10 +532,49 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 |------|------|------|
 | M0 | 脚手架、`sde init`、manifest、Orchestrator 骨架 | 🟢 已完成 |
 | M1 | 编排收敛：真依赖解析 + wave 并行 + 全局限速 + 写前 schema 校验 + config 引用校验 + 去 `verify=False` + mock 门控（R-14） | 🟢 已完成（修复 R-01/02/04/09/10/11/14） |
-| M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 修复 R-03/05/06 |
-| M3 | HTTP 第二批（capital/valuation/announcement）+ adj_factors 并行化 + dragon_tiger/block_trades | 修复 R-07；解锁 §4.2 资金/估值选股 |
-| M4 | failover/snapshot/source_diffs + 跨源一致性审计 + 连续 2 周稳定日更 | 修复 R-08 |
-| v1.1 | §4.4 扩展 batch（financial_statement_items、index_constituents、macro、market_breadth 等） | 价值/质量/宏观/情绪因子闭环 |
+| M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 🟢 已完成（遗留 R-16/17/18/19） |
+| M3 | HTTP 第二批（capital/valuation/announcement）+ adj_factors 并行化 + dragon_tiger/block_trades | 🟢 已完成（遗留 R-15/20/21/22） |
+| M4 | failover/snapshot/source_diffs + 跨源一致性审计 | 🟢 已完成（遗留 R-17/23；「连续 2 周稳定日更」未验证） |
+| v1.1 | §4.4 扩展 batch（financial_statement_items、index_constituents、macro、market_breadth 等） | 🟢 step/schema 已完成（产出受 R-15 阻断） |
+| **v1.2** | **正确性修复批次（本次评审结论，见 §11.1）** | 修复 R-15–R-26；这是当前最高优先级 |
+
+### 11.1 v1.2 修复计划（2026-07-06 全库架构评审）
+
+评审总结论：**四层湖 + schema 契约 + 自研编排的架构方向仍然正确，不推翻**；但「编排拓扑
+（compact/audit 依赖缺失）」「curated 覆盖语义（instruments）」「失败语义（水位推进/静默截断）」
+三处属于设计错误而非实现瑕疵，会直接污染下游选股结论，须先于任何新数据集修复。
+
+**P0 数据正确性止血（先做，预计 1–2 天）**
+
+| # | 任务 | 对应风险 | 验收 |
+|---|------|----------|------|
+| 1 | engine 每个 run 末尾自动追加 compact→audit（或 compact 动态依赖本 run 全部数据集 step；audit 声明 depends_on） | R-15/R-23 | 分组 run 后 curated 有当日分区；audit findings 反映本 run 数据 |
+| 2 | corporate_actions daily 主源明确化：EM 按日接口作 daily canonical（ADR-0003 增补「per-dataset 主源」），TDX xdxr 仅 backfill/除权日核对 | R-17 | 默认配置 daily run 不再失败；除权日 rebackfill 触发 |
+| 3 | compact 门禁 + 水位保护：dataset 本 run 有 failed batch → 不推该 dataset 水位并产 warning finding；retry 成功后自动 compact | R-18 | 构造部分失败集成测试：水位不推进、retry 后数据补齐 |
+| 4 | instruments 合并式 compact（merge + PK 去重，保留退市行）；补 list_date/delist_date 数据源 | R-16 | 人工删一行后重跑，旧 symbol 仍在；delist 过滤生效 |
+| 5 | TDX 分页早停（页内最老日期 < start 即停） | R-19 | 日增量单 symbol 请求数 ≤2 页 |
+
+**P1 契约与健壮性（约 1 周）**
+
+| # | 任务 | 对应风险 |
+|---|------|----------|
+| 6 | 统一 fail-loud：分页失败退避重试（启用 `max_retries`/`retry_backoff_seconds`），仍失败抛错；EM corporate_actions backfill 走分页 helper；区分「自然为空」与「抓取失败」 | R-22 |
+| 7 | EM adapter 接入跨进程限速 `config.rate_limit("eastmoney")`，收敛三套限速实现 | R-21 |
+| 8 | curated 原子写：tmp + `os.replace` | R-24 |
+| 9 | audit 扩展到全部 25 个数据集、全量 PK 检查（lazy scan）；macro 月度指标改「最近 N 期 + 去重」 | R-25/R-22 |
+| 10 | 配置/CLI 修缝：`job.init.phases.names` 键、CLI 默认 config、`sde compact`/`backfill` 全数据集化、retry_count 累计 | R-26/R-03 |
+
+**P2 性能与口径（约 1 周，可与 P1 并行）**
+
+| # | 任务 | 对应风险 |
+|---|------|----------|
+| 11 | 消费层与内部读取统一 `pl.scan_parquet` + hive 分区裁剪；水位从分区目录名推导 | R-25 |
+| 12 | adj_factors 改 append-only（存 hfq/事件比率，qfq 查询期换算）；刷新改除权日驱动；失败产 finding | R-20 |
+| 13 | trading_calendar 改单文件/按年分区；snapshot 目录按保留期清理 | R-25/§6.4 |
+| 14 | market_breadth 涨跌停阈值按板块区分（主板 10%/创业板科创板 20%/北交所 30%/ST 5%），当前统一 9.5% 的口径在文档中显式披露 | 数据口径 |
+
+**P3 防回归**：分组 run→curated 端到端断言、部分失败水位测试、audit 顺序测试、集成测试
+把 `status in ("success","failed")` 这类恒真断言改为精确断言。
 
 ---
 
@@ -1125,15 +1202,20 @@ After `sde init`:
 
 ### T+1 daily schedule (cron example)
 
+> ⚠️ **R-15 修复前，分组模式（`--group`）产出不会进入 curated**（组内 compact 缺失或
+> 空跑）。修复上线前，生产日更请使用不带 `--group` 的完整 Wave 模式
+> `sde run daily --config configs/stockdata.toml`（其 finalize wave 会 compact，
+> 但注意 audit 顺序缺陷 R-23）。以下为修复后的目标态：
+
 ```cron
 # Core reference + bars + derive (Mon-Fri 16:05)
-5 16 * * 1-5 cd /path/to/StockDataEngine && sde run daily --group core --config configs/stockdata.example.toml
+5 16 * * 1-5 cd /path/to/StockDataEngine && sde run daily --group core --config configs/stockdata.toml
 
 # Capital tables (16:35)
-35 16 * * 1-5 sde run daily --group capital --config configs/stockdata.example.toml
+35 16 * * 1-5 sde run daily --group capital --config configs/stockdata.toml
 
 # Signals (17:05)
-5 17 * * 1-5 sde run daily --group signals --config configs/stockdata.example.toml
+5 17 * * 1-5 sde run daily --group signals --config configs/stockdata.toml
 ```
 
 ### Init phases

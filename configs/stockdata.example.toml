@@ -93,23 +93,24 @@ at = "16:30"
 steps = [
   "fund_flow", "northbound_holdings", "northbound_flows", "margin_trading",
   "valuation_metrics", "sector_members", "announcement_index",
+  "compact",
 ]
 
 [job.daily.groups.signals]
 at = "17:00"
-steps = ["dragon_tiger", "block_trades"]
+steps = ["dragon_tiger", "block_trades", "compact"]
 
 [job.daily.groups.fundamentals]
 at = "17:30"
-steps = ["financial_statement_items", "index_constituents", "industry_members"]
+steps = ["financial_statement_items", "index_constituents", "industry_members", "compact"]
 
 [job.daily.groups.macro_risk]
 at = "18:00"
-steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events"]
+steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events", "compact"]
 
 [job.daily.groups.research]
 at = "18:30"
-steps = ["institutional_holdings", "analyst_consensus", "sentiment_scores"]
+steps = ["institutional_holdings", "analyst_consensus", "sentiment_scores", "compact"]
 
 [job.init.phases]
 names = [

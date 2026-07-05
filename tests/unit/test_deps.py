@@ -44,3 +44,41 @@ def test_cyclic_dependency_raises():
 
     with pytest.raises(CyclicDependencyError):
         step_execution_levels([name_a, name_b])
+
+
+def test_compact_runs_after_fetch_steps_in_core_group():
+    steps = [
+        "instruments",
+        "trading_calendar",
+        "trading_status",
+        "corporate_actions",
+        "daily_bars",
+        "index_bars",
+        "compact",
+        "derive_adj_factors",
+    ]
+    levels = step_execution_levels(steps)
+    flat = [s for level in levels for s in level]
+    assert flat.index("compact") > flat.index("daily_bars")
+    assert flat.index("derive_adj_factors") > flat.index("compact")
+
+
+def test_capital_group_runs_compact_last():
+    steps = [
+        "fund_flow",
+        "northbound_holdings",
+        "northbound_flows",
+        "margin_trading",
+        "valuation_metrics",
+        "sector_members",
+        "announcement_index",
+        "compact",
+    ]
+    levels = step_execution_levels(steps)
+    assert levels[-1] == ["compact"]
+
+
+def test_finalize_wave_order():
+    levels = step_execution_levels(["compact", "derive_adj_factors", "audit"])
+    flat = [s for level in levels for s in level]
+    assert flat == ["compact", "derive_adj_factors", "audit"]

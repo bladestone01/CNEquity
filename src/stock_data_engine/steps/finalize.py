@@ -68,9 +68,14 @@ def _update_watermarks(config: Config) -> None:
 
 @register_step("compact", group="finalize", parallelizable=False)
 def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    datasets = list(_PARTITION_COLS.keys())
+    writer = StagingWriter(config.staging_root)
+    staged = [
+        ds
+        for ds in _PARTITION_COLS
+        if writer.list_run_files(ds, run_id)
+    ]
     total = 0
-    for ds in datasets:
+    for ds in staged:
         pcol = _PARTITION_COLS[ds]
         if ds == "instruments":
             files = StagingWriter(config.staging_root).list_run_files(ds, run_id)
@@ -111,7 +116,12 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
     return {"rows_read": rows, "rows_written": rows}
 
 
-@register_step("audit", group="finalize", parallelizable=False)
+@register_step(
+    "audit",
+    group="finalize",
+    parallelizable=False,
+    depends_on=["compact", "derive_adj_factors"],
+)
 def step_audit(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     from stock_data_engine.quality.audit import run_audit
 
