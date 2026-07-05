@@ -44,7 +44,7 @@ sde = "stock_data_engine.cli.main:cli"
 where = ["src"]
 
 [tool.setuptools.package-data]
-stock_data_engine = ["py.typed"]
+stock_data_engine = ["py.typed", "adapters/calendar/seeds/*.csv"]
 
 [tool.ruff]
 line-length = 100
