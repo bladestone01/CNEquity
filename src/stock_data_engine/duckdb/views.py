@@ -20,7 +20,7 @@ _EMPTY_VIEW_DDL = {
             CAST(NULL AS DOUBLE) AS amount,
             CAST(NULL AS VARCHAR) AS source,
             CAST(NULL AS VARCHAR) AS data_version,
-            CAST(NULL AS VARCHAR) AS fetched_at
+            CAST(NULL AS TIMESTAMPTZ) AS fetched_at
         WHERE false
     """,
     "instruments": """
@@ -35,7 +35,7 @@ _EMPTY_VIEW_DDL = {
             CAST(NULL AS VARCHAR) AS prev_symbol,
             CAST(NULL AS VARCHAR) AS source,
             CAST(NULL AS VARCHAR) AS data_version,
-            CAST(NULL AS VARCHAR) AS fetched_at
+            CAST(NULL AS TIMESTAMPTZ) AS fetched_at
         WHERE false
     """,
     "adj_factors": """
@@ -47,7 +47,7 @@ _EMPTY_VIEW_DDL = {
             CAST(NULL AS DOUBLE) AS factor,
             CAST(NULL AS VARCHAR) AS source,
             CAST(NULL AS VARCHAR) AS data_version,
-            CAST(NULL AS VARCHAR) AS fetched_at
+            CAST(NULL AS TIMESTAMPTZ) AS fetched_at
         WHERE false
     """,
 }

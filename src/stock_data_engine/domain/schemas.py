@@ -6,6 +6,12 @@ import polars as pl
 
 PROVENANCE = ["source", "data_version", "fetched_at"]
 
+FETCHED_AT_DTYPE = pl.Datetime(time_unit="us", time_zone="UTC")
+
+# Rows carrying this source value are synthetic and must never be trusted
+# downstream; audit raises an error finding whenever they reach curated.
+MOCK_SOURCE = "mock"
+
 DAILY_BARS_SCHEMA = {
     "symbol": pl.Utf8,
     "trade_date": pl.Date,
@@ -17,7 +23,7 @@ DAILY_BARS_SCHEMA = {
     "amount": pl.Float64,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
-    "fetched_at": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
 }
 
 INSTRUMENTS_SCHEMA = {
@@ -30,7 +36,7 @@ INSTRUMENTS_SCHEMA = {
     "prev_symbol": pl.Utf8,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
-    "fetched_at": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
 }
 
 TRADING_CALENDAR_SCHEMA = {
@@ -38,7 +44,7 @@ TRADING_CALENDAR_SCHEMA = {
     "is_trading": pl.Boolean,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
-    "fetched_at": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
 }
 
 TRADING_STATUS_SCHEMA = {
@@ -48,7 +54,7 @@ TRADING_STATUS_SCHEMA = {
     "status": pl.Utf8,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
-    "fetched_at": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
 }
 
 CORPORATE_ACTIONS_SCHEMA = {
@@ -62,7 +68,7 @@ CORPORATE_ACTIONS_SCHEMA = {
     "allotment_price": pl.Float64,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
-    "fetched_at": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
 }
 
 ADJ_FACTORS_SCHEMA = {
@@ -72,7 +78,7 @@ ADJ_FACTORS_SCHEMA = {
     "factor": pl.Float64,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
-    "fetched_at": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
 }
 
 DATASET_SCHEMAS = {
@@ -113,7 +119,18 @@ def validate_dataframe(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
     if missing:
         raise SchemaValidationError(f"dataset '{dataset}': missing columns {missing}")
 
-    casts = [pl.col(col).cast(dtype, strict=False) for col, dtype in schema.items()]
+    casts = []
+    for col, dtype in schema.items():
+        if isinstance(dtype, pl.Datetime) and df.schema[col] == pl.Utf8:
+            casts.append(
+                pl.col(col)
+                .str.to_datetime(time_unit=dtype.time_unit, time_zone=dtype.time_zone, strict=False)
+                .alias(col)
+            )
+        elif dtype == pl.Date and df.schema[col] == pl.Utf8:
+            casts.append(pl.col(col).str.to_date(strict=False).alias(col))
+        else:
+            casts.append(pl.col(col).cast(dtype, strict=False))
     return df.with_columns(casts).select(list(schema.keys()))
 
 
@@ -122,9 +139,12 @@ def utc_now_iso() -> str:
 
 
 def with_provenance(df: pl.DataFrame, source: str, data_version: str) -> pl.DataFrame:
-    fetched = utc_now_iso()
-    return df.with_columns(
-        pl.lit(source).alias("source"),
+    # An adapter may pre-set `source` (e.g. MOCK_SOURCE) to flag row origin;
+    # that marker must survive normalization.
+    cols = [
         pl.lit(data_version).alias("data_version"),
-        pl.lit(fetched).alias("fetched_at"),
-    )
+        pl.lit(datetime.now(UTC)).cast(FETCHED_AT_DTYPE).alias("fetched_at"),
+    ]
+    if "source" not in df.columns:
+        cols.append(pl.lit(source).alias("source"))
+    return df.with_columns(cols)

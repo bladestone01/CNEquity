@@ -1,9 +1,13 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import polars as pl
 import pytest
 
-from stock_data_engine.domain.schemas import SchemaValidationError, validate_dataframe
+from stock_data_engine.domain.schemas import (
+    FETCHED_AT_DTYPE,
+    SchemaValidationError,
+    validate_dataframe,
+)
 
 
 def test_validate_empty_returns_typed_empty_frame():
@@ -33,6 +37,8 @@ def test_validate_casts_and_selects_schema_columns():
     out = validate_dataframe(raw, "daily_bars")
     assert "extra_col" not in out.columns
     assert out["trade_date"][0] == date(2024, 6, 28)
+    assert out.schema["fetched_at"] == FETCHED_AT_DTYPE
+    assert out["fetched_at"][0] == datetime(2024, 6, 28, tzinfo=UTC)
 
 
 def test_validate_missing_column_raises():
