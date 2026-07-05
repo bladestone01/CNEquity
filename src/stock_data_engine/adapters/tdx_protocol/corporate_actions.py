@@ -1,0 +1,143 @@
+"""TDX xdxr (除权除息) → corporate_actions schema."""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+
+import polars as pl
+
+from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
+
+logger = logging.getLogger(__name__)
+
+_ACTION_TYPES = {
+    "cash_dividend": "cash_dividend",
+    "bonus": "bonus",
+    "transfer": "transfer",
+    "allotment": "allotment",
+}
+
+
+def _rows_from_xdxr(symbol: str, pdf: pl.DataFrame) -> list[dict]:
+    rows: list[dict] = []
+    for record in pdf.iter_rows(named=True):
+        year = record.get("year")
+        month = record.get("month")
+        day = record.get("day")
+        if not all(v is not None for v in (year, month, day)):
+            continue
+        ex_date = date(int(year), int(month), int(day))
+        category = int(record.get("category") or 0)
+        if category != 1:
+            continue
+
+        fenhong = float(record.get("fenhong") or 0)
+        songzhuangu = float(record.get("songzhuangu") or 0)
+        peigu = float(record.get("peigu") or 0)
+        peigujia = float(record.get("peigujia") or 0)
+
+        if fenhong > 0:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "ex_date": ex_date,
+                    "action_type": _ACTION_TYPES["cash_dividend"],
+                    "cash_dividend": fenhong / 10.0,
+                    "bonus_ratio": 0.0,
+                    "transfer_ratio": 0.0,
+                    "allotment_ratio": None,
+                    "allotment_price": None,
+                }
+            )
+        if songzhuangu > 0:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "ex_date": ex_date,
+                    "action_type": _ACTION_TYPES["bonus"],
+                    "cash_dividend": 0.0,
+                    "bonus_ratio": songzhuangu,
+                    "transfer_ratio": 0.0,
+                    "allotment_ratio": None,
+                    "allotment_price": None,
+                }
+            )
+        if peigu > 0:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "ex_date": ex_date,
+                    "action_type": _ACTION_TYPES["allotment"],
+                    "cash_dividend": 0.0,
+                    "bonus_ratio": 0.0,
+                    "transfer_ratio": 0.0,
+                    "allotment_ratio": peigu,
+                    "allotment_price": peigujia if peigujia else None,
+                }
+            )
+    return rows
+
+
+def fetch_xdxr_for_symbol(
+    client,
+    symbol: str,
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    on_date: date | None = None,
+) -> pl.DataFrame:
+    wait_spec(rate_limit)
+    code, _ = symbol.split(".")
+    try:
+        raw = client.xdxr(symbol=code)
+    except Exception as exc:
+        logger.debug("TDX xdxr failed for %s: %s", symbol, exc)
+        return pl.DataFrame()
+
+    if raw is None or len(raw) == 0:
+        return pl.DataFrame()
+
+    pdf = pl.from_pandas(raw) if hasattr(raw, "columns") else pl.DataFrame(raw)
+    rows = _rows_from_xdxr(symbol, pdf)
+    if on_date is not None:
+        rows = [r for r in rows if r["ex_date"] == on_date]
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows)
+
+
+def fetch_corporate_actions_tdx(
+    symbols: list[str],
+    *,
+    trade_date: date | None = None,
+    backfill: bool = False,
+    client_factory,
+    rate_limit: RateLimitSpec | None = None,
+) -> pl.DataFrame:
+    client = client_factory()
+    frames: list[pl.DataFrame] = []
+    on_date = None if backfill else trade_date
+
+    for sym in symbols:
+        df = fetch_xdxr_for_symbol(
+            client, sym, rate_limit=rate_limit, on_date=on_date
+        )
+        if df.height:
+            frames.append(df)
+
+    if not frames:
+        return pl.DataFrame(
+            schema={
+                "symbol": pl.Utf8,
+                "ex_date": pl.Date,
+                "action_type": pl.Utf8,
+                "cash_dividend": pl.Float64,
+                "bonus_ratio": pl.Float64,
+                "transfer_ratio": pl.Float64,
+                "allotment_ratio": pl.Float64,
+                "allotment_price": pl.Float64,
+            }
+        )
+
+    out = pl.concat(frames, how="diagonal_relaxed")
+    return out.unique(subset=["symbol", "ex_date", "action_type"], keep="last")
