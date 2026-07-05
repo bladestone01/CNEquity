@@ -52,13 +52,6 @@ StockDataEngine 在 mootdx（TDX 协议）与多个 HTTP 数据源之上，提�
 - Web 管理台、多租户 SaaS、权限体系
 - 港股 / 美股（架构预留，不在 v1 交付）
 
-### 1.5 非目标但必须明确的约束（合规与法务）
-
-- 本平台**仅供个人研究**，所有数据来自第三方公开接口（mootdx/新浪/东方财富/巨潮等）。
-- 必须尊重各数据源的访问频率与 ToS；默认配置走保守限速。东方财富 NID 等鉴权处理仅用于正常访问，**不得用于绕过付费墙或大规模抓取**。
-- 数据版权归原始来源；交付物不得二次商业分发。
-- 这一约束需在 README 与首次 `sde init` 提示中可见。
-
 ---
 
 ## 2. 命名与约定
@@ -152,29 +145,145 @@ CLI (sde):  init | config validate | servers test | run | backfill
 ## 4. 综合数据清单
 
 > 完整字段见 [schema.md](schema.md)，逐源限制见 [datasets.md](datasets.md)。
+> 本章按**选股分析**所需的数据层次组织；每条数据集标注 ingestion 模式（batch / on-demand / derived）与目标里程碑。
+
+### 4.0 数据分层与选股用途
+
+| 层次 | 说明 | 典型选股用途 | 代表数据集 |
+|------|------|--------------|------------|
+| L0 基础参考 | Universe、日历、交易状态 | 可交易过滤、回测窗口、ST/停牌剔除 | instruments, trading_calendar, trading_status |
+| L1 行情 | 价量时序（未复权 + 复权因子） | 动量、波动、量价、技术特征 | daily_bars, index_bars, adj_factors |
+| L2 公司事件 | 除权除息、公告索引 | 事件驱动、除权回补、公告触发 | corporate_actions, announcement_index |
+| L3 基本面 | 财报科目、估值、一致预期 | 价值/质量/成长因子 | financial_statement_items, valuation_metrics |
+| L4 资金面 | 北向、融资、主力、龙虎榜 | 聪明钱、流动性、情绪 proxy | fund_flow, northbound_*, margin_trading, dragon_tiger |
+| L5 结构与行业 | 板块、指数成分、行业分类 | 行业中性、板块轮动、相对强度 | sector_members, industry_members, index_constituents |
+| L6 宏观 | 利率、货币、景气指标 | 宏观择时、风险预算、风格切换 | macro_indicators |
+| L7 舆情与文本 | 新闻、研报、结构化情绪 | NLP 特征、事件挖掘、风险预警 | stock_news, sentiment_scores, research_reports |
+| L8 风险合规 | 监管处罚、解禁、退市预警 | 负面清单、风控过滤 | share_unlock_schedule, regulatory_events |
+
+**Ingestion 模式约定**
+
+| 模式 | 适用场景 | 落地路径 |
+|------|----------|----------|
+| **batch** | 全市场、日更/周更、结构化、体积可控 | daily Wave → staging → curated |
+| **on-demand** | 按 symbol 访问、体积大、更新稀疏 | `OnDemandService` → `meta/on_demand/` 缓存 |
+| **derived** | 由 curated 计算、可重算 | `derive/` 或 DuckDB 视图 |
 
 ### 4.1 MVP-P0（v1 首批）
 
-| ID | 名称 | 主源 | 备源 | 状态 |
-|----|------|------|------|------|
-| instruments | 证券主数据 | tdx_protocol | akshare | 🟡 真实拉取，list_date 缺失 |
-| trading_calendar | 交易日历 | tdx_protocol | 交易所 CSV | 🔴 当前为 weekday mock |
-| trading_status | 停复牌/ST | tdx_protocol | eastmoney | 🔴 当前为 mock |
-| daily_bars | 股票未复权日线 | tdx_protocol | eastmoney | 🟡 单源真实，无分页/无全量回填 |
-| index_bars | 指数日线 | tdx_protocol | eastmoney | 🟡 |
-| corporate_actions | 分红送转/除权 | tdx_protocol | eastmoney | 🔴 当前返回空 |
-| adj_factors | 复权因子（外部源对齐） | sina | — | 🟡 串行 HTTP，性能瓶颈 |
+| ID | 名称 | 层次 | 模式 | 主源 | 备源 | 选股用途 | 状态 |
+|----|------|------|------|------|------|----------|------|
+| instruments | 证券主数据 | L0 | batch | tdx_protocol | akshare | Universe 定义、上市/退市过滤 | 🟡 真实拉取，list_date 缺失 |
+| trading_calendar | 交易日历 | L0 | batch | tdx_protocol | 交易所 CSV | 交易日对齐、特征窗口 | 🔴 当前为 weekday mock |
+| trading_status | 停复牌/ST | L0 | batch | tdx_protocol | eastmoney | ST/*ST/停牌剔除 | 🔴 当前为 mock |
+| daily_bars | 股票未复权日线 | L1 | batch | tdx_protocol | eastmoney | 动量、波动、量价因子 | 🟡 单源真实，无分页/无全量回填 |
+| index_bars | 指数日线 | L1 | batch | tdx_protocol | eastmoney | 市场状态、Beta、相对强度基准 | 🟡 |
+| corporate_actions | 分红送转/除权 | L2 | batch | tdx_protocol | eastmoney | 除权回补、股息因子 | 🔴 当前返回空 |
+| adj_factors | 复权因子 | L1 | derived | sina | — | 前/后复权价、长期动量 | 🟡 串行 HTTP，性能瓶颈 |
 
 Meta：`ingestion_runs`, `ingestion_batches`（🟢）、`quality_findings`（🟡）
 
-### 4.2 v1.0-full 第二批 🔴
+### 4.2 v1.0-full 第二批（batch）🔴
 
-fund_flow, northbound_holdings, northbound_flows, margin_trading, sector_members, valuation_metrics, announcement_index
-（注：config 已引用对应 step 名，但 step 尚未注册，运行时会被静默 skip——见 §10 风险 R-11）
+目标里程碑 **M3**。config 已引用部分 step 名，但 step 尚未注册，运行时会被静默 skip——见 §10 风险 R-11。
+
+| ID | 名称 | 层次 | 主源 | 备源 | 选股用途 | PK（摘要） | 状态 |
+|----|------|------|------|------|----------|------------|------|
+| fund_flow | 个股资金流向 | L4 | eastmoney | akshare | 主力净流入、资金动量 | (symbol, trade_date) | 🔴 |
+| northbound_holdings | 北向持股 | L4 | eastmoney | — | 外资偏好、持股变化 | (symbol, trade_date, channel) | 🔴 |
+| northbound_flows | 北向净流入 | L4 | eastmoney | — | 外资流向、市场宽度 | (trade_date, channel) | 🔴 |
+| margin_trading | 融资融券 | L4 | eastmoney | akshare | 杠杆情绪、融资买入 | (symbol, trade_date) | 🔴 |
+| sector_members | 板块成分 | L5 | eastmoney | tdx_protocol | 板块归属、主题选股 | (symbol, sector_code, as_of_date) | 🔴 |
+| valuation_metrics | 估值指标 | L3 | eastmoney | tencent | PE/PB/PS、价值因子 | (symbol, trade_date) | 🔴 |
+| announcement_index | 公告索引 | L2 | cninfo | — | 事件触发、公告类型过滤 | (announcement_id) | 🔴 |
+
+**schedule_groups 引用但未纳入上表的 step**（同属 M3，优先于 v1.1）：
+
+| ID | 名称 | 层次 | 主源 | 选股用途 | 状态 |
+|----|------|------|------|----------|------|
+| dragon_tiger | 龙虎榜 | L4 | eastmoney | 机构/游资席位、短线情绪 | 🔴 config 已引用，step 未注册 |
+| block_trades | 大宗交易 | L4 | eastmoney | 折价率、大股东减持信号 | 🔴 config 已引用，step 未注册 |
 
 ### 4.3 On-demand 层 🟡
 
-announcement_body, stock_news, research_reports, financial_reports（按 symbol 首次查询拉取 + 本地缓存；当前多为 placeholder/部分实现）
+按 symbol 首次查询拉取 + 本地缓存（`meta/on_demand/`）；适合体积大、访问稀疏的数据。当前多为 placeholder/部分实现。
+
+| ID | 名称 | 层次 | 主源 | 选股用途 | 状态 |
+|----|------|------|------|----------|------|
+| announcement_body | 公告正文 | L2 | cninfo | 事件 NLP、关键词挖掘 | 🟡 |
+| stock_news | 个股新闻 | L7 | eastmoney / akshare | 舆情事件、主题关联 | 🟡 |
+| research_reports | 研报摘要 | L7 | eastmoney reportapi | 分析师观点、评级变化 | 🟡 |
+| financial_reports | 财报原文/PDF | L3 | sina / gpcw | 深度基本面解析 | 🟡 |
+
+### 4.4 v1.1 扩展 batch（选股导向）🔴
+
+PRD 新增规划；schema 与 step 待 M3 完成后迭代。**优先级高于 on-demand 同类数据的 batch 化**——全市场因子计算依赖 batch curated。
+
+| ID | 名称 | 层次 | 更新频率 | 主源 | 选股用途 | PK（摘要） | 优先级 |
+|----|------|------|----------|------|----------|------------|--------|
+| financial_statement_items | 财报核心科目 | L3 | 季报披露后 | eastmoney / akshare | ROE、负债率、现金流质量因子 | (symbol, report_period, statement_type, item_code) | P0 |
+| index_constituents | 指数成分与权重 | L5 | 指数调样日 | csindex / eastmoney | 指数增强、成分股池、权重因子 | (index_symbol, symbol, as_of_date) | P0 |
+| industry_members | 行业分类归属 | L5 | 月度 | eastmoney / 申万 | 行业中性、板块轮动 | (symbol, classification_system, as_of_date) | P1 |
+| macro_indicators | 宏观指标 | L6 | 发布日 | akshare / 官方 | 宏观择时、利率敏感风格 | (indicator_id, obs_date) | P1 |
+| market_breadth | 市场宽度指标 | L7 | 日更 | 自算 + eastmoney | 涨跌家数、涨停比、情绪极值 | (trade_date, metric_id) | P1 |
+| share_unlock_schedule | 限售解禁日历 | L8 | 日更 | eastmoney | 供给冲击、解禁压力因子 | (symbol, unlock_date) | P1 |
+| regulatory_events | 监管处罚/立案 | L8 | 事件驱动 | cninfo / 交易所 | 负面清单、合规风控 | (event_id) | P2 |
+| institutional_holdings | 机构持股（基金/QFII 等） | L4 | 季报 | eastmoney | 机构共识、持仓变化 | (symbol, holder_type, report_period) | P2 |
+| analyst_consensus | 一致预期盈利 | L3 | 日更/周更 | eastmoney | EPS 修正、预期差因子 | (symbol, forecast_date) | P2 |
+| sentiment_scores | 结构化情绪得分 | L7 | 日更 | NLP on stock_news | 情绪因子、舆情反转 | (symbol, trade_date, source) | P2 |
+
+**macro_indicators 首批指标（建议）**
+
+| indicator_id | 说明 | 频率 |
+|--------------|------|------|
+| shibor_3m | 3 个月 SHIBOR | 日 |
+| lpr_1y | 1 年期 LPR | 月 |
+| cnbond_yield_10y | 10 年期国债收益率 | 日 |
+| pmi_manufacturing | 制造业 PMI | 月 |
+| m2_yoy | M2 同比增速 | 月 |
+| social_financing | 社融增量 | 月 |
+
+**financial_statement_items 首批科目（建议 batch 化）**
+
+利润表：营收、归母净利润、扣非净利润；资产负债表：总资产、总负债、净资产；现金流量表：经营现金流净额；衍生：ROE、资产负债率、经营现金流/净利润（可在 derive 层计算）。
+
+### 4.5 因子 ↔ 数据集映射（选股消费参考）
+
+下游选股/因子工程可直接参照此表组合 curated 数据集；**不在 StockDataEngine 内实现因子逻辑**。
+
+| 因子类别 | 依赖数据集 | 备注 |
+|----------|------------|------|
+| 动量 / 反转 | daily_bars + adj_factors | 查询期组合 adj_close |
+| 波动 / 流动性 | daily_bars | amount、换手率需结合 float 市值（valuation_metrics） |
+| 价值 | valuation_metrics | PE/PB/PS/PCF |
+| 质量 | financial_statement_items | ROE、杠杆、现金流质量 |
+| 成长 | financial_statement_items | 同比/环比增速 |
+| 资金 | fund_flow, northbound_*, margin_trading, dragon_tiger | M3 交付 |
+| 事件 | corporate_actions, announcement_index, regulatory_events | 除权日触发 rebackfill |
+| 行业中性 | industry_members / sector_members, index_constituents | 中性化基准 |
+| 宏观暴露 | macro_indicators | 组合层风险预算 |
+| 情绪 | market_breadth, sentiment_scores, stock_news | batch 优先，news 作 NLP 输入 |
+| 风控过滤 | trading_status, share_unlock_schedule, regulatory_events | Universe 黑名单 |
+
+### 4.6 数据边界（v1 不纳入）
+
+| 类别 | 原因 |
+|------|------|
+| Tick / 逐笔 / 订单簿历史 | 存储与带宽成本；见 §1.4 Out of Scope |
+| 实时推送 / WebSocket | 产品定位为离线研究数据层 |
+| 港股 / 美股 | 架构预留 exchange 列，v1 不交付 |
+| 社交媒体全量爬取（微博/雪球帖文） | ToS/合规风险高；v1 仅 structured + 新闻标题/on-demand |
+|  Level-2 十档快照历史 | 同 Tick，Out of Scope |
+
+### 4.7 里程碑与数据集交付顺序
+
+| 里程碑 | 交付数据集 | 选股能力解锁 |
+|--------|------------|--------------|
+| M2 完成 | §4.1 全部真实化 + 全量日线回填 | 全市场价量因子、复权研究 |
+| M3 完成 | §4.2 + dragon_tiger + block_trades | 资金/估值/公告事件选股 |
+| M3+ | §4.4 P0（financial_statement_items, index_constituents） | 价值/质量/指数增强 |
+| v1.1 | §4.4 P1–P2 + macro / sentiment batch | 宏观择时、情绪、风控完整闭环 |
+| 持续 | §4.3 on-demand 深化 | 深度文本/NLP 研究 |
 
 ---
 
@@ -197,13 +306,11 @@ announcement_body, stock_news, research_reports, financial_reports（按 symbol 
 2. **wave 内并行**：`parallel=true` 的 wave 内多个 step / 多个 task 真并发执行（线程池处理 I/O 密集 step，进程池处理 CPU/抓取密集 step），并正确合并各 step 的 `context_updates`。
 3. **批级清单与续跑**：worker pool 产出的每个 symbol-batch 都登记 manifest（含 symbols、窗口、retry_count），`retry` 只重跑 status=failed 的 batch。
 
-**现状（必须如实告知团队）**
+**现状**
 
-- 🔴 `depends_on` 已声明但 engine **未消费**，wave 顺序完全由 config 决定。
-- 🔴 `parallel` 分支与顺序分支**都是串行 for 循环**；真正的并发只发生在 `daily_bars` step 内部的 `ProcessPoolExecutor`。且 parallel 分支**漏传 `context_updates`**（已知 bug，见 R-02）。
-- 🔴 worker batch **不写 manifest**，manifest 粒度是「1 step = 1 batch」，因此 `retry` 实为「整 step 重跑」，达不到批级续跑。
-
-> 这三项是 v1 架构收敛的核心工作项，对应里程碑 M1/M2。
+- 🟢 `depends_on` 由 engine 消费：wave 内按 `step_execution_levels` 拓扑分层执行（`orchestrator/deps.py`），未注册 step 直接报错（`validate_steps_registered`）。
+- 🟢 `parallel` wave 内同层 step 走 `ThreadPoolExecutor` 真并发，`context_updates` 加锁合并；`daily_bars` step 内部另有 `ProcessPoolExecutor` symbol-batch 并行。
+- 🔴 worker batch **不写 manifest**，manifest 粒度是「1 step = 1 batch」，因此 `retry` 实为「整 step 重跑」，达不到批级续跑（M2 工作项，见 R-03）。
 
 ### 5.3 Wave DAG 配置（daily job）
 
@@ -276,11 +383,11 @@ steps = ["dragon_tiger","block_trades"]
 
 > 这一章是上一版 PRD 缺失、却决定平台能否长期可用的部分。
 
-### 6.1 限速与反封禁 🔴（v1 必做）
+### 6.1 限速与反封禁 🟡
 
-- 每个数据源一个**全局令牌桶**（跨进程共享，建议用文件锁或 manager），参数来自 `[sources.*].min_interval_*` / `[tdx_protocol].min_interval_ms`。
-- 指数退避重试（已有 `max_retries`/`retry_backoff_seconds` 配置项，需在 adapter 层真正使用）。
-- 失败分类：可重试（超时/限流/5xx） vs 不可重试（参数错/4xx）。
+- 🟢 每数据源跨进程限速：文件锁 + 状态文件（`domain/rate_limit.py`），参数来自 `[sources.*].min_interval_*` / `[tdx_protocol].min_interval_ms`，已接入 tdx adapter 与 worker pool。
+- 🔴 指数退避重试（已有 `max_retries`/`retry_backoff_seconds` 配置项，需在 adapter 层真正使用）。
+- 🔴 失败分类：可重试（超时/限流/5xx） vs 不可重试（参数错/4xx）。
 
 ### 6.2 增量与幂等 🔴（v1 必做）
 
@@ -288,11 +395,12 @@ steps = ["dragon_tiger","block_trades"]
 - 增量 run 从水位续抓，而非写死 `trade_date - 5天`。
 - 同一窗口重复 run 结果一致（compact 已按 PK + max(fetched_at) 去重，幂等性基本满足）。
 
-### 6.3 数据契约强校验 🟡→🟢
+### 6.3 数据契约强校验 🟢（data_version 语义除外）
 
-- 写 staging 前按 `DATASET_SCHEMAS` 对列名/类型做 cast 与校验，缺列/类型不符直接判 batch failed（不静默写脏数据）。
-- `fetched_at` 落 timestamp 类型（当前为字符串，与 schema.md 不符，需统一）。
-- `data_version` 应反映源接口版本/抓取契约版本，而非恒为 `"v1"`。
+- 🟢 写 staging 前按 `DATASET_SCHEMAS` 对列名/类型做 cast 与校验（`storage/parquet.py` → `validate_dataframe`），缺列直接判 batch failed。
+- 🟢 `fetched_at` 已统一为 UTC timestamp 类型（`Datetime("us","UTC")`）；compact 读旧文件时自动归一。
+- 🟢 **mock 数据门控**：数据源失败默认抛 `TdxSourceError` 判 batch failed，**永不静默伪造数据**；仅 `[tdx_protocol].allow_mock = true`（测试/演示）时返回 mock，且标记 `source="mock"`，audit 对 curated 中 mock 行产 error finding。
+- 🔴 `data_version` 应反映源接口版本/抓取契约版本，而非恒为 `"v1"`。
 
 ### 6.4 多源 failover 与审计 🔴
 
@@ -306,14 +414,14 @@ steps = ["dragon_tiger","block_trades"]
 - 待加：结构化运行报告导出（`.progress.json`）、关键阶段耗时、各数据源调用计数/失败率。
 - 统一日志格式（已有 logging，建议结构化字段：run_id/step/dataset）。
 
-### 6.6 配置健壮性 🔴
+### 6.6 配置健壮性 🟡
 
-- `validate_config` 增加：所有 wave/group 引用的 step 必须在 registry 中存在；未知 step **报错而非静默 skip**。
-- 校验 universe 取值、source 启用与依赖一致性。
+- 🟢 `validate_config` 校验所有 wave/group 引用的 step 必须在 registry 中存在；engine 运行前 `validate_steps_registered` 对未知 step **报错而非静默 skip**。
+- 🔴 校验 universe 取值、source 启用与依赖一致性。
 
-### 6.7 安全 🟡
+### 6.7 安全 🟢
 
-- 移除 `verify=False`（sina/derive 当前关闭了 TLS 校验，存在中间人风险）；如证书问题应显式配置 CA。
+- 🟢 `verify=False` 已移除（代码中无 TLS 校验关闭点）；如未来出现证书问题应显式配置 CA，而非关闭校验。
 - 鉴权/指纹处理仅限正常访问，配置项默认保守。
 
 ---
@@ -363,21 +471,22 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 
 ## 10. 风险登记册（Risk Register）
 
-| ID | 风险 | 影响 | 缓解 |
-|----|------|------|------|
-| R-01 | "Wave DAG" 无依赖解析 | 配置顺序错即数据错 | M1 实现 `depends_on` 拓扑排序 |
-| R-02 | parallel wave 实为串行且漏传 context | 性能不达标、context 丢失 | M1 修复 engine 并发与 context 合并 |
-| R-03 | 批级 retry/续跑缺失 | 大 run 失败需整 step 重跑 | M2 worker batch 入 manifest |
-| R-04 | 无全局限速 | 被数据源封禁 | M1 令牌桶限速 |
-| R-05 | 无增量水位 | 重跑全量、效率低 | M2 `meta/state/` 水位 |
-| R-06 | mootdx `offset=800` 无分页 | 全量历史回填不可达 | M2 分页抓取 |
-| R-07 | adj_factors 串行 HTTP | 全市场分钟级跑不完 | M3 并行 + 缓存 |
-| R-08 | failover/snapshot/diff 未实现 | 单源故障即断更 | M4 |
-| R-09 | 写入无 schema 强校验 | 脏数据进湖 | M1 写前校验 |
-| R-10 | `verify=False` | TLS 中间人风险 | M1 移除 |
-| R-11 | capital/signals 等 step 未注册被静默 skip | 数据集悄悄缺失 | M1 未知 step 报错 + 逐步实现 |
-| R-12 | 北交所前缀白名单可能漏覆盖 | universe 不全 | 确认 BSE 编码规则后修正 |
-| R-13 | 第三方数据 ToS/版权 | 合规风险 | §1.5 约束 + 保守限速 |
+| ID | 风险 | 影响 | 缓解 | 状态 |
+|----|------|------|------|------|
+| R-01 | "Wave DAG" 无依赖解析 | 配置顺序错即数据错 | `depends_on` 拓扑排序（`orchestrator/deps.py`） | 🟢 已修复 |
+| R-02 | parallel wave 实为串行且漏传 context | 性能不达标、context 丢失 | engine ThreadPool 并发 + context 加锁合并 | 🟢 已修复 |
+| R-03 | 批级 retry/续跑缺失 | 大 run 失败需整 step 重跑 | M2 worker batch 入 manifest | 🔴 |
+| R-04 | 无全局限速 | 被数据源封禁 | 跨进程文件锁限速（`domain/rate_limit.py`） | 🟢 已修复 |
+| R-05 | 无增量水位 | 重跑全量、效率低 | M2 `meta/state/` 水位 | 🔴 |
+| R-06 | mootdx `offset=800` 无分页 | 全量历史回填不可达 | M2 分页抓取 | 🔴 |
+| R-07 | adj_factors 串行 HTTP | 全市场分钟级跑不完 | M3 并行 + 缓存 | 🔴 |
+| R-08 | failover/snapshot/diff 未实现 | 单源故障即断更 | M4 | 🔴 |
+| R-09 | 写入无 schema 强校验 | 脏数据进湖 | 写前 `validate_dataframe` 强校验 | 🟢 已修复 |
+| R-10 | `verify=False` | TLS 中间人风险 | 已移除 | 🟢 已修复 |
+| R-11 | capital/signals 等 step 未注册被静默 skip | 数据集悄悄缺失 | `validate_config`/`validate_steps_registered` 报错 | 🟢 校验已修复；step 待 M3 实现 |
+| R-12 | 北交所前缀白名单可能漏覆盖 | universe 不全 | 确认 BSE 编码规则后修正 | 🔴 |
+| R-13 | 第三方数据 ToS/版权 | 合规风险 | 保守限速默认值 | 🟡 持续 |
+| R-14 | 数据源失败静默返回 mock 假数据入湖 | 下游选股被投毒 | 默认 fail-loud；mock 仅限 `allow_mock` 且标记 `source="mock"` + audit 拦截 | 🟢 已修复 |
 
 ---
 
@@ -386,10 +495,11 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | 阶段 | 交付 | 重点 |
 |------|------|------|
 | M0 | 脚手架、`sde init`、manifest、Orchestrator 骨架 | 🟢 已完成 |
-| M1 | 编排收敛：真依赖解析 + wave 并行 + 全局限速 + 写前 schema 校验 + config 引用校验 + 去 `verify=False` | 修复 R-01/02/04/09/10/11 |
+| M1 | 编排收敛：真依赖解析 + wave 并行 + 全局限速 + 写前 schema 校验 + config 引用校验 + 去 `verify=False` + mock 门控（R-14） | 🟢 已完成（修复 R-01/02/04/09/10/11/14） |
 | M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 修复 R-03/05/06 |
-| M3 | HTTP 第二批（capital/valuation/announcement）+ adj_factors 并行化 | 修复 R-07 |
+| M3 | HTTP 第二批（capital/valuation/announcement）+ adj_factors 并行化 + dragon_tiger/block_trades | 修复 R-07；解锁 §4.2 资金/估值选股 |
 | M4 | failover/snapshot/source_diffs + 跨源一致性审计 + 连续 2 周稳定日更 | 修复 R-08 |
+| v1.1 | §4.4 扩展 batch（financial_statement_items、index_constituents、macro、market_breadth 等） | 价值/质量/宏观/情绪因子闭环 |
 
 ---
 
