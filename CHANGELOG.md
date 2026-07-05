@@ -7,6 +7,11 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **R-17 — corporate_actions daily canonical source**
+  - Daily incremental uses EastMoney ex-date API (`source=eastmoney`); backfill
+    uses TDX xdxr per symbol (`source=tdx_protocol`). TDX snapshot on ex-date
+    symbols for cross-audit when failover enabled. ADR-0003 amended for
+    per-dataset/mode canonical source.
 - **R-15 / R-23 — schedule groups land data in curated**
   - Finalize steps defer until all fetch steps in the same run complete.
   - `audit` depends on `compact` + `derive_adj_factors`.

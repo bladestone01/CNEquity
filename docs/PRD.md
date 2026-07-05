@@ -24,7 +24,7 @@ StockDataEngine 在 mootdx（TDX 协议）与多个 HTTP 数据源之上，提�
 | 单个数据源（mootdx 等）只能「调接口」，不能「跑全市场、可恢复」 | Orchestrator：Job → Wave → Step → Task → Batch → Manifest | 🟡 |
 | 单进程拉数慢 | 多进程按 symbol batch 并行 + 全局限速 | 🟢 |
 | 数据散落、口径不一、来源不可追溯 | 统一 schema 契约 + 分区 + provenance 列（source/data_version/fetched_at） | 🟢（写前强校验 + mock 门控） |
-| 单一数据源不稳定、口径有偏差 | 多源采集 + canonical/snapshot 分离 + 跨源审计 | 🟢 M4（snapshot + source_diffs 已实现；corporate_actions daily 主源路径有缺陷，见 R-17） |
+| 单一数据源不稳定、口径有偏差 | 多源采集 + canonical/snapshot 分离 + 跨源审计 | 🟢 M4 |
 | 研究方被迫自建并维护数据库 | curated Parquet 即交付物 + 可选 DuckDB 视图 | 🟢 |
 
 ### 1.3 目标用户与使用场景
@@ -177,7 +177,7 @@ CLI (sde):  init | config validate | servers test | run | backfill
 | trading_status | 停复牌/ST | L0 | batch | eastmoney（ST 板 + 停牌接口） | — | ST/*ST/停牌剔除 | 🟢 M2 真实化 |
 | daily_bars | 股票未复权日线 | L1 | batch | tdx_protocol | eastmoney（snapshot） | 动量、波动、量价因子 | 🟡 分页回填可用，但增量无早停、每日翻全历史（R-19） |
 | index_bars | 指数日线 | L1 | batch | tdx_protocol | eastmoney | 市场状态、Beta、相对强度基准 | 🟢 |
-| corporate_actions | 分红送转/除权 | L2 | batch | tdx_protocol（backfill）/ eastmoney（daily） | eastmoney snapshot | 除权回补、股息因子 | 🔴 daily 路径失效：failover 开启必抛错、关闭则被 source 过滤清空（R-17） |
+| corporate_actions | 分红送转/除权 | L2 | batch | tdx_protocol（backfill）/ eastmoney（daily） | tdx_protocol snapshot（daily）/ eastmoney snapshot（backfill） | 除权回补、股息因子 | 🟢 daily=EM canonical；backfill=TDX xdxr |
 | adj_factors | 复权因子 | L1 | derived | sina | — | 前/后复权价、长期动量 | 🟡 已并行 + 缓存，但每日全量刷新并重写全部历史分区（R-20） |
 
 Meta：`ingestion_runs`, `ingestion_batches`（🟢，daily_bars 批级）、`quality_findings` + `source_diffs`（🟢，audit 仅覆盖 4 个数据集，见 §9）
@@ -346,7 +346,7 @@ steps = ["compact", "derive_adj_factors", "audit"]
 
 - `daily_bars` 依赖 `instruments`（取 universe）与 `corporate_actions`（除权日 rebackfill）
 - `derive_adj_factors` 依赖 `daily_bars` + `compact`（从 Sina 拉因子并对齐交易日）
-- `corporate_actions` 输出 `symbols_to_rebackfill`，`daily_bars` 优先回补这些 symbol（⚠️ daily 路径当前失效，见 R-17）
+- `corporate_actions` 输出 `symbols_to_rebackfill`，`daily_bars` 优先回补这些 symbol
 - `compact` 仅在同一 dataset 全部 batch SUCCESS 后触发（⚠️ 目标态；当前无门禁，见 R-18）
 
 ### 5.4 schedule_groups（错峰分组）
@@ -513,7 +513,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 |----|------|------|------|------|
 | R-15 | **分组运行不 compact**（…） | **高**：… | engine finalize 延后 + 各组 append compact | 🟢 P0 已修复 |
 | R-16 | instruments compact 用本次抓取**整表覆盖** curated，不与旧数据合并；TDX 只返回在市股票且 list/delist_date 恒空 | **高**：退市股从 universe 消失 → **幸存者偏差**；「保留退市 symbol」契约未实现；list/delist 过滤空转 | compact 改 merge+PK 去重保留旧行；用 EM/交易所数据回填 list_date/delist_date | 🔴 P0 |
-| R-17 | corporate_actions daily 路径自相矛盾：daily 模式不传 symbols（跳过 TDX 分支），failover 开启时 `primary_only=True` 又跳过 EM 分支 → 必抛错；failover 关闭时 EM 行被 `source=="tdx_protocol"` 过滤清空 | **高**：默认配置下 daily run 每天失败；除权日 `symbols_to_rebackfill` 永远为空，除权回补失效 | 明确 per-dataset 主源：daily 用 EM 按日接口作 canonical（改 ADR-0003 为「每数据集声明主源」），backfill 用 TDX xdxr；或 daily 对当日除权 symbol 补 TDX 拉取 | 🔴 P0 |
+| R-17 | corporate_actions daily 路径自相矛盾（…） | **高**：… | daily canonical=EM、backfill=TDX；per-dataset 主源见 ADR-0003 | 🟢 P0 已修复 |
 | R-18 | 部分批失败仍推进：engine 波次失败后继续执行 finalize，compact 无「全部 batch SUCCESS」门禁，水位照推 | **高**：失败 symbol 当日数据永久空洞且无告警；retry 成功后也不 compact | compact 前查 manifest：该 dataset 本 run 有 failed batch 则跳过推水位；retry 收尾自动 compact | 🔴 P0 |
 | R-19 | TDX 日线分页无早停：只在页 <800 行时停止，不看日期是否已越过 start | 中：**每日增量也翻每只股票全历史**（~8 页/股，请求量放大约 8 倍），拉长运行时间、加大封禁风险 | 页内最老日期 < start 即 break | 🔴 P0 |
 | R-20 | adj_factors 缓存判定 `bars.max > cache.max` 每日必真 → 全市场每日重抓（sina 全局 5 req/s ≈ 18 分钟）；qfq 因子锚定最新价，每日重写全部历史分区；抓取失败静默沿用旧缓存 | 中：性能 + 静默陈旧因子导致复权口径不一致 | 改存 hfq/事件累积比率（append-only），qfq 查询期换算；刷新改为除权日/新股驱动；失败产 finding 而非静默 | 🔴 P1 |
@@ -532,10 +532,10 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 |------|------|------|
 | M0 | 脚手架、`sde init`、manifest、Orchestrator 骨架 | 🟢 已完成 |
 | M1 | 编排收敛：真依赖解析 + wave 并行 + 全局限速 + 写前 schema 校验 + config 引用校验 + 去 `verify=False` + mock 门控（R-14） | 🟢 已完成（修复 R-01/02/04/09/10/11/14） |
-| M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 🟢 已完成（遗留 R-16/17/18/19） |
+| M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 🟢 已完成（遗留 R-16/18/19） |
 | M3 | HTTP 第二批（capital/valuation/announcement）+ adj_factors 并行化 + dragon_tiger/block_trades | 🟢 已完成（遗留 R-15/20/21/22） |
-| M4 | failover/snapshot/source_diffs + 跨源一致性审计 | 🟢 已完成（遗留 R-17/23；「连续 2 周稳定日更」未验证） |
-| v1.1 | §4.4 扩展 batch（financial_statement_items、index_constituents、macro、market_breadth 等） | 🟢 step/schema 已完成（产出受 R-15 阻断） |
+| M4 | failover/snapshot/source_diffs + 跨源一致性审计 | 🟢 已完成（遗留 R-23；「连续 2 周稳定日更」未验证） |
+| v1.1 | §4.4 扩展 batch（financial_statement_items、index_constituents、macro、market_breadth 等） | 🟢 step/schema 已完成 |
 | **v1.2** | **正确性修复批次（本次评审结论，见 §11.1）** | 修复 R-15–R-26；这是当前最高优先级 |
 
 ### 11.1 v1.2 修复计划（2026-07-06 全库架构评审）
@@ -549,7 +549,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | # | 任务 | 对应风险 | 验收 |
 |---|------|----------|------|
 | 1 | engine 每个 run 末尾自动追加 compact→audit（或 compact 动态依赖本 run 全部数据集 step；audit 声明 depends_on） | R-15/R-23 | 分组 run 后 curated 有当日分区；audit findings 反映本 run 数据 |
-| 2 | corporate_actions daily 主源明确化：EM 按日接口作 daily canonical（ADR-0003 增补「per-dataset 主源」），TDX xdxr 仅 backfill/除权日核对 | R-17 | 默认配置 daily run 不再失败；除权日 rebackfill 触发 |
+| 2 | corporate_actions daily 主源明确化：EM 按日接口作 daily canonical（ADR-0003 增补「per-dataset 主源」），TDX xdxr 仅 backfill/除权日核对 | R-17 | 🟢 已修复 |
 | 3 | compact 门禁 + 水位保护：dataset 本 run 有 failed batch → 不推该 dataset 水位并产 warning finding；retry 成功后自动 compact | R-18 | 构造部分失败集成测试：水位不推进、retry 后数据补齐 |
 | 4 | instruments 合并式 compact（merge + PK 去重，保留退市行）；补 list_date/delist_date 数据源 | R-16 | 人工删一行后重跑，旧 symbol 仍在；delist 过滤生效 |
 | 5 | TDX 分页早停（页内最老日期 < start 即停） | R-19 | 日增量单 symbol 请求数 ≤2 页 |

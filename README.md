@@ -166,7 +166,7 @@ sde run daily --group research --config configs/stockdata.toml       # 18:30（�
 
 ### Phase 4 多源健壮性（M4）✅ 已实现
 
-- 备源 snapshot → `meta/source_snapshots/`（主源 batch 失败时 EastMoney 日线；`corporate_actions` 每 run 备源快照）
+- 备源 snapshot → `meta/source_snapshots/`（主源 batch 失败时 EastMoney 日线；`corporate_actions` daily 对除权 symbol 快照 TDX，backfill 快照 EM）
 - `audit` 产出 `meta/quality/source_diffs/{run_id}.json`（价格 ±10bps 抽样比对）
 - ADR-0003：**永不自动切源**，canonical 仅写主源
 
@@ -178,8 +178,8 @@ sde run daily --group research --config configs/stockdata.toml       # 18:30（�
 
 | 优先级 | 内容 | 风险号 |
 |--------|------|--------|
-| P0 | 分组 run 自动追加 compact→audit（修「数据滞留 staging」与「audit 先于 compact 执行」） | R-15/R-23 |
-| P0 | corporate_actions daily 主源修复（默认配置下每日必失败/为空，除权回补失效） | R-17 |
+| P0 | 分组 run 自动追加 compact→audit（修「数据滞留 staging」与「audit 先于 compact 执行」） | R-15/R-23 ✅ |
+| P0 | corporate_actions daily 主源修复（daily=EM canonical，backfill=TDX xdxr） | R-17 ✅ |
 | P0 | 部分批失败时不推水位 + retry 后自动 compact（消除永久数据空洞） | R-18 |
 | P0 | instruments 合并式 compact，保留退市股（消除幸存者偏差）+ 补 list/delist_date | R-16 |
 | P0 | TDX 日线分页早停（当前每日增量翻全历史，请求放大 ~8 倍） | R-19 |

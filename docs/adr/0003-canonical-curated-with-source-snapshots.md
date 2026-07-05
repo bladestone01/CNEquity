@@ -18,6 +18,11 @@ data lands in `meta/source_snapshots/{dataset}/source=.../data_version=.../`.
 The `audit` step compares primary vs snapshots and emits `source_diffs`.
 **Source switching is never automatic** — a human decides.
 
+**Per-dataset canonical source:** The canonical `source` column reflects whichever
+adapter owns that dataset for the given ingestion mode (e.g. `corporate_actions`
+uses `eastmoney` for daily ex-date scans and `tdx_protocol` for symbol backfill).
+Backup snapshots use the alternate source for cross-audit only.
+
 ## Consequences
 
 - Reproducible, auditable canonical dataset; provenance always present.

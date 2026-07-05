@@ -41,9 +41,9 @@ def test_trading_calendar_uses_seed_without_mock():
     assert cal.filter(pl.col("trade_date") == date(2024, 6, 28))["is_trading"][0] is True
 
 
-def test_corporate_actions_raises_without_allow_mock():
+def test_corporate_actions_raises_without_allow_mock_on_backfill_path():
     with pytest.raises(tdx.TdxSourceError, match="corporate_actions"):
-        tdx.fetch_corporate_actions(END)
+        tdx.fetch_corporate_actions(date(2024, 6, 28), primary_only=True)
 
 
 def test_trading_status_raises_without_allow_mock():
