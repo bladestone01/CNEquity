@@ -6,6 +6,21 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Breaking (data trust):** TDX adapters no longer fall back to fabricated
+  mock data on failure. They raise `TdxSourceError` and fail the batch unless
+  `[tdx_protocol].allow_mock = true` (tests/demo only); mock rows are labeled
+  `source="mock"` and audit reports an error finding when they reach curated.
+- **Breaking (schema):** `fetched_at` is now a real UTC timestamp
+  (`Datetime("us", "UTC")`) instead of an ISO string, matching
+  `docs/schema.md`. `compact` normalizes previously written files on read;
+  regenerating the lake (`sde init` + backfill) is recommended.
+- Manifest SQLite connections enable WAL and `busy_timeout` in preparation
+  for batch-level writes from worker processes.
+- PRD §5.2/§6/§10/§11 status markers synced with code: R-01/02/04/09/10/11
+  are implemented (M1 complete); new risk R-14 (mock poisoning) recorded as
+  fixed.
+
 ### Added
 - Project scaffolding adjusted to Python best-practice layout (src layout,
   `tests/{unit,integration}`, `docs/adr/`, CI workflow, tooling config).
