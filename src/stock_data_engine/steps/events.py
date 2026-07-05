@@ -11,6 +11,7 @@ from stock_data_engine.adapters.tdx_protocol.client import fetch_corporate_actio
 from stock_data_engine.config import Config
 from stock_data_engine.domain.schemas import with_provenance
 from stock_data_engine.orchestrator.registry import register_step
+from stock_data_engine.quality.failover import snapshot_corporate_actions_backup
 from stock_data_engine.steps.common import load_symbols, write_simple
 from stock_data_engine.steps.http_common import empty_ok, write_fetched
 
@@ -20,17 +21,23 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     rl = config.tdx_rate_limit_spec()
     backfill = getattr(config, "_backfill", False)
     symbols = load_symbols(config) if backfill else None
+
+    if config.failover_enabled:
+        snapshot_corporate_actions_backup(
+            config, trade_date=trade_date, run_id=run_id, backfill=backfill
+        )
+
     df = fetch_corporate_actions(
         trade_date,
         symbols=symbols,
         backfill=backfill,
         rate_limit=rl,
         allow_mock=config.tdx_allow_mock,
+        primary_only=config.failover_enabled,
     )
-    if "source" not in df.columns:
-        df = with_provenance(df, source="tdx_protocol", data_version="v1")
-    else:
-        df = with_provenance(df, source="tdx_protocol", data_version="v1")
+    if df.height and "source" in df.columns:
+        df = df.filter(pl.col("source") == "tdx_protocol")
+    df = with_provenance(df, source="tdx_protocol", data_version="v1")
 
     rebackfill: list[str] = []
     if df.height and "symbol" in df.columns and "ex_date" in df.columns:

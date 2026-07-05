@@ -7,6 +7,14 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Phase 4 (M4) — multi-source snapshots and cross-source audit**
+  - `SnapshotStore` writes backup captures to `meta/source_snapshots/` (ADR-0003).
+  - Failover on `daily_bars` batch failure (EastMoney kline backup); `corporate_actions`
+    EastMoney snapshot each run when `[failover]` enabled.
+  - `quality/source_diff.py` compares curated primary vs snapshots; `audit` writes
+    `meta/quality/source_diffs/{run_id}.json` with ±10bps price drift checks.
+  - Config `[failover]` with per-dataset primary/backup/compare_fields.
+  - Tests: `tests/unit/test_phase4_failover.py`.
 - **stock_news on-demand + NLP sentiment chain**
   - EastMoney `np-anotice-stock` adapter with per-headline NLP scoring.
   - `OnDemandService` real fetch + cache; `sde query --dataset stock_news --symbol`.

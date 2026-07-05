@@ -25,6 +25,15 @@ class ScheduleGroup:
 
 
 @dataclass
+class FailoverDatasetSpec:
+    name: str
+    primary: str
+    backup: str
+    compare_fields: list[str] = field(default_factory=lambda: ["close"])
+    price_tolerance_bps: float = 10.0
+
+
+@dataclass
 class Config:
     data_root: Path
     workers: int = 8
@@ -54,6 +63,8 @@ class Config:
     adj_factors_types: list[str] = field(default_factory=lambda: ["qfq"])
     sentiment_use_snownlp: bool = True
     sentiment_news_symbol_limit: int = 300
+    failover_enabled: bool = True
+    failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
     _backfill: bool = False
     _rate_limiters: object | None = field(default=None, repr=False)
@@ -149,6 +160,18 @@ def load_config(path: str | Path) -> Config:
     on_demand = raw.get("on_demand", {})
     adj_raw = raw.get("adj_factors", {})
     sentiment_raw = raw.get("sentiment", {})
+    failover_raw = raw.get("failover", {})
+    failover_datasets: list[FailoverDatasetSpec] = []
+    for item in failover_raw.get("datasets", []):
+        failover_datasets.append(
+            FailoverDatasetSpec(
+                name=str(item["name"]),
+                primary=str(item.get("primary", "tdx_protocol")),
+                backup=str(item.get("backup", "eastmoney")),
+                compare_fields=list(item.get("compare_fields", ["close"])),
+                price_tolerance_bps=float(item.get("price_tolerance_bps", 10.0)),
+            )
+        )
 
     cfg = Config(
         data_root=data_root,
@@ -177,6 +200,8 @@ def load_config(path: str | Path) -> Config:
         adj_factors_types=list(adj_raw.get("adjust_types", ["qfq"])),
         sentiment_use_snownlp=bool(sentiment_raw.get("use_snownlp", True)),
         sentiment_news_symbol_limit=int(sentiment_raw.get("news_symbol_limit", 300)),
+        failover_enabled=bool(failover_raw.get("enabled", True)),
+        failover_datasets=failover_datasets,
         config_path=config_path,
     )
     return cfg

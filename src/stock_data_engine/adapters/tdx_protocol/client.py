@@ -214,6 +214,7 @@ def fetch_corporate_actions(
     backfill: bool = False,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
+    primary_only: bool = False,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
     empty = pl.DataFrame(
@@ -247,9 +248,10 @@ def fetch_corporate_actions(
         logger.warning("TDX corporate_actions failed: %s", exc)
 
     try:
-        em_df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill)
-        if em_df.height:
-            frames.append(em_df.with_columns(pl.lit("eastmoney").alias("source")))
+        if not primary_only:
+            em_df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill)
+            if em_df.height:
+                frames.append(em_df.with_columns(pl.lit("eastmoney").alias("source")))
     except Exception as exc:
         logger.warning("EastMoney corporate_actions backup failed: %s", exc)
 

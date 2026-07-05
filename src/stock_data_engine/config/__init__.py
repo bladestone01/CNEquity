@@ -1,5 +1,6 @@
 from stock_data_engine.config.loader import (
     Config,
+    FailoverDatasetSpec,
     ScheduleGroup,
     WaveConfig,
     load_config,
@@ -8,6 +9,7 @@ from stock_data_engine.config.loader import (
 
 __all__ = [
     "Config",
+    "FailoverDatasetSpec",
     "ScheduleGroup",
     "WaveConfig",
     "load_config",

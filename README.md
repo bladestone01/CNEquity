@@ -32,7 +32,7 @@
 1. **永不伪造**：数据源失败即判 batch failed，绝不静默返回假数据（mock 仅限测试开关 `allow_mock`，且强制标记 `source="mock"`，审计自动拦截）。✅
 2. **可溯源**：每行 curated 数据带 `source / data_version / fetched_at` 三列。✅
 3. **口径可重算**：日线存**未复权**价 + 独立复权因子，qfq/hfq 在查询期组合，不污染原始数据。✅
-4. **多源不打架**：curated 每主键一行 canonical；备源进 snapshot，审计出 diff，永不自动切源。🔜 M4
+4. **多源不打架**：curated 每主键一行 canonical；备源进 snapshot，审计出 diff，永不自动切源。✅ M4
 5. **无前视偏差**：财报等低频数据带公告日 `announce_date` 双时间轴，按「截至当日已公告」对齐。🔜 M3+
 
 ---
@@ -158,11 +158,13 @@ sde run daily --group macro_risk --config configs/stockdata.toml     # 18:00
 sde run daily --group research --config configs/stockdata.toml       # 18:30
 ```
 
-**待办**：Phase 4 多源审计
+**待办**：连续两周生产日更稳定性观察
 
-### Phase 4 多源健壮性（M4）
+### Phase 4 多源健壮性（M4）✅ 已实现
 
-备源 snapshot、跨源抽样审计（价格 ±10bps）、failover 语义按 ADR-0003：永不静默切源。
+- 备源 snapshot → `meta/source_snapshots/`（主源 batch 失败时 EastMoney 日线；`corporate_actions` 每 run 备源快照）
+- `audit` 产出 `meta/quality/source_diffs/{run_id}.json`（价格 ±10bps 抽样比对）
+- ADR-0003：**永不自动切源**，canonical 仅写主源
 
 ---
 

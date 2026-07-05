@@ -6,7 +6,8 @@ from datetime import date
 import polars as pl
 
 from stock_data_engine.config import Config
-from stock_data_engine.domain.schemas import MOCK_SOURCE
+from stock_data_engine.domain.schemas import MOCK_SOURCE, PRIMARY_KEYS
+from stock_data_engine.quality.source_diff import run_source_diffs
 
 
 def run_audit(config: Config, run_id: str, trade_date: date) -> int:
@@ -68,6 +69,19 @@ def run_audit(config: Config, run_id: str, trade_date: date) -> int:
             }
         )
 
+        pk = PRIMARY_KEYS.get(ds, [])
+        if pk and all(c in df.columns for c in pk):
+            dupes = df.height - df.unique(subset=pk).height
+            if dupes:
+                findings.append(
+                    {
+                        "dataset": ds,
+                        "severity": "error",
+                        "check": "pk_unique",
+                        "message": f"{dupes} duplicate PK rows in curated {ds}",
+                    }
+                )
+
         if ds == "daily_bars" and "close" in df.columns:
             null_close = df.filter(pl.col("close").is_null()).height
             if null_close:
@@ -90,4 +104,6 @@ def run_audit(config: Config, run_id: str, trade_date: date) -> int:
             ensure_ascii=False,
             indent=2,
         )
-    return len(findings)
+
+    diffs = run_source_diffs(config, run_id, trade_date)
+    return len(findings) + len(diffs)

@@ -39,6 +39,23 @@ adjust_types = ["qfq"]
 use_snownlp = true
 news_symbol_limit = 300
 
+[failover]
+enabled = true
+
+[[failover.datasets]]
+name = "daily_bars"
+primary = "tdx_protocol"
+backup = "eastmoney"
+compare_fields = ["close", "volume"]
+price_tolerance_bps = 10
+
+[[failover.datasets]]
+name = "corporate_actions"
+primary = "tdx_protocol"
+backup = "eastmoney"
+compare_fields = ["cash_dividend", "bonus_ratio", "transfer_ratio"]
+price_tolerance_bps = 10
+
 [universe]
 default = "all_a"
 

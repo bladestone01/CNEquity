@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from stock_data_engine.adapters.tdx_protocol.client import fetch_daily_bars, normalize_with_source
 from stock_data_engine.config import Config
 from stock_data_engine.domain.rate_limit import RateLimitSpec
 from stock_data_engine.orchestrator.manifest import Manifest
+from stock_data_engine.quality.failover import snapshot_daily_bars_backup
 from stock_data_engine.storage import StagingWriter
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
         rate_limit,
         allow_mock,
         manifest_path,
+        failover_enabled,
     ) = args
     start = date.fromisoformat(start_iso)
     end = date.fromisoformat(end_iso)
@@ -60,6 +63,23 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
     except Exception as exc:
         if manifest:
             manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
+        if failover_enabled and dataset == "daily_bars":
+            from stock_data_engine.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_bars
+            from stock_data_engine.domain.schemas import with_provenance
+            from stock_data_engine.storage.source_snapshots import SnapshotStore
+
+            backup_df = fetch_em_bars(symbols, start, end)
+            if backup_df.height:
+                backup_df = with_provenance(backup_df, source="eastmoney", data_version="v1")
+                SnapshotStore(Path(staging_root).parent / "meta").write(
+                    dataset,
+                    backup_df,
+                    source="eastmoney",
+                    data_version="v1",
+                    run_id=run_id,
+                    batch_id=f"{batch_id}-backup",
+                    trade_date=end,
+                )
         raise
 
 
@@ -127,6 +147,15 @@ def fetch_daily_bars_parallel(
             return {"rows_read": df.height, "rows_written": df.height, "batch_id": batch_id}
         except Exception as exc:
             manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
+            if config.failover_enabled and dataset == "daily_bars":
+                snapshot_daily_bars_backup(
+                    config,
+                    symbols=batch_symbols,
+                    start=start,
+                    end=end,
+                    run_id=run_id,
+                    batch_id=f"{batch_id}-backup",
+                )
             raise
 
     if config.workers <= 1 or len(batches) == 1:
@@ -156,6 +185,7 @@ def fetch_daily_bars_parallel(
                 rate_limit_tuple,
                 config.tdx_allow_mock,
                 manifest_path,
+                config.failover_enabled,
             )
         )
 
