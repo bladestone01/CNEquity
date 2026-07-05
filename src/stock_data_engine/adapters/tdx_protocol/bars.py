@@ -14,8 +14,31 @@ logger = logging.getLogger(__name__)
 _PAGE_SIZE = 800
 
 
+class TdxBarsPaginationError(RuntimeError):
+    """Raised when the first TDX bars page fails."""
+
+
+def _date_column(pdf: pl.DataFrame) -> str:
+    return "datetime" if "datetime" in pdf.columns else "date"
+
+
+def _page_min_date(pdf: pl.DataFrame) -> date | None:
+    col = _date_column(pdf)
+    if col not in pdf.columns or pdf.is_empty():
+        return None
+    series = pdf[col]
+    if series.dtype == pl.Date:
+        return series.min()
+    mins: list[date] = []
+    for val in series:
+        if val is None:
+            continue
+        mins.append(val.date() if hasattr(val, "date") else val)
+    return min(mins) if mins else None
+
+
 def _parse_bar_rows(pdf: pl.DataFrame, sym: str, start: date, end: date) -> list[dict]:
-    date_col = "datetime" if "datetime" in pdf.columns else "date"
+    date_col = _date_column(pdf)
     rows: list[dict] = []
     for row in pdf.iter_rows(named=True):
         td = row[date_col]
@@ -63,7 +86,11 @@ def fetch_bars_paginated(
                 offset=_PAGE_SIZE,
             )
         except Exception as exc:
-            logger.debug("TDX bars page failed for %s at start=%s: %s", sym, offset_pos, exc)
+            if offset_pos == 0:
+                raise TdxBarsPaginationError(
+                    f"TDX bars first page failed for {sym} at start={offset_pos}"
+                ) from exc
+            logger.warning("TDX bars page failed for %s at start=%s: %s", sym, offset_pos, exc)
             break
 
         if raw is None or len(raw) == 0:
@@ -79,6 +106,10 @@ def fetch_bars_paginated(
         page_rows = _parse_bar_rows(pdf, sym, start, end)
         if page_rows:
             all_rows.extend(page_rows)
+
+        page_min = _page_min_date(pdf)
+        if page_min is not None and page_min < start:
+            break
 
         if len(pdf) < _PAGE_SIZE:
             break

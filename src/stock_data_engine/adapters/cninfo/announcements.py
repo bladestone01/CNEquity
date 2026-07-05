@@ -61,7 +61,9 @@ def fetch_announcement_index(
                 data = resp.json()
             except Exception as exc:
                 logger.warning("CNINFO announcement page failed (%s p%s): %s", column, page, exc)
-                break
+                raise RuntimeError(
+                    f"CNINFO announcement pagination failed for {column} page {page}"
+                ) from exc
 
             batch = data.get("announcements") or []
             if not batch:

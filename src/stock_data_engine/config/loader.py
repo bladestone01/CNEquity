@@ -173,6 +173,10 @@ def load_config(path: str | Path) -> Config:
             )
         )
 
+    init_raw = raw.get("job", {}).get("init", {})
+    phases_block = init_raw.get("phases", init_raw)
+    init_phases = list(phases_block.get("names", init_raw.get("names", [])))
+
     cfg = Config(
         data_root=data_root,
         workers=int(orch.get("workers", 8)),
@@ -190,7 +194,7 @@ def load_config(path: str | Path) -> Config:
         universe_default=str(raw.get("universe", {}).get("default", "all_a")),
         daily_waves=daily_waves,
         schedule_groups=schedule_groups,
-        init_phases=list(raw.get("job", {}).get("init", {}).get("names", [])),
+        init_phases=init_phases,
         on_demand_enabled=bool(on_demand.get("enabled", True)),
         on_demand_datasets=list(on_demand.get("datasets", [])),
         duckdb_path=duckdb_path,

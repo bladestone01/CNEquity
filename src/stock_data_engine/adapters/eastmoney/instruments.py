@@ -33,9 +33,9 @@ def _parse_list_date(value: object) -> date | None:
     return None
 
 
-def fetch_list_date_map(*, client: EastMoneyClient | None = None) -> dict[str, date]:
+def fetch_list_date_map(*, client: EastMoneyClient | None = None, config: Config | None = None) -> dict[str, date]:
     """Return symbol -> list_date for all A-shares from EastMoney clist."""
-    client = client or EastMoneyClient()
+    client = client or EastMoneyClient(config=config)
     rows = fetch_clist_pages(client, fields="f12,f13,f26")
     out: dict[str, date] = {}
     for item in rows:
@@ -57,7 +57,7 @@ def enrich_instrument_list_dates(config: Config, df: pl.DataFrame) -> pl.DataFra
 
     try:
         config.rate_limit("eastmoney")
-        date_map = fetch_list_date_map()
+        date_map = fetch_list_date_map(config=config)
     except Exception as exc:
         logger.warning("EastMoney instrument list_date enrichment failed: %s", exc)
         return df

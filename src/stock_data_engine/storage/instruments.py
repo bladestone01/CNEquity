@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from stock_data_engine.domain.schemas import INSTRUMENTS_SCHEMA, validate_dataframe
+from stock_data_engine.storage.atomic import write_parquet_atomic
 from stock_data_engine.storage.parquet import StagingWriter
 
 
@@ -61,6 +62,5 @@ def compact_instruments(
     merged = pl.concat([incoming, preserved], how="diagonal_relaxed")
     merged = merged.sort("fetched_at").unique(subset=["symbol"], keep="last")
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    merged.write_parquet(out_path, compression="zstd")
+    write_parquet_atomic(out_path, merged, compression="zstd")
     return merged.height

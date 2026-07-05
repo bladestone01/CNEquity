@@ -5,8 +5,12 @@ from __future__ import annotations
 import logging
 import random
 import time
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from stock_data_engine.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +79,23 @@ def build_eastmoney_headers(url: str) -> dict[str, str]:
 class EastMoneyClient:
     """HTTP client with automatic EastMoney auth headers."""
 
-    def __init__(self, min_interval: float = 1.0):
+    def __init__(
+        self,
+        min_interval: float = 0.0,
+        *,
+        config: Config | None = None,
+    ):
         self.min_interval = min_interval
+        self.config = config
         self._last_request = 0.0
         self._client = httpx.Client(timeout=30.0)
 
     def _throttle(self) -> None:
+        if self.config is not None:
+            self.config.rate_limit("eastmoney")
+            return
+        if self.min_interval <= 0:
+            return
         elapsed = time.time() - self._last_request
         if elapsed < self.min_interval:
             time.sleep(self.min_interval - elapsed)

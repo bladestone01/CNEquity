@@ -7,13 +7,28 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **R-19 — TDX daily bars pagination early stop**
+  - Stop paging when the oldest date in a page is before the requested start window.
+- **R-22 — fail-loud EastMoney/CNINFO pagination**
+  - Datacenter helper retries then raises; corporate_actions backfill paginates fully;
+    CNINFO announcement fetch raises on mid-pagination failure.
+- **R-24 — atomic curated/derived parquet writes** via temp file + `os.replace`.
+- **R-26 — config/CLI fixes**
+  - Loader reads `[job.init.phases].names`; CLI defaults to `configs/stockdata.toml`;
+    `sde compact` runs full `step_compact`; `sde backfill` compacts on success.
+- **R-21 — EastMoney cross-process rate limit (partial)**
+  - `EastMoneyClient` accepts `config` and uses `config.rate_limit("eastmoney")` when set.
+- **R-20 — adj_factors fail-loud (partial)**
+  - Raise when fetch fails with no cache; append-only/qfq rewrite deferred to P2.
+- **R-25 — watermark scan (partial)**
+  - Derive max partition date from hive directory names before falling back to full read.
 - **R-16 — instruments merge compact and list/delist dates**
   - Compact merges with existing curated rows; symbols missing from TDX fetch are
     retained with `delist_date` inferred. EastMoney clist (`f26`) enriches `list_date`.
 - **R-18 — compact gate and watermark protection**
   - Skip compact/watermark advance for datasets with failed batches in the run;
-    audit emits `compact_skipped` warnings. `sde retry` runs compact→derive→audit
-    when all batches succeed.
+    audit emits `compact_skipped` warnings. `sde retry` runs compact when all
+    batches succeed.
 - **R-17 — corporate_actions daily canonical source**
   - Daily incremental uses EastMoney ex-date API (`source=eastmoney`); backfill
     uses TDX xdxr per symbol (`source=tdx_protocol`). TDX snapshot on ex-date

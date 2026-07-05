@@ -5,6 +5,7 @@ from pathlib import Path
 import polars as pl
 
 from stock_data_engine.domain.schemas import PRIMARY_KEYS, validate_dataframe
+from stock_data_engine.storage.atomic import write_parquet_atomic
 
 
 class StagingWriter:
@@ -50,7 +51,7 @@ class CuratedWriter:
         out_dir = self.partition_path(dataset, partition_col, partition_value)
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / part_name
-        df.write_parquet(path, compression="zstd")
+        write_parquet_atomic(path, df, compression="zstd")
         return path
 
 
@@ -80,8 +81,7 @@ def compact_dataset(
 
     if partition_col not in combined.columns:
         out_path = curated.curated_root / dataset / "part-merged.parquet"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        combined.write_parquet(out_path, compression="zstd")
+        write_parquet_atomic(out_path, combined, compression="zstd")
         return combined.height
 
     total = 0

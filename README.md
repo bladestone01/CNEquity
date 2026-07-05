@@ -182,9 +182,10 @@ sde run daily --group research --config configs/stockdata.toml       # 18:30（�
 | P0 | corporate_actions daily 主源修复（daily=EM canonical，backfill=TDX xdxr） | R-17 ✅ |
 | P0 | 部分批失败时不推水位 + retry 后自动 compact（消除永久数据空洞） | R-18 ✅ |
 | P0 | instruments 合并式 compact，保留退市股（消除幸存者偏差）+ 补 list/delist_date | R-16 ✅ |
-| P0 | TDX 日线分页早停（当前每日增量翻全历史，请求放大 ~8 倍） | R-19 |
-| P1 | 分页失败退避重试而非静默截断；EM 接入跨进程限速；curated 原子写；audit 全数据集覆盖 | R-21/22/24/25 |
-| P2 | 消费层 lazy scan + 分区裁剪；adj_factors 改 append-only；calendar 去按日分区 | R-20/25 |
+| P0 | TDX 日线分页早停（当前每日增量翻全历史，请求放大 ~8 倍） | R-19 ✅ |
+| P1 | 分页失败 fail-loud + EM backfill 全分页；EM 跨进程限速；curated 原子写 | R-22/R-21/R-24 🟡 |
+| P1 | 消费层 lazy scan + 分区裁剪；adj_factors 改 append-only | R-25/R-20（部分：水位目录扫描、无缓存 fail-loud） |
+| P1 | CLI 默认 config、`job.init.phases.names`、`sde compact`/`backfill` | R-26 ✅ |
 
 ---
 

@@ -12,8 +12,13 @@ from stock_data_engine.adapters.sina.adj_factors import fetch_adj_factor_series
 from stock_data_engine.config import Config
 from stock_data_engine.domain.rate_limit import wait_source
 from stock_data_engine.domain.schemas import with_provenance
+from stock_data_engine.storage.atomic import write_parquet_atomic
 
 logger = logging.getLogger(__name__)
+
+
+class AdjFactorsFetchError(RuntimeError):
+    """Raised when adj factor fetch fails and no cache is available."""
 
 
 def _load_daily_bar_dates(config: Config) -> pl.DataFrame:
@@ -102,6 +107,10 @@ def _resolve_factors(
         _save_cache(config, symbol, adjust_type, factors)
         return factors
     except Exception as exc:
+        if cached is None or cached.is_empty():
+            raise AdjFactorsFetchError(
+                f"adj_factors fetch failed for {symbol} ({adjust_type}) and no cache exists"
+            ) from exc
         logger.warning("External adj factors failed for %s (%s): %s", symbol, adjust_type, exc)
         return cached
 
@@ -170,6 +179,6 @@ def compute_adj_factors(
         out_dir = config.derived_root / "adj_factors" / f"trade_date={td_str}"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / "part-0.parquet"
-        group.write_parquet(path, compression="zstd")
+        write_parquet_atomic(path, group, compression="zstd")
         total += group.height
     return total

@@ -175,10 +175,10 @@ CLI (sde):  init | config validate | servers test | run | backfill
 | instruments | 证券主数据 | L0 | batch | tdx_protocol | eastmoney（list_date） | Universe 定义、上市/退市过滤 | 🟢 merge compact 保留退市股；EM 回填 list_date |
 | trading_calendar | 交易日历 | L0 | batch | 交易所种子 CSV（2016–2027） | 指数 bars 推导 | 交易日对齐、特征窗口 | 🟢 M2 真实化 |
 | trading_status | 停复牌/ST | L0 | batch | eastmoney（ST 板 + 停牌接口） | — | ST/*ST/停牌剔除 | 🟢 M2 真实化 |
-| daily_bars | 股票未复权日线 | L1 | batch | tdx_protocol | eastmoney（snapshot） | 动量、波动、量价因子 | 🟡 分页回填可用，但增量无早停、每日翻全历史（R-19） |
+| daily_bars | 股票未复权日线 | L1 | batch | tdx_protocol | eastmoney（snapshot） | 动量、波动、量价因子 | 🟢 分页 + 增量早停 |
 | index_bars | 指数日线 | L1 | batch | tdx_protocol | eastmoney | 市场状态、Beta、相对强度基准 | 🟢 |
 | corporate_actions | 分红送转/除权 | L2 | batch | tdx_protocol（backfill）/ eastmoney（daily） | tdx_protocol snapshot（daily）/ eastmoney snapshot（backfill） | 除权回补、股息因子 | 🟢 daily=EM canonical；backfill=TDX xdxr |
-| adj_factors | 复权因子 | L1 | derived | sina | — | 前/后复权价、长期动量 | 🟡 已并行 + 缓存，但每日全量刷新并重写全部历史分区（R-20） |
+| adj_factors | 复权因子 | L1 | derived | sina | — | 前/后复权价、长期动量 | 🟡 无缓存 fail-loud；append-only/qfq 重写待 P2（R-20） |
 
 Meta：`ingestion_runs`, `ingestion_batches`（🟢，daily_bars 批级）、`quality_findings` + `source_diffs`（🟢，audit 仅覆盖 4 个数据集，见 §9）
 
@@ -408,7 +408,7 @@ steps = ["dragon_tiger","block_trades"]
 - 🟢 `meta/state/{dataset}.json` 水位已实现；增量 run 从水位 +1 续抓（`steps/common.py`）。
 - 🟢 同一窗口重复 run 结果一致（compact 按 PK + max(fetched_at) 去重）。
 - 🟢 **部分失败不推水位**：compact 前查 manifest，该 dataset 本 run 有 failed batch 则跳过合并/水位；audit 产 `compact_skipped` warning；`sde retry` 全部 batch 成功后自动 compact。
-- ⚠️ 水位计算方式为「读整个 curated 数据集求 max(分区列)」，随湖增长每日全量扫描——见 R-25。
+- 🟢 水位优先从 hive 分区目录名推导 max 日期（R-25 部分）；fallback 才读 parquet。
 
 ### 6.3 数据契约强校验 🟢（data_version 语义除外）
 
@@ -464,8 +464,8 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | `sde config validate` | 校验配置（待加强引用校验） | 🟡 |
 | `sde servers test` | TDX 连通性测试 | 🟢 |
 | `sde run daily [--group] [--backfill]` | 日更（Wave 或分组） | 🟡 分组模式产出不落 curated（R-15） |
-| `sde backfill <dataset>` | 历史回填 | 🟡 回填后不 compact（R-26） |
-| `sde compact` | staging → curated | 🟡 CLI 版仅处理 daily_bars（R-26） |
+| `sde backfill <dataset>` | 历史回填 | 🟢 成功后自动 compact |
+| `sde compact` | staging → curated | 🟢 调用 `step_compact` 全数据集 |
 | `sde derive <name>` | 派生数据集 | 🟡 |
 | `sde audit` | 质量审计 | 🟡 |
 | `sde status` | 运行状态 | 🟢 |
@@ -513,14 +513,14 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | R-16 | instruments compact 整表覆盖丢退市股（…） | **高**：… | merge compact + EM list_date + TDX 缺席推断 delist_date | 🟢 P0 已修复 |
 | R-17 | corporate_actions daily 路径自相矛盾（…） | **高**：… | daily canonical=EM、backfill=TDX；per-dataset 主源见 ADR-0003 | 🟢 P0 已修复 |
 | R-18 | 部分批失败仍推进（…） | **高**：… | compact manifest 门禁 + per-dataset 水位 + retry 自动 compact | 🟢 P0 已修复 |
-| R-19 | TDX 日线分页无早停：只在页 <800 行时停止，不看日期是否已越过 start | 中：**每日增量也翻每只股票全历史**（~8 页/股，请求量放大约 8 倍），拉长运行时间、加大封禁风险 | 页内最老日期 < start 即 break | 🔴 P0 |
-| R-20 | adj_factors 缓存判定 `bars.max > cache.max` 每日必真 → 全市场每日重抓（sina 全局 5 req/s ≈ 18 分钟）；qfq 因子锚定最新价，每日重写全部历史分区；抓取失败静默沿用旧缓存 | 中：性能 + 静默陈旧因子导致复权口径不一致 | 改存 hfq/事件累积比率（append-only），qfq 查询期换算；刷新改为除权日/新股驱动；失败产 finding 而非静默 | 🔴 P1 |
-| R-21 | EastMoney 限速为进程内 per-client 实例，未走跨进程 `SourceRateLimiters`；并行组 7 step 叠加 ≈7 req/s | 中：封禁风险 | 各 EM adapter 统一走 `config.rate_limit("eastmoney")` | 🔴 P1 |
-| R-22 | HTTP 分页中途失败静默截断仍判 success（datacenter/clist/TDX bars）；EM corporate_actions backfill 只拉第 1 页（5000 行封顶）；akshare 月度宏观仅当发布日=运行日才入库 | **高**：半截数据无告警进湖，与 R-14 同族 | 分页失败→退避重试（用上 `max_retries`）→仍失败抛错判 batch failed；backfill 走分页 helper；宏观改「取最近 N 期 + compact 去重」 | 🔴 P1 |
+| R-19 | TDX 日线分页无早停（…） | 中：… | 页内最老日期 < start 即 break | 🟢 P0 已修复 |
+| R-20 | adj_factors 缓存/静默陈旧（…） | 中：… | 无缓存 fail-loud；append-only 待 P2 | 🟡 P1 部分 |
+| R-21 | EastMoney 限速 per-client（…） | 中：… | `EastMoneyClient(config=…)` | 🟡 P1 部分 |
+| R-22 | HTTP 分页静默截断（…） | **高**：… | datacenter 重试+抛错；EM backfill 全分页 | 🟡 P1 部分 |
 | R-23 | compact/audit/finalize 依赖缺失，拓扑按字母序：finalize wave 实际执行顺序为 audit → compact → derive_adj_factors | **高**：当日数据永远审计不到；source_diffs 比对的是昨日 curated | `audit` 声明 `depends_on`；`deps.py` 对 finalize 步骤强制 `compact→derive→audit` 顺序 | 🟢 P0 已修复 |
-| R-24 | curated 分区文件原地覆盖（无 tmp+rename）；写一半崩溃即损坏分区，DuckDB 并发读可读到坏文件 | 中：数据损坏需重建 | 同目录写 tmp 后 `os.replace` 原子替换 | 🔴 P1 |
-| R-25 | 全量 eager 读取遍布：reader `load()`、水位 `_max_partition_date`、universe、audit、catalog 均「读整个数据集再过滤」；trading_calendar 按日分区产生 396 个单行小文件 | 中：数据量到全市场十年规模后每次查询/每日 run 都全湖扫描 | 统一 `pl.scan_parquet` + hive 分区裁剪；水位从分区目录名推导；calendar 改单文件或按年分区 | 🔴 P1/P2 |
-| R-26 | 配置/CLI 缝隙：`[job.init.phases] names` 键 loader 读不到（读的是 `job.init.names`，静默回退默认值）；CLI 默认 `--config configs/stockdata.example.toml` 与 README「复制为 stockdata.toml」矛盾；`sde compact` 只处理 daily_bars；`sde backfill <dataset>` 不 compact | 低-中：行为与文档预期不符 | 修 loader 键名 + 校验；CLI 默认改 stockdata.toml（缺失时报错提示）；compact/backfill 全数据集化 | 🔴 P1 |
+| R-24 | curated 非原子写（…） | 中：… | tmp + `os.replace` | 🟢 P1 已修复 |
+| R-25 | 全量 eager 读取（…） | 中：… | 水位目录扫描；reader/audit lazy 待 P2 | 🟡 P1/P2 部分 |
+| R-26 | 配置/CLI 缝隙（…） | 低-中：… | loader/CLI/compact/backfill | 🟢 P1 已修复 |
 
 ---
 
@@ -530,7 +530,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 |------|------|------|
 | M0 | 脚手架、`sde init`、manifest、Orchestrator 骨架 | 🟢 已完成 |
 | M1 | 编排收敛：真依赖解析 + wave 并行 + 全局限速 + 写前 schema 校验 + config 引用校验 + 去 `verify=False` + mock 门控（R-14） | 🟢 已完成（修复 R-01/02/04/09/10/11/14） |
-| M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 🟢 已完成（遗留 R-19） |
+| M2 | 增量与续跑：watermark + 批级 manifest + mootdx 分页全量回填 + corporate_actions/calendar/status 真实化 | 🟢 已完成 |
 | M3 | HTTP 第二批（capital/valuation/announcement）+ adj_factors 并行化 + dragon_tiger/block_trades | 🟢 已完成（遗留 R-15/20/21/22） |
 | M4 | failover/snapshot/source_diffs + 跨源一致性审计 | 🟢 已完成（遗留 R-23；「连续 2 周稳定日更」未验证） |
 | v1.1 | §4.4 扩展 batch（financial_statement_items、index_constituents、macro、market_breadth 等） | 🟢 step/schema 已完成 |
@@ -550,23 +550,23 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | 2 | corporate_actions daily 主源明确化：EM 按日接口作 daily canonical（ADR-0003 增补「per-dataset 主源」），TDX xdxr 仅 backfill/除权日核对 | R-17 | 🟢 已修复 |
 | 3 | compact 门禁 + 水位保护：dataset 本 run 有 failed batch → 不推该 dataset 水位并产 warning finding；retry 成功后自动 compact | R-18 | 🟢 已修复 |
 | 4 | instruments 合并式 compact（merge + PK 去重，保留退市行）；补 list_date/delist_date 数据源 | R-16 | 🟢 已修复 |
-| 5 | TDX 分页早停（页内最老日期 < start 即停） | R-19 | 日增量单 symbol 请求数 ≤2 页 |
+| 5 | TDX 分页早停（页内最老日期 < start 即停） | R-19 | 🟢 已修复 |
 
 **P1 契约与健壮性（约 1 周）**
 
 | # | 任务 | 对应风险 |
 |---|------|----------|
-| 6 | 统一 fail-loud：分页失败退避重试（启用 `max_retries`/`retry_backoff_seconds`），仍失败抛错；EM corporate_actions backfill 走分页 helper；区分「自然为空」与「抓取失败」 | R-22 |
-| 7 | EM adapter 接入跨进程限速 `config.rate_limit("eastmoney")`，收敛三套限速实现 | R-21 |
-| 8 | curated 原子写：tmp + `os.replace` | R-24 |
-| 9 | audit 扩展到全部 25 个数据集、全量 PK 检查（lazy scan）；macro 月度指标改「最近 N 期 + 去重」 | R-25/R-22 |
-| 10 | 配置/CLI 修缝：`job.init.phases.names` 键、CLI 默认 config、`sde compact`/`backfill` 全数据集化、retry_count 累计 | R-26/R-03 |
+| 6 | 统一 fail-loud：分页失败退避重试… | R-22 | 🟡 部分 |
+| 7 | EM adapter 接入跨进程限速… | R-21 | 🟡 部分 |
+| 8 | curated 原子写：tmp + `os.replace` | R-24 | 🟢 已修复 |
+| 9 | audit lazy scan；macro 最近 N 期… | R-25/R-22 | 🔴 待办 |
+| 10 | 配置/CLI 修缝… | R-26/R-03 | 🟢 R-26 已修复 |
 
 **P2 性能与口径（约 1 周，可与 P1 并行）**
 
 | # | 任务 | 对应风险 |
 |---|------|----------|
-| 11 | 消费层与内部读取统一 `pl.scan_parquet` + hive 分区裁剪；水位从分区目录名推导 | R-25 |
+| 11 | 消费层 lazy scan + 分区裁剪（水位目录扫描已实现） | R-25 | 🟡 部分 |
 | 12 | adj_factors 改 append-only（存 hfq/事件比率，qfq 查询期换算）；刷新改除权日驱动；失败产 finding | R-20 |
 | 13 | trading_calendar 改单文件/按年分区；snapshot 目录按保留期清理 | R-25/§6.4 |
 | 14 | market_breadth 涨跌停阈值按板块区分（主板 10%/创业板科创板 20%/北交所 30%/ST 5%），当前统一 9.5% 的口径在文档中显式披露 | 数据口径 |

@@ -98,7 +98,7 @@ def snapshot_corporate_actions_backup(
     if spec is None or not config.sources.get(spec.backup, True):
         return
     config.rate_limit(spec.backup)
-    df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill)
+    df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill, config=config)
     if df.is_empty():
         return
     df = with_provenance(df, source=spec.backup, data_version="v1")

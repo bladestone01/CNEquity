@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import date
+from pathlib import Path
 
 import click
 import polars as pl
@@ -13,14 +15,30 @@ from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.quality.audit import run_audit
 from stock_data_engine.query.on_demand import OnDemandService
 from stock_data_engine.query.views import ensure_duckdb_views
-from stock_data_engine.storage import compact_dataset
+from stock_data_engine.steps.finalize import step_compact
 from stock_data_engine.storage.layout import init_data_layout
 
-DEFAULT_CONFIG = "configs/stockdata.example.toml"
+USER_CONFIG = "configs/stockdata.toml"
+EXAMPLE_CONFIG = "configs/stockdata.example.toml"
+DEFAULT_CONFIG = USER_CONFIG
+
+
+def resolve_config_path(config_path: str) -> Path:
+    path = Path(config_path)
+    if config_path == USER_CONFIG and not path.exists():
+        example = Path(EXAMPLE_CONFIG)
+        if example.exists():
+            raise click.ClickException(
+                f"Config not found: {USER_CONFIG}. "
+                f"Copy {EXAMPLE_CONFIG} to {USER_CONFIG} and edit data.root."
+            )
+    if not path.exists():
+        raise click.ClickException(f"Config not found: {path}")
+    return path
 
 
 def _cfg(config: str):
-    return load_config(config)
+    return load_config(resolve_config_path(config))
 
 
 @click.group()
@@ -87,6 +105,9 @@ def backfill(dataset: str, config_path: str):
     cfg = _cfg(config_path)
     engine = JobEngine(cfg)
     result = engine.run_job("backfill", steps=[dataset], backfill=True)
+    if result["status"] == "success":
+        compact_out = step_compact(cfg, date.today(), result["run_id"], {})
+        result["compact"] = compact_out
     click.echo(json.dumps(result, indent=2, default=str))
 
 
@@ -94,7 +115,7 @@ def backfill(dataset: str, config_path: str):
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option("--run-id", default=None)
 def compact(config_path: str, run_id: str | None):
-    """Compact staging into curated."""
+    """Compact staging into curated for all datasets staged in the run."""
     cfg = _cfg(config_path)
     manifest = Manifest(cfg.manifest_path)
     if not run_id:
@@ -102,8 +123,15 @@ def compact(config_path: str, run_id: str | None):
         if not latest:
             raise click.ClickException("No runs found")
         run_id = latest["run_id"]
-    total = compact_dataset(cfg.staging_root, cfg.curated_root, "daily_bars", run_id)
-    click.echo(f"Compacted daily_bars: {total} rows (run_id={run_id})")
+
+    out = step_compact(cfg, date.today(), run_id, {})
+    click.echo(
+        json.dumps(
+            {"run_id": run_id, "rows_written": out.get("rows_written", 0), **out},
+            indent=2,
+            default=str,
+        )
+    )
 
 
 @cli.command()
@@ -128,7 +156,6 @@ def audit(config_path: str, run_id: str | None):
     manifest = Manifest(cfg.manifest_path)
     latest = manifest.latest_run() if not run_id else None
     rid = run_id or (latest["run_id"] if latest else "manual")
-    from datetime import date
 
     n = run_audit(cfg, rid, date.today())
     click.echo(f"Audit complete: {n} findings written")

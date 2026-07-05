@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from urllib.parse import quote
 
 import polars as pl
 
+from stock_data_engine.adapters.eastmoney.datacenter import EastMoneyDatacenterError, fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
+from stock_data_engine.config import Config
 from stock_data_engine.domain.symbols import format_symbol
 
 logger = logging.getLogger(__name__)
 
 _REPORT = "RPT_SHAREBONUS_DET"
-_BASE = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+_COLUMNS = (
+    "SECURITY_CODE,SECUCODE,EX_DIV_DATE,CASH_BTAX_RMB,BONUS_RATIO,"
+    "TRANSFER_RATIO,ALLOTMENT_RATIO,ALLOTMENT_PRICE,IMPL_PLAN_PROFILE,MARKET_CODE"
+)
 
 
 def _map_action_type(row: dict) -> str | None:
@@ -76,10 +80,11 @@ def fetch_corporate_actions_eastmoney(
     *,
     backfill: bool = False,
     client: EastMoneyClient | None = None,
+    config: Config | None = None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient(min_interval=0.5)
+        client = EastMoneyClient(config=config)
 
     if backfill:
         date_filter = "(EX_DIV_DATE>='2016-01-01')"
@@ -87,28 +92,35 @@ def fetch_corporate_actions_eastmoney(
         ds = trade_date.isoformat()
         date_filter = f"(EX_DIV_DATE='{ds}')"
 
-    params = (
-        f"?reportName={_REPORT}"
-        f"&columns=SECURITY_CODE,SECUCODE,EX_DIV_DATE,CASH_BTAX_RMB,BONUS_RATIO,"
-        f"TRANSFER_RATIO,ALLOTMENT_RATIO,ALLOTMENT_PRICE,IMPL_PLAN_PROFILE,MARKET_CODE"
-        f"&pageSize=5000&pageNumber=1"
-        f"&sortColumns=EX_DIV_DATE&sortTypes=-1"
-        f"&filter={quote(date_filter, safe='()>=<=')}"
-    )
-    url = _BASE + params
+    retries = config.max_retries if config is not None else 3
+    backoff = float(config.retry_backoff_seconds if config is not None else 5)
 
     try:
-        resp = client.get(url)
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception as exc:
-        logger.warning("EastMoney corporate_actions failed: %s", exc)
+        if config is not None:
+            config.rate_limit("eastmoney")
+        raw = fetch_datacenter(
+            client,
+            _REPORT,
+            _COLUMNS,
+            filter_expr=date_filter,
+            sort_columns="EX_DIV_DATE",
+            sort_types="-1",
+            max_retries=retries,
+            retry_backoff_seconds=backoff,
+        )
+    except EastMoneyDatacenterError:
         if owns:
             client.close()
-        return pl.DataFrame()
+        raise
+    except Exception as exc:
+        if owns:
+            client.close()
+        raise EastMoneyDatacenterError(
+            f"EastMoney corporate_actions failed for filter {date_filter!r}"
+        ) from exc
 
     rows = []
-    for item in payload.get("result", {}).get("data") or []:
+    for item in raw:
         parsed = _parse_row(item)
         if parsed:
             rows.append(parsed)

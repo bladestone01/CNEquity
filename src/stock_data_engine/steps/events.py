@@ -47,7 +47,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     else:
         if not config.sources.get("eastmoney", True):
             raise RuntimeError("corporate_actions daily: eastmoney source disabled in config")
-        df = fetch_corporate_actions_eastmoney(trade_date, backfill=False)
+        df = fetch_corporate_actions_eastmoney(trade_date, backfill=False, config=config)
         canonical_source = _CANONICAL_DAILY
         if config.failover_enabled and df.height:
             ex_today = df.filter(pl.col("ex_date") == trade_date)

@@ -48,6 +48,20 @@ def _max_partition_date(config: Config, dataset: str, partition_col: str) -> dat
     root = config.curated_root / dataset
     if not root.exists():
         return None
+
+    prefix = f"{partition_col}="
+    max_dt: date | None = None
+    for entry in root.iterdir():
+        if entry.is_dir() and entry.name.startswith(prefix):
+            try:
+                candidate = date.fromisoformat(entry.name[len(prefix) :])
+            except ValueError:
+                continue
+            if max_dt is None or candidate > max_dt:
+                max_dt = candidate
+    if max_dt is not None:
+        return max_dt
+
     files = list(root.glob("**/*.parquet"))
     if not files:
         return None
