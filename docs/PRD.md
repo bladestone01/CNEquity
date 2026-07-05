@@ -511,7 +511,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 
 | ID | 风险 | 影响 | 缓解 | 状态 |
 |----|------|------|------|------|
-| R-15 | **分组运行不 compact**：capital/signals/fundamentals/macro_risk/research 组无 compact step；core 组虽含 compact 但其无 `depends_on` 被拓扑排到第 0 层先空跑。compact 只处理当前 run_id 的 staging，跨 run 无法补救 | **高**：M3/v1.1 全部数据集滞留 staging，curated 不更新，`load()` 读空；README 推荐的生产 cron 全部失效 | engine 对每个 run 在末尾自动追加 compact（+audit），或给 compact 动态注入对本 run 全部数据集 step 的依赖 | 🔴 P0 |
+| R-15 | **分组运行不 compact**（…） | **高**：… | engine finalize 延后 + 各组 append compact | 🟢 P0 已修复 |
 | R-16 | instruments compact 用本次抓取**整表覆盖** curated，不与旧数据合并；TDX 只返回在市股票且 list/delist_date 恒空 | **高**：退市股从 universe 消失 → **幸存者偏差**；「保留退市 symbol」契约未实现；list/delist 过滤空转 | compact 改 merge+PK 去重保留旧行；用 EM/交易所数据回填 list_date/delist_date | 🔴 P0 |
 | R-17 | corporate_actions daily 路径自相矛盾：daily 模式不传 symbols（跳过 TDX 分支），failover 开启时 `primary_only=True` 又跳过 EM 分支 → 必抛错；failover 关闭时 EM 行被 `source=="tdx_protocol"` 过滤清空 | **高**：默认配置下 daily run 每天失败；除权日 `symbols_to_rebackfill` 永远为空，除权回补失效 | 明确 per-dataset 主源：daily 用 EM 按日接口作 canonical（改 ADR-0003 为「每数据集声明主源」），backfill 用 TDX xdxr；或 daily 对当日除权 symbol 补 TDX 拉取 | 🔴 P0 |
 | R-18 | 部分批失败仍推进：engine 波次失败后继续执行 finalize，compact 无「全部 batch SUCCESS」门禁，水位照推 | **高**：失败 symbol 当日数据永久空洞且无告警；retry 成功后也不 compact | compact 前查 manifest：该 dataset 本 run 有 failed batch 则跳过推水位；retry 收尾自动 compact | 🔴 P0 |
@@ -519,7 +519,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | R-20 | adj_factors 缓存判定 `bars.max > cache.max` 每日必真 → 全市场每日重抓（sina 全局 5 req/s ≈ 18 分钟）；qfq 因子锚定最新价，每日重写全部历史分区；抓取失败静默沿用旧缓存 | 中：性能 + 静默陈旧因子导致复权口径不一致 | 改存 hfq/事件累积比率（append-only），qfq 查询期换算；刷新改为除权日/新股驱动；失败产 finding 而非静默 | 🔴 P1 |
 | R-21 | EastMoney 限速为进程内 per-client 实例，未走跨进程 `SourceRateLimiters`；并行组 7 step 叠加 ≈7 req/s | 中：封禁风险 | 各 EM adapter 统一走 `config.rate_limit("eastmoney")` | 🔴 P1 |
 | R-22 | HTTP 分页中途失败静默截断仍判 success（datacenter/clist/TDX bars）；EM corporate_actions backfill 只拉第 1 页（5000 行封顶）；akshare 月度宏观仅当发布日=运行日才入库 | **高**：半截数据无告警进湖，与 R-14 同族 | 分页失败→退避重试（用上 `max_retries`）→仍失败抛错判 batch failed；backfill 走分页 helper；宏观改「取最近 N 期 + compact 去重」 | 🔴 P1 |
-| R-23 | compact/audit/finalize 依赖缺失，拓扑按字母序：finalize wave 实际执行顺序为 audit → compact → derive_adj_factors | **高**：当日数据永远审计不到；source_diffs 比对的是昨日 curated | audit 声明 `depends_on=["compact","derive_adj_factors"]`；compact 依赖见 R-15 | 🔴 P0 |
+| R-23 | compact/audit/finalize 依赖缺失，拓扑按字母序：finalize wave 实际执行顺序为 audit → compact → derive_adj_factors | **高**：当日数据永远审计不到；source_diffs 比对的是昨日 curated | `audit` 声明 `depends_on`；`deps.py` 对 finalize 步骤强制 `compact→derive→audit` 顺序 | 🟢 P0 已修复 |
 | R-24 | curated 分区文件原地覆盖（无 tmp+rename）；写一半崩溃即损坏分区，DuckDB 并发读可读到坏文件 | 中：数据损坏需重建 | 同目录写 tmp 后 `os.replace` 原子替换 | 🔴 P1 |
 | R-25 | 全量 eager 读取遍布：reader `load()`、水位 `_max_partition_date`、universe、audit、catalog 均「读整个数据集再过滤」；trading_calendar 按日分区产生 396 个单行小文件 | 中：数据量到全市场十年规模后每次查询/每日 run 都全湖扫描 | 统一 `pl.scan_parquet` + hive 分区裁剪；水位从分区目录名推导；calendar 改单文件或按年分区 | 🔴 P1/P2 |
 | R-26 | 配置/CLI 缝隙：`[job.init.phases] names` 键 loader 读不到（读的是 `job.init.names`，静默回退默认值）；CLI 默认 `--config configs/stockdata.example.toml` 与 README「复制为 stockdata.toml」矛盾；`sde compact` 只处理 daily_bars；`sde backfill <dataset>` 不 compact | 低-中：行为与文档预期不符 | 修 loader 键名 + 校验；CLI 默认改 stockdata.toml（缺失时报错提示）；compact/backfill 全数据集化 | 🔴 P1 |

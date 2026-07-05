@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from stock_data_engine.orchestrator.registry import FINALIZE_STEP_GROUPS, STEP_REGISTRY, get_step
 
+# Hard ordering for finalize steps — do not rely on registration or alphabet sort alone.
+FINALIZE_STEP_ORDER = ("compact", "derive_adj_factors", "audit")
+
 
 class CyclicDependencyError(ValueError):
     """Raised when step dependencies form a cycle within a wave."""
@@ -47,6 +50,14 @@ def _levels_for(
     return levels
 
 
+def _finalize_execution_levels(finalize_steps: list[str]) -> list[list[str]]:
+    """Return one step per level in canonical finalize order (R-23)."""
+    names = set(finalize_steps)
+    ordered = [s for s in FINALIZE_STEP_ORDER if s in names]
+    ordered.extend(sorted(names - set(FINALIZE_STEP_ORDER)))
+    return [[step] for step in ordered]
+
+
 def step_execution_levels(step_names: list[str]) -> list[list[str]]:
     """Group steps into dependency levels that may run in parallel within each level.
 
@@ -68,9 +79,6 @@ def step_execution_levels(step_names: list[str]) -> list[list[str]]:
         levels.extend(_levels_for(fetch_steps, names_set=names_set, already_done=set()))
 
     if finalize_steps:
-        prerequisite = set(fetch_steps)
-        levels.extend(
-            _levels_for(finalize_steps, names_set=names_set, already_done=prerequisite)
-        )
+        levels.extend(_finalize_execution_levels(finalize_steps))
 
     return levels

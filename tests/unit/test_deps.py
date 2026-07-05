@@ -80,5 +80,9 @@ def test_capital_group_runs_compact_last():
 
 def test_finalize_wave_order():
     levels = step_execution_levels(["compact", "derive_adj_factors", "audit"])
-    flat = [s for level in levels for s in level]
-    assert flat == ["compact", "derive_adj_factors", "audit"]
+    assert levels == [["compact"], ["derive_adj_factors"], ["audit"]]
+
+
+def test_finalize_subset_skips_missing_steps():
+    levels = step_execution_levels(["compact", "audit"])
+    assert levels[-2:] == [["compact"], ["audit"]]
