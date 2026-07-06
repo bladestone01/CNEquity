@@ -15,7 +15,7 @@ _PAGE_SIZE = 800
 
 
 class TdxBarsPaginationError(RuntimeError):
-    """Raised when the first TDX bars page fails."""
+    """Raised when a TDX bars page fails and the caller requires complete history."""
 
 
 def _date_column(pdf: pl.DataFrame) -> str:
@@ -76,6 +76,7 @@ def fetch_bars_paginated(
     end: date,
     *,
     rate_limit: RateLimitSpec | None = None,
+    backfill: bool = False,
 ) -> list[dict]:
     """Fetch daily bars for *sym* in [start, end], paging through TDX history."""
     code, exch = sym.split(".")
@@ -94,9 +95,9 @@ def fetch_bars_paginated(
                 offset=_PAGE_SIZE,
             )
         except Exception as exc:
-            if offset_pos == 0:
+            if offset_pos == 0 or backfill:
                 raise TdxBarsPaginationError(
-                    f"TDX bars first page failed for {sym} at start={offset_pos}"
+                    f"TDX bars page failed for {sym} at start={offset_pos}"
                 ) from exc
             logger.warning("TDX bars page failed for %s at start=%s: %s", sym, offset_pos, exc)
             break

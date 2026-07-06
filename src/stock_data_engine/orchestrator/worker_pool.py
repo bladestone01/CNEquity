@@ -29,6 +29,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
         allow_mock,
         manifest_path,
         failover_enabled,
+        backfill,
     ) = args
     start = date.fromisoformat(start_iso)
     end = date.fromisoformat(end_iso)
@@ -47,7 +48,9 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
         )
 
     try:
-        df = fetch_daily_bars(symbols, start, end, rate_limit=rl, allow_mock=allow_mock)
+        df = fetch_daily_bars(
+            symbols, start, end, rate_limit=rl, allow_mock=allow_mock, backfill=backfill
+        )
         df = normalize_with_source(df)
         writer = StagingWriter(staging_root)
         writer.write_batch(dataset, run_id, batch_id, df)
@@ -133,6 +136,7 @@ def fetch_daily_bars_parallel(
                 end,
                 rate_limit=rl,
                 allow_mock=config.tdx_allow_mock,
+                backfill=getattr(config, "_backfill", False),
             )
             df = normalize_with_source(df)
             writer = StagingWriter(staging_root)
@@ -186,6 +190,7 @@ def fetch_daily_bars_parallel(
                 config.tdx_allow_mock,
                 manifest_path,
                 config.failover_enabled,
+                getattr(config, "_backfill", False),
             )
         )
 

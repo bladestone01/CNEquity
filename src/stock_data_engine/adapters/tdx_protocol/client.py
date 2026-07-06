@@ -218,12 +218,17 @@ def fetch_daily_bars(
     *,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
+    backfill: bool = False,
 ) -> pl.DataFrame:
     try:
         client = _quotes_client()
         rows = []
         for sym in symbols:
-            rows.extend(fetch_bars_paginated(client, sym, start, end, rate_limit=rate_limit))
+            rows.extend(
+                fetch_bars_paginated(
+                    client, sym, start, end, rate_limit=rate_limit, backfill=backfill
+                )
+            )
         if rows:
             return pl.DataFrame(rows)
         reason = "TDX returned no bars"
@@ -240,6 +245,7 @@ def fetch_index_bars(
     *,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
+    backfill: bool = False,
 ) -> pl.DataFrame:
     symbols = [format_symbol(c, e) for c, e in INDEX_SYMBOLS]
     try:
@@ -247,7 +253,11 @@ def fetch_index_bars(
         rows: list[dict] = []
         for sym in symbols:
             try:
-                rows.extend(fetch_bars_paginated(client, sym, start, end, rate_limit=rate_limit))
+                rows.extend(
+                    fetch_bars_paginated(
+                        client, sym, start, end, rate_limit=rate_limit, backfill=backfill
+                    )
+                )
             except Exception as exc:
                 logger.warning("TDX index bars failed for %s: %s", sym, exc)
         if rows:
