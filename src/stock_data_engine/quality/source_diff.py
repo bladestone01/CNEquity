@@ -214,5 +214,5 @@ def run_source_diffs(
         "diffs": all_diffs,
     }
     with open(out_dir / f"{run_id}.json", "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
     return all_diffs

@@ -119,6 +119,7 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
             f,
             ensure_ascii=False,
             indent=2,
+            default=str,
         )
 
     diffs = run_source_diffs(config, run_id, trade_date)
