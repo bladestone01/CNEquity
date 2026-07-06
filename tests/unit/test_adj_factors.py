@@ -122,10 +122,53 @@ steps = ["derive_adj_factors"]
 
 
 def test_compute_adj_factors_writes_derived(adj_config):
-    rows = compute_adj_factors(adj_config)
-    assert rows == 1
+    result = compute_adj_factors(adj_config)
+    assert result.rows == 1
+    assert result.failed == []
     out = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
     assert out.exists()
     df = pl.read_parquet(out)
     assert df["factor"][0] == 0.5
     assert df["source"][0] == "sina"
+
+
+def test_resolve_factors_raises_without_cache(adj_config, monkeypatch):
+    from stock_data_engine.derive.adj_factors import AdjFactorsFetchError, _resolve_factors
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("sina down")
+
+    monkeypatch.setattr(
+        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        boom,
+    )
+    sym_bars = pl.DataFrame({"trade_date": [date(2024, 6, 28)]})
+    with pytest.raises(AdjFactorsFetchError, match="No cached adj factors"):
+        _resolve_factors(
+            adj_config,
+            "600519.SH",
+            "qfq",
+            sym_bars,
+            force=True,
+            client=object(),
+        )
+
+
+def test_compute_adj_factors_fails_over_threshold(adj_config, monkeypatch):
+    from stock_data_engine.derive.adj_factors import AdjFactorsDeriveError, FAIL_RATIO_THRESHOLD
+    from stock_data_engine.steps.finalize import step_derive_adj_factors
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("sina down")
+
+    monkeypatch.setattr(
+        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        boom,
+    )
+    result = compute_adj_factors(adj_config)
+    assert len(result.failed) == 1
+    assert result.fail_ratio > FAIL_RATIO_THRESHOLD
+    assert result.findings[0]["check"] == "adj_factor_fetch_failed"
+
+    with pytest.raises(AdjFactorsDeriveError, match="adj_factors"):
+        step_derive_adj_factors(adj_config, date(2024, 6, 28), "run-adj", {})

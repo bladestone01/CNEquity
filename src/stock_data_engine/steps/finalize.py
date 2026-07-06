@@ -161,11 +161,26 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
     depends_on=["daily_bars", "compact"],
 )
 def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    from stock_data_engine.derive.adj_factors import compute_adj_factors
+    from stock_data_engine.derive.adj_factors import (
+        FAIL_RATIO_THRESHOLD,
+        AdjFactorsDeriveError,
+        compute_adj_factors,
+    )
 
     rebackfill = context.get("symbols_to_rebackfill") or []
-    rows = compute_adj_factors(config, refresh_symbols=rebackfill)
-    return {"rows_read": rows, "rows_written": rows}
+    result = compute_adj_factors(config, refresh_symbols=rebackfill)
+    out: dict = {"rows_read": result.rows, "rows_written": result.rows}
+    if result.findings:
+        out["context_updates"] = {"audit_findings": result.findings}
+    if result.failed and result.fail_ratio > FAIL_RATIO_THRESHOLD:
+        raise AdjFactorsDeriveError(
+            (
+                f"adj_factors: {len(result.failed)}/{result.task_count} symbol×type tasks "
+                f"failed uncached fetch (>{FAIL_RATIO_THRESHOLD:.0%} threshold)"
+            ),
+            findings=result.findings,
+        )
+    return out
 
 
 @register_step(

@@ -193,7 +193,7 @@ sde run daily --group research --config configs/stockdata.toml       # 18:30（�
 | P0 | instruments 合并式 compact，保留退市股（消除幸存者偏差）+ 补 list/delist_date | R-16 ✅ |
 | P0 | TDX 日线分页早停（当前每日增量翻全历史，请求放大 ~8 倍） | R-19 ✅ |
 | P1 | 分页失败 fail-loud + EM backfill 全分页；EM 跨进程限速；curated 原子写 | R-22/R-21/R-24 🟡 |
-| P1 | 消费层 lazy scan + 分区裁剪；adj_factors 改 append-only | R-25/R-20（部分：水位目录扫描、无缓存 fail-loud） |
+| P1 | 消费层 lazy scan + 分区裁剪；adj_factors 改 append-only | R-25/R-20（无缓存 fail-loud + `adj_is_exact` 标记） |
 | P1 | CLI 默认 config、`job.init.phases.names`、`sde compact`/`backfill` | R-26 ✅ |
 
 ---

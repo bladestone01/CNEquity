@@ -100,8 +100,25 @@ def test_load_daily_bars_with_adjustment(lake):
         config=lake,
     )
     assert df.height == 3
+    exact = dict(zip(df["symbol"].to_list(), df["adj_is_exact"].to_list(), strict=True))
+    assert exact["600519.SH"] is True
+    assert exact["000001.SZ"] is True
+    assert exact["300750.SZ"] is False
     moutai = df.filter(pl.col("symbol") == "600519.SH")
     assert moutai["adj_close"][0] == pytest.approx(21.0)
+    assert moutai["adj_is_exact"][0] is True
+
+
+def test_load_strict_adj_raises_when_factor_missing(lake):
+    with pytest.raises(ReaderError, match="missing adj_factors"):
+        load(
+            "daily_bars",
+            start="2024-06-27",
+            end="2024-06-27",
+            adjust="hfq",
+            strict_adj=True,
+            config=lake,
+        )
 
 
 def test_load_daily_bars_universe_filters_st_and_suspended(lake):

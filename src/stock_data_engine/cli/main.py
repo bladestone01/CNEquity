@@ -141,8 +141,14 @@ def derive(name: str, config_path: str):
     """Derive computed datasets."""
     cfg = _cfg(config_path)
     if name == "adj_factors":
-        rows = compute_adj_factors(cfg)
-        click.echo(f"Derived {name}: {rows} rows")
+        result = compute_adj_factors(cfg)
+        click.echo(f"Derived {name}: {result.rows} rows")
+        if result.failed:
+            click.echo(
+                f"Warnings: {len(result.failed)} symbol×type fetch failures "
+                f"({result.fail_ratio:.1%})",
+                err=True,
+            )
     else:
         raise click.ClickException(f"Unknown derive target: {name}")
 

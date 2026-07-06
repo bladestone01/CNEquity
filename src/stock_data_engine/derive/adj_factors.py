@@ -16,9 +16,42 @@ from stock_data_engine.storage.atomic import write_parquet_atomic
 
 logger = logging.getLogger(__name__)
 
+# Derive step fails when uncached fetch failures exceed this share of symbol×type tasks.
+FAIL_RATIO_THRESHOLD = 0.05
+
 
 class AdjFactorsFetchError(RuntimeError):
     """Raised when adj factor fetch fails and no cache is available."""
+
+
+class AdjFactorsDeriveError(RuntimeError):
+    """Raised when too many symbols lack adj factors after derive."""
+
+    def __init__(self, message: str, *, findings: list[dict]):
+        super().__init__(message)
+        self.findings = findings
+
+
+class AdjFactorsResult:
+    __slots__ = ("rows", "task_count", "failed", "findings")
+
+    def __init__(
+        self,
+        rows: int,
+        task_count: int,
+        failed: list[str],
+        findings: list[dict],
+    ) -> None:
+        self.rows = rows
+        self.task_count = task_count
+        self.failed = failed
+        self.findings = findings
+
+    @property
+    def fail_ratio(self) -> float:
+        if not self.task_count:
+            return 0.0
+        return len(self.failed) / self.task_count
 
 
 def _load_daily_bar_dates(config: Config) -> pl.DataFrame:
@@ -108,15 +141,51 @@ def _resolve_factors(
         return factors
     except Exception as exc:
         if cached is None or cached.is_empty():
-            logger.warning(
-                "No adj factors for %s (%s): %s; using default factor=1.0",
-                symbol,
-                adjust_type,
-                exc,
-            )
-            return pl.DataFrame(schema={"trade_date": pl.Date, "factor": pl.Float64})
+            raise AdjFactorsFetchError(
+                f"No cached adj factors for {symbol} ({adjust_type}): {exc}"
+            ) from exc
         logger.warning("External adj factors failed for %s (%s): %s", symbol, adjust_type, exc)
         return cached
+
+
+def _fetch_failure_finding(symbol: str, adjust_type: str, exc: Exception) -> dict:
+    return {
+        "dataset": "adj_factors",
+        "severity": "error",
+        "check": "adj_factor_fetch_failed",
+        "message": f"No cached adj factors for {symbol} ({adjust_type}): {exc}",
+        "symbol": symbol,
+        "adjust_type": adjust_type,
+    }
+
+
+def _process_symbol_adj(
+    config: Config,
+    bars: pl.DataFrame,
+    sym: str,
+    adj: str,
+    sym_bars: pl.DataFrame,
+    *,
+    force: bool,
+    client: httpx.Client | None = None,
+) -> tuple[pl.DataFrame | None, str | None, dict | None]:
+    own_client = client is None
+    if own_client:
+        client = httpx.Client(timeout=20.0)
+    try:
+        try:
+            factors = _resolve_factors(config, sym, adj, sym_bars, force=force, client=client)
+        except AdjFactorsFetchError as exc:
+            return None, f"{sym}:{adj}", _fetch_failure_finding(sym, adj, exc)
+        if factors is None or factors.is_empty():
+            return None, None, None
+        aligned = _align_factors_to_bars(bars, sym, factors, adj)
+        if aligned.is_empty():
+            return None, None, None
+        return aligned, None, None
+    finally:
+        if own_client:
+            client.close()
 
 
 def compute_adj_factors(
@@ -124,10 +193,10 @@ def compute_adj_factors(
     adjust_type: str | None = None,
     *,
     refresh_symbols: list[str] | None = None,
-) -> int:
+) -> AdjFactorsResult:
     bars = _load_daily_bar_dates(config)
     if bars.is_empty():
-        return 0
+        return AdjFactorsResult(0, 0, [], [])
 
     adjust_types = [adjust_type] if adjust_type else list(config.adj_factors_types)
     refresh_set = set(refresh_symbols or [])
@@ -141,35 +210,46 @@ def compute_adj_factors(
     ]
 
     frames: list[pl.DataFrame] = []
-
-    def _align_task(args: tuple) -> pl.DataFrame | None:
-        sym, adj, sym_bars, force = args
-        with httpx.Client(timeout=20.0) as client:
-            factors = _resolve_factors(config, sym, adj, sym_bars, force=force, client=client)
-        if factors is None or factors.is_empty():
-            return None
-        aligned = _align_factors_to_bars(bars, sym, factors, adj)
-        return aligned if aligned.height else None
+    failed: list[str] = []
+    findings: list[dict] = []
 
     if workers <= 1 or len(tasks) == 1:
         with httpx.Client(timeout=20.0) as client:
             for sym, adj, sym_bars, force in tasks:
-                factors = _resolve_factors(config, sym, adj, sym_bars, force=force, client=client)
-                if factors is None:
-                    continue
-                aligned = _align_factors_to_bars(bars, sym, factors, adj)
-                if aligned.height:
+                aligned, fail_key, finding = _process_symbol_adj(
+                    config, bars, sym, adj, sym_bars, force=force, client=client
+                )
+                if fail_key:
+                    failed.append(fail_key)
+                if finding:
+                    findings.append(finding)
+                if aligned is not None:
                     frames.append(aligned)
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_align_task, t) for t in tasks]
+            futures = [
+                pool.submit(
+                    _process_symbol_adj,
+                    config,
+                    bars,
+                    sym,
+                    adj,
+                    sym_bars,
+                    force=force,
+                )
+                for sym, adj, sym_bars, force in tasks
+            ]
             for fut in as_completed(futures):
-                aligned = fut.result()
-                if aligned is not None and aligned.height:
+                aligned, fail_key, finding = fut.result()
+                if fail_key:
+                    failed.append(fail_key)
+                if finding:
+                    findings.append(finding)
+                if aligned is not None:
                     frames.append(aligned)
 
     if not frames:
-        return 0
+        return AdjFactorsResult(0, len(tasks), failed, findings)
 
     out = pl.concat(frames, how="diagonal_relaxed").unique(
         subset=["symbol", "trade_date", "adjust_type"], keep="last"
@@ -185,4 +265,4 @@ def compute_adj_factors(
         path = out_dir / "part-0.parquet"
         write_parquet_atomic(path, group, compression="zstd")
         total += group.height
-    return total
+    return AdjFactorsResult(total, len(tasks), failed, findings)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -11,6 +12,8 @@ import polars as pl
 from stock_data_engine.config import Config, load_config
 from stock_data_engine.domain.schemas import DATASET_SCHEMAS, validate_dataframe
 from stock_data_engine.query.universe import apply_universe_filter
+
+logger = logging.getLogger(__name__)
 
 AdjustType = Literal["qfq", "hfq"]
 UniverseType = Literal["all_a"]
@@ -159,25 +162,39 @@ def _apply_adjustment(
     adjust: AdjustType,
     start: date | None,
     end: date | None,
+    *,
+    strict_adj: bool = False,
 ) -> pl.DataFrame:
     if bars.is_empty():
         return bars
 
     factors = _read_dataset(config, "adj_factors")
     if factors.is_empty():
-        return bars.with_columns(
+        out = bars.with_columns(
             *[
                 pl.col(c).alias(f"adj_{c}")
                 for c in PRICE_COLS
                 if c in bars.columns
-            ]
+            ],
+            pl.lit(False).alias("adj_is_exact"),
         )
+        if strict_adj:
+            raise ReaderError("adj_factors dataset is empty; cannot compute exact adjusted prices")
+        logger.warning("adj_factors missing; adj_is_exact=False for all rows")
+        return out
 
     factors = factors.filter(pl.col("adjust_type") == adjust)
     factors = _apply_date_range(factors, "adj_factors", start, end)
     factors = factors.select(["symbol", "trade_date", "factor"])
 
     joined = bars.join(factors, on=["symbol", "trade_date"], how="left")
+    joined = joined.with_columns(pl.col("factor").is_not_null().alias("adj_is_exact"))
+    inexact = joined.filter(~pl.col("adj_is_exact")).height
+    if inexact:
+        msg = f"{inexact} bar row(s) missing adj_factors for adjust={adjust!r}"
+        if strict_adj:
+            raise ReaderError(msg)
+        logger.warning("%s; using factor=1.0 with adj_is_exact=False", msg)
     joined = joined.with_columns(pl.col("factor").fill_null(1.0))
     adj_exprs = [
         (pl.col(c) * pl.col("factor")).alias(f"adj_{c}") for c in PRICE_COLS if c in joined.columns
@@ -211,6 +228,7 @@ def load(
     as_of: str | date | None = None,
     items: list[str] | None = None,
     symbols: list[str] | None = None,
+    strict_adj: bool = False,
     config: Config | None = None,
     data_root: str | Path | None = None,
 ) -> pl.DataFrame:
@@ -223,7 +241,10 @@ def load(
     start, end:
         Inclusive date window on the dataset's primary date column.
     adjust:
-        ``qfq`` or ``hfq`` — joins ``adj_factors`` and adds ``adj_open`` … ``adj_close``.
+        ``qfq`` or ``hfq`` — joins ``adj_factors`` and adds ``adj_open`` … ``adj_close``
+        plus ``adj_is_exact`` (``True`` when a factor row exists for that bar).
+        Rows with ``adj_is_exact=False`` used factor=1.0 (unadjusted); pass
+        ``strict_adj=True`` to raise instead.
         Only applies to ``daily_bars`` / ``index_bars``.
     universe:
         ``all_a`` — drop unlisted/delisted rows per day via ``instruments``, and
@@ -268,7 +289,7 @@ def load(
         df = apply_universe_filter(df, cfg, universe=universe, date_col=date_col)
 
     if adjust and dataset in {"daily_bars", "index_bars"}:
-        df = _apply_adjustment(df, cfg, adjust, start_d, end_d)
+        df = _apply_adjustment(df, cfg, adjust, start_d, end_d, strict_adj=strict_adj)
 
     sort_cols = [c for c in (DATE_COLUMNS.get(dataset), "symbol") if c and c in df.columns]
     if sort_cols:
