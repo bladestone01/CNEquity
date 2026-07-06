@@ -12,6 +12,7 @@ from stock_data_engine.config import load_config, validate_config
 from stock_data_engine.domain.datasets import fetch_semantics
 from stock_data_engine.derive.adj_factors import compute_adj_factors
 from stock_data_engine.orchestrator.engine import JobEngine
+from stock_data_engine.orchestrator.run_lock import RunLockError
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.quality.audit import run_audit
 from stock_data_engine.query.on_demand import OnDemandService
@@ -257,12 +258,15 @@ def retry(config_path: str, run_id: str):
     run = engine.manifest.get_run(run_id)
     if run is None:
         raise click.ClickException(f"Unknown run_id: {run_id}")
-    if run["job_name"] == "init":
-        result = engine.resume_init(run_id=run_id)
-    else:
-        result = engine.run_job("retry", retry_failed_only=True, run_id=run_id)
+    try:
+        if run["job_name"] == "init":
+            result = engine.resume_init(run_id=run_id)
+        else:
+            result = engine.run_job("retry", retry_failed_only=True, run_id=run_id)
+    except RunLockError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(result, indent=2, default=str))
-    if result.get("status") != "success":
+    if result.get("status") not in ("success",):
         raise SystemExit(1)
 
 

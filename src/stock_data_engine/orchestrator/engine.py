@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import uuid
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any
@@ -23,7 +24,8 @@ from stock_data_engine.orchestrator.init_phases import (
 )
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.orchestrator.registry import get_step
-from stock_data_engine.steps.common import BACKFILL_START, is_trading_day
+from stock_data_engine.orchestrator.run_lock import RunLockError, run_lock
+from stock_data_engine.steps.common import is_trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -254,7 +256,71 @@ class JobEngine:
             batches = self.manifest.get_batches_for_run(run_id)
         return results
 
+    def _merge_retry_context(self, run_id: str, trade_date: date) -> dict[str, Any]:
+        context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
+        for key, value in self.manifest.get_run_metadata(run_id).items():
+            if key not in context:
+                context[key] = value
+        return context
+
+    def _retry_batch_status(self, run_id: str) -> str:
+        incomplete = self.manifest.incomplete_batch_count(run_id)
+        if incomplete == 0:
+            return "success"
+        counts = self.manifest.incomplete_batch_counts_by_status(run_id)
+        if counts.get("failed"):
+            return "failed"
+        if counts.get("running") or counts.get("stale"):
+            return "pending"
+        return "failed"
+
+    def _pending_retry_payload(
+        self,
+        run_id: str,
+        *,
+        stale_marked: int,
+        timeout: dict[str, int],
+        retried: int = 0,
+        results: list[dict[str, Any]] | None = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "status": "pending",
+            "retried": retried,
+            "incomplete_batches": self.manifest.incomplete_batch_count(run_id),
+            "incomplete_by_status": self.manifest.incomplete_batch_counts_by_status(run_id),
+            "stale_marked_failed": stale_marked,
+            "batch_timeout": timeout,
+            "results": results or [],
+            **extra,
+        }
+
+    def _worker_batch_specs(
+        self, batches: list, trade_date: date
+    ) -> list[tuple[str, list[str], date, date]]:
+        specs: list[tuple[str, list[str], date, date]] = []
+        for batch in batches:
+            symbols = json.loads(batch["symbols_json"] or "[]")
+            window_start = batch["window_start"] or trade_date.isoformat()
+            window_end = batch["window_end"] or trade_date.isoformat()
+            specs.append(
+                (
+                    batch["batch_id"],
+                    symbols,
+                    date.fromisoformat(window_start),
+                    date.fromisoformat(window_end),
+                )
+            )
+        return specs
+
     def _retry_run(
+        self, run_id: str, trade_date: date, *, auto_finalize: bool = True
+    ) -> dict[str, Any]:
+        with run_lock(self.config.meta_root, run_id):
+            return self._retry_run_locked(run_id, trade_date, auto_finalize=auto_finalize)
+
+    def _retry_run_locked(
         self, run_id: str, trade_date: date, *, auto_finalize: bool = True
     ) -> dict[str, Any]:
         timeout = self.manifest.advance_batch_timeouts(
@@ -266,15 +332,18 @@ class JobEngine:
         missing_init = self._missing_init_steps(run_id) if self._is_init_run(run_id) else []
 
         if not failed and not missing_init:
+            incomplete = self.manifest.incomplete_batch_count(run_id)
+            if incomplete > 0:
+                return self._pending_retry_payload(run_id, stale_marked=stale_marked, timeout=timeout)
+
             batches = self.manifest.get_batches_for_run(run_id)
             phases = self._init_phases_list(run_id)
             if auto_finalize and self._is_init_run(run_id) and needs_finalize(phases, batches):
-                context = {"run_id": run_id, "trade_date": trade_date}
-                context.update(self.manifest.get_run_metadata(run_id))
+                context = self._merge_retry_context(run_id, trade_date)
                 fin_results = self._run_finalize_steps(run_id, trade_date, context)
-                incomplete = self.manifest.incomplete_batch_count(run_id)
-                status = "failed" if incomplete else "success"
-                self.manifest.finish_run(run_id, status)
+                status = self._retry_batch_status(run_id)
+                if auto_finalize:
+                    self.manifest.finish_run(run_id, status)
                 return {
                     "run_id": run_id,
                     "status": status,
@@ -291,26 +360,26 @@ class JobEngine:
                 "batch_timeout": timeout,
             }
 
-        context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
-        context.update(self.manifest.get_run_metadata(run_id))
+        context = self._merge_retry_context(run_id, trade_date)
 
-        worker_batches = [b for b in failed if b["dataset"] == "daily_bars"]
-        step_batches = [b for b in failed if b["dataset"] != "daily_bars"]
+        worker_batches_by_dataset: dict[str, list] = defaultdict(list)
+        step_batches: list = []
+        for batch in failed:
+            dataset = batch["dataset"]
+            if get_step(dataset).requires_workers:
+                worker_batches_by_dataset[dataset].append(batch)
+            else:
+                step_batches.append(batch)
 
         results: list[dict[str, Any]] = []
         retried = len(failed)
 
-        if worker_batches:
-            if any(
-                b["window_start"] == BACKFILL_START.isoformat() for b in worker_batches
-            ):
-                self.config._backfill = True
-            batch_specs = []
-            for batch in worker_batches:
-                symbols = json.loads(batch["symbols_json"] or "[]")
-                batch_specs.append((batch["batch_id"], symbols))
-            context["_retry_batch_specs"] = batch_specs
-            results.append(self._run_step("daily_bars", trade_date, run_id, context))
+        for dataset, worker_batches in worker_batches_by_dataset.items():
+            context["_retry_batch_specs"] = self._worker_batch_specs(worker_batches, trade_date)
+            try:
+                results.append(self._run_step(dataset, trade_date, run_id, context))
+            finally:
+                context.pop("_retry_batch_specs", None)
 
         for batch in step_batches:
             dataset = batch["dataset"]
@@ -330,11 +399,10 @@ class JobEngine:
         if auto_finalize and self.manifest.incomplete_batch_count(run_id) == 0:
             results.extend(self._run_finalize_steps(run_id, trade_date, context))
 
-        incomplete = self.manifest.incomplete_batch_count(run_id)
-        status = "failed" if incomplete else "success"
-        if auto_finalize:
+        status = self._retry_batch_status(run_id)
+        if auto_finalize and status != "pending":
             self.manifest.finish_run(run_id, status)
-        return {
+        payload: dict[str, Any] = {
             "run_id": run_id,
             "status": status,
             "retried": retried,
@@ -343,6 +411,12 @@ class JobEngine:
             "batch_timeout": timeout,
             "results": results,
         }
+        if status == "pending":
+            payload["incomplete_batches"] = self.manifest.incomplete_batch_count(run_id)
+            payload["incomplete_by_status"] = self.manifest.incomplete_batch_counts_by_status(
+                run_id
+            )
+        return payload
 
     def _finalize_init_run(
         self,
@@ -469,8 +543,7 @@ class JobEngine:
 
         batches = self.manifest.get_batches_for_run(run_id)
         if needs_finalize(phases, batches) and self.manifest.incomplete_batch_count(run_id) == 0:
-            context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
-            context.update(self.manifest.get_run_metadata(run_id))
+            context = self._merge_retry_context(run_id, trade_date)
             fin_results = self._run_finalize_steps(run_id, trade_date, context)
             phase_results.append(
                 {

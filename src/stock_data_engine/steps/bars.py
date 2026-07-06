@@ -21,6 +21,18 @@ from stock_data_engine.steps.common import BACKFILL_START, incremental_window, l
     requires_workers=True,
 )
 def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    batch_specs = context.get("_retry_batch_specs")
+    if batch_specs:
+        return fetch_daily_bars_parallel(
+            config,
+            [],
+            trade_date,
+            trade_date,
+            run_id,
+            "daily_bars",
+            batch_specs=batch_specs,
+        )
+
     symbols = load_symbols(config)
     rebackfill = context.get("symbols_to_rebackfill") or []
     if rebackfill:
@@ -32,7 +44,6 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         start = incremental_window(config, "daily_bars", trade_date)
 
     end = trade_date
-    batch_specs = context.get("_retry_batch_specs")
     result = fetch_daily_bars_parallel(
         config,
         symbols,
@@ -40,7 +51,6 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         end,
         run_id,
         "daily_bars",
-        batch_specs=batch_specs,
     )
     return result
 

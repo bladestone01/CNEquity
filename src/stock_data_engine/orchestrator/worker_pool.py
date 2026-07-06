@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -11,9 +11,13 @@ from stock_data_engine.config import Config, load_config
 from stock_data_engine.domain.rate_limit import RateLimitSpec
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.quality.failover import snapshot_daily_bars_backup
+from stock_data_engine.steps.common import BACKFILL_START
 from stock_data_engine.storage import StagingWriter
 
 logger = logging.getLogger(__name__)
+
+# (batch_id, symbols, window_start, window_end)
+BatchSpec = tuple[str, list[str], date, date]
 
 
 def _symbol_batch_id(start: date, end: date, index: int) -> str:
@@ -35,6 +39,10 @@ def _worker_tdx_config(
     cfg.tdx_allow_mock = allow_mock
     cfg._backfill = backfill
     return cfg
+
+
+def _window_backfill(start: date) -> bool:
+    return start == BACKFILL_START
 
 
 def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
@@ -132,7 +140,7 @@ def fetch_daily_bars_parallel(
     run_id: str,
     dataset: str = "daily_bars",
     *,
-    batch_specs: list[tuple[str, list[str]]] | None = None,
+    batch_specs: list[BatchSpec] | None = None,
 ) -> dict[str, Any]:
     """Fetch daily bars in symbol batches; each batch is recorded in manifest."""
     if batch_specs:
@@ -142,7 +150,7 @@ def fetch_daily_bars_parallel(
     else:
         batch_size = config.batch_size
         batches = [
-            (_symbol_batch_id(start, end, i), symbols[i : i + batch_size])
+            (_symbol_batch_id(start, end, i), symbols[i : i + batch_size], start, end)
             for i in range(0, len(symbols), batch_size)
         ]
 
@@ -156,29 +164,37 @@ def fetch_daily_bars_parallel(
     total_written = 0
     rl = config.tdx_rate_limit_spec()
     rate_limit_tuple = (rl.state_dir, rl.source, rl.min_interval) if rl else None
+    stale_seconds = config.batch_stale_seconds
 
-    def _run_batch(batch_id: str, batch_symbols: list[str]) -> dict[str, Any]:
+    def _run_batch(
+        batch_id: str,
+        batch_symbols: list[str],
+        batch_start: date,
+        batch_end: date,
+    ) -> dict[str, Any]:
+        backfill = _window_backfill(batch_start)
         manifest.start_batch(
             run_id,
             batch_id,
             task_id=dataset,
             dataset=dataset,
             symbols=batch_symbols,
-            window_start=start.isoformat(),
-            window_end=end.isoformat(),
+            window_start=batch_start.isoformat(),
+            window_end=batch_end.isoformat(),
         )
         try:
+
             def _heartbeat() -> None:
                 manifest.touch_batch_heartbeat(run_id, batch_id)
 
             _heartbeat()
             df = fetch_daily_bars(
                 batch_symbols,
-                start,
-                end,
+                batch_start,
+                batch_end,
                 rate_limit=rl,
                 allow_mock=config.tdx_allow_mock,
-                backfill=getattr(config, "_backfill", False),
+                backfill=backfill,
                 config=config,
                 on_heartbeat=_heartbeat,
             )
@@ -199,8 +215,8 @@ def fetch_daily_bars_parallel(
                 snapshot_daily_bars_backup(
                     config,
                     symbols=batch_symbols,
-                    start=start,
-                    end=end,
+                    start=batch_start,
+                    end=batch_end,
                     run_id=run_id,
                     batch_id=f"{batch_id}-backup",
                 )
@@ -208,9 +224,9 @@ def fetch_daily_bars_parallel(
 
     if config.workers <= 1 or len(batches) == 1:
         had_error = False
-        for batch_id, batch_symbols in batches:
+        for batch_id, batch_symbols, batch_start, batch_end in batches:
             try:
-                result = _run_batch(batch_id, batch_symbols)
+                result = _run_batch(batch_id, batch_symbols, batch_start, batch_end)
                 total_read += result["rows_read"]
                 total_written += result["rows_written"]
             except Exception:
@@ -219,13 +235,14 @@ def fetch_daily_bars_parallel(
             raise RuntimeError(f"{dataset}: one or more symbol batches failed")
         return {"rows_read": total_read, "rows_written": total_written}
 
-    tasks = []
-    for batch_id, batch_symbols in batches:
-        tasks.append(
-            (
+    futures: dict = {}
+    with ProcessPoolExecutor(max_workers=min(config.workers, len(batches))) as pool:
+        for batch_id, batch_symbols, batch_start, batch_end in batches:
+            backfill = _window_backfill(batch_start)
+            task = (
                 batch_symbols,
-                start.isoformat(),
-                end.isoformat(),
+                batch_start.isoformat(),
+                batch_end.isoformat(),
                 str(staging_root),
                 dataset,
                 run_id,
@@ -234,19 +251,31 @@ def fetch_daily_bars_parallel(
                 config.tdx_allow_mock,
                 manifest_path,
                 config.failover_enabled,
-                getattr(config, "_backfill", False),
+                backfill,
                 str(config.config_path) if config.config_path else "",
             )
-        )
+            futures[pool.submit(_worker_fetch_batch, task)] = batch_id
 
-    had_error = False
-    with ProcessPoolExecutor(max_workers=min(config.workers, len(tasks))) as pool:
-        futures = [pool.submit(_worker_fetch_batch, t) for t in tasks]
+        had_error = False
         for fut in as_completed(futures):
+            batch_id = futures[fut]
             try:
-                result = fut.result()
+                result = fut.result(timeout=stale_seconds)
                 total_read += result["rows_read"]
                 total_written += result["rows_written"]
+            except TimeoutError:
+                had_error = True
+                manifest.mark_batch_stale(
+                    run_id,
+                    batch_id,
+                    f"worker result timeout after {stale_seconds}s",
+                )
+                logger.warning(
+                    "%s batch %s timed out after %ss; marked stale",
+                    dataset,
+                    batch_id,
+                    stale_seconds,
+                )
             except Exception:
                 had_error = True
 

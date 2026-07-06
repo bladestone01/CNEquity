@@ -252,6 +252,30 @@ class Manifest:
             )
             return int(cur.fetchone()["cnt"])
 
+    def incomplete_batch_counts_by_status(self, run_id: str) -> dict[str, int]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT status, COUNT(*) AS cnt
+                FROM ingestion_batches
+                WHERE run_id = ? AND status != 'success'
+                GROUP BY status
+                """,
+                (run_id,),
+            )
+            return {row["status"]: row["cnt"] for row in cur.fetchall()}
+
+    def mark_batch_stale(self, run_id: str, batch_id: str, error_message: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_batches
+                SET status = 'stale', error_message = ?
+                WHERE run_id = ? AND batch_id = ?
+                """,
+                (error_message, run_id, batch_id),
+            )
+
     def promote_running_to_stale(
         self, run_id: str, *, stale_after_seconds: float
     ) -> int:
