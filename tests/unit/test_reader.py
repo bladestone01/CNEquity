@@ -164,3 +164,8 @@ def test_load_raises_when_data_root_has_no_dataset(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     with pytest.raises(ReaderError, match="no parquet data for dataset 'daily_bars'"):
         load("daily_bars", config=cfg)
+
+
+def test_load_index_bars_rejects_universe_filter(lake):
+    with pytest.raises(ReaderError, match="index symbols are not in all_a"):
+        load("index_bars", universe="all_a", config=lake)

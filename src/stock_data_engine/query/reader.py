@@ -254,6 +254,7 @@ def load(
     universe:
         ``all_a`` — drop unlisted/delisted rows per day via ``instruments``, and
         drop ST/suspended rows when ``trading_status`` has data for that day.
+        Only valid for ``daily_bars`` (not ``index_bars``).
 
         **Limitation:** ``trading_status`` is daily-only (no historical ST
         backfill). Dates before the curated coverage start (see audit check
@@ -273,6 +274,11 @@ def load(
     if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
         raise ReaderError(f"unknown dataset {dataset!r}")
 
+    if universe and dataset == "index_bars":
+        raise ReaderError(
+            "universe filter applies to daily_bars only; index symbols are not in all_a"
+        )
+
     start_d = _parse_date(start)
     end_d = _parse_date(end)
     as_of_d = _parse_date(as_of)
@@ -290,7 +296,7 @@ def load(
     df = _apply_date_range(df, dataset, start_d, end_d)
     df = _apply_symbol_filter(df, symbols)
 
-    if universe and dataset in {"daily_bars", "index_bars"}:
+    if universe and dataset == "daily_bars":
         date_col = DATE_COLUMNS[dataset]
         df = apply_universe_filter(df, cfg, universe=universe, date_col=date_col)
 
