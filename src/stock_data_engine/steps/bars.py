@@ -11,9 +11,7 @@ from stock_data_engine.adapters.tdx_protocol.client import (
 from stock_data_engine.config import Config
 from stock_data_engine.orchestrator.registry import register_step
 from stock_data_engine.orchestrator.worker_pool import fetch_daily_bars_parallel
-from stock_data_engine.steps.common import incremental_window, load_symbols
-
-BACKFILL_START = date(2016, 1, 1)
+from stock_data_engine.steps.common import BACKFILL_START, incremental_window, load_symbols
 
 
 @register_step(

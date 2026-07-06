@@ -46,7 +46,14 @@ def test_corporate_actions_raises_without_allow_mock_on_backfill_path():
         tdx.fetch_corporate_actions(date(2024, 6, 28), primary_only=True)
 
 
-def test_trading_status_raises_without_allow_mock():
+def test_trading_status_raises_without_allow_mock(monkeypatch):
+    def _boom(*_a, **_kw):
+        raise RuntimeError("simulated EastMoney outage")
+
+    monkeypatch.setattr(
+        "stock_data_engine.adapters.tdx_protocol.client.fetch_trading_status_eastmoney",
+        _boom,
+    )
     with pytest.raises(tdx.TdxSourceError, match="trading_status"):
         tdx.fetch_trading_status(["600519.SH"], END)
 

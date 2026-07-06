@@ -13,6 +13,7 @@ from stock_data_engine.config import Config, WaveConfig
 from stock_data_engine.orchestrator.deps import step_execution_levels, validate_steps_registered
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.orchestrator.registry import get_step
+from stock_data_engine.steps.common import BACKFILL_START
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,10 @@ class JobEngine:
         results: list[dict[str, Any]] = []
 
         if worker_batches:
+            if any(
+                b["window_start"] == BACKFILL_START.isoformat() for b in worker_batches
+            ):
+                self.config._backfill = True
             batch_specs = []
             for batch in worker_batches:
                 symbols = json.loads(batch["symbols_json"] or "[]")
@@ -229,7 +234,10 @@ class JobEngine:
         run_id = self.manifest.start_run("init", {"phases": phases})
         for phase in phases:
             steps = phase_steps.get(phase, [])
-            backfill = phase == "phase2c_daily_bars_backfill"
+            backfill = phase in (
+                "phase2a_corporate_actions",
+                "phase2c_daily_bars_backfill",
+            )
             logger.info("Init phase %s: %s", phase, steps)
             result = self.run_job(
                 "init",

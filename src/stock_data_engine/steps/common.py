@@ -12,6 +12,7 @@ from stock_data_engine.storage import StagingWriter
 from stock_data_engine.storage.state import StateStore
 
 INCREMENTAL_LOOKBACK_DAYS = 5
+BACKFILL_START = date(2016, 1, 1)
 
 
 def write_simple(config: Config, run_id: str, dataset: str, df: pl.DataFrame) -> dict:
