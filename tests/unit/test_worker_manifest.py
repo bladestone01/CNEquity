@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -7,6 +7,7 @@ from stock_data_engine.config import load_config
 from stock_data_engine.orchestrator.engine import JobEngine
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.orchestrator.worker_pool import fetch_daily_bars_parallel
+from stock_data_engine.storage import StagingWriter
 from stock_data_engine.storage.layout import init_data_layout
 
 
@@ -94,3 +95,52 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
     curated = worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
     assert curated.exists()
     assert any(r.get("step") == "compact" for r in retry["results"])
+
+
+def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
+    from stock_data_engine.adapters.tdx_protocol import client as tdx
+
+    calls: list[list[str]] = []
+    worker_config.batch_stale_seconds = 60
+
+    def _fetch(symbols, start, end, **kwargs):
+        calls.append(list(symbols))
+        return tdx._mock_bars(symbols, start, end)
+
+    monkeypatch.setattr("stock_data_engine.orchestrator.worker_pool.fetch_daily_bars", _fetch)
+
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("daily")
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars", symbols=["000001.SZ"])
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+    writer = StagingWriter(worker_config.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-0",
+        tdx.normalize_with_source(
+            tdx._mock_bars(["000001.SZ"], date(2024, 6, 28), date(2024, 6, 28))
+        ),
+    )
+    manifest.start_batch(run_id, "batch-1", "daily_bars", "daily_bars", symbols=["600519.SH"])
+    old_start = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    with manifest._connect() as conn:
+        conn.execute(
+            "UPDATE ingestion_batches SET started_at = ? WHERE run_id = ? AND batch_id = ?",
+            (old_start, run_id, "batch-1"),
+        )
+
+    engine = JobEngine(worker_config)
+    retry = engine.run_job(
+        "daily",
+        date(2024, 6, 28),
+        run_id=run_id,
+        retry_failed_only=True,
+    )
+    assert retry["stale_marked_failed"] == 1
+    assert retry["retried"] == 1
+    assert retry["status"] == "success"
+    assert calls == [["600519.SH"]]
+    curated = worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
+    assert curated.exists()

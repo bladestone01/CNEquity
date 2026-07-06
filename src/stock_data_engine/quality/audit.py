@@ -15,16 +15,20 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
     context = context or {}
 
     for skip in context.get("compact_skipped_datasets") or []:
+        incomplete = skip.get(
+            "incomplete_batches",
+            skip.get("failed_batches", 0),
+        )
         findings.append(
             {
                 "dataset": skip["dataset"],
                 "severity": "warning",
                 "check": "compact_skipped",
                 "message": (
-                    f"{skip['failed_batches']} failed batch(es) in run; "
+                    f"{incomplete} incomplete batch(es) in run; "
                     "staging not merged and watermark not advanced"
                 ),
-                "failed_batches": skip["failed_batches"],
+                "incomplete_batches": incomplete,
             }
         )
 

@@ -101,12 +101,12 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
     audit_findings: list[dict] = []
 
     for ds in staged:
-        allowed, failed_count = compact_allowed(manifest, run_id, ds)
+        allowed, incomplete_count = compact_allowed(manifest, run_id, ds)
         if not allowed:
             skipped.append(
                 {
                     "dataset": ds,
-                    "failed_batches": failed_count,
+                    "incomplete_batches": incomplete_count,
                 }
             )
             continue

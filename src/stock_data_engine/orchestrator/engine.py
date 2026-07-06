@@ -169,9 +169,18 @@ class JobEngine:
             return {"step": name, "status": "failed", "error": str(exc), "elapsed": elapsed}
 
     def _retry_run(self, run_id: str, trade_date: date) -> dict[str, Any]:
+        stale_marked = self.manifest.mark_stale_running_batches_failed(
+            run_id,
+            stale_after_seconds=self.config.batch_stale_seconds,
+        )
         failed = self.manifest.get_failed_batches(run_id)
         if not failed:
-            return {"run_id": run_id, "status": "success", "retried": 0}
+            return {
+                "run_id": run_id,
+                "status": "success",
+                "retried": 0,
+                "stale_marked_failed": stale_marked,
+            }
 
         context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
         context.update(self.manifest.get_run_metadata(run_id))
@@ -197,20 +206,23 @@ class JobEngine:
             dataset = batch["dataset"]
             results.append(self._run_step(dataset, trade_date, run_id, context))
 
-        summary = self.manifest.run_summary(run_id)
-        failed_count = summary["batch_counts"].get("failed", 0)
-
-        if failed_count == 0:
+        if self.manifest.incomplete_batch_count(run_id) == 0:
             result = self._run_step("compact", trade_date, run_id, context)
             updates = result.get("context_updates")
             if updates:
                 context.update(updates)
             results.append(result)
-            summary = self.manifest.run_summary(run_id)
 
-        status = "failed" if summary["batch_counts"].get("failed", 0) else "success"
+        incomplete = self.manifest.incomplete_batch_count(run_id)
+        status = "failed" if incomplete else "success"
         self.manifest.finish_run(run_id, status)
-        return {"run_id": run_id, "status": status, "retried": len(failed), "results": results}
+        return {
+            "run_id": run_id,
+            "status": status,
+            "retried": len(failed),
+            "stale_marked_failed": stale_marked,
+            "results": results,
+        }
 
     def run_init_phases(self, trade_date: date | None = None) -> dict[str, Any]:
         trade_date = trade_date or date.today()

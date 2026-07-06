@@ -41,6 +41,7 @@ class Config:
     date_chunk_days: int = 30
     max_retries: int = 3
     retry_backoff_seconds: int = 5
+    batch_stale_seconds: int = 3600
     tdx_enabled: bool = True
     tdx_min_interval_ms: int = 50
     tdx_servers: str = "auto"
@@ -184,6 +185,7 @@ def load_config(path: str | Path) -> Config:
         date_chunk_days=int(orch.get("date_chunk_days", 30)),
         max_retries=int(orch.get("max_retries", 3)),
         retry_backoff_seconds=int(orch.get("retry_backoff_seconds", 5)),
+        batch_stale_seconds=int(orch.get("batch_stale_seconds", 3600)),
         tdx_enabled=bool(tdx.get("enabled", True)),
         tdx_min_interval_ms=int(tdx.get("min_interval_ms", 50)),
         tdx_servers=str(tdx.get("servers", "auto")),

@@ -4,7 +4,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -196,18 +196,70 @@ class Manifest:
             )
             return cur.fetchall()
 
-    def failed_batch_counts_by_dataset(self, run_id: str) -> dict[str, int]:
+    def incomplete_batch_counts_by_dataset(self, run_id: str) -> dict[str, int]:
+        """Count batches that are not status='success' (failed, running, etc.)."""
         with self._connect() as conn:
             cur = conn.execute(
                 """
                 SELECT dataset, COUNT(*) AS cnt
                 FROM ingestion_batches
-                WHERE run_id = ? AND status = 'failed'
+                WHERE run_id = ? AND status != 'success'
                 GROUP BY dataset
                 """,
                 (run_id,),
             )
             return {row["dataset"]: row["cnt"] for row in cur.fetchall()}
+
+    def incomplete_batch_count(self, run_id: str) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM ingestion_batches
+                WHERE run_id = ? AND status != 'success'
+                """,
+                (run_id,),
+            )
+            return int(cur.fetchone()["cnt"])
+
+    def mark_stale_running_batches_failed(
+        self, run_id: str, *, stale_after_seconds: float
+    ) -> int:
+        """Mark running batches older than *stale_after_seconds* as failed for retry."""
+        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        stale_ids: list[str] = []
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT batch_id, started_at
+                FROM ingestion_batches
+                WHERE run_id = ? AND status = 'running'
+                """,
+                (run_id,),
+            )
+            for row in cur:
+                started_raw = row["started_at"]
+                if started_raw is None:
+                    stale_ids.append(row["batch_id"])
+                    continue
+                started = datetime.fromisoformat(started_raw)
+                if started <= cutoff:
+                    stale_ids.append(row["batch_id"])
+            for batch_id in stale_ids:
+                conn.execute(
+                    """
+                    UPDATE ingestion_batches
+                    SET status = 'failed', finished_at = ?, error_message = ?
+                    WHERE run_id = ? AND batch_id = ?
+                    """,
+                    (
+                        _utcnow(),
+                        "batch timed out (worker likely crashed)",
+                        run_id,
+                        batch_id,
+                    ),
+                )
+        return len(stale_ids)
 
     def get_batches_for_run(self, run_id: str) -> list[sqlite3.Row]:
         with self._connect() as conn:

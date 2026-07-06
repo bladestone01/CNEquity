@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 
@@ -51,7 +51,36 @@ def test_compact_skips_dataset_with_failed_batches(tmp_path):
 
     result = step_compact(cfg, trade_date, run_id, {})
     skipped = result.get("context_updates", {}).get("compact_skipped_datasets", [])
-    assert skipped == [{"dataset": "daily_bars", "failed_batches": 1}]
+    assert skipped == [{"dataset": "daily_bars", "incomplete_batches": 1}]
+    assert state.get_date("daily_bars") == date(2024, 6, 27)
+    assert not (cfg.curated_root / "daily_bars" / "trade_date=2024-06-28").exists()
+
+
+def test_compact_skips_dataset_with_running_batches(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    run_id = "run-running"
+    trade_date = date(2024, 6, 28)
+    manifest = Manifest(cfg.manifest_path)
+
+    manifest.start_batch(run_id, "batch-ok", "daily_bars", "daily_bars", symbols=["000001.SZ"])
+    manifest.finish_batch(run_id, "batch-ok", "success", rows_written=1)
+    manifest.start_batch(run_id, "batch-stuck", "daily_bars", "daily_bars", symbols=["600519.SH"])
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-ok",
+        pl.DataFrame([_daily_bar_row("000001.SZ", trade_date)]),
+    )
+
+    state = StateStore(cfg.meta_root)
+    state.set_date("daily_bars", date(2024, 6, 27))
+
+    result = step_compact(cfg, trade_date, run_id, {})
+    skipped = result.get("context_updates", {}).get("compact_skipped_datasets", [])
+    assert skipped == [{"dataset": "daily_bars", "incomplete_batches": 1}]
     assert state.get_date("daily_bars") == date(2024, 6, 27)
     assert not (cfg.curated_root / "daily_bars" / "trade_date=2024-06-28").exists()
 
@@ -86,7 +115,7 @@ def test_audit_emits_compact_skipped_warning(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     run_id = "run-audit"
     trade_date = date(2024, 6, 28)
-    context = {"compact_skipped_datasets": [{"dataset": "daily_bars", "failed_batches": 2}]}
+    context = {"compact_skipped_datasets": [{"dataset": "daily_bars", "incomplete_batches": 2}]}
 
     step_audit(cfg, trade_date, run_id, context)
 
@@ -98,4 +127,23 @@ def test_audit_emits_compact_skipped_warning(tmp_path):
     warnings = [f for f in payload["findings"] if f.get("check") == "compact_skipped"]
     assert len(warnings) == 1
     assert warnings[0]["severity"] == "warning"
-    assert warnings[0]["failed_batches"] == 2
+    assert warnings[0]["incomplete_batches"] == 2
+
+
+def test_mark_stale_running_batches_failed(tmp_path):
+    cfg = Config(data_root=tmp_path / "data", batch_stale_seconds=60)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = "run-stale"
+    manifest.start_batch(run_id, "batch-stuck", "daily_bars", "daily_bars", symbols=["600519.SH"])
+    old_start = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    with manifest._connect() as conn:
+        conn.execute(
+            "UPDATE ingestion_batches SET started_at = ? WHERE run_id = ? AND batch_id = ?",
+            (old_start, run_id, "batch-stuck"),
+        )
+
+    marked = manifest.mark_stale_running_batches_failed(run_id, stale_after_seconds=60)
+    assert marked == 1
+    batches = manifest.get_batches_for_run(run_id)
+    assert batches[0]["status"] == "failed"
+    assert "timed out" in (batches[0]["error_message"] or "")
