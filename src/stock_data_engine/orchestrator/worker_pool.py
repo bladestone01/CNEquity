@@ -16,6 +16,11 @@ from stock_data_engine.storage import StagingWriter
 logger = logging.getLogger(__name__)
 
 
+def _symbol_batch_id(start: date, end: date, index: int) -> str:
+    """Unique batch id per symbol chunk and fetch window within a run."""
+    return f"{start.isoformat()}_{end.isoformat()}-batch-{index}"
+
+
 def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
     (
         symbols,
@@ -104,7 +109,7 @@ def fetch_daily_bars_parallel(
     else:
         batch_size = config.batch_size
         batches = [
-            (f"batch-{i}", symbols[i : i + batch_size])
+            (_symbol_batch_id(start, end, i), symbols[i : i + batch_size])
             for i in range(0, len(symbols), batch_size)
         ]
 

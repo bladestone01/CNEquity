@@ -51,7 +51,37 @@ def test_worker_pool_records_symbol_batches(worker_config, monkeypatch):
 
     batches = manifest.get_batches_for_run(run_id)
     assert len(batches) == 2
-    assert {b["batch_id"] for b in batches} == {"batch-0", "batch-1"}
+    assert {b["batch_id"] for b in batches} == {
+        "2024-06-27_2024-06-28-batch-0",
+        "2024-06-27_2024-06-28-batch-1",
+    }
+
+
+def test_symbol_batch_ids_unique_per_window(worker_config, monkeypatch):
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("test")
+
+    fetch_daily_bars_parallel(
+        worker_config,
+        ["600519.SH"],
+        date(2024, 6, 20),
+        date(2024, 6, 21),
+        run_id,
+        "daily_bars",
+    )
+    fetch_daily_bars_parallel(
+        worker_config,
+        ["600519.SH"],
+        date(2016, 1, 1),
+        date(2024, 6, 28),
+        run_id,
+        "daily_bars",
+    )
+
+    batches = manifest.get_batches_for_run(run_id)
+    assert len(batches) == 2
+    assert len({b["batch_id"] for b in batches}) == 2
 
 
 def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
