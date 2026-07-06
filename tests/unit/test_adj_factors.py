@@ -10,7 +10,11 @@ from stock_data_engine.adapters.sina.adj_factors import (
     to_sina_symbol,
 )
 from stock_data_engine.config import load_config
-from stock_data_engine.derive.adj_factors import _align_factors_to_bars, compute_adj_factors
+from stock_data_engine.derive.adj_factors import (
+    _align_factors_to_bars,
+    _cache_path,
+    compute_adj_factors,
+)
 
 
 def test_to_sina_symbol():
@@ -136,6 +140,104 @@ def test_compute_adj_factors_writes_derived(adj_config):
     assert df["factor"][0] == 0.5
     assert df["adjust_type"][0] == "hfq"
     assert df["source"][0] == "sina"
+
+
+def _write_bar(cfg, symbol: str, trade_date: date) -> None:
+    bars_dir = cfg.curated_root / "daily_bars" / f"trade_date={trade_date.isoformat()}"
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": [symbol],
+            "trade_date": [trade_date],
+            "open": [1.0],
+            "high": [1.0],
+            "low": [1.0],
+            "close": [1.0],
+            "volume": [100],
+            "amount": [100.0],
+        }
+    ).write_parquet(bars_dir / f"{symbol.replace('.', '_')}.parquet")
+
+
+def _write_factor_cache(cfg, symbol: str, trade_date: date, factor: float = 0.5) -> None:
+    path = _cache_path(cfg, symbol, "hfq")
+    pl.DataFrame({"trade_date": [trade_date], "factor": [factor]}).write_parquet(path)
+
+
+def test_compute_adj_factors_reuses_cache_on_non_event_day(adj_config, monkeypatch):
+    _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 29)], "factor": [0.8]})
+
+    monkeypatch.setattr(
+        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+    assert calls == []
+    assert result.rows == 2
+    out = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-29" / "part-0.parquet"
+    df = pl.read_parquet(out)
+    assert df["factor"][0] == 0.5
+
+
+def test_compute_adj_factors_refreshes_corporate_action_symbol(adj_config, monkeypatch):
+    _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
+    ca_dir = adj_config.curated_root / "corporate_actions" / "ex_date=2024-06-29"
+    ca_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "ex_date": [date(2024, 6, 29)],
+            "action_type": ["dividend"],
+        }
+    ).write_parquet(ca_dir / "part-0.parquet")
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 29)], "factor": [0.8]})
+
+    monkeypatch.setattr(
+        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    compute_adj_factors(adj_config)
+    assert calls == ["600519.SH"]
+
+
+def test_compute_adj_factors_refreshes_new_listing(adj_config, monkeypatch):
+    _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_factor_cache(adj_config, "000001.SZ", date(2024, 6, 28))
+    _write_bar(adj_config, "000001.SZ", date(2024, 6, 29))
+    inst_dir = adj_config.curated_root / "instruments"
+    inst_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"],
+            "list_date": [date(2024, 6, 29)],
+        }
+    ).write_parquet(inst_dir / "part-merged.parquet")
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 29)], "factor": [1.0]})
+
+    monkeypatch.setattr(
+        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    compute_adj_factors(adj_config)
+    assert calls == ["000001.SZ"]
 
 
 def test_resolve_factors_raises_without_cache(adj_config, monkeypatch):

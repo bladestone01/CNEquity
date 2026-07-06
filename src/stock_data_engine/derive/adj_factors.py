@@ -109,8 +109,46 @@ def _save_cache(config: Config, symbol: str, adjust_type: str, factors: pl.DataF
     factors.write_parquet(path, compression="zstd")
 
 
+def _read_parquet_files(files: list[Path]) -> pl.DataFrame:
+    if not files:
+        return pl.DataFrame()
+    return pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+
+
+def _corporate_action_symbols_on(config: Config, trade_date: date) -> set[str]:
+    root = config.curated_root / "corporate_actions"
+    if not root.exists():
+        return set()
+
+    part_files = list((root / f"ex_date={trade_date.isoformat()}").glob("**/*.parquet"))
+    files = part_files or list(root.glob("**/*.parquet"))
+    df = _read_parquet_files(files)
+    if df.is_empty() or not {"symbol", "ex_date"}.issubset(df.columns):
+        return set()
+    today = df.filter(pl.col("ex_date") == trade_date)
+    return set(today["symbol"].unique().to_list())
+
+
+def _new_listing_symbols_on(config: Config, trade_date: date) -> set[str]:
+    root = config.curated_root / "instruments"
+    if not root.exists():
+        return set()
+
+    df = _read_parquet_files(list(root.glob("**/*.parquet")))
+    if df.is_empty() or not {"symbol", "list_date"}.issubset(df.columns):
+        return set()
+    listed = df.filter(pl.col("list_date") == trade_date)
+    return set(listed["symbol"].unique().to_list())
+
+
+def _event_refresh_symbols(config: Config, trade_date: date) -> set[str]:
+    """Symbols whose factor cache should be refreshed for this trading date."""
+    return _corporate_action_symbols_on(config, trade_date) | _new_listing_symbols_on(
+        config, trade_date
+    )
+
+
 def _needs_refresh(
-    sym_bars: pl.DataFrame,
     cached: pl.DataFrame | None,
     force: bool,
 ) -> bool:
@@ -118,7 +156,7 @@ def _needs_refresh(
         return True
     if cached is None or cached.is_empty():
         return True
-    return sym_bars["trade_date"].max() > cached["trade_date"].max()
+    return False
 
 
 def _resolve_factors(
@@ -131,7 +169,7 @@ def _resolve_factors(
     client: httpx.Client,
 ) -> pl.DataFrame | None:
     cached = _load_cache(config, symbol, adjust_type)
-    if not _needs_refresh(sym_bars, cached, force):
+    if not _needs_refresh(cached, force):
         return cached
 
     source = config.adj_factors_source
@@ -213,7 +251,10 @@ def compute_adj_factors(
             STORED_ADJUST_TYPE,
         )
     adjust_types = [STORED_ADJUST_TYPE]
+    latest_trade_date = bars["trade_date"].max()
     refresh_set = set(refresh_symbols or [])
+    if isinstance(latest_trade_date, date):
+        refresh_set |= _event_refresh_symbols(config, latest_trade_date)
     workers = max(1, min(config.workers, 16))
 
     tasks: list[tuple[str, str, pl.DataFrame, bool]] = []
