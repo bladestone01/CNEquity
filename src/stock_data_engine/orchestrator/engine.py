@@ -90,6 +90,17 @@ class JobEngine:
             total_written += wave_written
             had_error = had_error or wave_error
 
+            if "daily_bars" in wave.steps:
+                promoted = self.manifest.promote_running_to_stale(
+                    run_id, stale_after_seconds=self.config.batch_stale_seconds
+                )
+                if promoted:
+                    logger.warning(
+                        "Promoted %s running batch(es) to stale after wave %s",
+                        promoted,
+                        wave.name,
+                    )
+
         status = "failed" if had_error else "success"
         self.manifest.finish_run(
             run_id,
@@ -187,10 +198,11 @@ class JobEngine:
             return {"step": name, "status": "failed", "error": str(exc), "elapsed": elapsed}
 
     def _retry_run(self, run_id: str, trade_date: date) -> dict[str, Any]:
-        stale_marked = self.manifest.mark_stale_running_batches_failed(
+        timeout = self.manifest.advance_batch_timeouts(
             run_id,
             stale_after_seconds=self.config.batch_stale_seconds,
         )
+        stale_marked = timeout["running_to_stale"] + timeout["stale_to_failed"]
         failed = self.manifest.get_failed_batches(run_id)
         if not failed:
             return {
@@ -198,6 +210,7 @@ class JobEngine:
                 "status": "success",
                 "retried": 0,
                 "stale_marked_failed": stale_marked,
+                "batch_timeout": timeout,
             }
 
         context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
@@ -240,6 +253,7 @@ class JobEngine:
             "status": status,
             "retried": len(failed),
             "stale_marked_failed": stale_marked,
+            "batch_timeout": timeout,
             "results": results,
         }
 

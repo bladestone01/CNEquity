@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -245,14 +246,23 @@ def fetch_daily_bars(
     allow_mock: bool = False,
     backfill: bool = False,
     config: Config | None = None,
+    on_heartbeat: Callable[[], None] | None = None,
 ) -> pl.DataFrame:
     try:
         client = _quotes_client(config)
         rows = []
         for sym in symbols:
+            if on_heartbeat is not None:
+                on_heartbeat()
             rows.extend(
                 fetch_bars_paginated(
-                    client, sym, start, end, rate_limit=rate_limit, backfill=backfill
+                    client,
+                    sym,
+                    start,
+                    end,
+                    rate_limit=rate_limit,
+                    backfill=backfill,
+                    on_page=on_heartbeat,
                 )
             )
         if rows:

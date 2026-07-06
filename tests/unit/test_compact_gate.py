@@ -138,12 +138,16 @@ def test_mark_stale_running_batches_failed(tmp_path):
     old_start = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     with manifest._connect() as conn:
         conn.execute(
-            "UPDATE ingestion_batches SET started_at = ? WHERE run_id = ? AND batch_id = ?",
-            (old_start, run_id, "batch-stuck"),
+            """
+            UPDATE ingestion_batches
+            SET started_at = ?, heartbeat_at = ?
+            WHERE run_id = ? AND batch_id = ?
+            """,
+            (old_start, old_start, run_id, "batch-stuck"),
         )
 
     marked = manifest.mark_stale_running_batches_failed(run_id, stale_after_seconds=60)
-    assert marked == 1
+    assert marked == 2
     batches = manifest.get_batches_for_run(run_id)
     assert batches[0]["status"] == "failed"
-    assert "timed out" in (batches[0]["error_message"] or "")
+    assert "heartbeat" in (batches[0]["error_message"] or "").lower()

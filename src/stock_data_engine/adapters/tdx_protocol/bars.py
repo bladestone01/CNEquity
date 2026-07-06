@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date
 
 import polars as pl
@@ -77,6 +78,7 @@ def fetch_bars_paginated(
     *,
     rate_limit: RateLimitSpec | None = None,
     backfill: bool = False,
+    on_page: Callable[[], None] | None = None,
 ) -> list[dict]:
     """Fetch daily bars for *sym* in [start, end], paging through TDX history."""
     code, exch = sym.split(".")
@@ -123,6 +125,8 @@ def fetch_bars_paginated(
         if len(pdf) < _PAGE_SIZE:
             break
         offset_pos += _PAGE_SIZE
+        if on_page is not None:
+            on_page()
 
     if not all_rows:
         return []

@@ -12,36 +12,7 @@ from stock_data_engine.storage import StagingWriter, compact_dataset
 from stock_data_engine.storage.instruments import compact_instruments
 from stock_data_engine.storage.state import StateStore
 
-_PARTITION_COLS = {
-    "instruments": None,
-    "trading_calendar": "trade_date",
-    "trading_status": "trade_date",
-    "daily_bars": "trade_date",
-    "index_bars": "trade_date",
-    "corporate_actions": "ex_date",
-    "fund_flow": "trade_date",
-    "margin_trading": "trade_date",
-    "northbound_holdings": "trade_date",
-    "northbound_flows": "trade_date",
-    "valuation_metrics": "trade_date",
-    "sector_members": "as_of_date",
-    "announcement_index": "announce_date",
-    "dragon_tiger": "trade_date",
-    "block_trades": "trade_date",
-    "financial_statement_items": "report_period",
-    "index_constituents": "as_of_date",
-    "industry_members": "as_of_date",
-    "macro_indicators": "obs_date",
-    "market_breadth": "trade_date",
-    "share_unlock_schedule": "unlock_date",
-    "regulatory_events": "event_date",
-    "institutional_holdings": "report_period",
-    "analyst_consensus": "forecast_date",
-    "sentiment_scores": "trade_date",
-}
-
-# Datasets partitioned by non-date keys — skip date-based watermarks.
-_WATERMARK_SKIP = frozenset({"financial_statement_items", "institutional_holdings"})
+from stock_data_engine.domain.datasets import PARTITION_COLS, WATERMARK_SKIP
 
 
 def _max_partition_date(config: Config, dataset: str, partition_col: str) -> date | None:
@@ -73,8 +44,8 @@ def _max_partition_date(config: Config, dataset: str, partition_col: str) -> dat
 
 def _update_watermarks(config: Config, datasets: frozenset[str] | None = None) -> None:
     state = StateStore(config.meta_root)
-    for dataset, pcol in _PARTITION_COLS.items():
-        if pcol is None or dataset in _WATERMARK_SKIP:
+    for dataset, pcol in PARTITION_COLS.items():
+        if pcol is None or dataset in WATERMARK_SKIP:
             continue
         if datasets is not None and dataset not in datasets:
             continue
@@ -92,7 +63,7 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
     writer = StagingWriter(config.staging_root)
     staged = [
         ds
-        for ds in _PARTITION_COLS
+        for ds in PARTITION_COLS
         if writer.list_run_files(ds, run_id)
     ]
     total = 0
@@ -101,7 +72,12 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
     audit_findings: list[dict] = []
 
     for ds in staged:
-        allowed, incomplete_count = compact_allowed(manifest, run_id, ds)
+        allowed, incomplete_count = compact_allowed(
+            manifest,
+            run_id,
+            ds,
+            stale_after_seconds=config.batch_stale_seconds,
+        )
         if not allowed:
             skipped.append(
                 {
@@ -111,7 +87,7 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
             )
             continue
 
-        pcol = _PARTITION_COLS[ds]
+        pcol = PARTITION_COLS[ds]
         if ds == "instruments":
             rows, inst_findings = compact_instruments(
                 config.staging_root,

@@ -158,8 +158,12 @@ def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
     old_start = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     with manifest._connect() as conn:
         conn.execute(
-            "UPDATE ingestion_batches SET started_at = ? WHERE run_id = ? AND batch_id = ?",
-            (old_start, run_id, "batch-1"),
+            """
+            UPDATE ingestion_batches
+            SET started_at = ?, heartbeat_at = ?
+            WHERE run_id = ? AND batch_id = ?
+            """,
+            (old_start, old_start, run_id, "batch-1"),
         )
 
     engine = JobEngine(worker_config)
@@ -169,7 +173,8 @@ def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
         run_id=run_id,
         retry_failed_only=True,
     )
-    assert retry["stale_marked_failed"] == 1
+    assert retry["stale_marked_failed"] == 2
+    assert retry["batch_timeout"] == {"running_to_stale": 1, "stale_to_failed": 1}
     assert retry["retried"] == 1
     assert retry["status"] == "success"
     assert calls == [["600519.SH"]]

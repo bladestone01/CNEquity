@@ -89,6 +89,7 @@ class Manifest:
                     started_at TEXT,
                     finished_at TEXT,
                     error_message TEXT,
+                    heartbeat_at TEXT,
                     PRIMARY KEY (run_id, batch_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_batches_run_status
@@ -97,6 +98,21 @@ class Manifest:
                     ON ingestion_batches(dataset, status);
                 """
             )
+            cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(ingestion_batches)")
+            }
+            if "heartbeat_at" not in cols:
+                conn.execute(
+                    "ALTER TABLE ingestion_batches ADD COLUMN heartbeat_at TEXT"
+                )
+
+    @staticmethod
+    def _batch_activity_at(row: sqlite3.Row) -> datetime | None:
+        for field in ("heartbeat_at", "started_at"):
+            raw = row[field]
+            if raw:
+                return datetime.fromisoformat(raw)
+        return None
 
     def start_run(self, job_name: str, metadata: dict[str, Any] | None = None) -> str:
         run_id = str(uuid.uuid4())
@@ -138,13 +154,14 @@ class Manifest:
         window_start: str | None = None,
         window_end: str | None = None,
     ) -> None:
+        now = _utcnow()
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO ingestion_batches (
                     run_id, batch_id, task_id, dataset, status, symbols_json,
-                    window_start, window_end, started_at, retry_count
-                ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, 0)
+                    window_start, window_end, started_at, heartbeat_at, retry_count
+                ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, 0)
                 """,
                 (
                     run_id,
@@ -154,8 +171,21 @@ class Manifest:
                     json.dumps(symbols or []),
                     window_start,
                     window_end,
-                    _utcnow(),
+                    now,
+                    now,
                 ),
+            )
+
+    def touch_batch_heartbeat(self, run_id: str, batch_id: str) -> None:
+        """Refresh liveness timestamp for a running batch."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_batches
+                SET heartbeat_at = ?
+                WHERE run_id = ? AND batch_id = ? AND status = 'running'
+                """,
+                (_utcnow(), run_id, batch_id),
             )
 
     def finish_batch(
@@ -222,29 +252,51 @@ class Manifest:
             )
             return int(cur.fetchone()["cnt"])
 
-    def mark_stale_running_batches_failed(
+    def promote_running_to_stale(
         self, run_id: str, *, stale_after_seconds: float
     ) -> int:
-        """Mark running batches older than *stale_after_seconds* as failed for retry."""
+        """Mark running batches with expired heartbeats as stale."""
         cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
         stale_ids: list[str] = []
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                SELECT batch_id, started_at
+                SELECT batch_id, started_at, heartbeat_at
                 FROM ingestion_batches
                 WHERE run_id = ? AND status = 'running'
                 """,
                 (run_id,),
             )
             for row in cur:
-                started_raw = row["started_at"]
-                if started_raw is None:
+                activity = self._batch_activity_at(row)
+                if activity is None or activity <= cutoff:
                     stale_ids.append(row["batch_id"])
-                    continue
-                started = datetime.fromisoformat(started_raw)
-                if started <= cutoff:
-                    stale_ids.append(row["batch_id"])
+            for batch_id in stale_ids:
+                conn.execute(
+                    """
+                    UPDATE ingestion_batches
+                    SET status = 'stale', error_message = ?
+                    WHERE run_id = ? AND batch_id = ?
+                    """,
+                    (
+                        "batch heartbeat timed out (worker likely stuck or crashed)",
+                        run_id,
+                        batch_id,
+                    ),
+                )
+        return len(stale_ids)
+
+    def promote_stale_to_failed(self, run_id: str) -> int:
+        """Promote stale batches to failed so retry can pick them up."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT batch_id FROM ingestion_batches
+                WHERE run_id = ? AND status = 'stale'
+                """,
+                (run_id,),
+            )
+            stale_ids = [row["batch_id"] for row in cur]
             for batch_id in stale_ids:
                 conn.execute(
                     """
@@ -254,12 +306,34 @@ class Manifest:
                     """,
                     (
                         _utcnow(),
-                        "batch timed out (worker likely crashed)",
+                        "batch promoted from stale after heartbeat timeout",
                         run_id,
                         batch_id,
                     ),
                 )
         return len(stale_ids)
+
+    def advance_batch_timeouts(
+        self, run_id: str, *, stale_after_seconds: float
+    ) -> dict[str, int]:
+        """Apply running→stale→failed lifecycle for timed-out batches."""
+        running_to_stale = self.promote_running_to_stale(
+            run_id, stale_after_seconds=stale_after_seconds
+        )
+        stale_to_failed = self.promote_stale_to_failed(run_id)
+        return {
+            "running_to_stale": running_to_stale,
+            "stale_to_failed": stale_to_failed,
+        }
+
+    def mark_stale_running_batches_failed(
+        self, run_id: str, *, stale_after_seconds: float
+    ) -> int:
+        """Backward-compatible alias: full running→stale→failed promotion."""
+        result = self.advance_batch_timeouts(
+            run_id, stale_after_seconds=stale_after_seconds
+        )
+        return result["running_to_stale"] + result["stale_to_failed"]
 
     def get_batches_for_run(self, run_id: str) -> list[sqlite3.Row]:
         with self._connect() as conn:

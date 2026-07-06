@@ -73,7 +73,12 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
         config_path, staging_root, allow_mock=allow_mock, backfill=backfill
     )
 
+    def _heartbeat() -> None:
+        if manifest:
+            manifest.touch_batch_heartbeat(run_id, batch_id)
+
     try:
+        _heartbeat()
         df = fetch_daily_bars(
             symbols,
             start,
@@ -82,6 +87,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             allow_mock=allow_mock,
             backfill=backfill,
             config=tdx_cfg,
+            on_heartbeat=_heartbeat,
         )
         df = normalize_with_source(df)
         writer = StagingWriter(staging_root)
@@ -162,6 +168,10 @@ def fetch_daily_bars_parallel(
             window_end=end.isoformat(),
         )
         try:
+            def _heartbeat() -> None:
+                manifest.touch_batch_heartbeat(run_id, batch_id)
+
+            _heartbeat()
             df = fetch_daily_bars(
                 batch_symbols,
                 start,
@@ -170,6 +180,7 @@ def fetch_daily_bars_parallel(
                 allow_mock=config.tdx_allow_mock,
                 backfill=getattr(config, "_backfill", False),
                 config=config,
+                on_heartbeat=_heartbeat,
             )
             df = normalize_with_source(df)
             writer = StagingWriter(staging_root)
