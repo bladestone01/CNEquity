@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
+import tempfile
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -17,12 +22,45 @@ class StateStore:
     def _path(self, dataset: str) -> Path:
         return self.root / f"{dataset}.json"
 
-    def get_date(self, dataset: str, field: str = "last_success_trade_date") -> date | None:
-        path = self._path(dataset)
+    def _lock_path(self, dataset: str) -> Path:
+        return self.root / f"{dataset}.lock"
+
+    @contextlib.contextmanager
+    def _dataset_lock(self, dataset: str) -> Iterator[None]:
+        self.root.mkdir(parents=True, exist_ok=True)
+        with open(self._lock_path(dataset), "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+    def _read_payload(self, path: Path) -> dict:
         if not path.exists():
-            return None
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        value = raw.get(field)
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _write_payload(self, path: Path, payload: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.stem}-",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def get_date(self, dataset: str, field: str = "last_success_trade_date") -> date | None:
+        with self._dataset_lock(dataset):
+            value = self._read_payload(self._path(dataset)).get(field)
         if not value:
             return None
         return date.fromisoformat(str(value))
@@ -35,13 +73,11 @@ class StateStore:
         field: str = "last_success_trade_date",
     ) -> None:
         path = self._path(dataset)
-        payload = {
-            field: value.isoformat(),
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
-        if path.exists():
-            payload = {**json.loads(path.read_text(encoding="utf-8")), **payload}
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with self._dataset_lock(dataset):
+            payload = self._read_payload(path)
+            payload[field] = value.isoformat()
+            payload["updated_at"] = datetime.now(UTC).isoformat()
+            self._write_payload(path, payload)
 
     def update_max_date(
         self,
@@ -50,6 +86,12 @@ class StateStore:
         *,
         field: str = "last_success_trade_date",
     ) -> None:
-        current = self.get_date(dataset, field=field)
-        if current is None or candidate > current:
-            self.set_date(dataset, candidate, field=field)
+        path = self._path(dataset)
+        with self._dataset_lock(dataset):
+            payload = self._read_payload(path)
+            current_raw = payload.get(field)
+            current = date.fromisoformat(str(current_raw)) if current_raw else None
+            if current is None or candidate > current:
+                payload[field] = candidate.isoformat()
+                payload["updated_at"] = datetime.now(UTC).isoformat()
+                self._write_payload(path, payload)
