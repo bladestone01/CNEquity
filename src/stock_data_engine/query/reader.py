@@ -10,6 +10,7 @@ from typing import Literal
 import polars as pl
 
 from stock_data_engine.config import Config, load_config
+from stock_data_engine.derive.adj_factors import STORED_ADJUST_TYPE
 from stock_data_engine.domain.schemas import DATASET_SCHEMAS, validate_dataframe
 from stock_data_engine.query.universe import apply_universe_filter
 
@@ -161,6 +162,27 @@ def _apply_symbol_filter(df: pl.DataFrame, symbols: list[str] | None) -> pl.Data
     return df.filter(pl.col("symbol").is_in(symbols))
 
 
+def _hfq_anchor_factors(
+    factors: pl.DataFrame,
+    bars: pl.DataFrame,
+    end: date | None,
+) -> pl.DataFrame:
+    """Per-symbol hfq factor at the qfq anchor date (latest date in scope)."""
+    if end is not None:
+        anchor_bars = bars.filter(pl.col("trade_date") <= end)
+        anchor_factors = factors.filter(pl.col("trade_date") <= end)
+    else:
+        anchor_bars = bars
+        anchor_factors = factors
+
+    bar_anchors = anchor_bars.group_by("symbol").agg(pl.col("trade_date").max().alias("anchor_date"))
+    return (
+        anchor_factors.join(bar_anchors, on="symbol")
+        .filter(pl.col("trade_date") == pl.col("anchor_date"))
+        .select(["symbol", pl.col("factor").alias("hfq_anchor")])
+    )
+
+
 def _apply_adjustment(
     bars: pl.DataFrame,
     config: Config,
@@ -188,9 +210,29 @@ def _apply_adjustment(
         logger.warning("adj_factors missing; adj_is_exact=False for all rows")
         return out
 
-    factors = factors.filter(pl.col("adjust_type") == adjust)
+    factors = factors.filter(pl.col("adjust_type") == STORED_ADJUST_TYPE)
+    if factors.is_empty():
+        raise ReaderError(
+            f"adj_factors has no {STORED_ADJUST_TYPE!r} rows; re-run derive (ADR-0004)"
+        )
+
     factors = _apply_date_range(factors, "adj_factors", start, end)
     factors = factors.select(["symbol", "trade_date", "factor"])
+
+    if adjust == "qfq":
+        anchors = _hfq_anchor_factors(
+            _read_dataset(config, "adj_factors").filter(
+                pl.col("adjust_type") == STORED_ADJUST_TYPE
+            ),
+            bars,
+            end,
+        )
+        factors = factors.join(anchors, on="symbol", how="left")
+        factors = factors.with_columns(
+            (pl.col("factor") / pl.col("hfq_anchor")).alias("factor")
+        ).drop("hfq_anchor")
+    elif adjust != "hfq":
+        raise ReaderError(f"unsupported adjust type {adjust!r}")
 
     joined = bars.join(factors, on=["symbol", "trade_date"], how="left")
     joined = joined.with_columns(pl.col("factor").is_not_null().alias("adj_is_exact"))
@@ -246,11 +288,10 @@ def load(
     start, end:
         Inclusive date window on the dataset's primary date column.
     adjust:
-        ``qfq`` or ``hfq`` — joins ``adj_factors`` and adds ``adj_open`` … ``adj_close``
-        plus ``adj_is_exact`` (``True`` when a factor row exists for that bar).
-        Rows with ``adj_is_exact=False`` used factor=1.0 (unadjusted); pass
-        ``strict_adj=True`` to raise instead.
-        Only applies to ``daily_bars`` / ``index_bars``.
+        ``qfq`` or ``hfq`` — joins stored ``hfq`` ``adj_factors`` and adds
+        ``adj_open`` … ``adj_close`` plus ``adj_is_exact``. ``qfq`` is derived
+        at query time as ``hfq_factor / hfq_anchor`` (anchor = latest bar date
+        in scope); only ``hfq`` is persisted (ADR-0004).
     universe:
         ``all_a`` — drop unlisted/delisted rows per day via ``instruments``, and
         drop ST/suspended rows when ``trading_status`` has data for that day.

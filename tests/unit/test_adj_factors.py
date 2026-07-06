@@ -87,7 +87,7 @@ min_interval_seconds = 0
 
 [adj_factors]
 source = "sina"
-adjust_types = ["qfq"]
+adjust_types = ["hfq"]
 
 [[job.daily.waves]]
 name = "finalize"
@@ -129,6 +129,7 @@ def test_compute_adj_factors_writes_derived(adj_config):
     assert out.exists()
     df = pl.read_parquet(out)
     assert df["factor"][0] == 0.5
+    assert df["adjust_type"][0] == "hfq"
     assert df["source"][0] == "sina"
 
 
@@ -147,7 +148,7 @@ def test_resolve_factors_raises_without_cache(adj_config, monkeypatch):
         _resolve_factors(
             adj_config,
             "600519.SH",
-            "qfq",
+            "hfq",
             sym_bars,
             force=True,
             client=object(),

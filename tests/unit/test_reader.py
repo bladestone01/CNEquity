@@ -132,6 +132,49 @@ def test_load_daily_bars_universe_filters_st_and_suspended(lake):
     assert set(df["symbol"].to_list()) == {"600519.SH"}
 
 
+def test_load_daily_bars_qfq_derived_from_hfq(lake):
+    bars_dir = lake.curated_root / "daily_bars" / "trade_date=2024-06-26"
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 26)],
+            "open": [10.0],
+            "high": [10.0],
+            "low": [10.0],
+            "close": [10.0],
+            "volume": [1000],
+            "amount": [10000.0],
+            **_prov(),
+        }
+    ).write_parquet(bars_dir / "part-0.parquet")
+
+    for td, factor in ((date(2024, 6, 26), 2.0), (date(2024, 6, 27), 4.0)):
+        adj_dir = lake.derived_root / "adj_factors" / f"trade_date={td.isoformat()}"
+        adj_dir.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [td],
+                "adjust_type": ["hfq"],
+                "factor": [factor],
+                **_prov("sina"),
+            }
+        ).write_parquet(adj_dir / "part-0.parquet")
+
+    df = load(
+        "daily_bars",
+        start="2024-06-26",
+        end="2024-06-27",
+        adjust="qfq",
+        config=lake,
+    )
+    moutai = df.filter(pl.col("symbol") == "600519.SH").sort("trade_date")
+    assert moutai["adj_close"][0] == pytest.approx(5.0)  # 10 * (2/4)
+    assert moutai["adj_close"][1] == pytest.approx(10.5)  # anchor date
+    assert moutai["adj_is_exact"].all()
+
+
 def test_load_financial_statement_items_pit(lake):
     df = load(
         "financial_statement_items",

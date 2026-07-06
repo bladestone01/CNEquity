@@ -16,6 +16,9 @@ from stock_data_engine.storage.atomic import write_parquet_atomic
 
 logger = logging.getLogger(__name__)
 
+# Only hfq is persisted; qfq is derived at query time (ADR-0004).
+STORED_ADJUST_TYPE = "hfq"
+
 # Derive step fails when uncached fetch failures exceed this share of symbol×type tasks.
 FAIL_RATIO_THRESHOLD = 0.05
 
@@ -199,6 +202,15 @@ def compute_adj_factors(
         return AdjFactorsResult(0, 0, [], [])
 
     adjust_types = [adjust_type] if adjust_type else list(config.adj_factors_types)
+    skipped = [t for t in adjust_types if t != STORED_ADJUST_TYPE]
+    if skipped:
+        logger.warning(
+            "adj_factors: ignoring non-persisted adjust_types %s (only %s is stored; "
+            "derive qfq via load(..., adjust='qfq') — ADR-0004)",
+            skipped,
+            STORED_ADJUST_TYPE,
+        )
+    adjust_types = [STORED_ADJUST_TYPE]
     refresh_set = set(refresh_symbols or [])
     symbols = bars["symbol"].unique().to_list()
     workers = max(1, min(config.workers, 16))

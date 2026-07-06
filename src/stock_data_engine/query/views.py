@@ -91,10 +91,24 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
     con.execute(
         """
         CREATE OR REPLACE VIEW daily_bars_adj AS
-        SELECT b.*, b.close * COALESCE(a.factor, 1.0) AS adj_close
+        WITH hfq AS (
+            SELECT symbol, trade_date, factor
+            FROM adj_factors
+            WHERE adjust_type = 'hfq'
+        ),
+        anchors AS (
+            SELECT symbol, factor AS hfq_anchor
+            FROM hfq
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) = 1
+        )
+        SELECT
+            b.*,
+            b.close * COALESCE(h.factor / a.hfq_anchor, 1.0) AS adj_close
         FROM daily_bars b
-        LEFT JOIN adj_factors a
-          ON b.symbol = a.symbol AND b.trade_date = a.trade_date AND a.adjust_type = 'qfq'
+        LEFT JOIN hfq h
+          ON b.symbol = h.symbol AND b.trade_date = h.trade_date
+        LEFT JOIN anchors a
+          ON b.symbol = a.symbol
         """
     )
     con.close()
