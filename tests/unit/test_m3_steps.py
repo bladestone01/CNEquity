@@ -61,6 +61,9 @@ def cfg(tmp_path):
 
 def test_step_fund_flow_writes_staging(cfg, monkeypatch):
     from stock_data_engine.steps import capital as cap
+    from stock_data_engine.storage.state import StateStore
+
+    StateStore(cfg.meta_root).set_date("fund_flow", date(2024, 6, 27))
 
     def fake_fetch(trade_date, **kwargs):
         return pl.DataFrame(

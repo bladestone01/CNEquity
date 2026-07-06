@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, timedelta
 
 import polars as pl
@@ -28,6 +29,80 @@ def incremental_window(config: Config, dataset: str, trade_date: date) -> date:
     if watermark is not None:
         return min(watermark + timedelta(days=1), trade_date)
     return trade_date - timedelta(days=INCREMENTAL_LOOKBACK_DAYS)
+
+
+def _load_trading_calendar_df(config: Config) -> pl.DataFrame | None:
+    curated = config.curated_root / "trading_calendar"
+    if curated.exists():
+        files = list(curated.glob("**/*.parquet"))
+        if files:
+            return pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+    staging = list(config.staging_root.glob("trading_calendar/**/*.parquet"))
+    if staging:
+        latest = max(staging, key=lambda p: p.stat().st_mtime)
+        return pl.read_parquet(latest)
+    return None
+
+
+def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
+    """Trading days in [start, end] from curated/staging calendar, else Mon–Fri."""
+    if start > end:
+        return []
+    cal = _load_trading_calendar_df(config)
+    if cal is not None and not cal.is_empty() and "trade_date" in cal.columns:
+        out = (
+            cal.filter(
+                pl.col("is_trading")
+                & (pl.col("trade_date") >= start)
+                & (pl.col("trade_date") <= end)
+            )["trade_date"]
+            .sort()
+            .to_list()
+        )
+        if out:
+            return out
+    dates: list[date] = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            dates.append(d)
+        d += timedelta(days=1)
+    return dates
+
+
+def incremental_trade_dates(config: Config, dataset: str, trade_date: date) -> list[date]:
+    """Trading days to fetch for a daily dataset: [watermark+1, trade_date]."""
+    start = incremental_window(config, dataset, trade_date)
+    return list_trading_dates(config, start, trade_date)
+
+
+def fetch_incremental_daily(
+    config: Config,
+    dataset: str,
+    trade_date: date,
+    fetch_fn: Callable[[date], pl.DataFrame],
+    *,
+    allow_empty: bool = False,
+) -> pl.DataFrame:
+    """Fetch one or more trading days from watermark+1 through *trade_date*."""
+    if getattr(config, "_backfill", False):
+        return fetch_fn(trade_date)
+
+    dates = incremental_trade_dates(config, dataset, trade_date)
+    if not dates:
+        return pl.DataFrame()
+
+    frames: list[pl.DataFrame] = []
+    for d in dates:
+        part = fetch_fn(d)
+        if part.is_empty():
+            if not allow_empty:
+                raise RuntimeError(f"{dataset}: no rows returned for {d.isoformat()}")
+            continue
+        frames.append(part)
+    if not frames:
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def load_symbols(config: Config) -> list[str]:

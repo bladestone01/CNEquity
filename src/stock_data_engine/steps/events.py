@@ -16,8 +16,8 @@ from stock_data_engine.quality.failover import (
     snapshot_corporate_actions_backup,
     snapshot_corporate_actions_tdx_backup,
 )
-from stock_data_engine.steps.common import load_symbols, write_simple
-from stock_data_engine.steps.http_common import empty_ok, write_fetched
+from stock_data_engine.steps.common import fetch_incremental_daily, load_symbols, write_simple
+from stock_data_engine.steps.http_common import run_incremental_fetched
 
 # TDX xdxr is per-symbol (backfill); EastMoney datacenter supports ex-date filter (daily).
 _CANONICAL_BACKFILL = "tdx_protocol"
@@ -47,7 +47,13 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     else:
         if not config.sources.get("eastmoney", True):
             raise RuntimeError("corporate_actions daily: eastmoney source disabled in config")
-        df = fetch_corporate_actions_eastmoney(trade_date, backfill=False, config=config)
+        df = fetch_incremental_daily(
+            config,
+            "corporate_actions",
+            trade_date,
+            lambda d: fetch_corporate_actions_eastmoney(d, backfill=False, config=config),
+            allow_empty=True,
+        )
         canonical_source = _CANONICAL_DAILY
         if config.failover_enabled and df.height:
             ex_today = df.filter(pl.col("ex_date") == trade_date)
@@ -85,6 +91,11 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
 def step_announcement_index(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("cninfo", True):
         raise RuntimeError("announcement_index: cninfo source disabled in config")
-    df = fetch_announcement_index(trade_date)
-    empty_ok(df, "announcement_index", trade_date)
-    return write_fetched(config, run_id, "announcement_index", df, source="cninfo")
+    return run_incremental_fetched(
+        config,
+        trade_date,
+        run_id,
+        "announcement_index",
+        fetch_announcement_index,
+        source="cninfo",
+    )

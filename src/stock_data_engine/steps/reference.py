@@ -12,8 +12,9 @@ from stock_data_engine.adapters.tdx_protocol.client import (
     normalize_with_source,
 )
 from stock_data_engine.config import Config
+from stock_data_engine.domain.schemas import with_provenance
 from stock_data_engine.orchestrator.registry import register_step
-from stock_data_engine.steps.common import load_symbols, write_simple
+from stock_data_engine.steps.common import fetch_incremental_daily, load_symbols, write_simple
 
 
 @register_step("instruments", group="core", requires_workers=False)
@@ -47,11 +48,23 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
 def step_trading_status(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     symbols = context.get("symbols") or load_symbols(config)
     rl = config.tdx_rate_limit_spec()
-    df = fetch_trading_status(symbols, trade_date, rate_limit=rl, allow_mock=config.tdx_allow_mock)
+
+    def _fetch(day: date):
+        return fetch_trading_status(
+            symbols, day, rate_limit=rl, allow_mock=config.tdx_allow_mock
+        )
+
+    df = fetch_incremental_daily(
+        config,
+        "trading_status",
+        trade_date,
+        _fetch,
+        allow_empty=True,
+    )
+    if df.is_empty():
+        return {"rows_read": 0, "rows_written": 0}
     if "source" not in df.columns:
         df = normalize_with_source(df)
     else:
-        from stock_data_engine.domain.schemas import with_provenance
-
         df = with_provenance(df, source="eastmoney", data_version="v1")
     return write_simple(config, run_id, "trading_status", df)

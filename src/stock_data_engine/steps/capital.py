@@ -14,7 +14,7 @@ from stock_data_engine.adapters.eastmoney.capital import (
 )
 from stock_data_engine.config import Config
 from stock_data_engine.orchestrator.registry import register_step
-from stock_data_engine.steps.http_common import empty_ok, write_fetched
+from stock_data_engine.steps.http_common import run_incremental_fetched
 
 
 def _run_capital_step(
@@ -26,9 +26,14 @@ def _run_capital_step(
 ) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
-    df = fetch_fn(trade_date)
-    empty_ok(df, dataset, trade_date)
-    return write_fetched(config, run_id, dataset, df, source="eastmoney")
+    return run_incremental_fetched(
+        config,
+        trade_date,
+        run_id,
+        dataset,
+        fetch_fn,
+        source="eastmoney",
+    )
 
 
 @register_step("fund_flow", group="capital", depends_on=["instruments"])
