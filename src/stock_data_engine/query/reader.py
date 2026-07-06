@@ -101,32 +101,37 @@ def resolve_config(
         return config
     if data_root is not None:
         return Config(data_root=Path(data_root).expanduser().resolve())
-    for path in (Path("configs/stockdata.toml"), Path("configs/stockdata.example.toml")):
-        if path.exists():
-            return load_config(path)
+    path = Path("configs/stockdata.toml")
+    if path.exists():
+        return load_config(path)
     raise ReaderError(
         "No config found: pass config= or data_root=, or create configs/stockdata.toml"
     )
 
 
-def _dataset_files(config: Config, dataset: str) -> list[Path]:
+def _dataset_root(config: Config, dataset: str) -> Path:
     if dataset in DERIVED_DATASETS:
-        root = config.derived_root / dataset
-    elif dataset in CURATED_DATASETS:
-        root = config.curated_root / dataset
-    else:
-        raise ReaderError(f"unknown dataset {dataset!r}")
+        return config.derived_root / dataset
+    if dataset in CURATED_DATASETS:
+        return config.curated_root / dataset
+    raise ReaderError(f"unknown dataset {dataset!r}")
 
+
+def _dataset_files(config: Config, dataset: str) -> list[Path]:
+    root = _dataset_root(config, dataset)
     if not root.exists():
         return []
     return sorted(root.glob("**/*.parquet"))
 
 
 def _read_dataset(config: Config, dataset: str) -> pl.DataFrame:
+    root = _dataset_root(config, dataset)
     files = _dataset_files(config, dataset)
     if not files:
-        schema = DATASET_SCHEMAS.get(dataset)
-        return pl.DataFrame(schema=schema) if schema else pl.DataFrame()
+        raise ReaderError(
+            f"no parquet data for dataset {dataset!r} under {root} "
+            f"(data_root={config.data_root})"
+        )
 
     df = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
     if dataset in DATASET_SCHEMAS:
@@ -262,6 +267,7 @@ def load(
         Restrict to these symbols when the dataset has a ``symbol`` column.
     config, data_root:
         Lake location; auto-detects ``configs/stockdata.toml`` when omitted.
+        Raises ``ReaderError`` if config or dataset parquet files are missing.
     """
     cfg = resolve_config(config=config, data_root=data_root)
     if dataset not in CURATED_DATASETS | DERIVED_DATASETS:

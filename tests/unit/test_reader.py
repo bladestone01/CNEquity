@@ -4,7 +4,7 @@ import polars as pl
 import pytest
 
 from stock_data_engine.config import Config
-from stock_data_engine.query.reader import ReaderError, load
+from stock_data_engine.query.reader import ReaderError, load, resolve_config
 
 
 def _prov(source: str = "test") -> dict:
@@ -149,7 +149,18 @@ def test_load_financial_statement_items_requires_as_of(lake):
         load("financial_statement_items", config=lake)
 
 
-def test_load_empty_dataset_returns_typed_frame(lake):
-    df = load("corporate_actions", config=lake)
-    assert df.is_empty()
-    assert "ex_date" in df.columns
+def test_load_raises_when_dataset_has_no_parquet_files(lake):
+    with pytest.raises(ReaderError, match="no parquet data for dataset 'corporate_actions'"):
+        load("corporate_actions", config=lake)
+
+
+def test_resolve_config_raises_without_stockdata_toml(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ReaderError, match="No config found"):
+        resolve_config()
+
+
+def test_load_raises_when_data_root_has_no_dataset(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    with pytest.raises(ReaderError, match="no parquet data for dataset 'daily_bars'"):
+        load("daily_bars", config=cfg)
