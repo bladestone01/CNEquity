@@ -225,11 +225,12 @@ class JobEngine:
             results.append(self._run_step(dataset, trade_date, run_id, context))
 
         if self.manifest.incomplete_batch_count(run_id) == 0:
-            result = self._run_step("compact", trade_date, run_id, context)
-            updates = result.get("context_updates")
-            if updates:
-                context.update(updates)
-            results.append(result)
+            for step_name in ("compact", "derive_adj_factors", "audit"):
+                result = self._run_step(step_name, trade_date, run_id, context)
+                updates = result.get("context_updates")
+                if updates:
+                    context.update(updates)
+                results.append(result)
 
         incomplete = self.manifest.incomplete_batch_count(run_id)
         status = "failed" if incomplete else "success"
