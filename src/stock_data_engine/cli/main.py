@@ -49,11 +49,31 @@ def cli():
 
 @cli.command()
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-def init(config_path: str):
-    """Initialize data directories, manifest, and DuckDB views."""
+@click.option(
+    "--layout-only",
+    is_flag=True,
+    help="Only create directories, manifest, and DuckDB views (skip init phases).",
+)
+@click.option(
+    "--trade-date",
+    default=None,
+    help="As-of trade date for init phases (YYYY-MM-DD); default today.",
+)
+def init(config_path: str, layout_only: bool, trade_date: str | None):
+    """Initialize data lake and run configured init phases (first full backfill)."""
     cfg = _cfg(config_path)
     init_data_layout(cfg)
-    click.echo(f"Initialized StockDataEngine at {cfg.data_root}")
+    if layout_only:
+        click.echo(f"Initialized layout at {cfg.data_root}")
+        return
+
+    td = date.fromisoformat(trade_date) if trade_date else date.today()
+    engine = JobEngine(cfg)
+    result = engine.run_init_phases(trade_date=td)
+    click.echo(json.dumps(result, indent=2, default=str))
+    failed = [p for p in result.get("phases", []) if p.get("status") != "success"]
+    if failed:
+        raise SystemExit(1)
 
 
 @cli.command("config")
