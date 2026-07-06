@@ -75,7 +75,8 @@ def _fetch_suspended_symbols(client: EastMoneyClient, trade_date: date) -> set[s
         logger.debug("EastMoney suspend list unavailable: %s", exc)
         return symbols
 
-    for item in payload.get("result", {}).get("data") or []:
+    result = payload.get("result") or {}
+    for item in result.get("data") or []:
         code = str(item.get("SECURITY_CODE", "")).zfill(6)
         exch = _exchange_from_code(code)
         if is_all_a_symbol(code, exch):

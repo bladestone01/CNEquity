@@ -27,6 +27,20 @@ def to_sina_symbol(symbol: str) -> str:
     return f"{prefix}{info.code}"
 
 
+def _normalize_sina_rows(data: list) -> list[dict]:
+    rows: list[dict] = []
+    for item in data:
+        row = dict(item)
+        if "d" in row and "date" not in row:
+            row["date"] = row.pop("d")
+        factor_val = row.pop("f", None)
+        if factor_val is not None:
+            row.setdefault("qfq_factor", factor_val)
+            row.setdefault("hfq_factor", factor_val)
+        rows.append(row)
+    return rows
+
+
 def _parse_sina_factor_payload(text: str) -> list[dict]:
     match = re.search(r"=\s*(\{.*\})", text, re.DOTALL)
     if not match:
@@ -35,7 +49,7 @@ def _parse_sina_factor_payload(text: str) -> list[dict]:
     data = payload.get("data")
     if not data:
         raise ValueError("Sina adj factor response has empty data")
-    return data
+    return _normalize_sina_rows(data)
 
 
 def fetch_adj_factor_series(
@@ -63,6 +77,9 @@ def fetch_adj_factor_series(
     finally:
         if owns_client:
             client.close()
+
+    if not rows:
+        return pl.DataFrame(schema={"trade_date": pl.Date, "factor": pl.Float64})
 
     sina_col = _SINA_FACTOR_COLS[adjust_type]
     df = pl.DataFrame(rows).rename({"date": "trade_date", sina_col: "sina_factor"})

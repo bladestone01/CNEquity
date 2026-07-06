@@ -88,7 +88,7 @@ class EastMoneyClient:
         self.min_interval = min_interval
         self.config = config
         self._last_request = 0.0
-        self._client = httpx.Client(timeout=30.0)
+        self._client = httpx.Client(timeout=30.0, follow_redirects=True)
 
     def _throttle(self) -> None:
         if self.config is not None:
