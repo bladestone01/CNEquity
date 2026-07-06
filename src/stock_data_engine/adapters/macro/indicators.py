@@ -14,11 +14,11 @@ from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)
 
-_TREASURY_REPORT = "RPTA_WEB_TREASURY_YIELD"
-_TREASURY_COLUMNS = "TRADE_DATE,TENYEAR"
+_TREASURY_REPORT = "RPTA_WEB_TREASURYYIELD"
+_TREASURY_COLUMNS = "SOLAR_DATE,EMM00166466"
 _SHIBOR_REPORT = "RPTA_WEB_SHIBOR"
 _SHIBOR_COLUMNS = "TRADE_DATE,SHIBOR_3M"
-_LPR_REPORT = "RPTA_WEB_LPR"
+_LPR_REPORT = "RPTA_WEB_RATE"
 _LPR_COLUMNS = "TRADE_DATE,LPR1Y"
 
 _AKSHARE_SERIES = {
@@ -75,18 +75,18 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
             client,
             _TREASURY_REPORT,
             _TREASURY_COLUMNS,
-            filter_expr=f"(TRADE_DATE='{ds}')",
+            filter_expr=f"(SOLAR_DATE='{ds}')",
         )
     except EastMoneyDatacenterError as exc:
         logger.warning("EastMoney treasury indicator fetch skipped: %s", exc)
         treasury = []
     for item in treasury:
-        val = item.get("TENYEAR")
+        val = item.get("EMM00166466")
         if val is not None:
             rows.append(
                 {
                     "indicator_id": "cnbond_yield_10y",
-                    "obs_date": _parse_obs_date(item.get("TRADE_DATE"), trade_date),
+                    "obs_date": _parse_obs_date(item.get("SOLAR_DATE"), trade_date),
                     "value": float(val),
                     "frequency": "daily",
                 }

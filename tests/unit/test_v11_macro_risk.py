@@ -89,9 +89,9 @@ def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
     monkeypatch.setattr(macro_indicators, "_akshare_rows", lambda _td: [])
     client = FakeDatacenterClient(
         {
-            "RPTA_WEB_TREASURY_YIELD": [{"TRADE_DATE": "2024-06-28", "TENYEAR": 2.25}],
+            "RPTA_WEB_TREASURYYIELD": [{"SOLAR_DATE": "2024-06-28", "EMM00166466": 2.25}],
             "RPTA_WEB_SHIBOR": [{"TRADE_DATE": "2024-06-28", "SHIBOR_3M": 1.85}],
-            "RPTA_WEB_LPR": [],
+            "RPTA_WEB_RATE": [{"TRADE_DATE": "2024-06-28", "LPR1Y": 3.45}],
         }
     )
     df = fetch_macro_indicators(date(2024, 6, 28), client=client)  # type: ignore[arg-type]

@@ -12,6 +12,7 @@ from stock_data_engine.adapters.eastmoney.common import (
     exchange_from_datacenter,
     symbol_from_em,
     symbol_from_secucode,
+    _to_float,
 )
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
@@ -83,11 +84,11 @@ def fetch_fund_flow(trade_date: date, *, client: EastMoneyClient | None = None) 
             {
                 "symbol": sym,
                 "trade_date": trade_date,
-                "main_net_inflow": float(item.get("f62") or 0),
-                "super_large_net_inflow": float(item.get("f66") or 0),
-                "large_net_inflow": float(item.get("f72") or 0),
-                "medium_net_inflow": float(item.get("f78") or 0),
-                "small_net_inflow": float(item.get("f84") or 0),
+                "main_net_inflow": _to_float(item.get("f62")),
+                "super_large_net_inflow": _to_float(item.get("f66")),
+                "large_net_inflow": _to_float(item.get("f72")),
+                "medium_net_inflow": _to_float(item.get("f78")),
+                "small_net_inflow": _to_float(item.get("f84")),
             }
         )
     if owns:

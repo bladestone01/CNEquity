@@ -3,12 +3,55 @@
 from __future__ import annotations
 
 import logging
+import time
 from urllib.parse import urlencode
 
-from stock_data_engine.adapters.eastmoney.common import ALL_A_FS, PUSH2_CLIST, symbol_from_em
+from stock_data_engine.adapters.eastmoney.common import ALL_A_FS, PUSH2_CLIST_HOSTS, symbol_from_clist
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)
+
+
+def _fetch_clist_page(
+    client: EastMoneyClient,
+    *,
+    host: str,
+    fields: str,
+    fs: str,
+    page: int,
+    page_size: int,
+    max_retries: int = 3,
+    retry_backoff_seconds: float = 1.0,
+) -> tuple[list[dict], int]:
+    params = urlencode(
+        {
+            "pn": page,
+            "pz": page_size,
+            "po": 1,
+            "np": 1,
+            "fltt": 2,
+            "invt": 2,
+            "fid": "f12",
+            "fs": fs,
+            "fields": fields,
+        }
+    )
+    url = f"{host}/api/qt/clist/get?{params}"
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            resp = client.get(url)
+            resp.raise_for_status()
+            payload = resp.json()
+            data = payload.get("data") or {}
+            diff = data.get("diff") or []
+            total = int(data.get("total") or 0)
+            return diff, total
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < max_retries:
+                time.sleep(retry_backoff_seconds * (attempt + 1))
+    raise RuntimeError(f"EastMoney clist page {page} failed on {host}") from last_exc
 
 
 def fetch_clist_pages(
@@ -19,47 +62,61 @@ def fetch_clist_pages(
     page_size: int = 5000,
 ) -> list[dict]:
     rows: list[dict] = []
+    active_host: str | None = None
     page = 1
-    total = None
-    while True:
-        params = urlencode(
-            {
-                "pn": page,
-                "pz": page_size,
-                "po": 1,
-                "np": 1,
-                "fltt": 2,
-                "invt": 2,
-                "fid": "f12",
-                "fs": fs,
-                "fields": fields,
-            }
-        )
-        url = f"{PUSH2_CLIST}?{params}"
-        try:
-            resp = client.get(url)
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as exc:
-            logger.warning("EastMoney clist page %s failed: %s", page, exc)
-            break
+    total = 0
 
-        data = payload.get("data") or {}
-        diff = data.get("diff") or []
-        if not diff:
+    while True:
+        if active_host is None:
+            page_rows: list[dict] = []
+            for host in PUSH2_CLIST_HOSTS:
+                try:
+                    page_rows, total = _fetch_clist_page(
+                        client,
+                        host=host,
+                        fields=fields,
+                        fs=fs,
+                        page=page,
+                        page_size=page_size,
+                    )
+                except Exception as exc:
+                    logger.warning("EastMoney clist page %s failed on %s: %s", page, host, exc)
+                    continue
+                active_host = host
+                break
+            if active_host is None:
+                logger.warning("EastMoney clist page %s failed on all hosts", page)
+                break
+        else:
+            try:
+                page_rows, total = _fetch_clist_page(
+                    client,
+                    host=active_host,
+                    fields=fields,
+                    fs=fs,
+                    page=page,
+                    page_size=page_size,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "EastMoney clist page %s failed on %s: %s", page, active_host, exc
+                )
+                break
+
+        if not page_rows:
             break
-        rows.extend(diff)
-        total = int(data.get("total") or 0)
-        if page * page_size >= total:
+        rows.extend(page_rows)
+        if len(rows) >= total:
             break
         page += 1
+
     return rows
 
 
 def clist_rows_to_symbols(rows: list[dict]) -> list[tuple[str, dict]]:
     out: list[tuple[str, dict]] = []
     for item in rows:
-        sym = symbol_from_em(str(item.get("f12", "")), int(item.get("f13", 0)))
+        sym = symbol_from_clist(str(item.get("f12", "")), int(item.get("f13", 0)))
         if sym:
             out.append((sym, item))
     return out
