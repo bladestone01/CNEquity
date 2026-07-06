@@ -42,6 +42,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             rate_limit=rl,
             allow_mock=config.tdx_allow_mock,
             primary_only=True,
+            config=config,
         )
         canonical_source = _CANONICAL_BACKFILL
     else:

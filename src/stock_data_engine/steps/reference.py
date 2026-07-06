@@ -20,7 +20,9 @@ from stock_data_engine.steps.common import fetch_incremental_daily, load_symbols
 @register_step("instruments", group="core", requires_workers=False)
 def step_instruments(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     rl = config.tdx_rate_limit_spec()
-    df = fetch_instruments(rate_limit=rl, allow_mock=config.tdx_allow_mock)
+    df = fetch_instruments(
+        rate_limit=rl, allow_mock=config.tdx_allow_mock, config=config
+    )
     df = normalize_with_source(df)
     df = enrich_instrument_list_dates(config, df)
     return write_simple(config, run_id, "instruments", df)

@@ -125,14 +125,14 @@ def snapshot_corporate_actions_tdx_backup(
     spec = failover_spec(config, "corporate_actions")
     if spec is None or not symbols or not config.tdx_enabled:
         return
-    from stock_data_engine.adapters.tdx_protocol.client import _quotes_client
+    from stock_data_engine.adapters.tdx_protocol.client import quotes_client_factory
     from stock_data_engine.adapters.tdx_protocol.corporate_actions import fetch_corporate_actions_tdx
 
     tdx_df = fetch_corporate_actions_tdx(
         symbols,
         trade_date=trade_date,
         backfill=False,
-        client_factory=_quotes_client,
+        client_factory=quotes_client_factory(config),
         rate_limit=rate_limit,
     )
     if tdx_df.is_empty():

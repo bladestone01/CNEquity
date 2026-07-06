@@ -141,6 +141,8 @@ def load_symbols(config: Config) -> list[str]:
         latest = max(staging_glob, key=lambda p: p.stat().st_mtime)
         return pl.read_parquet(latest)["symbol"].to_list()
     df = fetch_instruments(
-        rate_limit=config.tdx_rate_limit_spec(), allow_mock=config.tdx_allow_mock
+        rate_limit=config.tdx_rate_limit_spec(),
+        allow_mock=config.tdx_allow_mock,
+        config=config,
     )
     return df["symbol"].to_list()

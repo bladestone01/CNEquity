@@ -18,7 +18,7 @@ END = date(2024, 6, 28)
 
 @pytest.fixture(autouse=True)
 def _no_mootdx(monkeypatch):
-    def _boom():
+    def _boom(_config=None):
         raise RuntimeError("simulated TDX outage")
 
     monkeypatch.setattr(tdx, "_quotes_client", _boom)
@@ -33,7 +33,7 @@ def test_instruments_raises_on_partial_market_failure(monkeypatch):
                 raise RuntimeError("SZ timeout")
             return pd.DataFrame({"code": ["600519"], "name": ["贵州茅台"]})
 
-    monkeypatch.setattr(tdx, "_quotes_client", lambda: _FakeClient())
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: _FakeClient())
 
     with pytest.raises(tdx.TdxSourceError, match="market fetch failed"):
         tdx.fetch_instruments(allow_mock=False)

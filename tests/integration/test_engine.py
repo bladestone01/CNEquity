@@ -45,7 +45,7 @@ def test_daily_job_fails_loudly_without_allow_mock(config, monkeypatch):
     never silently fall back to fabricated data."""
     from stock_data_engine.adapters.tdx_protocol import client as tdx
 
-    def _boom():
+    def _boom(_config=None):
         raise RuntimeError("simulated TDX outage")
 
     monkeypatch.setattr(tdx, "_quotes_client", _boom)

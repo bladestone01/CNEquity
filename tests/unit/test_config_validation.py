@@ -16,6 +16,27 @@ def test_validate_config_rejects_unknown_group_step(tmp_path):
     assert any("unknown step 'not_a_dataset_step'" in err for err in errors)
 
 
+def test_validate_config_rejects_invalid_tdx_servers(tmp_path):
+    cfg_path = tmp_path / "test.toml"
+    cfg_path.write_text(
+        f"""
+[data]
+root = "{tmp_path / "data"}"
+
+[[job.daily.waves]]
+name = "core"
+parallel = true
+steps = ["instruments"]
+
+[tdx_protocol]
+servers = "not-a-server"
+"""
+    )
+    cfg = load_config(cfg_path)
+    errors = validate_config(cfg)
+    assert any("servers must be" in e for e in errors)
+
+
 def test_validate_config_accepts_registered_waves(tmp_path):
     cfg = Config(
         data_root=tmp_path / "data",

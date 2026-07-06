@@ -14,6 +14,7 @@ from stock_data_engine.adapters.eastmoney.corporate_actions import fetch_corpora
 from stock_data_engine.adapters.eastmoney.trading_status import fetch_trading_status_eastmoney
 from stock_data_engine.adapters.tdx_protocol.bars import fetch_bars_paginated
 from stock_data_engine.adapters.tdx_protocol.corporate_actions import fetch_corporate_actions_tdx
+from stock_data_engine.config import Config
 from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
 from stock_data_engine.domain.schemas import MOCK_SOURCE, with_provenance
 from stock_data_engine.domain.symbols import PREFIX_WHITELIST, format_symbol, is_all_a_symbol
@@ -37,11 +38,32 @@ class TdxSourceError(RuntimeError):
     """
 
 
-def _quotes_client():
+def _quotes_client(config: Config | None = None):
     """Build a mootdx client; isolated so tests can monkeypatch it."""
     from mootdx.quotes import Quotes
 
-    return Quotes.factory(market="std", multithread=True, heartbeat=True, timeout=10)
+    timeout = config.tdx_connect_timeout_sec if config else 10
+    servers = (config.tdx_servers if config else "auto").strip()
+    kwargs: dict[str, object] = {
+        "multithread": True,
+        "heartbeat": True,
+        "timeout": timeout,
+    }
+    if servers.lower() == "auto":
+        kwargs["bestip"] = True
+    else:
+        host, sep, port = servers.partition(":")
+        if not sep:
+            raise TdxSourceError(
+                f"invalid [tdx_protocol].servers {servers!r}; use 'auto' or host:port"
+            )
+        kwargs["server"] = (host.strip(), int(port.strip()))
+    return Quotes.factory(market="std", **kwargs)
+
+
+def quotes_client_factory(config: Config | None = None):
+    """Callable factory for corporate_actions xdxr (one client per batch)."""
+    return lambda: _quotes_client(config)
 
 
 # mootdx market ids: 0=Shenzhen, 1=Shanghai (not "SH"/"SZ" strings).
@@ -152,11 +174,14 @@ def _fail_or_mock(
 
 
 def fetch_instruments(
-    *, rate_limit: RateLimitSpec | None = None, allow_mock: bool = False
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    allow_mock: bool = False,
+    config: Config | None = None,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
     try:
-        client = _quotes_client()
+        client = _quotes_client(config)
         frames = []
         market_errors: list[str] = []
         for market, exch in _TDX_STOCK_MARKETS:
@@ -219,9 +244,10 @@ def fetch_daily_bars(
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
     backfill: bool = False,
+    config: Config | None = None,
 ) -> pl.DataFrame:
     try:
-        client = _quotes_client()
+        client = _quotes_client(config)
         rows = []
         for sym in symbols:
             rows.extend(
@@ -246,10 +272,11 @@ def fetch_index_bars(
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
     backfill: bool = False,
+    config: Config | None = None,
 ) -> pl.DataFrame:
     symbols = [format_symbol(c, e) for c, e in INDEX_SYMBOLS]
     try:
-        client = _quotes_client()
+        client = _quotes_client(config)
         rows: list[dict] = []
         for sym in symbols:
             try:
@@ -283,6 +310,7 @@ def fetch_corporate_actions(
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
     primary_only: bool = False,
+    config: Config | None = None,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
     empty = pl.DataFrame(
@@ -305,7 +333,7 @@ def fetch_corporate_actions(
                 symbols,
                 trade_date=trade_date,
                 backfill=backfill,
-                client_factory=_quotes_client,
+                client_factory=quotes_client_factory(config),
                 rate_limit=rate_limit,
             )
             if tdx_df.height:

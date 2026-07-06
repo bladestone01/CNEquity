@@ -38,7 +38,6 @@ class Config:
     data_root: Path
     workers: int = 8
     batch_size: int = 100
-    date_chunk_days: int = 30
     max_retries: int = 3
     retry_backoff_seconds: int = 5
     batch_stale_seconds: int = 3600
@@ -182,7 +181,6 @@ def load_config(path: str | Path) -> Config:
         data_root=data_root,
         workers=int(orch.get("workers", 8)),
         batch_size=int(orch.get("batch_size", 100)),
-        date_chunk_days=int(orch.get("date_chunk_days", 30)),
         max_retries=int(orch.get("max_retries", 3)),
         retry_backoff_seconds=int(orch.get("retry_backoff_seconds", 5)),
         batch_stale_seconds=int(orch.get("batch_stale_seconds", 3600)),
@@ -222,6 +220,11 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("orchestrator.workers must be >= 1")
     if cfg.batch_size < 1:
         errors.append("orchestrator.batch_size must be >= 1")
+    servers = cfg.tdx_servers.strip()
+    if servers.lower() != "auto" and ":" not in servers:
+        errors.append("[tdx_protocol].servers must be 'auto' or host:port")
+    if cfg.tdx_connect_timeout_sec < 1:
+        errors.append("[tdx_protocol].connect_timeout_sec must be >= 1")
     if not cfg.daily_waves:
         errors.append("job.daily.waves must define at least one wave")
 

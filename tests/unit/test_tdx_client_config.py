@@ -1,0 +1,51 @@
+import pytest
+
+from stock_data_engine.config import Config
+from stock_data_engine.adapters.tdx_protocol import client as tdx
+
+
+def test_quotes_client_auto_uses_bestip_and_config_timeout(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def fake_factory(market, **kwargs):
+        seen["market"] = market
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("mootdx.quotes.Quotes.factory", fake_factory)
+    cfg = Config(data_root="/tmp/data")
+    cfg.tdx_connect_timeout_sec = 42
+    cfg.tdx_servers = "auto"
+
+    tdx._quotes_client(cfg)
+
+    assert seen["market"] == "std"
+    assert seen["timeout"] == 42
+    assert seen["bestip"] is True
+    assert "server" not in seen
+
+
+def test_quotes_client_explicit_server(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def fake_factory(market, **kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("mootdx.quotes.Quotes.factory", fake_factory)
+    cfg = Config(data_root="/tmp/data")
+    cfg.tdx_servers = "119.147.212.81:7709"
+    cfg.tdx_connect_timeout_sec = 15
+
+    tdx._quotes_client(cfg)
+
+    assert seen["server"] == ("119.147.212.81", 7709)
+    assert seen["timeout"] == 15
+    assert "bestip" not in seen
+
+
+def test_quotes_client_rejects_invalid_servers():
+    cfg = Config(data_root="/tmp/data")
+    cfg.tdx_servers = "not-a-server"
+    with pytest.raises(tdx.TdxSourceError, match="invalid"):
+        tdx._quotes_client(cfg)

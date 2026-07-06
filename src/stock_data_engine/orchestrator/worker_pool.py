@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from stock_data_engine.adapters.tdx_protocol.client import fetch_daily_bars, normalize_with_source
-from stock_data_engine.config import Config
+from stock_data_engine.config import Config, load_config
 from stock_data_engine.domain.rate_limit import RateLimitSpec
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.quality.failover import snapshot_daily_bars_backup
@@ -19,6 +19,22 @@ logger = logging.getLogger(__name__)
 def _symbol_batch_id(start: date, end: date, index: int) -> str:
     """Unique batch id per symbol chunk and fetch window within a run."""
     return f"{start.isoformat()}_{end.isoformat()}-batch-{index}"
+
+
+def _worker_tdx_config(
+    config_path: str,
+    staging_root: str,
+    *,
+    allow_mock: bool,
+    backfill: bool,
+) -> Config:
+    if config_path:
+        cfg = load_config(Path(config_path))
+    else:
+        cfg = Config(data_root=Path(staging_root).parent)
+    cfg.tdx_allow_mock = allow_mock
+    cfg._backfill = backfill
+    return cfg
 
 
 def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
@@ -35,6 +51,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
         manifest_path,
         failover_enabled,
         backfill,
+        config_path,
     ) = args
     start = date.fromisoformat(start_iso)
     end = date.fromisoformat(end_iso)
@@ -52,9 +69,19 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             window_end=end_iso,
         )
 
+    tdx_cfg = _worker_tdx_config(
+        config_path, staging_root, allow_mock=allow_mock, backfill=backfill
+    )
+
     try:
         df = fetch_daily_bars(
-            symbols, start, end, rate_limit=rl, allow_mock=allow_mock, backfill=backfill
+            symbols,
+            start,
+            end,
+            rate_limit=rl,
+            allow_mock=allow_mock,
+            backfill=backfill,
+            config=tdx_cfg,
         )
         df = normalize_with_source(df)
         writer = StagingWriter(staging_root)
@@ -142,6 +169,7 @@ def fetch_daily_bars_parallel(
                 rate_limit=rl,
                 allow_mock=config.tdx_allow_mock,
                 backfill=getattr(config, "_backfill", False),
+                config=config,
             )
             df = normalize_with_source(df)
             writer = StagingWriter(staging_root)
@@ -196,6 +224,7 @@ def fetch_daily_bars_parallel(
                 manifest_path,
                 config.failover_enabled,
                 getattr(config, "_backfill", False),
+                str(config.config_path) if config.config_path else "",
             )
         )
 

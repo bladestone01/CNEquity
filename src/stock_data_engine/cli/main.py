@@ -258,9 +258,10 @@ def query(config_path: str, sql: str, dataset: str | None, symbol: str | None):
 def servers(action: str, config_path: str):
     """Test TDX server connectivity."""
     try:
-        from mootdx.quotes import Quotes
+        from stock_data_engine.adapters.tdx_protocol.client import _quotes_client
 
-        client = Quotes.factory(market="std", multithread=True, heartbeat=True, timeout=10)
+        cfg = _cfg(config_path)
+        client = _quotes_client(cfg)
         _ = client
         click.echo("TDX connection OK")
     except ImportError:

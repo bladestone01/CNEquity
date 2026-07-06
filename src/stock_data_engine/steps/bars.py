@@ -58,6 +58,7 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
         rate_limit=rl,
         allow_mock=config.tdx_allow_mock,
         backfill=getattr(config, "_backfill", False),
+        config=config,
     )
     df = normalize_with_source(df)
     from stock_data_engine.steps.common import write_simple
