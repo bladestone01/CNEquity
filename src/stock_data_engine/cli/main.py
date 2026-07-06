@@ -234,7 +234,7 @@ def servers(action: str, config_path: str):
     try:
         from mootdx.quotes import Quotes
 
-        client = Quotes.factory(market="std")
+        client = Quotes.factory(market="std", multithread=True, heartbeat=True, timeout=10)
         _ = client
         click.echo("TDX connection OK")
     except ImportError:

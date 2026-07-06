@@ -22,6 +22,16 @@ def _date_column(pdf: pl.DataFrame) -> str:
     return "datetime" if "datetime" in pdf.columns else "date"
 
 
+def _coerce_date(val) -> date:
+    if isinstance(val, date):
+        return val
+    if hasattr(val, "date"):
+        return val.date()
+    if isinstance(val, str):
+        return date.fromisoformat(val[:10])
+    raise TypeError(f"unsupported bar date value: {val!r}")
+
+
 def _page_min_date(pdf: pl.DataFrame) -> date | None:
     col = _date_column(pdf)
     if col not in pdf.columns or pdf.is_empty():
@@ -33,7 +43,7 @@ def _page_min_date(pdf: pl.DataFrame) -> date | None:
     for val in series:
         if val is None:
             continue
-        mins.append(val.date() if hasattr(val, "date") else val)
+        mins.append(_coerce_date(val))
     return min(mins) if mins else None
 
 
@@ -41,9 +51,7 @@ def _parse_bar_rows(pdf: pl.DataFrame, sym: str, start: date, end: date) -> list
     date_col = _date_column(pdf)
     rows: list[dict] = []
     for row in pdf.iter_rows(named=True):
-        td = row[date_col]
-        if hasattr(td, "date"):
-            td = td.date()
+        td = _coerce_date(row[date_col])
         if td < start or td > end:
             continue
         rows.append(

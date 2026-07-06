@@ -16,7 +16,7 @@ from stock_data_engine.adapters.tdx_protocol.bars import fetch_bars_paginated
 from stock_data_engine.adapters.tdx_protocol.corporate_actions import fetch_corporate_actions_tdx
 from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
 from stock_data_engine.domain.schemas import MOCK_SOURCE, with_provenance
-from stock_data_engine.domain.symbols import format_symbol, is_all_a_symbol
+from stock_data_engine.domain.symbols import PREFIX_WHITELIST, format_symbol, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,51 @@ def _quotes_client():
     """Build a mootdx client; isolated so tests can monkeypatch it."""
     from mootdx.quotes import Quotes
 
-    return Quotes.factory(market="std")
+    return Quotes.factory(market="std", multithread=True, heartbeat=True, timeout=10)
+
+
+# mootdx market ids: 0=Shenzhen, 1=Shanghai (not "SH"/"SZ" strings).
+_TDX_STOCK_MARKETS = ((1, "SH"), (0, "SZ"))
+
+
+def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
+    code_col = "code" if "code" in pdf.columns else pdf.columns[0]
+    name_col = "name" if "name" in pdf.columns else pdf.columns[1]
+    codes = pdf[code_col].cast(pl.Utf8).str.zfill(6)
+    prefixes = PREFIX_WHITELIST.get(exch.upper(), ())
+    mask = pl.lit(False)
+    for prefix in prefixes:
+        mask = mask | codes.str.starts_with(prefix)
+    for blocked in range(81, 90):
+        mask = mask & ~codes.str.starts_with(str(blocked))
+    filtered = pdf.filter(mask)
+    if filtered.is_empty():
+        return pl.DataFrame(
+            schema={
+                "symbol": pl.Utf8,
+                "name": pl.Utf8,
+                "exchange": pl.Utf8,
+                "asset_type": pl.Utf8,
+                "list_date": pl.Date,
+                "delist_date": pl.Date,
+                "prev_symbol": pl.Utf8,
+            }
+        )
+    rows = []
+    for row in filtered.iter_rows(named=True):
+        code = str(row[code_col]).zfill(6)
+        rows.append(
+            {
+                "symbol": format_symbol(code, exch),
+                "name": str(row[name_col]),
+                "exchange": exch,
+                "asset_type": "stock",
+                "list_date": None,
+                "delist_date": None,
+                "prev_symbol": None,
+            }
+        )
+    return pl.DataFrame(rows)
 
 
 def _mark_mock(df: pl.DataFrame) -> pl.DataFrame:
@@ -114,7 +158,7 @@ def fetch_instruments(
     try:
         client = _quotes_client()
         frames = []
-        for market, exch in (("SH", "SH"), ("SZ", "SZ"), ("BJ", "BJ")):
+        for market, exch in _TDX_STOCK_MARKETS:
             try:
                 raw = client.stocks(market=market)
             except Exception:
@@ -122,25 +166,11 @@ def fetch_instruments(
             if raw is None or len(raw) == 0:
                 continue
             pdf = pl.from_pandas(raw) if hasattr(raw, "columns") else pl.DataFrame(raw)
-            code_col = "code" if "code" in pdf.columns else pdf.columns[0]
-            name_col = "name" if "name" in pdf.columns else pdf.columns[1]
-            for row in pdf.iter_rows(named=True):
-                code = str(row[code_col]).zfill(6)
-                if not is_all_a_symbol(code, exch):
-                    continue
-                frames.append(
-                    {
-                        "symbol": format_symbol(code, exch),
-                        "name": str(row[name_col]),
-                        "exchange": exch,
-                        "asset_type": "stock",
-                        "list_date": None,
-                        "delist_date": None,
-                        "prev_symbol": None,
-                    }
-                )
+            part = _filter_instrument_frame(pdf, exch)
+            if part.height:
+                frames.append(part)
         if frames:
-            return pl.DataFrame(frames)
+            return pl.concat(frames, how="diagonal_relaxed")
         reason = "TDX returned no instruments"
     except ImportError:
         reason = "mootdx not installed"
@@ -203,8 +233,27 @@ def fetch_index_bars(
     allow_mock: bool = False,
 ) -> pl.DataFrame:
     symbols = [format_symbol(c, e) for c, e in INDEX_SYMBOLS]
-    df = fetch_daily_bars(symbols, start, end, rate_limit=rate_limit, allow_mock=allow_mock)
-    return df.with_columns(pl.lit("1d").alias("frequency"))
+    try:
+        client = _quotes_client()
+        rows: list[dict] = []
+        for sym in symbols:
+            try:
+                rows.extend(fetch_bars_paginated(client, sym, start, end, rate_limit=rate_limit))
+            except Exception as exc:
+                logger.warning("TDX index bars failed for %s: %s", sym, exc)
+        if rows:
+            return pl.DataFrame(rows).with_columns(pl.lit("1d").alias("frequency"))
+        reason = "TDX returned no index bars"
+    except ImportError:
+        reason = "mootdx not installed"
+    except Exception as exc:
+        reason = f"TDX fetch failed: {exc}"
+    return _fail_or_mock(
+        "index_bars",
+        reason,
+        allow_mock,
+        _mock_bars(symbols, start, end).with_columns(pl.lit("1d").alias("frequency")),
+    )
 
 
 def fetch_corporate_actions(
