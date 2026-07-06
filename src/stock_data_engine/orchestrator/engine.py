@@ -13,7 +13,7 @@ from stock_data_engine.config import Config, WaveConfig
 from stock_data_engine.orchestrator.deps import step_execution_levels, validate_steps_registered
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.orchestrator.registry import get_step
-from stock_data_engine.steps.common import BACKFILL_START
+from stock_data_engine.steps.common import BACKFILL_START, is_trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,23 @@ class JobEngine:
 
         if run_id and retry_failed_only:
             return self._retry_run(run_id, trade_date)
+
+        if not backfill and job_name != "init" and not is_trading_day(self.config, trade_date):
+            logger.info(
+                "Skipping job %s: %s is not a trading day",
+                job_name,
+                trade_date.isoformat(),
+            )
+            skip_run_id = run_id or self.manifest.start_run(
+                job_name,
+                {"trade_date": trade_date.isoformat(), "backfill": backfill},
+            )
+            self.manifest.finish_run(skip_run_id, "skipped_non_trading_day")
+            return {
+                "run_id": skip_run_id,
+                "status": "skipped_non_trading_day",
+                "trade_date": trade_date.isoformat(),
+            }
 
         metadata = {"trade_date": trade_date.isoformat(), "backfill": backfill}
         if not run_id:

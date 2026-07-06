@@ -76,6 +76,32 @@ def incremental_trade_dates(config: Config, dataset: str, trade_date: date) -> l
     return list_trading_dates(config, start, trade_date)
 
 
+def is_trading_day(config: Config, trade_date: date) -> bool:
+    """Return whether *trade_date* is a trading day per curated calendar or seed."""
+    cal = _load_trading_calendar_df(config)
+    if cal is not None and not cal.is_empty():
+        row = cal.filter(pl.col("trade_date") == trade_date)
+        if not row.is_empty():
+            return bool(row["is_trading"][0])
+
+    from stock_data_engine.adapters.calendar.exchange_calendar import (
+        build_trading_calendar,
+        ensure_seed_csv,
+    )
+
+    seed_path = config.meta_root / "seeds" / "trading_calendar.csv"
+    effective_seed = seed_path if seed_path.exists() else ensure_seed_csv()
+    day_cal = build_trading_calendar(
+        trade_date,
+        trade_date,
+        seed_path=effective_seed,
+        curated_root=config.curated_root if config.curated_root.exists() else None,
+    )
+    if not day_cal.is_empty():
+        return bool(day_cal["is_trading"][0])
+    return trade_date.weekday() < 5
+
+
 def fetch_incremental_daily(
     config: Config,
     dataset: str,
