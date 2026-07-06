@@ -23,13 +23,56 @@ def _scan_parquet(root: Path, dataset: str) -> pl.DataFrame:
     return pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
 
 
+def coverage_start_date(
+    config: Config,
+    dataset: str,
+    *,
+    date_col: str = "trade_date",
+) -> date | None:
+    """Earliest *date_col* present in curated *dataset*, if any."""
+    root = config.curated_root / dataset
+    if not root.exists():
+        return None
+
+    prefix = f"{date_col}="
+    min_dt: date | None = None
+    for entry in root.iterdir():
+        if entry.is_dir() and entry.name.startswith(prefix):
+            try:
+                candidate = date.fromisoformat(entry.name[len(prefix) :])
+            except ValueError:
+                continue
+            if min_dt is None or candidate < min_dt:
+                min_dt = candidate
+    if min_dt is not None:
+        return min_dt
+
+    files = list(root.glob("**/*.parquet"))
+    if not files:
+        return None
+    combined = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+    if date_col not in combined.columns or combined.is_empty():
+        return None
+    return combined[date_col].min()
+
+
+def trading_status_coverage_start(config: Config) -> date | None:
+    """First trade_date with curated trading_status rows."""
+    return coverage_start_date(config, "trading_status")
+
+
 def tradable_symbols_on_date(
     config: Config,
     trade_date: date,
     *,
     universe: str = "all_a",
 ) -> pl.DataFrame | None:
-    """Return ``symbol`` rows tradable on *trade_date* for the given universe rule."""
+    """Return ``symbol`` rows tradable on *trade_date* for the given universe rule.
+
+    Applies list/delist dates from ``instruments``. ST/suspended filtering uses
+    ``trading_status`` only when rows exist for *trade_date*; dates before
+    :func:`trading_status_coverage_start` are not ST-filtered.
+    """
     if universe != "all_a":
         raise ValueError(f"unsupported universe: {universe!r} (supported: 'all_a')")
 
@@ -81,7 +124,12 @@ def apply_universe_filter(
     universe: str,
     date_col: str = "trade_date",
 ) -> pl.DataFrame:
-    """Filter bar-like frames to tradable universe rows per *date_col*."""
+    """Filter bar-like frames to tradable universe rows per *date_col*.
+
+    ``instruments`` list/delist rules always apply. ST/suspended removal via
+    ``trading_status`` only affects dates with status rows; earlier history
+    passes through unchanged (see :func:`trading_status_coverage_start`).
+    """
     if df.is_empty() or universe != "all_a":
         return df
 

@@ -8,6 +8,7 @@ import polars as pl
 from stock_data_engine.config import Config
 from stock_data_engine.domain.schemas import MOCK_SOURCE, PRIMARY_KEYS
 from stock_data_engine.quality.source_diff import run_source_diffs
+from stock_data_engine.query.universe import coverage_start_date, trading_status_coverage_start
 
 
 def run_audit(config: Config, run_id: str, trade_date: date, context: dict | None = None) -> int:
@@ -34,6 +35,32 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
 
     for extra in context.get("audit_findings") or []:
         findings.append(extra)
+
+    ts_start = trading_status_coverage_start(config)
+    if ts_start is not None:
+        bars_start = coverage_start_date(config, "daily_bars")
+        gap = bars_start is not None and ts_start > bars_start
+        if gap:
+            message = (
+                f"trading_status coverage starts at {ts_start.isoformat()} but "
+                f"daily_bars starts at {bars_start.isoformat()}; universe=all_a does not "
+                "filter ST/suspended before trading_status coverage"
+            )
+        else:
+            message = (
+                f"trading_status coverage starts at {ts_start.isoformat()}; "
+                "universe=all_a ST/suspended filter applies only on/after this date"
+            )
+        findings.append(
+            {
+                "dataset": "trading_status",
+                "severity": "warning" if gap else "info",
+                "check": "trading_status_coverage_start",
+                "message": message,
+                "coverage_start": ts_start.isoformat(),
+                "daily_bars_start": bars_start.isoformat() if bars_start else None,
+            }
+        )
 
     datasets = ["daily_bars", "instruments", "trading_calendar", "index_bars"]
 

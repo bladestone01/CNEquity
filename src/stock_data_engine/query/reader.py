@@ -226,7 +226,13 @@ def load(
         ``qfq`` or ``hfq`` — joins ``adj_factors`` and adds ``adj_open`` … ``adj_close``.
         Only applies to ``daily_bars`` / ``index_bars``.
     universe:
-        ``all_a`` — drop ST, suspended, unlisted, and delisted rows per day.
+        ``all_a`` — drop unlisted/delisted rows per day via ``instruments``, and
+        drop ST/suspended rows when ``trading_status`` has data for that day.
+
+        **Limitation:** ``trading_status`` is daily-only (no historical ST
+        backfill). Dates before the curated coverage start (see audit check
+        ``trading_status_coverage_start``) are **not** ST/suspended-filtered;
+        long backtests may include ST names in early windows.
     as_of:
         Point-in-time date for ``financial_statement_items`` (filters ``announce_date``).
     items:

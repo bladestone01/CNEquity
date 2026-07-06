@@ -38,6 +38,7 @@
 3. **口径可重算**：日线存**未复权**价 + 独立复权因子，qfq/hfq 在查询期组合，不污染原始数据。✅
 4. **多源不打架**：curated 每主键一行 canonical；备源进 snapshot，审计出 diff，永不自动切源。✅ M4
 5. **无前视偏差**：财报等低频数据带公告日 `announce_date` 双时间轴，按「截至当日已公告」对齐（`load(..., as_of=)`）。✅ M3+
+6. **`universe="all_a"` ST/停牌过滤仅限 `trading_status` 有覆盖的日期**：日更只抓当天状态，2016→上线日之间的历史回填区间无 ST/停牌行；该日期之前 `load(..., universe="all_a")` 仅做上市/退市过滤，**不会**剔除历史 ST（审计项 `trading_status_coverage_start` 会报覆盖起点）。中期计划补历史 ST 源。
 
 ---
 
@@ -75,12 +76,12 @@ sde retry  --run-id <id> --config configs/stockdata.toml   # 只重跑失败部�
 ```python
 from stock_data_engine.query import load
 
-# 全市场后复权日线，自动剔除 ST/停牌/未上市
+# 全市场后复权日线；上市/退市过滤 + 有 trading_status 覆盖日的 ST/停牌过滤
 bars = load(
     "daily_bars",
     start="2020-01-01", end="2025-12-31",
     adjust="hfq",              # None | "qfq" | "hfq"，查询期组合复权因子
-    universe="all_a",          # 应用 instruments + trading_status 过滤
+    universe="all_a",          # instruments + trading_status（见上文第 6 条限制）
 )
 
 # 财报科目，按「2024-04-30 当日已公告」的口径取数（无前视偏差）
@@ -140,14 +141,14 @@ mock 静默兜底改为显式失败（新增 `allow_mock` 门控 + 审计拦截�
 | 4 | 增量水位 `meta/state/`（按数据集记录 last-success 日期） | `storage/`, `steps/` | 日更只抓水位之后 |
 | 5 | 批级 manifest + 续跑（symbol-batch 粒度入库） | `orchestrator/manifest.py`, `worker_pool.py` | `sde retry` 只重跑失败 batch |
 | 6 | adj_factors 并行 + 缓存（仅除权日/新股重抓） | `derive/adj_factors.py` | 全市场 < 10 分钟 |
-| 7 | trading_status 真实化（eastmoney ST/停牌） | `adapters/eastmoney/` | ST 股可被 universe 过滤 |
+| 7 | trading_status 真实化（eastmoney ST/停牌） | `adapters/eastmoney/` | 日更 ST/停牌可过滤；**历史 ST 回填待补**（见数据可信原则 §6） |
 
 **出口标准**：P0 七数据集全部真实源、连续两周日更成功率 ≥99%、同窗口重复 run 结果幂等、PK 唯一率 100%。
 
 ### Phase 2 消费层（Python API + PIT 契约）✅ 已完成
 
 1. `query/reader.py`：`load(dataset, start, end, adjust, universe, as_of)`（Polars 实现，DuckDB 视图仍可用于 SQL）。
-2. 复权组合、universe 过滤（instruments + trading_status）内置。
+2. 复权组合、universe 过滤（instruments 全窗口 + trading_status 仅有数据日起）内置。
 3. **PIT 契约**：`financial_statement_items` schema 含 `announce_date`，PRD 附录 A 已锁定；`load(..., as_of=)` 按公告日过滤。
 
 ### Phase 3 数据面铺开（M3 → v1.1，✅ M3 + M3+ 已完成）
