@@ -343,6 +343,40 @@ class Manifest:
             )
             return cur.fetchall()
 
+    def get_run(self, run_id: str) -> sqlite3.Row | None:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM ingestion_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+
+    def list_runs(self, job_name: str | None = None) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            if job_name:
+                cur = conn.execute(
+                    """
+                    SELECT * FROM ingestion_runs WHERE job_name = ?
+                    ORDER BY started_at DESC
+                    """,
+                    (job_name,),
+                )
+            else:
+                cur = conn.execute("SELECT * FROM ingestion_runs ORDER BY started_at DESC")
+            return cur.fetchall()
+
+    def latest_incomplete_init_run(self) -> sqlite3.Row | None:
+        from stock_data_engine.orchestrator.init_phases import init_run_complete
+
+        for run in self.list_runs("init"):
+            meta = json.loads(run["metadata_json"] or "{}")
+            phases = meta.get("phases") or []
+            if not phases:
+                continue
+            batches = self.get_batches_for_run(run["run_id"])
+            if init_run_complete(phases, batches):
+                continue
+            return run
+        return None
+
     def latest_run(self, job_name: str | None = None) -> sqlite3.Row | None:
         with self._connect() as conn:
             if job_name:

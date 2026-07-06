@@ -1,0 +1,141 @@
+"""Remove compacted or stale staging run directories."""
+
+from __future__ import annotations
+
+import shutil
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from stock_data_engine.config import Config
+from stock_data_engine.orchestrator.manifest import Manifest
+
+
+@dataclass
+class StagingCleanupResult:
+    removed_run_ids: list[str]
+    orphan_run_ids: list[str]
+    bytes_freed: int
+    skipped_run_ids: list[str]
+
+
+def list_staging_run_ids(staging_root: Path) -> set[str]:
+    if not staging_root.exists():
+        return set()
+    run_ids: set[str] = set()
+    for dataset_dir in staging_root.iterdir():
+        if not dataset_dir.is_dir():
+            continue
+        for run_dir in dataset_dir.iterdir():
+            if run_dir.is_dir() and run_dir.name.startswith("run_id="):
+                run_ids.add(run_dir.name.split("=", 1)[1])
+    return run_ids
+
+
+def staging_run_paths(staging_root: Path, run_id: str) -> list[Path]:
+    if not staging_root.exists():
+        return []
+    paths: list[Path] = []
+    for dataset_dir in staging_root.iterdir():
+        if not dataset_dir.is_dir():
+            continue
+        run_dir = dataset_dir / f"run_id={run_id}"
+        if run_dir.is_dir():
+            paths.append(run_dir)
+    return paths
+
+
+def _dir_size(paths: list[Path]) -> int:
+    return sum(f.stat().st_size for path in paths for f in path.rglob("*") if f.is_file())
+
+
+def _delete_paths(paths: list[Path], *, dry_run: bool) -> int:
+    size = _dir_size(paths)
+    if not dry_run:
+        for path in paths:
+            shutil.rmtree(path)
+    return size
+
+
+def _staging_age_days(paths: list[Path], now: datetime) -> float:
+    mtime = max(p.stat().st_mtime for p in paths)
+    return (now.timestamp() - mtime) / 86400.0
+
+
+def _has_successful_step(manifest: Manifest, run_id: str, step: str) -> bool:
+    return any(
+        b["dataset"] == step and b["status"] == "success"
+        for b in manifest.get_batches_for_run(run_id)
+    )
+
+
+def run_ready_for_staging_cleanup(manifest: Manifest, run_id: str) -> bool:
+    """True when run succeeded, all batches OK, and compact finished."""
+    run = manifest.get_run(run_id)
+    if run is None:
+        return False
+    if run["status"] != "success":
+        return False
+    if manifest.incomplete_batch_count(run_id) > 0:
+        return False
+    return _has_successful_step(manifest, run_id, "compact")
+
+
+def _run_age_days(run_row, now: datetime) -> float | None:
+    anchor = run_row["finished_at"] or run_row["started_at"]
+    if not anchor:
+        return None
+    return (now - datetime.fromisoformat(anchor)).total_seconds() / 86400.0
+
+
+def clean_staging(
+    config: Config,
+    *,
+    dry_run: bool = False,
+    orphan_retention_days: int = 7,
+) -> StagingCleanupResult:
+    manifest = Manifest(config.manifest_path)
+    staging_root = config.staging_root
+    now = datetime.now(UTC)
+
+    known_run_ids = {row["run_id"] for row in manifest.list_runs()}
+    staging_run_ids = list_staging_run_ids(staging_root)
+
+    removed: list[str] = []
+    orphans: list[str] = []
+    skipped: list[str] = []
+    bytes_freed = 0
+
+    for run_id in sorted(staging_run_ids):
+        paths = staging_run_paths(staging_root, run_id)
+        if not paths:
+            continue
+
+        if run_id not in known_run_ids:
+            if _staging_age_days(paths, now) < orphan_retention_days:
+                skipped.append(run_id)
+                continue
+            orphans.append(run_id)
+            bytes_freed += _delete_paths(paths, dry_run=dry_run)
+            continue
+
+        if run_ready_for_staging_cleanup(manifest, run_id):
+            removed.append(run_id)
+            bytes_freed += _delete_paths(paths, dry_run=dry_run)
+            continue
+
+        run = manifest.get_run(run_id)
+        age = _run_age_days(run, now) if run is not None else _staging_age_days(paths, now)
+        if age is not None and age >= orphan_retention_days and run is not None:
+            if run["status"] in ("failed", "success") and manifest.incomplete_batch_count(run_id) > 0:
+                orphans.append(run_id)
+                bytes_freed += _delete_paths(paths, dry_run=dry_run)
+                continue
+        skipped.append(run_id)
+
+    return StagingCleanupResult(
+        removed_run_ids=removed,
+        orphan_run_ids=orphans,
+        bytes_freed=bytes_freed,
+        skipped_run_ids=skipped,
+    )

@@ -18,6 +18,7 @@ from stock_data_engine.query.on_demand import OnDemandService
 from stock_data_engine.query.views import ensure_duckdb_views
 from stock_data_engine.steps.finalize import step_compact
 from stock_data_engine.storage.layout import init_data_layout
+from stock_data_engine.storage.staging_cleanup import clean_staging
 
 USER_CONFIG = "configs/stockdata.toml"
 EXAMPLE_CONFIG = "configs/stockdata.example.toml"
@@ -60,7 +61,30 @@ def cli():
     default=None,
     help="As-of trade date for init phases (YYYY-MM-DD); default today.",
 )
-def init(config_path: str, layout_only: bool, trade_date: str | None):
+@click.option(
+    "--resume",
+    is_flag=True,
+    help="Resume the latest incomplete init run (retry failed batches + missing phases).",
+)
+@click.option(
+    "--run-id",
+    "resume_run_id",
+    default=None,
+    help="Resume a specific init run_id (implies --resume).",
+)
+@click.option(
+    "--keep-going",
+    is_flag=True,
+    help="Continue init phases after a phase failure instead of stopping.",
+)
+def init(
+    config_path: str,
+    layout_only: bool,
+    trade_date: str | None,
+    resume: bool,
+    resume_run_id: str | None,
+    keep_going: bool,
+):
     """Initialize data lake and run configured init phases (first full backfill)."""
     cfg = _cfg(config_path)
     init_data_layout(cfg)
@@ -70,10 +94,25 @@ def init(config_path: str, layout_only: bool, trade_date: str | None):
 
     td = date.fromisoformat(trade_date) if trade_date else date.today()
     engine = JobEngine(cfg)
-    result = engine.run_init_phases(trade_date=td)
+
+    if not resume and not resume_run_id:
+        incomplete = engine.manifest.latest_incomplete_init_run()
+        if incomplete is not None:
+            raise click.ClickException(
+                f"Incomplete init run {incomplete['run_id']} exists "
+                f"(status={incomplete['status']}). "
+                "Use `sde init --resume` or `sde retry --run-id "
+                f"{incomplete['run_id']}` — do not start a new full init."
+            )
+
+    result = engine.run_init_phases(
+        trade_date=td,
+        resume=resume or bool(resume_run_id),
+        resume_run_id=resume_run_id,
+        keep_going=keep_going,
+    )
     click.echo(json.dumps(result, indent=2, default=str))
-    failed = [p for p in result.get("phases", []) if p.get("status") != "success"]
-    if failed:
+    if result.get("status") != "success":
         raise SystemExit(1)
 
 
@@ -212,11 +251,50 @@ def status(config_path: str):
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option("--run-id", required=True)
 def retry(config_path: str, run_id: str):
-    """Retry failed batches for a run."""
+    """Retry failed batches and missing init steps for a run."""
     cfg = _cfg(config_path)
     engine = JobEngine(cfg)
-    result = engine.run_job("retry", retry_failed_only=True, run_id=run_id)
+    run = engine.manifest.get_run(run_id)
+    if run is None:
+        raise click.ClickException(f"Unknown run_id: {run_id}")
+    if run["job_name"] == "init":
+        result = engine.resume_init(run_id=run_id)
+    else:
+        result = engine.run_job("retry", retry_failed_only=True, run_id=run_id)
     click.echo(json.dumps(result, indent=2, default=str))
+    if result.get("status") != "success":
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--dry-run", is_flag=True, help="Report removable staging without deleting.")
+@click.option(
+    "--orphan-retention-days",
+    default=7,
+    show_default=True,
+    help="Delete orphan/failed staging older than this many days.",
+)
+def clean(config_path: str, dry_run: bool, orphan_retention_days: int):
+    """Remove staging for successful compacted runs and aged orphans."""
+    cfg = _cfg(config_path)
+    result = clean_staging(
+        cfg,
+        dry_run=dry_run,
+        orphan_retention_days=orphan_retention_days,
+    )
+    click.echo(
+        json.dumps(
+            {
+                "dry_run": dry_run,
+                "removed_run_ids": result.removed_run_ids,
+                "orphan_run_ids": result.orphan_run_ids,
+                "skipped_run_ids": result.skipped_run_ids,
+                "bytes_freed": result.bytes_freed,
+            },
+            indent=2,
+        )
+    )
 
 
 @cli.command()

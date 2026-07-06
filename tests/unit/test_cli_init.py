@@ -29,9 +29,9 @@ def test_init_layout_only_skips_phases(tmp_path, monkeypatch):
     cfg_path = _write_config(tmp_path)
     called = {"phases": False}
 
-    def fake_run_init_phases(self, trade_date=None):
+    def fake_run_init_phases(self, trade_date=None, **kwargs):
         called["phases"] = True
-        return {"run_id": "x", "phases": []}
+        return {"run_id": "x", "status": "success", "phases": []}
 
     monkeypatch.setattr(JobEngine, "run_init_phases", fake_run_init_phases)
 
@@ -50,10 +50,11 @@ def test_init_runs_phases_by_default(tmp_path, monkeypatch):
     cfg_path = _write_config(tmp_path)
     seen: dict[str, date | None] = {"trade_date": "unset"}
 
-    def fake_run_init_phases(self, trade_date=None):
+    def fake_run_init_phases(self, trade_date=None, **kwargs):
         seen["trade_date"] = trade_date
         return {
             "run_id": "init-run",
+            "status": "success",
             "phases": [{"phase": "phase1_reference", "status": "success"}],
         }
 
@@ -73,9 +74,10 @@ def test_init_runs_phases_by_default(tmp_path, monkeypatch):
 def test_init_exits_nonzero_when_phase_fails(tmp_path, monkeypatch):
     cfg_path = _write_config(tmp_path)
 
-    def fake_run_init_phases(self, trade_date=None):
+    def fake_run_init_phases(self, trade_date=None, **kwargs):
         return {
             "run_id": "init-run",
+            "status": "failed",
             "phases": [{"phase": "phase1_reference", "status": "failed"}],
         }
 

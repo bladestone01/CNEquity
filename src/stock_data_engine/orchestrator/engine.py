@@ -11,6 +11,16 @@ from typing import Any
 
 from stock_data_engine.config import Config, WaveConfig
 from stock_data_engine.orchestrator.deps import step_execution_levels, validate_steps_registered
+from stock_data_engine.orchestrator.init_phases import (
+    DEFAULT_INIT_PHASES,
+    INIT_PHASE_STEPS,
+    missing_steps,
+    needs_finalize,
+    phase_backfill,
+    phases_never_started,
+    step_backfill,
+    step_succeeded,
+)
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.orchestrator.registry import get_step
 from stock_data_engine.steps.common import BACKFILL_START, is_trading_day
@@ -35,6 +45,7 @@ class JobEngine:
         backfill: bool = False,
         run_id: str | None = None,
         retry_failed_only: bool = False,
+        finalize_run: bool = True,
     ) -> dict[str, Any]:
         trade_date = trade_date or date.today()
         self.config._backfill = backfill
@@ -102,14 +113,21 @@ class JobEngine:
                     )
 
         status = "failed" if had_error else "success"
-        self.manifest.finish_run(
-            run_id,
-            status,
-            rows_read=total_read,
-            rows_written=total_written,
-            error_message="one or more steps failed" if had_error else None,
-        )
-        return {"run_id": run_id, "status": status, "results": results}
+        if finalize_run:
+            self.manifest.finish_run(
+                run_id,
+                status,
+                rows_read=total_read,
+                rows_written=total_written,
+                error_message="one or more steps failed" if had_error else None,
+            )
+        return {
+            "run_id": run_id,
+            "status": status,
+            "results": results,
+            "rows_read": total_read,
+            "rows_written": total_written,
+        }
 
     def _run_wave(
         self,
@@ -200,14 +218,71 @@ class JobEngine:
             logger.exception("Step %s failed after %.1fs", name, elapsed)
             return {"step": name, "status": "failed", "error": str(exc), "elapsed": elapsed}
 
-    def _retry_run(self, run_id: str, trade_date: date) -> dict[str, Any]:
+    def _is_init_run(self, run_id: str) -> bool:
+        run = self.manifest.get_run(run_id)
+        return run is not None and run["job_name"] == "init"
+
+    def _init_phases_list(self, run_id: str | None = None) -> list[str]:
+        if run_id:
+            meta = self.manifest.get_run_metadata(run_id)
+            phases = meta.get("phases")
+            if phases:
+                return list(phases)
+        return list(self.config.init_phases or DEFAULT_INIT_PHASES)
+
+    def _missing_init_steps(self, run_id: str) -> list[str]:
+        phases = self._init_phases_list(run_id)
+        batches = self.manifest.get_batches_for_run(run_id)
+        return missing_steps(phases, batches)
+
+    def _run_finalize_steps(
+        self, run_id: str, trade_date: date, context: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        batches = self.manifest.get_batches_for_run(run_id)
+        for step_name in ("compact", "derive_adj_factors", "audit"):
+            if step_succeeded(batches, step_name):
+                continue
+            result = self._run_step(step_name, trade_date, run_id, context)
+            updates = result.get("context_updates")
+            if updates:
+                findings = updates.pop("audit_findings", None)
+                if findings:
+                    context.setdefault("audit_findings", []).extend(findings)
+                context.update(updates)
+            results.append(result)
+            batches = self.manifest.get_batches_for_run(run_id)
+        return results
+
+    def _retry_run(
+        self, run_id: str, trade_date: date, *, auto_finalize: bool = True
+    ) -> dict[str, Any]:
         timeout = self.manifest.advance_batch_timeouts(
             run_id,
             stale_after_seconds=self.config.batch_stale_seconds,
         )
         stale_marked = timeout["running_to_stale"] + timeout["stale_to_failed"]
         failed = self.manifest.get_failed_batches(run_id)
-        if not failed:
+        missing_init = self._missing_init_steps(run_id) if self._is_init_run(run_id) else []
+
+        if not failed and not missing_init:
+            batches = self.manifest.get_batches_for_run(run_id)
+            phases = self._init_phases_list(run_id)
+            if auto_finalize and self._is_init_run(run_id) and needs_finalize(phases, batches):
+                context = {"run_id": run_id, "trade_date": trade_date}
+                context.update(self.manifest.get_run_metadata(run_id))
+                fin_results = self._run_finalize_steps(run_id, trade_date, context)
+                incomplete = self.manifest.incomplete_batch_count(run_id)
+                status = "failed" if incomplete else "success"
+                self.manifest.finish_run(run_id, status)
+                return {
+                    "run_id": run_id,
+                    "status": status,
+                    "retried": 0,
+                    "stale_marked_failed": stale_marked,
+                    "batch_timeout": timeout,
+                    "results": fin_results,
+                }
             return {
                 "run_id": run_id,
                 "status": "success",
@@ -223,6 +298,7 @@ class JobEngine:
         step_batches = [b for b in failed if b["dataset"] != "daily_bars"]
 
         results: list[dict[str, Any]] = []
+        retried = len(failed)
 
         if worker_batches:
             if any(
@@ -240,54 +316,79 @@ class JobEngine:
             dataset = batch["dataset"]
             results.append(self._run_step(dataset, trade_date, run_id, context))
 
-        if self.manifest.incomplete_batch_count(run_id) == 0:
-            for step_name in ("compact", "derive_adj_factors", "audit"):
-                result = self._run_step(step_name, trade_date, run_id, context)
-                updates = result.get("context_updates")
-                if updates:
-                    findings = updates.pop("audit_findings", None)
-                    if findings:
-                        context.setdefault("audit_findings", []).extend(findings)
-                    context.update(updates)
-                results.append(result)
+        if missing_init:
+            phases = self._init_phases_list(run_id)
+            for step in missing_init:
+                prev_backfill = self.config._backfill
+                self.config._backfill = step_backfill(step, phases)
+                try:
+                    results.append(self._run_step(step, trade_date, run_id, context))
+                finally:
+                    self.config._backfill = prev_backfill
+            retried += len(missing_init)
+
+        if auto_finalize and self.manifest.incomplete_batch_count(run_id) == 0:
+            results.extend(self._run_finalize_steps(run_id, trade_date, context))
 
         incomplete = self.manifest.incomplete_batch_count(run_id)
         status = "failed" if incomplete else "success"
-        self.manifest.finish_run(run_id, status)
+        if auto_finalize:
+            self.manifest.finish_run(run_id, status)
         return {
             "run_id": run_id,
             "status": status,
-            "retried": len(failed),
+            "retried": retried,
+            "missing_steps": missing_init,
             "stale_marked_failed": stale_marked,
             "batch_timeout": timeout,
             "results": results,
         }
 
-    def run_init_phases(self, trade_date: date | None = None) -> dict[str, Any]:
-        trade_date = trade_date or date.today()
-        phases = self.config.init_phases or [
-            "phase1_reference",
-            "phase2a_corporate_actions",
-            "phase2c_daily_bars_backfill",
-            "phase3_index_and_status",
-            "phase4_finalize",
-        ]
-        phase_steps = {
-            "phase1_reference": ["instruments", "trading_calendar"],
-            "phase2a_corporate_actions": ["corporate_actions"],
-            "phase2b_daily_bars_incremental": ["daily_bars"],
-            "phase2c_daily_bars_backfill": ["daily_bars"],
-            "phase3_index_and_status": ["index_bars", "trading_status"],
-            "phase4_finalize": ["compact", "derive_adj_factors", "audit"],
-        }
-        all_results = []
-        run_id = self.manifest.start_run("init", {"phases": phases})
+    def _finalize_init_run(
+        self,
+        run_id: str,
+        phase_results: list[dict[str, Any]],
+        *,
+        rows_read: int = 0,
+        rows_written: int = 0,
+    ) -> str:
+        had_failure = any(p.get("status") == "failed" for p in phase_results)
+        incomplete = self.manifest.incomplete_batch_count(run_id) > 0
+        status = "failed" if had_failure or incomplete else "success"
+        error_message = None
+        if had_failure:
+            error_message = "one or more init phases failed"
+        elif incomplete:
+            error_message = "init run has incomplete batches"
+        self.manifest.finish_run(
+            run_id,
+            status,
+            rows_read=rows_read,
+            rows_written=rows_written,
+            error_message=error_message,
+        )
+        meta = self.manifest.get_run_metadata(run_id)
+        meta["phase_results"] = phase_results
+        self.manifest.update_run_metadata(run_id, meta)
+        return status
+
+    def _execute_init_phases(
+        self,
+        run_id: str,
+        trade_date: date,
+        phases: list[str],
+        *,
+        keep_going: bool = False,
+    ) -> dict[str, Any]:
+        phase_results: list[dict[str, Any]] = []
+        total_read = 0
+        total_written = 0
+
         for phase in phases:
-            steps = phase_steps.get(phase, [])
-            backfill = phase in (
-                "phase2a_corporate_actions",
-                "phase2c_daily_bars_backfill",
-            )
+            steps = INIT_PHASE_STEPS.get(phase, [])
+            if not steps:
+                continue
+            backfill = phase_backfill(phase)
             logger.info("Init phase %s: %s", phase, steps)
             result = self.run_job(
                 "init",
@@ -295,6 +396,130 @@ class JobEngine:
                 steps=steps,
                 backfill=backfill,
                 run_id=run_id,
+                finalize_run=False,
             )
-            all_results.append({"phase": phase, **result})
-        return {"run_id": run_id, "phases": all_results}
+            phase_results.append({"phase": phase, **result})
+            total_read += result.get("rows_read", 0)
+            total_written += result.get("rows_written", 0)
+            if result["status"] == "failed" and not keep_going:
+                logger.error("Init phase %s failed; stopping remaining phases", phase)
+                break
+
+        status = self._finalize_init_run(
+            run_id,
+            phase_results,
+            rows_read=total_read,
+            rows_written=total_written,
+        )
+        return {"run_id": run_id, "status": status, "phases": phase_results}
+
+    def resume_init(
+        self,
+        trade_date: date | None = None,
+        *,
+        run_id: str | None = None,
+        keep_going: bool = False,
+    ) -> dict[str, Any]:
+        trade_date = trade_date or date.today()
+        if not run_id:
+            latest = self.manifest.latest_incomplete_init_run()
+            if latest is None:
+                raise RuntimeError(
+                    "No incomplete init run found. Start a new init with `sde init`."
+                )
+            run_id = latest["run_id"]
+
+        run = self.manifest.get_run(run_id)
+        if run is None:
+            raise RuntimeError(f"Unknown run_id: {run_id}")
+        if run["job_name"] != "init":
+            raise RuntimeError(f"Run {run_id} is not an init job (job_name={run['job_name']})")
+
+        phases = self._init_phases_list(run_id)
+        meta = self.manifest.get_run_metadata(run_id)
+        meta["resumed_at"] = date.today().isoformat()
+        self.manifest.update_run_metadata(run_id, meta)
+
+        logger.info("Resuming init run %s", run_id)
+        retry_result = self._retry_run(run_id, trade_date, auto_finalize=False)
+
+        batches = self.manifest.get_batches_for_run(run_id)
+        to_run = phases_never_started(phases, batches)
+        phase_results: list[dict[str, Any]] = list(meta.get("phase_results") or [])
+        total_read = retry_result.get("rows_read", 0)
+        total_written = retry_result.get("rows_written", 0)
+
+        for phase in to_run:
+            steps = INIT_PHASE_STEPS.get(phase, [])
+            backfill = phase_backfill(phase)
+            logger.info("Init resume phase %s: %s", phase, steps)
+            result = self.run_job(
+                "init",
+                trade_date,
+                steps=steps,
+                backfill=backfill,
+                run_id=run_id,
+                finalize_run=False,
+            )
+            phase_results.append({"phase": phase, **result})
+            total_read += result.get("rows_read", 0)
+            total_written += result.get("rows_written", 0)
+            if result["status"] == "failed" and not keep_going:
+                break
+
+        batches = self.manifest.get_batches_for_run(run_id)
+        if needs_finalize(phases, batches) and self.manifest.incomplete_batch_count(run_id) == 0:
+            context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
+            context.update(self.manifest.get_run_metadata(run_id))
+            fin_results = self._run_finalize_steps(run_id, trade_date, context)
+            phase_results.append(
+                {
+                    "phase": "phase4_finalize",
+                    "status": "failed"
+                    if any(r.get("status") == "failed" for r in fin_results)
+                    else "success",
+                    "results": fin_results,
+                }
+            )
+
+        status = self._finalize_init_run(
+            run_id,
+            phase_results,
+            rows_read=total_read,
+            rows_written=total_written,
+        )
+        return {
+            "run_id": run_id,
+            "status": status,
+            "resumed": True,
+            "retry": retry_result,
+            "phases": phase_results,
+        }
+
+    def run_init_phases(
+        self,
+        trade_date: date | None = None,
+        *,
+        resume: bool = False,
+        resume_run_id: str | None = None,
+        keep_going: bool = False,
+    ) -> dict[str, Any]:
+        trade_date = trade_date or date.today()
+        if resume or resume_run_id:
+            return self.resume_init(
+                trade_date,
+                run_id=resume_run_id,
+                keep_going=keep_going,
+            )
+
+        phases = self._init_phases_list()
+        run_id = self.manifest.start_run(
+            "init",
+            {"phases": phases, "trade_date": trade_date.isoformat()},
+        )
+        return self._execute_init_phases(
+            run_id,
+            trade_date,
+            phases,
+            keep_going=keep_going,
+        )
