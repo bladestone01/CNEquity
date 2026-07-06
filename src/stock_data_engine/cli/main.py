@@ -234,11 +234,62 @@ def audit(config_path: str, run_id: str | None):
     click.echo(f"Audit complete: {n} findings written")
 
 
+def _last_trading_day(cfg, today: date) -> date:
+    from datetime import timedelta
+
+    from stock_data_engine.steps.common import is_trading_day
+
+    d = today
+    for _ in range(15):
+        if is_trading_day(cfg, d):
+            return d
+        d -= timedelta(days=1)
+    return today
+
+
 @cli.command()
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-def status(config_path: str):
-    """Show latest run status."""
+@click.option(
+    "--datasets",
+    "show_datasets",
+    is_flag=True,
+    help="Per-dataset freshness: coverage, watermark, and staleness vs the last trading day.",
+)
+def status(config_path: str, show_datasets: bool):
+    """Show latest run status, or per-dataset freshness with --datasets."""
     cfg = _cfg(config_path)
+
+    if show_datasets:
+        import polars as pl_mod
+
+        from stock_data_engine.query.reader import list_datasets
+
+        anchor = _last_trading_day(cfg, date.today())
+        df = list_datasets(config=cfg)
+        df = df.with_columns(
+            pl_mod.when(~pl_mod.col("has_data"))
+            .then(pl_mod.lit("empty"))
+            # Quarterly/report_period datasets have no daily watermark; their
+            # coverage_end is a report date and must not be judged daily-stale.
+            .when(~pl_mod.col("watermarked"))
+            .then(pl_mod.lit("n/a"))
+            .when(
+                pl_mod.coalesce(pl_mod.col("watermark"), pl_mod.col("coverage_end"))
+                < anchor
+            )
+            .then(pl_mod.lit("STALE"))
+            .otherwise(pl_mod.lit("fresh"))
+            .alias("freshness")
+        )
+        click.echo(f"last trading day: {anchor.isoformat()}")
+        with pl_mod.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
+            click.echo(df)
+        stale = df.filter(pl_mod.col("freshness") == "STALE").height
+        if stale:
+            click.echo(f"\n{stale} dataset(s) STALE — check runs with `sde status` / `sde retry`.")
+            raise SystemExit(1)
+        return
+
     manifest = Manifest(cfg.manifest_path)
     latest = manifest.latest_run()
     if not latest:
@@ -277,15 +328,29 @@ def retry(config_path: str, run_id: str):
     "--orphan-retention-days",
     default=7,
     show_default=True,
-    help="Delete orphan/failed staging older than this many days.",
+    help="Delete manifest-less orphan staging older than this many days.",
 )
-def clean(config_path: str, dry_run: bool, orphan_retention_days: int):
-    """Remove staging for successful compacted runs and aged orphans."""
+@click.option(
+    "--force",
+    is_flag=True,
+    help=(
+        "Also delete staging of failed/incomplete runs. Their success batches "
+        "are demoted to failed so `sde retry` refetches them (data is refetched, "
+        "not lost, but the retry becomes a full re-run)."
+    ),
+)
+def clean(config_path: str, dry_run: bool, orphan_retention_days: int, force: bool):
+    """Remove staging for successful compacted runs and aged orphans.
+
+    Failed/incomplete runs keep their staging (it is resumable state) unless
+    --force is given.
+    """
     cfg = _cfg(config_path)
     result = clean_staging(
         cfg,
         dry_run=dry_run,
         orphan_retention_days=orphan_retention_days,
+        force=force,
     )
     click.echo(
         json.dumps(
@@ -293,6 +358,7 @@ def clean(config_path: str, dry_run: bool, orphan_retention_days: int):
                 "dry_run": dry_run,
                 "removed_run_ids": result.removed_run_ids,
                 "orphan_run_ids": result.orphan_run_ids,
+                "force_removed_run_ids": result.force_removed_run_ids,
                 "skipped_run_ids": result.skipped_run_ids,
                 "bytes_freed": result.bytes_freed,
             },
@@ -312,7 +378,18 @@ def catalog(config_path: str):
         for ds_dir in sorted(curated.iterdir()):
             if ds_dir.is_dir():
                 files = list(ds_dir.glob("**/*.parquet"))
-                rows = sum(pl.read_parquet(f).height for f in files) if files else 0
+                # lazy count(*) resolves from parquet metadata without
+                # decoding data pages — cheap even on a 10-year lake.
+                rows = (
+                    int(
+                        pl.scan_parquet([str(f) for f in files])
+                        .select(pl.len())
+                        .collect()
+                        .item()
+                    )
+                    if files
+                    else 0
+                )
                 entries.append({"dataset": ds_dir.name, "files": len(files), "rows": rows})
     click.echo(json.dumps(entries, indent=2))
 

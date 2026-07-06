@@ -81,7 +81,12 @@ def test_example_config_validates_macro_risk_group():
     assert validate_config(cfg) == []
 
 
-def test_macro_indicators_parses_treasury_and_shibor():
+def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
+    # Keep the test hermetic: akshare (when installed) would fetch the real
+    # full monthly history over the network.
+    from stock_data_engine.adapters.macro import indicators as macro_indicators
+
+    monkeypatch.setattr(macro_indicators, "_akshare_rows", lambda _td: [])
     client = FakeDatacenterClient(
         {
             "RPTA_WEB_TREASURY_YIELD": [{"TRADE_DATE": "2024-06-28", "TENYEAR": 2.25}],
@@ -215,3 +220,14 @@ def test_load_macro_indicators_by_date_range(tmp_path):
     df = load("macro_indicators", start="2024-06-28", end="2024-06-28", config=cfg)
     assert df.height == 1
     assert df["indicator_id"][0] == "shibor_3m"
+
+
+def test_parse_series_obs_date_handles_month_formats():
+    from stock_data_engine.adapters.macro.indicators import _parse_series_obs_date
+
+    assert _parse_series_obs_date("2024-06-28") == date(2024, 6, 28)
+    assert _parse_series_obs_date("2024-06") == date(2024, 6, 30)
+    assert _parse_series_obs_date("2024年6月份") == date(2024, 6, 30)
+    assert _parse_series_obs_date("2024年12月") == date(2024, 12, 31)
+    assert _parse_series_obs_date("garbage") is None
+    assert _parse_series_obs_date(None) is None

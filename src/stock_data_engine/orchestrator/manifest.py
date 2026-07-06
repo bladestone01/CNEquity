@@ -359,6 +359,20 @@ class Manifest:
         )
         return result["running_to_stale"] + result["stale_to_failed"]
 
+    def demote_success_batches(self, run_id: str, *, reason: str) -> int:
+        """Mark fetch batches failed (e.g. staging evicted) so retry refetches them."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE ingestion_batches
+                SET status = 'failed', error_message = ?
+                WHERE run_id = ? AND status = 'success' AND dataset NOT IN
+                    ('compact', 'derive_adj_factors', 'audit')
+                """,
+                (reason, run_id),
+            )
+            return cur.rowcount
+
     def get_batches_for_run(self, run_id: str) -> list[sqlite3.Row]:
         with self._connect() as conn:
             cur = conn.execute(

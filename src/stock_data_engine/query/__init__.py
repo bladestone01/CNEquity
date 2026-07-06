@@ -1,3 +1,9 @@
-from stock_data_engine.query.reader import load, resolve_config
+from stock_data_engine.query.reader import (
+    dataset_schema,
+    list_datasets,
+    load,
+    resolve_config,
+    scan,
+)
 
-__all__ = ["load", "resolve_config"]
+__all__ = ["dataset_schema", "list_datasets", "load", "resolve_config", "scan"]

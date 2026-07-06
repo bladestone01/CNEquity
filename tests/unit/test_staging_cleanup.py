@@ -69,6 +69,85 @@ def test_clean_skips_incomplete_run(tmp_path):
     assert run_id in list_staging_run_ids(cfg.staging_root)
 
 
+def test_clean_never_deletes_failed_run_staging_without_force(tmp_path):
+    """A failed run's success batches live only in staging; age must not matter."""
+    import os
+
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily", {})
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars")
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+    manifest.start_batch(run_id, "batch-1", "daily_bars", "daily_bars")
+    manifest.finish_batch(run_id, "batch-1", "failed", error_message="err")
+    manifest.finish_run(run_id, "failed")
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_bar_row("000001.SZ", date(2024, 6, 28))]),
+    )
+    run_dir = cfg.staging_root / "daily_bars" / f"run_id={run_id}"
+    old = datetime.now(UTC) - timedelta(days=30)
+    os.utime(run_dir, (old.timestamp(), old.timestamp()))
+
+    result = clean_staging(cfg, orphan_retention_days=7)
+    assert run_id in result.skipped_run_ids
+    assert run_id in list_staging_run_ids(cfg.staging_root)
+
+
+def test_clean_force_deletes_failed_run_and_demotes_success_batches(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily", {})
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars")
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+    manifest.start_batch(run_id, "batch-1", "daily_bars", "daily_bars")
+    manifest.finish_batch(run_id, "batch-1", "failed", error_message="err")
+    manifest.finish_run(run_id, "failed")
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_bar_row("000001.SZ", date(2024, 6, 28))]),
+    )
+
+    result = clean_staging(cfg, force=True)
+    assert run_id in result.force_removed_run_ids
+    assert run_id not in list_staging_run_ids(cfg.staging_root)
+    # success batch demoted so retry refetches it instead of losing rows
+    statuses = {b["batch_id"]: b["status"] for b in manifest.get_batches_for_run(run_id)}
+    assert statuses["batch-0"] == "failed"
+    assert statuses["batch-1"] == "failed"
+
+
+def test_clean_force_dry_run_keeps_manifest_untouched(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily", {})
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars")
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+    manifest.finish_run(run_id, "failed")
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_bar_row("000001.SZ", date(2024, 6, 28))]),
+    )
+
+    result = clean_staging(cfg, force=True, dry_run=True)
+    assert run_id in result.force_removed_run_ids
+    assert run_id in list_staging_run_ids(cfg.staging_root)
+    statuses = {b["batch_id"]: b["status"] for b in manifest.get_batches_for_run(run_id)}
+    assert statuses["batch-0"] == "success"
+
+
 def test_clean_removes_orphan_staging_without_manifest(tmp_path):
     import os
 

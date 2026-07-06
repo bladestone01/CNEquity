@@ -11,11 +11,18 @@ import polars as pl
 
 from stock_data_engine.config import Config, load_config
 from stock_data_engine.derive.adj_factors import STORED_ADJUST_TYPE
+from stock_data_engine.domain.datasets import (
+    DATASETS,
+    curated_dataset_names,
+    derived_dataset_names,
+    pit_dataset_names,
+)
 from stock_data_engine.domain.schemas import DATASET_SCHEMAS, validate_dataframe
 from stock_data_engine.query.parquet_scan import (
     collect_parquet_root,
     dataset_has_parquet,
     partition_col_for_dataset,
+    scan_parquet_root,
 )
 from stock_data_engine.query.universe import apply_universe_filter
 
@@ -24,65 +31,15 @@ logger = logging.getLogger(__name__)
 AdjustType = Literal["qfq", "hfq"]
 UniverseType = Literal["all_a"]
 
-CURATED_DATASETS = frozenset(
-    {
-        "instruments",
-        "trading_calendar",
-        "trading_status",
-        "daily_bars",
-        "index_bars",
-        "corporate_actions",
-        "financial_statement_items",
-        "fund_flow",
-        "margin_trading",
-        "northbound_holdings",
-        "northbound_flows",
-        "valuation_metrics",
-        "sector_members",
-        "announcement_index",
-        "dragon_tiger",
-        "block_trades",
-        "index_constituents",
-        "industry_members",
-        "macro_indicators",
-        "market_breadth",
-        "share_unlock_schedule",
-        "regulatory_events",
-        "institutional_holdings",
-        "analyst_consensus",
-        "sentiment_scores",
-    }
-)
-DERIVED_DATASETS = frozenset({"adj_factors"})
-
+# All derived from the DatasetSpec registry (domain/datasets.py).
+CURATED_DATASETS = curated_dataset_names()
+DERIVED_DATASETS = derived_dataset_names()
 DATE_COLUMNS: dict[str, str] = {
-    "daily_bars": "trade_date",
-    "index_bars": "trade_date",
-    "trading_calendar": "trade_date",
-    "trading_status": "trade_date",
-    "corporate_actions": "ex_date",
-    "adj_factors": "trade_date",
-    "fund_flow": "trade_date",
-    "margin_trading": "trade_date",
-    "northbound_holdings": "trade_date",
-    "northbound_flows": "trade_date",
-    "valuation_metrics": "trade_date",
-    "sector_members": "as_of_date",
-    "announcement_index": "announce_date",
-    "dragon_tiger": "trade_date",
-    "block_trades": "trade_date",
-    "index_constituents": "as_of_date",
-    "industry_members": "as_of_date",
-    "macro_indicators": "obs_date",
-    "market_breadth": "trade_date",
-    "share_unlock_schedule": "unlock_date",
-    "regulatory_events": "event_date",
-    "institutional_holdings": "report_period",
-    "analyst_consensus": "forecast_date",
-    "sentiment_scores": "trade_date",
+    name: spec.query_date_col
+    for name, spec in DATASETS.items()
+    if spec.query_date_col is not None
 }
-
-PIT_DATASETS = frozenset({"financial_statement_items", "announcement_index"})
+PIT_DATASETS = pit_dataset_names()
 PRICE_COLS = ("open", "high", "low", "close")
 
 
@@ -356,3 +313,84 @@ def load(
     if sort_cols:
         df = df.sort(sort_cols)
     return df
+
+
+def scan(
+    dataset: str,
+    *,
+    start: str | date | None = None,
+    end: str | date | None = None,
+    symbols: list[str] | None = None,
+    config: Config | None = None,
+    data_root: str | Path | None = None,
+) -> pl.LazyFrame:
+    """Return a LazyFrame over a dataset with hive partition pruning.
+
+    Raw scan for heavy pipelines — no adjustment/universe/PIT semantics
+    (use ``load`` for those); date window and symbol filters push down to
+    the partition scan.
+    """
+    cfg = resolve_config(config=config, data_root=data_root)
+    if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
+        raise ReaderError(f"unknown dataset {dataset!r}")
+    root = _dataset_root(cfg, dataset)
+    if not dataset_has_parquet(root):
+        raise ReaderError(
+            f"no parquet data for dataset {dataset!r} under {root} "
+            f"(data_root={cfg.data_root})"
+        )
+    return scan_parquet_root(
+        root,
+        partition_col=DATE_COLUMNS.get(dataset) or partition_col_for_dataset(dataset),
+        start=_parse_date(start),
+        end=_parse_date(end),
+        symbols=symbols,
+    )
+
+
+def dataset_schema(dataset: str) -> dict[str, pl.DataType]:
+    """Column contract (polars dtypes) for a dataset."""
+    if dataset not in DATASET_SCHEMAS:
+        raise ReaderError(f"unknown dataset {dataset!r}")
+    return dict(DATASET_SCHEMAS[dataset])
+
+
+def list_datasets(
+    *,
+    config: Config | None = None,
+    data_root: str | Path | None = None,
+) -> pl.DataFrame:
+    """Catalog of all datasets: layer, semantics, coverage, and watermark.
+
+    Uses hive partition directory names and ``meta/state`` watermarks — no
+    parquet data is read, so this is cheap even on a 10-year lake.
+    """
+    from stock_data_engine.query.parquet_scan import list_hive_partition_dates
+    from stock_data_engine.storage.state import StateStore
+
+    cfg = resolve_config(config=config, data_root=data_root)
+    state = StateStore(cfg.meta_root)
+    rows = []
+    for name, spec in sorted(DATASETS.items()):
+        root = (cfg.derived_root if spec.layer == "derived" else cfg.curated_root) / name
+        has_data = dataset_has_parquet(root)
+        first_part = last_part = None
+        if has_data and spec.partition_col:
+            parts = list_hive_partition_dates(root, spec.partition_col)
+            if parts:
+                first_part, last_part = parts[0], parts[-1]
+        rows.append(
+            {
+                "dataset": name,
+                "layer": spec.layer,
+                "date_col": spec.query_date_col,
+                "fetch_semantics": spec.fetch_semantics,
+                "pit": spec.pit,
+                "has_data": has_data,
+                "coverage_start": first_part,
+                "coverage_end": last_part,
+                "watermarked": spec.watermark,
+                "watermark": state.get_date(name) if spec.watermark else None,
+            }
+        )
+    return pl.DataFrame(rows)

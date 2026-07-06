@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import calendar
 import logging
+import re
 from datetime import date
 
 import polars as pl
@@ -35,6 +37,33 @@ def _parse_obs_date(value: object, fallback: date) -> date:
         return date.fromisoformat(text)
     except ValueError:
         return fallback
+
+
+_MONTH_RE = re.compile(r"^(\d{4})[-年/.](\d{1,2})月?")
+
+
+def _parse_series_obs_date(value: object) -> date | None:
+    """Parse an akshare observation date; monthly values map to month end.
+
+    Returns None when unparseable — the row is dropped rather than stamped
+    with a fabricated date.
+    """
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        pass
+    match = _MONTH_RE.match(text)
+    if match:
+        year, month = int(match.group(1)), int(match.group(2))
+        if 1 <= month <= 12:
+            last_day = calendar.monthrange(year, month)[1]
+            return date(year, month, last_day)
+    return None
 
 
 def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
@@ -119,9 +148,13 @@ def _akshare_rows(trade_date: date) -> list[dict]:
 
         date_col = pdf.columns[0]
         value_col = next((c for c in pdf.columns if col_hint in str(c)), pdf.columns[-1])
+        # akshare returns the full published series. Keep everything up to
+        # trade_date — monthly obs dates almost never equal the run day, and
+        # compact dedupes by (indicator_id, obs_date) so re-ingesting is
+        # idempotent. Filtering to obs == trade_date would drop ~all rows.
         for _, rec in pdf.iterrows():
-            obs = _parse_obs_date(rec.get(date_col), trade_date)
-            if obs != trade_date:
+            obs = _parse_series_obs_date(rec.get(date_col))
+            if obs is None or obs > trade_date:
                 continue
             val = rec.get(value_col)
             if val is None or (isinstance(val, float) and val != val):

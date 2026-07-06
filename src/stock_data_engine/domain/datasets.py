@@ -1,57 +1,151 @@
-"""Curated dataset registry: partition keys and audit thresholds."""
+"""Single source of truth for dataset metadata (DatasetSpec registry).
+
+Every module that needs per-dataset knowledge — compact partitioning, watermark
+policy, fetch semantics, query date columns, DuckDB views, audit — derives it
+from ``DATASETS`` below. Schema and primary keys live in
+``domain/schemas.py`` (polars dtypes); ``test_dataset_registry.py`` asserts the
+two stay in sync.
+
+Adding a dataset = one ``DatasetSpec`` entry here + schema/PK in schemas.py +
+a registered step.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 FetchSemantics = Literal["by_date", "snapshot"]
+Layer = Literal["curated", "derived"]
 
-# partition column per curated dataset; None = merge-style (e.g. instruments).
-PARTITION_COLS: dict[str, str | None] = {
-    "instruments": None,
-    "trading_calendar": "trade_date",
-    "trading_status": "trade_date",
-    "daily_bars": "trade_date",
-    "index_bars": "trade_date",
-    "corporate_actions": "ex_date",
-    "fund_flow": "trade_date",
-    "margin_trading": "trade_date",
-    "northbound_holdings": "trade_date",
-    "northbound_flows": "trade_date",
-    "valuation_metrics": "trade_date",
-    "sector_members": "as_of_date",
-    "announcement_index": "announce_date",
-    "dragon_tiger": "trade_date",
-    "block_trades": "trade_date",
-    "financial_statement_items": "report_period",
-    "index_constituents": "as_of_date",
-    "industry_members": "as_of_date",
-    "macro_indicators": "obs_date",
-    "market_breadth": "trade_date",
-    "share_unlock_schedule": "unlock_date",
-    "regulatory_events": "event_date",
-    "institutional_holdings": "report_period",
-    "analyst_consensus": "forecast_date",
-    "sentiment_scores": "trade_date",
-}
 
-# Incremental fetch semantics: by_date = API returns values for the requested day;
-# snapshot = live page stamped with trade_date (no historical replay).
-FETCH_SEMANTICS: dict[str, FetchSemantics] = {
-    "fund_flow": "snapshot",
-    "valuation_metrics": "snapshot",
-    "sector_members": "snapshot",
-    "index_constituents": "snapshot",
-    "industry_members": "snapshot",
-}
+@dataclass(frozen=True)
+class DatasetSpec:
+    """Orchestration/query metadata for one dataset.
+
+    partition_col:
+        Hive partition directory key under the lake (None = merge-style single
+        file, e.g. instruments).
+    date_col:
+        Column used for query date-range filters; defaults to ``partition_col``.
+    fetch_semantics:
+        ``by_date`` — source returns values for a requested day (gap catch-up
+        allowed). ``snapshot`` — live page stamped with trade_date; historical
+        replay would forge rows, so only the run day is ever fetched.
+    watermark:
+        Maintain a date watermark under ``meta/state`` (False for datasets
+        partitioned by non-date keys like report_period).
+    pit:
+        Point-in-time dataset — ``load()`` requires ``as_of`` and filters on
+        ``announce_date``.
+    """
+
+    name: str
+    layer: Layer = "curated"
+    partition_col: str | None = None
+    date_col: str | None = None
+    fetch_semantics: FetchSemantics = "by_date"
+    watermark: bool = True
+    pit: bool = False
+
+    @property
+    def query_date_col(self) -> str | None:
+        return self.date_col or self.partition_col
+
+
+_SPECS = [
+    # L0 reference
+    DatasetSpec("instruments", partition_col=None, watermark=False),
+    DatasetSpec("trading_calendar", partition_col="trade_date"),
+    DatasetSpec("trading_status", partition_col="trade_date"),
+    # L1 bars
+    DatasetSpec("daily_bars", partition_col="trade_date"),
+    DatasetSpec("index_bars", partition_col="trade_date"),
+    # L2 corporate events
+    DatasetSpec("corporate_actions", partition_col="ex_date"),
+    DatasetSpec("announcement_index", partition_col="announce_date", pit=True),
+    # L3 fundamentals
+    DatasetSpec(
+        "financial_statement_items",
+        partition_col="report_period",
+        watermark=False,
+        pit=True,
+    ),
+    DatasetSpec("valuation_metrics", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec("analyst_consensus", partition_col="forecast_date"),
+    # L4 capital flows
+    DatasetSpec("fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec("margin_trading", partition_col="trade_date"),
+    DatasetSpec("northbound_holdings", partition_col="trade_date"),
+    DatasetSpec("northbound_flows", partition_col="trade_date"),
+    DatasetSpec("dragon_tiger", partition_col="trade_date"),
+    DatasetSpec("block_trades", partition_col="trade_date"),
+    DatasetSpec("institutional_holdings", partition_col="report_period", watermark=False),
+    # L5 structure
+    DatasetSpec("sector_members", partition_col="as_of_date", fetch_semantics="snapshot"),
+    DatasetSpec("index_constituents", partition_col="as_of_date", fetch_semantics="snapshot"),
+    DatasetSpec("industry_members", partition_col="as_of_date", fetch_semantics="snapshot"),
+    # L6 macro
+    DatasetSpec("macro_indicators", partition_col="obs_date"),
+    DatasetSpec("market_breadth", partition_col="trade_date"),
+    # L7 sentiment
+    DatasetSpec("sentiment_scores", partition_col="trade_date"),
+    # L8 risk
+    DatasetSpec("share_unlock_schedule", partition_col="unlock_date"),
+    DatasetSpec("regulatory_events", partition_col="event_date"),
+    # derived
+    DatasetSpec("adj_factors", layer="derived", partition_col="trade_date"),
+]
+
+DATASETS: dict[str, DatasetSpec] = {spec.name: spec for spec in _SPECS}
+
+
+def get_dataset(name: str) -> DatasetSpec:
+    try:
+        return DATASETS[name]
+    except KeyError:
+        raise KeyError(f"unknown dataset {name!r}") from None
+
+
+def curated_dataset_names() -> frozenset[str]:
+    return frozenset(s.name for s in DATASETS.values() if s.layer == "curated")
+
+
+def derived_dataset_names() -> frozenset[str]:
+    return frozenset(s.name for s in DATASETS.values() if s.layer == "derived")
+
+
+def pit_dataset_names() -> frozenset[str]:
+    return frozenset(s.name for s in DATASETS.values() if s.pit)
 
 
 def fetch_semantics(dataset: str) -> FetchSemantics:
-    return FETCH_SEMANTICS.get(dataset, "by_date")
+    spec = DATASETS.get(dataset)
+    return spec.fetch_semantics if spec else "by_date"
 
+
+# ---------------------------------------------------------------------------
+# Derived legacy tables (kept so existing imports stay valid; do not edit these
+# directly — edit the DatasetSpec entries above).
+# ---------------------------------------------------------------------------
+
+# partition column per curated dataset; None = merge-style (e.g. instruments).
+PARTITION_COLS: dict[str, str | None] = {
+    s.name: s.partition_col for s in DATASETS.values() if s.layer == "curated"
+}
+
+FETCH_SEMANTICS: dict[str, FetchSemantics] = {
+    s.name: s.fetch_semantics
+    for s in DATASETS.values()
+    if s.fetch_semantics != "by_date"
+}
 
 # Datasets partitioned by non-date keys — skip date-based watermarks.
-WATERMARK_SKIP = frozenset({"financial_statement_items", "institutional_holdings"})
+WATERMARK_SKIP = frozenset(
+    s.name
+    for s in DATASETS.values()
+    if s.layer == "curated" and s.partition_col is not None and not s.watermark
+)
 
 # Warn when a partition's row/symbol count falls below this fraction of the prior partition.
 ROW_COUNT_MUTATION_MIN_RATIO = 0.5

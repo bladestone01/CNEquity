@@ -57,37 +57,28 @@ def _compare_numeric_fields(
                     }
                 )
                 continue
+            # Relative bps tolerance applies to every configured numeric field
+            # (volume differs by a few lots between sources routinely; exact
+            # equality checks just spam findings).
             bps = _relative_bps(float(left), float(right))
-            if field == "close" and bps > tolerance_bps:
-                diffs.append(
-                    {
-                        "dataset": dataset,
-                        "check": "price_drift",
-                        "severity": "warning",
-                        "field": field,
-                        "bps": round(bps, 2),
-                        "tolerance_bps": tolerance_bps,
-                        "primary_source": primary_source,
-                        "backup_source": backup_source,
-                        "primary_value": float(left),
-                        "backup_value": float(right),
-                        **{k: row.get(k) for k in pk if k in row},
-                    }
-                )
-            elif field != "close" and left != right:
-                diffs.append(
-                    {
-                        "dataset": dataset,
-                        "check": "field_mismatch",
-                        "severity": "info",
-                        "field": field,
-                        "primary_source": primary_source,
-                        "backup_source": backup_source,
-                        "primary_value": left,
-                        "backup_value": right,
-                        **{k: row.get(k) for k in pk if k in row},
-                    }
-                )
+            if bps <= tolerance_bps:
+                continue
+            is_price = field in ("open", "high", "low", "close")
+            diffs.append(
+                {
+                    "dataset": dataset,
+                    "check": "price_drift" if is_price else "field_drift",
+                    "severity": "warning" if is_price else "info",
+                    "field": field,
+                    "bps": round(bps, 2),
+                    "tolerance_bps": tolerance_bps,
+                    "primary_source": primary_source,
+                    "backup_source": backup_source,
+                    "primary_value": float(left),
+                    "backup_value": float(right),
+                    **{k: row.get(k) for k in pk if k in row},
+                }
+            )
     return diffs
 
 
@@ -109,17 +100,21 @@ def diff_dataset(
             }
         ]
 
-    curated_files = list(curated_root.glob("**/*.parquet"))
-    if not curated_files:
+    from stock_data_engine.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+
+    if not dataset_has_parquet(curated_root):
         return []
 
-    primary = pl.concat([pl.read_parquet(f) for f in curated_files], how="diagonal_relaxed")
-    if "source" in primary.columns:
-        primary = primary.filter(pl.col("source") == spec.primary)
-    if trade_date is not None:
-        date_col = _date_column(spec.name)
-        if date_col and date_col in primary.columns:
-            primary = primary.filter(pl.col(date_col) == trade_date)
+    date_col = _date_column(spec.name)
+    lf = scan_parquet_root(
+        curated_root,
+        partition_col=date_col,
+        start=trade_date,
+        end=trade_date,
+    )
+    if "source" in lf.collect_schema().names():
+        lf = lf.filter(pl.col("source") == spec.primary)
+    primary = lf.collect()
 
     backup = SnapshotStore(config.meta_root).read_latest(spec.name, source=spec.backup)
     if backup.is_empty():
@@ -145,7 +140,17 @@ def diff_dataset(
     if not join_keys:
         return []
 
-    primary = primary.head(sample_limit)
+    # Deterministic spread sample: hashing the join keys picks rows across the
+    # whole universe instead of always the first N symbols in file order.
+    if primary.height > sample_limit:
+        primary = (
+            primary.with_columns(
+                pl.concat_str([pl.col(k).cast(pl.Utf8) for k in join_keys]).hash(seed=0).alias("_sample_key")
+            )
+            .sort("_sample_key")
+            .head(sample_limit)
+            .drop("_sample_key")
+        )
     joined = primary.join(
         backup.select([*join_keys, *[c for c in backup.columns if c not in join_keys]]),
         on=join_keys,
@@ -174,12 +179,10 @@ def diff_dataset(
 
 
 def _date_column(dataset: str) -> str | None:
-    mapping = {
-        "daily_bars": "trade_date",
-        "index_bars": "trade_date",
-        "corporate_actions": "ex_date",
-    }
-    return mapping.get(dataset)
+    from stock_data_engine.domain.datasets import DATASETS
+
+    spec = DATASETS.get(dataset)
+    return spec.query_date_col if spec else None
 
 
 def run_source_diffs(

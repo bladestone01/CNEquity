@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,6 +19,11 @@ class StagingCleanupResult:
     orphan_run_ids: list[str]
     bytes_freed: int
     skipped_run_ids: list[str]
+    force_removed_run_ids: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.force_removed_run_ids is None:
+            self.force_removed_run_ids = []
 
 
 def list_staging_run_ids(staging_root: Path) -> set[str]:
@@ -88,12 +95,55 @@ def _run_age_days(run_row, now: datetime) -> float | None:
     return (now - datetime.fromisoformat(anchor)).total_seconds() / 86400.0
 
 
+def clean_stale_lock_files(
+    meta_root: Path,
+    *,
+    retention_days: int = 7,
+    dry_run: bool = False,
+) -> int:
+    """Delete old run-lock files nobody holds (they accumulate one per run).
+
+    A file is only removed after acquiring its flock non-blocking — a held
+    lock (live retry/compact) is always skipped.
+    """
+    lock_dir = meta_root / "locks"
+    if not lock_dir.exists():
+        return 0
+    cutoff = datetime.now(UTC).timestamp() - retention_days * 86400
+    removed = 0
+    for path in lock_dir.glob("*.lock"):
+        if path.stat().st_mtime > cutoff:
+            continue
+        with contextlib.suppress(OSError):
+            with open(path, "w") as fh:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                if not dry_run:
+                    path.unlink(missing_ok=True)
+                removed += 1
+    return removed
+
+
 def clean_staging(
     config: Config,
     *,
     dry_run: bool = False,
     orphan_retention_days: int = 7,
+    force: bool = False,
 ) -> StagingCleanupResult:
+    """Remove staging that is safe to delete.
+
+    Safe means: the run succeeded and compact merged its staging into curated,
+    or the staging belongs to no manifest run (orphan) and is old enough.
+
+    Staging of failed/incomplete runs is resumable state — its successful
+    batches may exist *only* in staging (compact was gated off). It is never
+    deleted unless ``force=True``, and then the run's success batches are
+    demoted to failed in the manifest so a later ``sde retry`` refetches them
+    instead of silently losing their rows.
+    """
     manifest = Manifest(config.manifest_path)
     staging_root = config.staging_root
     now = datetime.now(UTC)
@@ -103,6 +153,7 @@ def clean_staging(
 
     removed: list[str] = []
     orphans: list[str] = []
+    force_removed: list[str] = []
     skipped: list[str] = []
     bytes_freed = 0
 
@@ -125,17 +176,27 @@ def clean_staging(
             continue
 
         run = manifest.get_run(run_id)
-        age = _run_age_days(run, now) if run is not None else _staging_age_days(paths, now)
-        if age is not None and age >= orphan_retention_days and run is not None:
-            if run["status"] in ("failed", "success") and manifest.incomplete_batch_count(run_id) > 0:
-                orphans.append(run_id)
-                bytes_freed += _delete_paths(paths, dry_run=dry_run)
-                continue
+        if force and run is not None and run["status"] != "running":
+            if not dry_run:
+                manifest.demote_success_batches(
+                    run_id,
+                    reason="staging evicted by sde clean --force; refetch on retry",
+                )
+            force_removed.append(run_id)
+            bytes_freed += _delete_paths(paths, dry_run=dry_run)
+            continue
         skipped.append(run_id)
+
+    clean_stale_lock_files(
+        config.meta_root,
+        retention_days=orphan_retention_days,
+        dry_run=dry_run,
+    )
 
     return StagingCleanupResult(
         removed_run_ids=removed,
         orphan_run_ids=orphans,
         bytes_freed=bytes_freed,
         skipped_run_ids=skipped,
+        force_removed_run_ids=force_removed,
     )

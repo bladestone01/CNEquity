@@ -212,3 +212,65 @@ def test_load_raises_when_data_root_has_no_dataset(tmp_path):
 def test_load_index_bars_rejects_universe_filter(lake):
     with pytest.raises(ReaderError, match="index symbols are not in all_a"):
         load("index_bars", universe="all_a", config=lake)
+
+
+def test_scan_returns_lazyframe_with_pushdown(tmp_path):
+    import polars as pl
+
+    from stock_data_engine.config import Config
+    from stock_data_engine.query.reader import ReaderError, scan
+
+    cfg = Config(data_root=tmp_path)
+    out_dir = tmp_path / "curated" / "daily_bars" / "trade_date=2024-06-28"
+    out_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"],
+            "trade_date": [date(2024, 6, 28)],
+            "close": [10.5],
+        }
+    ).write_parquet(out_dir / "part-0.parquet")
+
+    lf = scan("daily_bars", config=cfg)
+    assert isinstance(lf, pl.LazyFrame)
+    assert lf.collect().height == 1
+
+    lf = scan("daily_bars", config=cfg, end="2024-06-27")
+    assert lf.collect().height == 0
+
+    try:
+        scan("nope", config=cfg)
+        raise AssertionError("expected ReaderError")
+    except ReaderError:
+        pass
+
+
+def test_list_datasets_catalog(tmp_path):
+    import polars as pl
+
+    from stock_data_engine.config import Config
+    from stock_data_engine.query.reader import list_datasets
+
+    cfg = Config(data_root=tmp_path)
+    out_dir = tmp_path / "curated" / "daily_bars" / "trade_date=2024-06-28"
+    out_dir.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["000001.SZ"]}).write_parquet(out_dir / "part-0.parquet")
+
+    df = list_datasets(config=cfg)
+    assert df.height >= 26
+    row = df.filter(pl.col("dataset") == "daily_bars").to_dicts()[0]
+    assert row["has_data"] is True
+    assert row["coverage_start"] == date(2024, 6, 28)
+    row = df.filter(pl.col("dataset") == "fund_flow").to_dicts()[0]
+    assert row["fetch_semantics"] == "snapshot"
+    assert row["has_data"] is False
+
+
+def test_dataset_schema_contract():
+    import polars as pl
+
+    from stock_data_engine.query.reader import dataset_schema
+
+    schema = dataset_schema("daily_bars")
+    assert schema["trade_date"] == pl.Date
+    assert "close" in schema

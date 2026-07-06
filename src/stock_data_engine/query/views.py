@@ -1,60 +1,53 @@
+"""DuckDB view layer — one view per dataset, generated from the registry."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import duckdb
+import polars as pl
 
 from stock_data_engine.config import Config
+from stock_data_engine.domain.datasets import DATASETS, DatasetSpec
+from stock_data_engine.domain.schemas import DATASET_SCHEMAS
 
-_EMPTY_VIEW_DDL = {
-    "daily_bars": """
-        CREATE OR REPLACE VIEW daily_bars AS
+
+def _duckdb_type(dtype: pl.DataType) -> str:
+    if isinstance(dtype, pl.Datetime):
+        return "TIMESTAMPTZ" if dtype.time_zone else "TIMESTAMP"
+    if dtype == pl.Date:
+        return "DATE"
+    if dtype == pl.Boolean:
+        return "BOOLEAN"
+    if dtype in (pl.Int8, pl.Int16, pl.Int32, pl.Int64):
+        return "BIGINT"
+    if dtype in (pl.Float32, pl.Float64):
+        return "DOUBLE"
+    return "VARCHAR"
+
+
+def _empty_view_sql(name: str) -> str:
+    schema = DATASET_SCHEMAS[name]
+    cols = ",\n            ".join(
+        f"CAST(NULL AS {_duckdb_type(dtype)}) AS {col}" for col, dtype in schema.items()
+    )
+    return f"""
+        CREATE OR REPLACE VIEW {name} AS
         SELECT
-            CAST(NULL AS VARCHAR) AS symbol,
-            CAST(NULL AS DATE) AS trade_date,
-            CAST(NULL AS DOUBLE) AS open,
-            CAST(NULL AS DOUBLE) AS high,
-            CAST(NULL AS DOUBLE) AS low,
-            CAST(NULL AS DOUBLE) AS close,
-            CAST(NULL AS BIGINT) AS volume,
-            CAST(NULL AS DOUBLE) AS amount,
-            CAST(NULL AS VARCHAR) AS source,
-            CAST(NULL AS VARCHAR) AS data_version,
-            CAST(NULL AS TIMESTAMPTZ) AS fetched_at
+            {cols}
         WHERE false
-    """,
-    "instruments": """
-        CREATE OR REPLACE VIEW instruments AS
-        SELECT
-            CAST(NULL AS VARCHAR) AS symbol,
-            CAST(NULL AS VARCHAR) AS name,
-            CAST(NULL AS VARCHAR) AS exchange,
-            CAST(NULL AS VARCHAR) AS asset_type,
-            CAST(NULL AS DATE) AS list_date,
-            CAST(NULL AS DATE) AS delist_date,
-            CAST(NULL AS VARCHAR) AS prev_symbol,
-            CAST(NULL AS VARCHAR) AS source,
-            CAST(NULL AS VARCHAR) AS data_version,
-            CAST(NULL AS TIMESTAMPTZ) AS fetched_at
-        WHERE false
-    """,
-    "adj_factors": """
-        CREATE OR REPLACE VIEW adj_factors AS
-        SELECT
-            CAST(NULL AS VARCHAR) AS symbol,
-            CAST(NULL AS DATE) AS trade_date,
-            CAST(NULL AS VARCHAR) AS adjust_type,
-            CAST(NULL AS DOUBLE) AS factor,
-            CAST(NULL AS VARCHAR) AS source,
-            CAST(NULL AS VARCHAR) AS data_version,
-            CAST(NULL AS TIMESTAMPTZ) AS fetched_at
-        WHERE false
-    """,
-}
+    """
+
+
+def _view_glob(data_root: str, spec: DatasetSpec) -> tuple[str, bool]:
+    layer_dir = "derived" if spec.layer == "derived" else "curated"
+    if spec.partition_col is None:
+        return f"{data_root}/{layer_dir}/{spec.name}/*.parquet", False
+    return f"{data_root}/{layer_dir}/{spec.name}/**/*.parquet", True
 
 
 def _glob_has_files(pattern: str) -> bool:
-    base = pattern.split("**")[0].rstrip("/")
+    base = pattern.split("**")[0].split("*")[0].rstrip("/")
     p = Path(base)
     if not p.exists():
         return False
@@ -70,24 +63,22 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
     con.execute(f"SET memory_limit='{config.duckdb_memory_limit}'")
     con.execute(f"SET threads={config.duckdb_threads}")
 
-    view_defs = {
-        "daily_bars": f"{root}/curated/daily_bars/**/*.parquet",
-        "instruments": f"{root}/curated/instruments/*.parquet",
-        "adj_factors": f"{root}/derived/adj_factors/**/*.parquet",
-    }
-
-    for view_name, glob_path in view_defs.items():
-        hive = "true" if "**" in glob_path else "false"
+    for name, spec in sorted(DATASETS.items()):
+        glob_path, hive = _view_glob(root, spec)
         if _glob_has_files(glob_path) or require_data:
             con.execute(
                 f"""
-                CREATE OR REPLACE VIEW {view_name} AS
-                SELECT * FROM read_parquet('{glob_path}', hive_partitioning={hive})
+                CREATE OR REPLACE VIEW {name} AS
+                SELECT * FROM read_parquet('{glob_path}', hive_partitioning={str(hive).lower()})
                 """
             )
         else:
-            con.execute(_EMPTY_VIEW_DDL[view_name])
+            con.execute(_empty_view_sql(name))
 
+    # Adjusted bars per ADR-0004: only hfq factors are stored.
+    #   hfq price = raw * factor
+    #   qfq price = raw * factor / anchor   (anchor = symbol's latest hfq factor)
+    # adj_* keeps its historical qfq meaning; adj_is_exact mirrors the Python API.
     con.execute(
         """
         CREATE OR REPLACE VIEW daily_bars_adj AS
@@ -103,6 +94,15 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
         )
         SELECT
             b.*,
+            h.factor IS NOT NULL AS adj_is_exact,
+            b.open  * COALESCE(h.factor, 1.0) AS hfq_open,
+            b.high  * COALESCE(h.factor, 1.0) AS hfq_high,
+            b.low   * COALESCE(h.factor, 1.0) AS hfq_low,
+            b.close * COALESCE(h.factor, 1.0) AS hfq_close,
+            b.open  * COALESCE(h.factor / a.hfq_anchor, 1.0) AS qfq_open,
+            b.high  * COALESCE(h.factor / a.hfq_anchor, 1.0) AS qfq_high,
+            b.low   * COALESCE(h.factor / a.hfq_anchor, 1.0) AS qfq_low,
+            b.close * COALESCE(h.factor / a.hfq_anchor, 1.0) AS qfq_close,
             b.close * COALESCE(h.factor / a.hfq_anchor, 1.0) AS adj_close
         FROM daily_bars b
         LEFT JOIN hfq h
