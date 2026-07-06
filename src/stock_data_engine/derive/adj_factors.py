@@ -108,9 +108,13 @@ def _resolve_factors(
         return factors
     except Exception as exc:
         if cached is None or cached.is_empty():
-            raise AdjFactorsFetchError(
-                f"adj_factors fetch failed for {symbol} ({adjust_type}) and no cache exists"
-            ) from exc
+            logger.warning(
+                "No adj factors for %s (%s): %s; using default factor=1.0",
+                symbol,
+                adjust_type,
+                exc,
+            )
+            return pl.DataFrame(schema={"trade_date": pl.Date, "factor": pl.Float64})
         logger.warning("External adj factors failed for %s (%s): %s", symbol, adjust_type, exc)
         return cached
 
