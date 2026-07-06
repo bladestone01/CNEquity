@@ -12,31 +12,21 @@ from stock_data_engine.domain.datasets import (
     ROW_COUNT_MUTATION_MIN_RATIO,
 )
 from stock_data_engine.domain.schemas import MOCK_SOURCE, PRIMARY_KEYS
+from stock_data_engine.query.parquet_scan import (
+    dataset_has_parquet,
+    lazy_mock_row_count,
+    lazy_n_unique_symbol,
+    lazy_row_count,
+    list_hive_partition_dates,
+    scan_parquet_files,
+    scan_parquet_root,
+)
 
 _AUDIT_SAMPLE_FILES = 20
 
 
-def list_partition_dates(root: Path, partition_col: str) -> list[date]:
-    prefix = f"{partition_col}="
-    dates: list[date] = []
-    if not root.exists():
-        return dates
-    for entry in root.iterdir():
-        if not entry.is_dir() or not entry.name.startswith(prefix):
-            continue
-        try:
-            dates.append(date.fromisoformat(entry.name[len(prefix) :]))
-        except ValueError:
-            continue
-    return sorted(dates)
-
-
-def _partition_dir(root: Path, partition_col: str, partition_value: date) -> Path:
-    return root / f"{partition_col}={partition_value.isoformat()}"
-
-
 def partition_parquet_files(root: Path, partition_col: str, partition_value: date) -> list[Path]:
-    part_dir = _partition_dir(root, partition_col, partition_value)
+    part_dir = root / f"{partition_col}={partition_value.isoformat()}"
     if not part_dir.exists():
         return []
     return sorted(part_dir.glob("**/*.parquet"))
@@ -45,24 +35,15 @@ def partition_parquet_files(root: Path, partition_col: str, partition_value: dat
 def partition_row_stats(files: list[Path]) -> dict[str, int | None]:
     if not files:
         return {"rows": 0, "symbols": None}
-    frames = [pl.read_parquet(f) for f in files]
-    df = pl.concat(frames, how="diagonal_relaxed")
-    symbols = int(df["symbol"].n_unique()) if "symbol" in df.columns else None
-    return {"rows": sum(f.height for f in frames), "symbols": symbols}
+    lf = scan_parquet_files(files)
+    return {
+        "rows": lazy_row_count(lf),
+        "symbols": lazy_n_unique_symbol(lf),
+    }
 
 
 def _sample_files(files: list[Path], limit: int = _AUDIT_SAMPLE_FILES) -> list[Path]:
     return files[:limit] if len(files) <= limit else files[:limit]
-
-
-def _mock_row_count(files: list[Path]) -> int:
-    total = 0
-    for path in files:
-        df = pl.read_parquet(path)
-        if "source" not in df.columns:
-            continue
-        total += df.filter(pl.col("source") == MOCK_SOURCE).height
-    return total
 
 
 def _pk_duplicate_count(df: pl.DataFrame, dataset: str) -> int:
@@ -156,8 +137,7 @@ def audit_curated_dataset(
         )
         return findings
 
-    all_files = sorted(root.glob("**/*.parquet"))
-    if not all_files:
+    if not dataset_has_parquet(root):
         findings.append(
             {
                 "dataset": dataset,
@@ -168,12 +148,13 @@ def audit_curated_dataset(
         )
         return findings
 
-    audit_files = all_files
+    audit_files: list[Path] | None = None
     partition_value: date | None = None
     previous_value: date | None = None
+    audit_lf: pl.LazyFrame
 
     if partition_col is not None:
-        partition_dates = list_partition_dates(root, partition_col)
+        partition_dates = list_hive_partition_dates(root, partition_col)
         if trade_date in partition_dates:
             partition_value = trade_date
             prior = [d for d in partition_dates if d < trade_date]
@@ -181,11 +162,28 @@ def audit_curated_dataset(
             part_files = partition_parquet_files(root, partition_col, trade_date)
             if part_files:
                 audit_files = part_files
+                audit_lf = scan_parquet_files(part_files)
+            else:
+                audit_lf = scan_parquet_root(
+                    root,
+                    partition_col=partition_col,
+                    start=trade_date,
+                    end=trade_date,
+                )
+        else:
+            audit_lf = scan_parquet_root(root, partition_col=partition_col)
+    else:
+        audit_lf = scan_parquet_root(root, hive=False)
 
-    sample = _sample_files(audit_files)
-    sample_df = pl.concat([pl.read_parquet(f) for f in sample], how="diagonal_relaxed")
-    row_count = sum(pl.read_parquet(f).height for f in audit_files)
-    mock_rows = _mock_row_count(audit_files)
+    sample_lf = (
+        scan_parquet_files(_sample_files(audit_files))
+        if audit_files is not None
+        else audit_lf.limit(_AUDIT_SAMPLE_FILES)
+    )
+    sample_df = sample_lf.collect()
+    row_count = lazy_row_count(audit_lf)
+    mock_rows = lazy_mock_row_count(audit_lf, mock_source=MOCK_SOURCE)
+    file_count = len(audit_files) if audit_files is not None else None
 
     if mock_rows:
         findings.append(
@@ -206,16 +204,17 @@ def audit_curated_dataset(
             "severity": "info",
             "check": "row_count",
             "message": (
-                f"{row_count} rows across {len(audit_files)} file(s)"
+                f"{row_count} rows"
                 + (
                     f" in {partition_col}={partition_value.isoformat()}"
                     if partition_value is not None
-                    else f" across {len(all_files)} file(s)"
+                    else " across dataset"
                 )
             ),
             "sample_columns": sample_df.columns[:10],
             "partition_col": partition_col,
             "partition_value": partition_value.isoformat() if partition_value else None,
+            "file_count": file_count,
         }
     )
 

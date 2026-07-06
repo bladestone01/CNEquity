@@ -3,24 +3,60 @@
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 
 import polars as pl
 
 from stock_data_engine.config import Config
-from stock_data_engine.domain.symbols import is_all_a_symbol, parse_symbol
+from stock_data_engine.domain.symbols import EXCLUDED_PREFIXES, PREFIX_WHITELIST
+from stock_data_engine.query.parquet_scan import (
+    collect_parquet_root,
+    coverage_start_from_partitions,
+    scan_parquet_root,
+)
 
 EXCLUDED_STATUSES = frozenset({"st", "*st", "suspended"})
 
 
-def _scan_parquet(root: Path, dataset: str) -> pl.DataFrame:
-    direct = root / dataset
-    if not direct.exists():
+def _all_a_symbol_expr(symbol_col: str = "symbol") -> pl.Expr:
+    code = pl.col(symbol_col).str.split(".").list.first()
+    exchange = pl.col(symbol_col).str.split(".").list.last()
+    excluded = pl.lit(False)
+    for prefix in EXCLUDED_PREFIXES:
+        excluded = excluded | code.str.starts_with(prefix)
+    allowed = pl.lit(False)
+    for exch, prefixes in PREFIX_WHITELIST.items():
+        for prefix in prefixes:
+            allowed = allowed | ((exchange == exch) & code.str.starts_with(prefix))
+    return (~excluded) & allowed
+
+
+def _load_instruments(config: Config) -> pl.DataFrame:
+    root = config.curated_root / "instruments"
+    if not root.exists():
         return pl.DataFrame()
-    files = list(direct.glob("**/*.parquet"))
-    if not files:
+    try:
+        return collect_parquet_root(root, hive=False)
+    except FileNotFoundError:
         return pl.DataFrame()
-    return pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+
+
+def _load_trading_status(
+    config: Config,
+    *,
+    trade_date: date | None = None,
+) -> pl.DataFrame:
+    root = config.curated_root / "trading_status"
+    if not root.exists():
+        return pl.DataFrame()
+    try:
+        return collect_parquet_root(
+            root,
+            partition_col="trade_date",
+            start=trade_date,
+            end=trade_date,
+        )
+    except FileNotFoundError:
+        return pl.DataFrame()
 
 
 def coverage_start_date(
@@ -31,29 +67,17 @@ def coverage_start_date(
 ) -> date | None:
     """Earliest *date_col* present in curated *dataset*, if any."""
     root = config.curated_root / dataset
-    if not root.exists():
-        return None
-
-    prefix = f"{date_col}="
-    min_dt: date | None = None
-    for entry in root.iterdir():
-        if entry.is_dir() and entry.name.startswith(prefix):
-            try:
-                candidate = date.fromisoformat(entry.name[len(prefix) :])
-            except ValueError:
-                continue
-            if min_dt is None or candidate < min_dt:
-                min_dt = candidate
+    min_dt = coverage_start_from_partitions(root, date_col)
     if min_dt is not None:
         return min_dt
-
-    files = list(root.glob("**/*.parquet"))
-    if not files:
+    if not root.exists():
         return None
-    combined = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
-    if date_col not in combined.columns or combined.is_empty():
+    try:
+        return scan_parquet_root(root, partition_col=date_col).select(
+            pl.col(date_col).min()
+        ).collect().item()
+    except FileNotFoundError:
         return None
-    return combined[date_col].min()
 
 
 def trading_status_coverage_start(config: Config) -> date | None:
@@ -76,43 +100,31 @@ def tradable_symbols_on_date(
     if universe != "all_a":
         raise ValueError(f"unsupported universe: {universe!r} (supported: 'all_a')")
 
-    instruments = _scan_parquet(config.curated_root, "instruments")
+    instruments = _load_instruments(config)
     if instruments.is_empty():
         return None
 
-    rows = []
-    for row in instruments.iter_rows(named=True):
-        sym = row["symbol"]
-        try:
-            info = parse_symbol(sym)
-        except ValueError:
-            continue
-        if not is_all_a_symbol(info.code, info.exchange):
-            continue
-        list_date = row.get("list_date")
-        delist_date = row.get("delist_date")
-        if list_date is not None and list_date > trade_date:
-            continue
-        if delist_date is not None and delist_date < trade_date:
-            continue
-        rows.append({"symbol": sym})
-
-    if not rows:
+    out = (
+        instruments.filter(_all_a_symbol_expr())
+        .filter(
+            pl.col("list_date").is_null() | (pl.col("list_date") <= trade_date)
+        )
+        .filter(
+            pl.col("delist_date").is_null() | (pl.col("delist_date") >= trade_date)
+        )
+        .select("symbol")
+    )
+    if out.is_empty():
         return pl.DataFrame(schema={"symbol": pl.Utf8})
 
-    out = pl.DataFrame(rows)
-    status = _scan_parquet(config.curated_root, "trading_status")
+    status = _load_trading_status(config, trade_date=trade_date)
     if status.is_empty():
         return out
 
-    day_status = status.filter(pl.col("trade_date") == trade_date)
-    if day_status.is_empty():
-        return out
-
-    bad = day_status.filter(
+    bad = status.filter(
         (~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES))
-    )["symbol"].to_list()
-    if bad:
+    )["symbol"]
+    if not bad.is_empty():
         out = out.filter(~pl.col("symbol").is_in(bad))
     return out
 
@@ -133,12 +145,11 @@ def apply_universe_filter(
     if df.is_empty() or universe != "all_a":
         return df
 
-    instruments = _scan_parquet(config.curated_root, "instruments")
-    status = _scan_parquet(config.curated_root, "trading_status")
-
+    instruments = _load_instruments(config)
     if instruments.is_empty():
         return df
 
+    valid_symbols = instruments.filter(_all_a_symbol_expr())["symbol"]
     inst = instruments.select(["symbol", "list_date", "delist_date"])
     df = df.join(inst, on="symbol", how="left")
     df = df.filter(
@@ -146,24 +157,27 @@ def apply_universe_filter(
     ).filter(
         pl.col("delist_date").is_null() | (pl.col("delist_date") >= pl.col(date_col))
     )
+    if not valid_symbols.is_empty():
+        df = df.filter(pl.col("symbol").is_in(valid_symbols.to_list()))
 
-    valid_symbols = []
-    for row in instruments.iter_rows(named=True):
-        try:
-            info = parse_symbol(row["symbol"])
-        except ValueError:
-            continue
-        if is_all_a_symbol(info.code, info.exchange):
-            valid_symbols.append(row["symbol"])
-    if valid_symbols:
-        df = df.filter(pl.col("symbol").is_in(valid_symbols))
-
-    if status.is_empty() or date_col not in df.columns:
+    if date_col not in df.columns:
         return df.drop(["list_date", "delist_date"], strict=False)
 
-    bad = status.filter(
-        (~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES))
-    ).select(["symbol", pl.col("trade_date").alias(date_col)])
+    try:
+        status = scan_parquet_root(
+            config.curated_root / "trading_status",
+            partition_col="trade_date",
+        )
+    except FileNotFoundError:
+        return df.drop(["list_date", "delist_date"], strict=False)
+
+    bad = (
+        status.filter(
+            (~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES))
+        )
+        .select(["symbol", pl.col("trade_date").alias(date_col)])
+        .collect()
+    )
     if bad.is_empty():
         return df.drop(["list_date", "delist_date"], strict=False)
 

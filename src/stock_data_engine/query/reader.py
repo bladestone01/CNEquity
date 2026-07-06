@@ -12,6 +12,11 @@ import polars as pl
 from stock_data_engine.config import Config, load_config
 from stock_data_engine.derive.adj_factors import STORED_ADJUST_TYPE
 from stock_data_engine.domain.schemas import DATASET_SCHEMAS, validate_dataframe
+from stock_data_engine.query.parquet_scan import (
+    collect_parquet_root,
+    dataset_has_parquet,
+    partition_col_for_dataset,
+)
 from stock_data_engine.query.universe import apply_universe_filter
 
 logger = logging.getLogger(__name__)
@@ -118,23 +123,35 @@ def _dataset_root(config: Config, dataset: str) -> Path:
     raise ReaderError(f"unknown dataset {dataset!r}")
 
 
-def _dataset_files(config: Config, dataset: str) -> list[Path]:
+def _read_dataset(
+    config: Config,
+    dataset: str,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    symbols: list[str] | None = None,
+) -> pl.DataFrame:
     root = _dataset_root(config, dataset)
-    if not root.exists():
-        return []
-    return sorted(root.glob("**/*.parquet"))
-
-
-def _read_dataset(config: Config, dataset: str) -> pl.DataFrame:
-    root = _dataset_root(config, dataset)
-    files = _dataset_files(config, dataset)
-    if not files:
+    if not dataset_has_parquet(root):
         raise ReaderError(
             f"no parquet data for dataset {dataset!r} under {root} "
             f"(data_root={config.data_root})"
         )
 
-    df = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+    partition_col = DATE_COLUMNS.get(dataset) or partition_col_for_dataset(dataset)
+    try:
+        df = collect_parquet_root(
+            root,
+            partition_col=partition_col,
+            start=start,
+            end=end,
+            symbols=symbols,
+        )
+    except FileNotFoundError as exc:
+        raise ReaderError(
+            f"no parquet data for dataset {dataset!r} under {root} "
+            f"(data_root={config.data_root})"
+        ) from exc
     if dataset in DATASET_SCHEMAS:
         return validate_dataframe(df, dataset)
     return df
@@ -195,7 +212,7 @@ def _apply_adjustment(
     if bars.is_empty():
         return bars
 
-    factors = _read_dataset(config, "adj_factors")
+    factors = _read_dataset(config, "adj_factors", start=start, end=end)
     if factors.is_empty():
         out = bars.with_columns(
             *[
@@ -216,17 +233,10 @@ def _apply_adjustment(
             f"adj_factors has no {STORED_ADJUST_TYPE!r} rows; re-run derive (ADR-0004)"
         )
 
-    factors = _apply_date_range(factors, "adj_factors", start, end)
     factors = factors.select(["symbol", "trade_date", "factor"])
 
     if adjust == "qfq":
-        anchors = _hfq_anchor_factors(
-            _read_dataset(config, "adj_factors").filter(
-                pl.col("adjust_type") == STORED_ADJUST_TYPE
-            ),
-            bars,
-            end,
-        )
+        anchors = _hfq_anchor_factors(factors, bars, end)
         factors = factors.join(anchors, on="symbol", how="left")
         factors = factors.with_columns(
             (pl.col("factor") / pl.col("hfq_anchor")).alias("factor")
@@ -327,15 +337,13 @@ def load(
     if dataset in PIT_DATASETS:
         if as_of_d is None:
             raise ReaderError(f"{dataset} requires as_of= for point-in-time queries")
-        df = _read_dataset(cfg, dataset)
+        df = _read_dataset(cfg, dataset, symbols=symbols)
         df = _apply_pit_filters(df, as_of=as_of_d, items=items)
         df = _apply_symbol_filter(df, symbols)
         sort_cols = [c for c in ("announce_date", "symbol", "report_period", "item_code") if c in df.columns]
         return df.sort(sort_cols) if sort_cols else df
 
-    df = _read_dataset(cfg, dataset)
-    df = _apply_date_range(df, dataset, start_d, end_d)
-    df = _apply_symbol_filter(df, symbols)
+    df = _read_dataset(cfg, dataset, start=start_d, end=end_d, symbols=symbols)
 
     if universe and dataset == "daily_bars":
         date_col = DATE_COLUMNS[dataset]
