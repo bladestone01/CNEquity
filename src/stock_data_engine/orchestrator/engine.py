@@ -135,6 +135,9 @@ class JobEngine:
             updates = result.get("context_updates")
             if updates:
                 with context_lock:
+                    findings = updates.pop("audit_findings", None)
+                    if findings:
+                        context.setdefault("audit_findings", []).extend(findings)
                     context.update(updates)
 
         if wave.parallel:
@@ -242,6 +245,9 @@ class JobEngine:
                 result = self._run_step(step_name, trade_date, run_id, context)
                 updates = result.get("context_updates")
                 if updates:
+                    findings = updates.pop("audit_findings", None)
+                    if findings:
+                        context.setdefault("audit_findings", []).extend(findings)
                     context.update(updates)
                 results.append(result)
 

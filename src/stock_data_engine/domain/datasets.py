@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
+FetchSemantics = Literal["by_date", "snapshot"]
+
 # partition column per curated dataset; None = merge-style (e.g. instruments).
 PARTITION_COLS: dict[str, str | None] = {
     "instruments": None,
@@ -30,6 +34,21 @@ PARTITION_COLS: dict[str, str | None] = {
     "analyst_consensus": "forecast_date",
     "sentiment_scores": "trade_date",
 }
+
+# Incremental fetch semantics: by_date = API returns values for the requested day;
+# snapshot = live page stamped with trade_date (no historical replay).
+FETCH_SEMANTICS: dict[str, FetchSemantics] = {
+    "fund_flow": "snapshot",
+    "valuation_metrics": "snapshot",
+    "sector_members": "snapshot",
+    "index_constituents": "snapshot",
+    "industry_members": "snapshot",
+}
+
+
+def fetch_semantics(dataset: str) -> FetchSemantics:
+    return FETCH_SEMANTICS.get(dataset, "by_date")
+
 
 # Datasets partitioned by non-date keys — skip date-based watermarks.
 WATERMARK_SKIP = frozenset({"financial_statement_items", "institutional_holdings"})

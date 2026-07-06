@@ -56,7 +56,7 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
             symbols, day, rate_limit=rl, allow_mock=config.tdx_allow_mock
         )
 
-    df = fetch_incremental_daily(
+    df, _findings = fetch_incremental_daily(
         config,
         "trading_status",
         trade_date,

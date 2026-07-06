@@ -111,6 +111,44 @@ def test_compact_advances_watermark_when_all_batches_succeed(tmp_path):
     assert (cfg.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet").exists()
 
 
+def test_compact_snapshot_watermark_uses_run_date_not_max_partition(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    run_id = "run-snapshot-wm"
+    trade_date = date(2024, 6, 28)
+    manifest = Manifest(cfg.manifest_path)
+
+    manifest.start_batch(run_id, "batch-0", "fund_flow", "fund_flow")
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "fund_flow",
+        run_id,
+        "batch-0",
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [trade_date],
+                "main_net_inflow": [1.0],
+                "super_large_net_inflow": [0.0],
+                "large_net_inflow": [0.0],
+                "medium_net_inflow": [0.0],
+                "small_net_inflow": [0.0],
+                "source": ["eastmoney"],
+                "data_version": ["v1"],
+                "fetched_at": ["2024-06-28T00:00:00+00:00"],
+            }
+        ),
+    )
+
+    state = StateStore(cfg.meta_root)
+    state.set_date("fund_flow", date(2024, 6, 25))
+
+    step_compact(cfg, trade_date, run_id, {})
+    assert state.get_date("fund_flow") == trade_date
+
+
 def test_audit_emits_compact_skipped_warning(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     run_id = "run-audit"

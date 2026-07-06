@@ -60,20 +60,19 @@ def test_run_job_backfill_does_not_skip_weekend(tmp_path, monkeypatch):
             {
                 "symbol": ["600519.SH"],
                 "trade_date": [trade_date],
-                "main_net_inflow": [1.0],
-                "super_large_net_inflow": [0.0],
-                "large_net_inflow": [0.0],
-                "medium_net_inflow": [0.0],
-                "small_net_inflow": [0.0],
+                "margin_balance": [1.0],
+                "margin_buy": [0.0],
+                "short_balance": [0.0],
+                "short_sell_volume": [0.0],
             }
         )
 
-    monkeypatch.setattr(cap, "fetch_fund_flow", fake_fetch)
+    monkeypatch.setattr(cap, "fetch_margin_trading", fake_fetch)
     engine = JobEngine(cfg)
     result = engine.run_job(
         "backfill",
         date(2024, 6, 29),
-        steps=["fund_flow"],
+        steps=["margin_trading"],
         backfill=True,
     )
     assert result["status"] == "success"

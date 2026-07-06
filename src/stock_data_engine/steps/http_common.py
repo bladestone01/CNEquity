@@ -34,7 +34,7 @@ def run_incremental_fetched(
     source: str,
     allow_empty: bool = False,
 ) -> dict:
-    df = fetch_incremental_daily(
+    df, findings = fetch_incremental_daily(
         config,
         dataset,
         trade_date,
@@ -42,8 +42,14 @@ def run_incremental_fetched(
         allow_empty=allow_empty,
     )
     if df.is_empty():
-        return {"rows_read": 0, "rows_written": 0}
-    return write_fetched(config, run_id, dataset, df, source=source)
+        out: dict = {"rows_read": 0, "rows_written": 0}
+        if findings:
+            out["context_updates"] = {"audit_findings": findings}
+        return out
+    result = write_fetched(config, run_id, dataset, df, source=source)
+    if findings:
+        result["context_updates"] = {"audit_findings": findings}
+    return result
 
 
 def empty_ok(df: pl.DataFrame, dataset: str, trade_date: date) -> None:

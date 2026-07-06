@@ -12,7 +12,7 @@ from stock_data_engine.storage import StagingWriter, compact_dataset
 from stock_data_engine.storage.instruments import compact_instruments
 from stock_data_engine.storage.state import StateStore
 
-from stock_data_engine.domain.datasets import PARTITION_COLS, WATERMARK_SKIP
+from stock_data_engine.domain.datasets import PARTITION_COLS, WATERMARK_SKIP, fetch_semantics
 
 
 def _max_partition_date(config: Config, dataset: str, partition_col: str) -> date | None:
@@ -42,12 +42,19 @@ def _max_partition_date(config: Config, dataset: str, partition_col: str) -> dat
     return combined[partition_col].max()
 
 
-def _update_watermarks(config: Config, datasets: frozenset[str] | None = None) -> None:
+def _update_watermarks(
+    config: Config,
+    datasets: frozenset[str] | None,
+    trade_date: date,
+) -> None:
     state = StateStore(config.meta_root)
     for dataset, pcol in PARTITION_COLS.items():
         if pcol is None or dataset in WATERMARK_SKIP:
             continue
         if datasets is not None and dataset not in datasets:
+            continue
+        if fetch_semantics(dataset) == "snapshot":
+            state.set_date(dataset, trade_date)
             continue
         max_dt = _max_partition_date(config, dataset, pcol)
         if max_dt is not None:
@@ -113,7 +120,7 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
             total += rows
 
     if compacted:
-        _update_watermarks(config, frozenset(compacted))
+        _update_watermarks(config, frozenset(compacted), trade_date)
 
     from stock_data_engine.query.views import ensure_duckdb_views
 

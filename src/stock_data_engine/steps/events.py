@@ -48,7 +48,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     else:
         if not config.sources.get("eastmoney", True):
             raise RuntimeError("corporate_actions daily: eastmoney source disabled in config")
-        df = fetch_incremental_daily(
+        df, _findings = fetch_incremental_daily(
             config,
             "corporate_actions",
             trade_date,

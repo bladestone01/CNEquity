@@ -9,11 +9,16 @@ import polars as pl
 
 from stock_data_engine.adapters.tdx_protocol.client import fetch_instruments
 from stock_data_engine.config import Config
+from stock_data_engine.domain.datasets import fetch_semantics
 from stock_data_engine.storage import StagingWriter
 from stock_data_engine.storage.state import StateStore
 
 INCREMENTAL_LOOKBACK_DAYS = 5
 BACKFILL_START = date(2016, 1, 1)
+
+
+class SnapshotBackfillError(RuntimeError):
+    """Raised when backfill is requested for a snapshot-only dataset."""
 
 
 def write_simple(config: Config, run_id: str, dataset: str, df: pl.DataFrame) -> dict:
@@ -102,6 +107,24 @@ def is_trading_day(config: Config, trade_date: date) -> bool:
     return trade_date.weekday() < 5
 
 
+def _coverage_gap_findings(dataset: str, gap_dates: list[date]) -> list[dict]:
+    if not gap_dates:
+        return []
+    gap_text = ", ".join(d.isoformat() for d in gap_dates)
+    return [
+        {
+            "dataset": dataset,
+            "severity": "warning",
+            "check": "coverage_gap",
+            "message": (
+                f"{dataset}: skipped {len(gap_dates)} trading day(s) ({gap_text}) — "
+                "snapshot fetch semantics cannot backfill historical values"
+            ),
+            "gap_dates": [d.isoformat() for d in gap_dates],
+        }
+    ]
+
+
 def fetch_incremental_daily(
     config: Config,
     dataset: str,
@@ -109,17 +132,35 @@ def fetch_incremental_daily(
     fetch_fn: Callable[[date], pl.DataFrame],
     *,
     allow_empty: bool = False,
-) -> pl.DataFrame:
-    """Fetch one or more trading days from watermark+1 through *trade_date*."""
+) -> tuple[pl.DataFrame, list[dict]]:
+    """Fetch one or more trading days from watermark+1 through *trade_date*.
+
+    Returns ``(dataframe, audit_findings)``. Snapshot datasets only fetch
+    *trade_date*; missed days are reported as ``coverage_gap`` findings.
+    """
+    semantics = fetch_semantics(dataset)
     if getattr(config, "_backfill", False):
-        return fetch_fn(trade_date)
+        if semantics == "snapshot":
+            raise SnapshotBackfillError(
+                f"{dataset}: backfill not supported — fetch semantics are snapshot "
+                "(live page stamped with trade_date; historical values unavailable)"
+            )
+        return fetch_fn(trade_date), []
 
     dates = incremental_trade_dates(config, dataset, trade_date)
     if not dates:
-        return pl.DataFrame()
+        return pl.DataFrame(), []
+
+    if semantics == "snapshot":
+        gap_dates = [d for d in dates if d < trade_date]
+        fetch_dates = [trade_date]
+        findings = _coverage_gap_findings(dataset, gap_dates)
+    else:
+        fetch_dates = dates
+        findings = []
 
     frames: list[pl.DataFrame] = []
-    for d in dates:
+    for d in fetch_dates:
         part = fetch_fn(d)
         if part.is_empty():
             if not allow_empty:
@@ -127,8 +168,8 @@ def fetch_incremental_daily(
             continue
         frames.append(part)
     if not frames:
-        return pl.DataFrame()
-    return pl.concat(frames, how="diagonal_relaxed")
+        return pl.DataFrame(), findings
+    return pl.concat(frames, how="diagonal_relaxed"), findings
 
 
 def load_symbols(config: Config) -> list[str]:
