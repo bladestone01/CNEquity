@@ -1224,7 +1224,119 @@ sde init --config configs/stockdata.example.toml
 
 Runs phases in order; Phase 2c (daily_bars backfill) may take 15–20 minutes.
 
-### Failure recovery
+> **资源与排期**：2016 起全量 init 约 1.5–2.5 h（TDX 分页 + Sina 复权 + compact 内存尖峰 ~2 GB）。
+> macOS 上请将 `[orchestrator].workers = 1`（mootdx 与 `ProcessPoolExecutor` 不兼容）。
+> 单实例、收盘后运行；详见上文 init 决策项或团队 runbook。
+
+Full init currently requires `JobEngine.run_init_phases()` (no dedicated CLI yet):
+
+```python
+import stock_data_engine.steps  # noqa: F401
+from datetime import date
+from stock_data_engine.config import load_config
+from stock_data_engine.orchestrator.engine import JobEngine
+
+cfg = load_config("configs/stockdata.toml")
+engine = JobEngine(cfg)
+engine.run_init_phases(trade_date=date.today())
+```
+
+### Post-backfill acceptance（回填完成验收）
+
+Init 或首次全量回填 **compact + derive 成功且 `sde status` 为 success** 后，**同一维护窗口内**执行下列检查。通过后再切换 cron / 下游选股项目。
+
+#### 0. 前置
+
+```bash
+sde status --config configs/stockdata.toml          # 必须 success，failed batch = 0
+sde audit  --config configs/stockdata.toml          # 无 mock_source / pk_duplicate error
+ls data/stock-data-engine/curated/daily_bars/       # 应有 trade_date=YYYY-MM-DD 分区
+```
+
+`[adj_factors].adjust_types` 若仅含 `qfq` 而验收要求后复权，需追加 `"hfq"` 并重跑
+`sde derive adj_factors`（`load(..., adjust="hfq")` 依赖 derived 中的 `adjust_type=hfq`）。
+
+#### 1. 幂等（同窗口重跑，curated 行数不变）
+
+在同一 `trade_date` 窗口内再跑一次日更（或 init phase 4 等价步骤），**curated 行数必须与重跑前完全一致**。
+
+```bash
+# 重跑前：快照
+.venv/bin/python scripts/accept_backfill.py snapshot \
+  --config configs/stockdata.toml --out /tmp/curated-counts.json
+
+# 同窗口重跑（示例：完整 daily Wave；勿并行第二个 sde 实例）
+sde run daily --config configs/stockdata.toml
+
+# 重跑后：对比
+.venv/bin/python scripts/accept_backfill.py check \
+  --config configs/stockdata.toml --compare /tmp/curated-counts.json
+```
+
+**断言**：`daily_bars`、`instruments`、`adj_factors` 等核心数据集 `before == after`。
+若行数增加且 PK 重复 audit 未报错，说明 compact 去重或水位逻辑异常。
+
+#### 2. 口径抽查（600519 等标杆股）
+
+与通达信 / 同花顺等行情软件对照 **未复权 close** 与 **后复权 adj_close**（容忍 ±1 tick 或除权日 ±0.1%）。
+
+```bash
+.venv/bin/python scripts/accept_backfill.py check \
+  --config configs/stockdata.toml \
+  --symbol 600519.SH --start 2024-01-01 --end 2024-12-31
+```
+
+输出含 `close` / `adj_close` 样本行；**人工**在行情软件中打开同一交易日比对。
+除权日前后各抽 1 天；另抽 1 个普通交易日。
+
+#### 3. 每年行数曲线（断崖 = 静默分页/限速）
+
+脚本打印 `daily_bars` 按年聚合的 `rows / symbols / trade_days`。正常形态：2016→近年 **symbols 缓增**、
+每年 `rows ≈ symbols × 该年交易日 (~240)**，无单年腰斩。
+
+```bash
+.venv/bin/python scripts/accept_backfill.py check --config configs/stockdata.toml
+# 查看输出 === daily_bars by year ===
+```
+
+若某年 `rows` 显著低于中位数 70% 以下 → 怀疑 phase2c 分页早停或 batch 半截 success（R-22），
+对该年窗口 `sde backfill daily_bars --config ...` 或 targeted retry，勿直接下游投产。
+
+#### 4. 消费层冒烟（`load` + universe + 复权）
+
+```python
+from stock_data_engine.query import load
+
+# 无 universe：含 ST/停牌日（若 trading_status 有标注）
+raw = load("daily_bars", start="2024-06-01", end="2024-06-30")
+
+# universe=all_a：按日剔除 ST、停牌、未上市/已退市
+tradable = load(
+    "daily_bars",
+    start="2024-06-01",
+    end="2024-06-30",
+    adjust="hfq",           # 或 qfq，与 adjust_types 一致
+    universe="all_a",
+)
+
+assert tradable.height < raw.height, "universe 应剔除 ST/停牌行"
+assert "adj_close" in tradable.columns
+```
+
+脚本内置检查：`load()` 对比 raw vs `universe="all_a"` 行数；若 `trading_status` 有 ST/停牌而两者相等，会打印 WARN。
+
+#### 5. 验收通过标准（checklist）
+
+| # | 项 | 通过标准 |
+|---|-----|----------|
+| 1 | 幂等 | 同窗口重跑后核心数据集 row count 不变 |
+| 2 | 口径 | 标杆股 close/adj_close 与行情软件一致（人工） |
+| 3 | 覆盖 | 按年行数无异常断崖；2016 起分区连续 |
+| 4 | 消费 | `load(..., universe="all_a")` 剔除 ST/停牌；`adj_close` 可算 |
+| 5 | 审计 | 最新 run audit 无 error；`source=mock` 行数 = 0 |
+
+自动化入口：`scripts/accept_backfill.py`（`snapshot` + `check`）。通过自动化后仍需完成 **§2 人工比价**。
+
 
 ```bash
 sde status --config configs/stockdata.example.toml

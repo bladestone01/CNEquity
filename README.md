@@ -58,6 +58,14 @@ sde status --config configs/stockdata.toml                 # 运行状态与失�
 sde retry  --run-id <id> --config configs/stockdata.toml   # 只重跑失败部分
 ```
 
+**首次全量 init** 完成后，按 [docs/PRD.md 附录 C — Post-backfill acceptance](docs/PRD.md#post-backfill-acceptance回填完成验收) 做幂等/口径/覆盖/消费层验收；可执行：
+
+```bash
+.venv/bin/python scripts/accept_backfill.py snapshot --out /tmp/curated-counts.json
+# 同窗口重跑 daily 后再：
+.venv/bin/python scripts/accept_backfill.py check --compare /tmp/curated-counts.json
+```
+
 ## 使用数据（三种方式，任选）
 
 ### 1. Python API（推荐，✅ Phase 2）
