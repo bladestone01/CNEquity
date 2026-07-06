@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime
+import json
 
 import polars as pl
 
@@ -40,29 +41,29 @@ def test_compact_instruments_preserves_missing_symbols_and_marks_delist(tmp_path
 
     curated_path = cfg.curated_root / "instruments" / "part-merged.parquet"
     curated_path.parent.mkdir(parents=True)
-    pl.DataFrame(
-        [
-            _instrument("600519.SH", list_date=date(2001, 8, 27)),
-            _instrument("000001.SZ", list_date=date(1991, 4, 3)),
-            _instrument("600000.SH", list_date=date(1999, 11, 10)),
-        ]
-    ).write_parquet(curated_path)
+    existing_rows = [
+        _instrument("600519.SH", list_date=date(2001, 8, 27)),
+        _instrument("000001.SZ", list_date=date(1991, 4, 3)),
+    ]
+    for i in range(98):
+        existing_rows.append(
+            _instrument(f"600{i:03d}.SH", list_date=date(2000, 1, 1)),
+        )
+    existing_rows.append(_instrument("600000.SH", list_date=date(1999, 11, 10)))
+    pl.DataFrame(existing_rows).write_parquet(curated_path)
 
     writer = StagingWriter(cfg.staging_root)
+    incoming_rows = [r for r in existing_rows if r["symbol"] != "600000.SH"]
     writer.write_batch(
         "instruments",
         run_id,
         "batch-0",
-        pl.DataFrame(
-            [
-                _instrument("600519.SH", list_date=date(2001, 8, 27)),
-                _instrument("000001.SZ", list_date=date(1991, 4, 3)),
-            ]
-        ),
+        pl.DataFrame(incoming_rows),
     )
 
-    rows = compact_instruments(cfg.staging_root, cfg.curated_root, run_id, trade_date)
-    assert rows == 3
+    rows, findings = compact_instruments(cfg.staging_root, cfg.curated_root, run_id, trade_date)
+    assert rows == 100
+    assert findings == []
 
     merged = pl.read_parquet(curated_path)
     delisted = merged.filter(pl.col("symbol") == "600000.SH")
@@ -71,6 +72,42 @@ def test_compact_instruments_preserves_missing_symbols_and_marks_delist(tmp_path
 
     active = merged.filter(pl.col("symbol") == "600519.SH")
     assert active["delist_date"][0] is None
+
+
+def test_compact_instruments_suppresses_delist_when_absent_ratio_exceeds_threshold(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    run_id = "run-circuit"
+    trade_date = date(2024, 6, 28)
+
+    curated_path = cfg.curated_root / "instruments" / "part-merged.parquet"
+    curated_path.parent.mkdir(parents=True)
+    existing_rows = [
+        _instrument("600519.SH", list_date=date(2001, 8, 27)),
+        _instrument("000001.SZ", list_date=date(1991, 4, 3)),
+    ]
+    for i in range(8):
+        existing_rows.append(_instrument(f"600{i:03d}.SH", list_date=date(2000, 1, 1)))
+    pl.DataFrame(existing_rows).write_parquet(curated_path)
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "instruments",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_instrument("600519.SH", list_date=date(2001, 8, 27))]),
+    )
+
+    rows, findings = compact_instruments(cfg.staging_root, cfg.curated_root, run_id, trade_date)
+    assert rows == 10
+    assert len(findings) == 1
+    assert findings[0]["check"] == "instruments_delist_suppressed"
+    assert findings[0]["severity"] == "error"
+
+    merged = pl.read_parquet(curated_path)
+    absent = merged.filter(pl.col("symbol") == "000001.SZ")
+    assert absent.height == 1
+    assert absent["delist_date"][0] is None
 
 
 def test_compact_instruments_via_step_respects_manifest_gate(tmp_path):
@@ -89,6 +126,41 @@ def test_compact_instruments_via_step_respects_manifest_gate(tmp_path):
 
     step_compact(cfg, trade_date, run_id, {})
     assert (cfg.curated_root / "instruments" / "part-merged.parquet").exists()
+
+
+def test_audit_emits_instruments_delist_suppressed_error(tmp_path):
+    from stock_data_engine.steps.finalize import step_audit, step_compact
+
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    run_id = "run-audit-circuit"
+    trade_date = date(2024, 6, 28)
+
+    curated_path = cfg.curated_root / "instruments" / "part-merged.parquet"
+    curated_path.parent.mkdir(parents=True)
+    existing_rows = [_instrument("600519.SH", list_date=date(2001, 8, 27))]
+    for i in range(9):
+        existing_rows.append(_instrument(f"600{i:03d}.SH", list_date=date(2000, 1, 1)))
+    pl.DataFrame(existing_rows).write_parquet(curated_path)
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "instruments",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_instrument("600519.SH", list_date=date(2001, 8, 27))]),
+    )
+
+    compact_result = step_compact(cfg, trade_date, run_id, {})
+    context = compact_result.get("context_updates", {})
+    step_audit(cfg, trade_date, run_id, context)
+
+    payload = json.loads(
+        (cfg.meta_root / "quality" / "findings" / f"{run_id}.json").read_text(encoding="utf-8")
+    )
+    suppressed = [f for f in payload["findings"] if f.get("check") == "instruments_delist_suppressed"]
+    assert len(suppressed) == 1
+    assert suppressed[0]["severity"] == "error"
 
 
 def test_tradable_universe_excludes_delisted_symbol(tmp_path):

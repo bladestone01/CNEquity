@@ -158,20 +158,29 @@ def fetch_instruments(
     try:
         client = _quotes_client()
         frames = []
+        market_errors: list[str] = []
         for market, exch in _TDX_STOCK_MARKETS:
             try:
                 raw = client.stocks(market=market)
-            except Exception:
+            except Exception as exc:
+                market_errors.append(f"{exch}: {exc}")
                 continue
             if raw is None or len(raw) == 0:
+                market_errors.append(f"{exch}: empty response")
                 continue
             pdf = pl.from_pandas(raw) if hasattr(raw, "columns") else pl.DataFrame(raw)
             part = _filter_instrument_frame(pdf, exch)
             if part.height:
                 frames.append(part)
-        if frames:
-            return pl.concat(frames, how="diagonal_relaxed")
-        reason = "TDX returned no instruments"
+            else:
+                market_errors.append(f"{exch}: no qualifying instruments")
+        if market_errors:
+            reason = "market fetch failed: " + "; ".join(market_errors)
+            return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
+        if not frames:
+            reason = "TDX returned no instruments"
+            return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
+        return pl.concat(frames, how="diagonal_relaxed")
     except ImportError:
         reason = "mootdx not installed"
     except Exception as exc:

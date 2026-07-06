@@ -28,6 +28,9 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
             }
         )
 
+    for extra in context.get("audit_findings") or []:
+        findings.append(extra)
+
     datasets = ["daily_bars", "instruments", "trading_calendar", "index_bars"]
 
     for ds in datasets:

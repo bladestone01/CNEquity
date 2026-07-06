@@ -98,6 +98,7 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
     total = 0
     compacted: set[str] = set()
     skipped: list[dict] = []
+    audit_findings: list[dict] = []
 
     for ds in staged:
         allowed, failed_count = compact_allowed(manifest, run_id, ds)
@@ -112,7 +113,7 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
 
         pcol = _PARTITION_COLS[ds]
         if ds == "instruments":
-            rows = compact_instruments(
+            rows, inst_findings = compact_instruments(
                 config.staging_root,
                 config.curated_root,
                 run_id,
@@ -121,6 +122,8 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
             if rows:
                 compacted.add(ds)
             total += rows
+            if inst_findings:
+                audit_findings.extend(inst_findings)
         elif pcol:
             rows = compact_dataset(
                 config.staging_root,
@@ -141,8 +144,13 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
     ensure_duckdb_views(config)
 
     result: dict = {"rows_read": total, "rows_written": total}
+    context_updates: dict = {}
     if skipped:
-        result["context_updates"] = {"compact_skipped_datasets": skipped}
+        context_updates["compact_skipped_datasets"] = skipped
+    if audit_findings:
+        context_updates["audit_findings"] = audit_findings
+    if context_updates:
+        result["context_updates"] = context_updates
     return result
 
 
