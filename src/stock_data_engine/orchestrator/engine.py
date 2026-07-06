@@ -63,8 +63,9 @@ class JobEngine:
         if not run_id:
             run_id = self.manifest.start_run(job_name, metadata)
         else:
-            metadata.update(self.manifest.get_run_metadata(run_id))
-            self.manifest.update_run_metadata(run_id, metadata)
+            merged = self.manifest.get_run_metadata(run_id)
+            merged.update(metadata)
+            self.manifest.update_run_metadata(run_id, merged)
 
         wave_list = waves or self.config.daily_waves
         if steps:
