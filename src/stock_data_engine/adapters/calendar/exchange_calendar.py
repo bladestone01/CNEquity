@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 
 _SEED_START = date(2016, 1, 1)
 _SEED_END = date(2027, 12, 31)
+CALENDAR_FORWARD_COVERAGE_WARN_DAYS = 90
+
+
+def calendar_seed_end() -> date:
+    """Last calendar date covered by bundled holiday seed data."""
+    return _SEED_END
+
+
+def calendar_forward_coverage_days(as_of: date) -> int:
+    """Days from *as_of* (inclusive) through the bundled seed end date."""
+    return (_SEED_END - as_of).days
 
 
 def _is_trading_day(d: date) -> bool:
