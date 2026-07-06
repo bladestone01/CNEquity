@@ -71,13 +71,16 @@ def _load_daily_bar_dates(config: Config) -> pl.DataFrame:
 
 
 def _align_factors_to_bars(
-    bars: pl.DataFrame, symbol: str, factors: pl.DataFrame, adjust_type: str
+    sym_bars: pl.DataFrame,
+    symbol: str,
+    factors: pl.DataFrame,
+    adjust_type: str,
 ) -> pl.DataFrame:
-    sym_bars = bars.filter(pl.col("symbol") == symbol).select("trade_date").sort("trade_date")
-    if sym_bars.is_empty():
+    sym_dates = sym_bars.select("trade_date").sort("trade_date")
+    if sym_dates.is_empty():
         return pl.DataFrame()
 
-    aligned = sym_bars.join(factors, on="trade_date", how="left").sort("trade_date")
+    aligned = sym_dates.join(factors, on="trade_date", how="left").sort("trade_date")
     aligned = aligned.with_columns(pl.col("factor").forward_fill().fill_null(1.0))
     return aligned.with_columns(
         pl.lit(symbol).alias("symbol"),
@@ -164,7 +167,6 @@ def _fetch_failure_finding(symbol: str, adjust_type: str, exc: Exception) -> dic
 
 def _process_symbol_adj(
     config: Config,
-    bars: pl.DataFrame,
     sym: str,
     adj: str,
     sym_bars: pl.DataFrame,
@@ -182,7 +184,7 @@ def _process_symbol_adj(
             return None, f"{sym}:{adj}", _fetch_failure_finding(sym, adj, exc)
         if factors is None or factors.is_empty():
             return None, None, None
-        aligned = _align_factors_to_bars(bars, sym, factors, adj)
+        aligned = _align_factors_to_bars(sym_bars, sym, factors, adj)
         if aligned.is_empty():
             return None, None, None
         return aligned, None, None
@@ -212,14 +214,15 @@ def compute_adj_factors(
         )
     adjust_types = [STORED_ADJUST_TYPE]
     refresh_set = set(refresh_symbols or [])
-    symbols = bars["symbol"].unique().to_list()
     workers = max(1, min(config.workers, 16))
 
-    tasks = [
-        (sym, adj, bars.filter(pl.col("symbol") == sym), sym in refresh_set)
-        for sym in symbols
-        for adj in adjust_types
-    ]
+    tasks: list[tuple[str, str, pl.DataFrame, bool]] = []
+    for group in bars.partition_by("symbol"):
+        sym = group["symbol"][0]
+        sym_bars = group.select("trade_date").sort("trade_date")
+        force = sym in refresh_set
+        for adj in adjust_types:
+            tasks.append((sym, adj, sym_bars, force))
 
     frames: list[pl.DataFrame] = []
     failed: list[str] = []
@@ -229,7 +232,7 @@ def compute_adj_factors(
         with httpx.Client(timeout=20.0) as client:
             for sym, adj, sym_bars, force in tasks:
                 aligned, fail_key, finding = _process_symbol_adj(
-                    config, bars, sym, adj, sym_bars, force=force, client=client
+                    config, sym, adj, sym_bars, force=force, client=client
                 )
                 if fail_key:
                     failed.append(fail_key)
@@ -243,7 +246,6 @@ def compute_adj_factors(
                 pool.submit(
                     _process_symbol_adj,
                     config,
-                    bars,
                     sym,
                     adj,
                     sym_bars,

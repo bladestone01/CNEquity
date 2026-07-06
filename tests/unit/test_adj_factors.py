@@ -65,7 +65,12 @@ def test_align_factors_to_bars_forward_fill():
             "factor": [0.5],
         }
     )
-    aligned = _align_factors_to_bars(bars, "600519.SH", factors, "qfq")
+    aligned = _align_factors_to_bars(
+        bars.filter(pl.col("symbol") == "600519.SH").select("trade_date"),
+        "600519.SH",
+        factors,
+        "qfq",
+    )
     assert aligned["factor"].to_list() == [1.0, 0.5, 0.5]
 
 
