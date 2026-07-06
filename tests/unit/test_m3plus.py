@@ -26,7 +26,7 @@ class FakeDatacenterClient:
                 return None
 
             def json(self):
-                return {"result": {"data": self._data}}
+                return {"success": True, "result": {"data": self._data}}
 
         for key, rows in self.batches.items():
             if key in url:
@@ -57,8 +57,8 @@ def test_financial_statement_items_parses_notice_date():
                     "SECURITY_CODE": "600519",
                     "REPORTDATE": "2024-03-31",
                     "NOTICE_DATE": "2024-04-28",
-                    "TOTALOPERATEREVE": 100.0,
-                    "ROEJQ": 0.25,
+                    "TOTAL_OPERATE_INCOME": 100.0,
+                    "WEIGHTAVG_ROE": 0.25,
                 }
             ]
         }
@@ -93,7 +93,7 @@ def test_index_constituents_fetch():
                 {
                     "INDEX_CODE": "000300",
                     "SECURITY_CODE": "600519",
-                    "WEIGHT": 5.0,
+                    "TRADE_DATE": "2024-06-28",
                 }
             ]
         }
@@ -107,12 +107,12 @@ def test_index_constituents_fetch():
 def test_industry_members_fetch():
     client = FakeDatacenterClient(
         {
-            "RPT_STOCK_INDUSTRY": [
+            "RPT_BOARD_CONSTITUENT": [
                 {
                     "SECURITY_CODE": "600519",
-                    "INDUSTRY_CODE": "3405",
-                    "INDUSTRY_NAME": "白酒",
-                    "INDUSTRY_TYPE": "sw",
+                    "BOARD_CODE": "3405",
+                    "BOARD_NAME": "白酒",
+                    "BOARD_TYPE_NEW": "2",
                 }
             ]
         }

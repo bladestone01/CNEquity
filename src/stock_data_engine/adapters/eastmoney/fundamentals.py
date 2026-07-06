@@ -13,17 +13,14 @@ from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)
 
-# (statement_type, item_code) -> EastMoney datacenter column on RPT_LICO_FN_CPD
+# (statement_type, item_code) -> EastMoney datacenter column on RPT_LICO_FN_CPD.
+# EastMoney's current financial quick-report endpoint exposes a compact set of
+# reported items; request only live fields so fail-loud validation catches real
+# API changes rather than our stale aliases.
 _ITEM_FIELDS: dict[tuple[str, str], str] = {
-    ("income", "revenue"): "TOTALOPERATEREVE",
-    ("income", "net_profit"): "PARENTNETPROFIT",
-    ("income", "deducted_net_profit"): "KCFJCXSYJLR",
-    ("balance", "total_assets"): "TOTALASSETS",
-    ("balance", "total_liabilities"): "TOTALLIAB",
-    ("balance", "net_assets"): "TOTALSHEQUITY",
-    ("cashflow", "operating_cashflow"): "NETOPERATECASHFLOW",
-    ("indicator", "roe"): "ROEJQ",
-    ("indicator", "debt_ratio"): "ZCFZL",
+    ("income", "revenue"): "TOTAL_OPERATE_INCOME",
+    ("income", "net_profit"): "PARENT_NETPROFIT",
+    ("indicator", "roe"): "WEIGHTAVG_ROE",
 }
 
 _COLUMNS = (

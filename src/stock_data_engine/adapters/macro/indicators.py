@@ -9,7 +9,7 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
+from stock_data_engine.adapters.eastmoney.datacenter import EastMoneyDatacenterError, fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)
@@ -70,12 +70,16 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
     ds = trade_date.isoformat()
     rows: list[dict] = []
 
-    treasury = fetch_datacenter(
-        client,
-        _TREASURY_REPORT,
-        _TREASURY_COLUMNS,
-        filter_expr=f"(TRADE_DATE='{ds}')",
-    )
+    try:
+        treasury = fetch_datacenter(
+            client,
+            _TREASURY_REPORT,
+            _TREASURY_COLUMNS,
+            filter_expr=f"(TRADE_DATE='{ds}')",
+        )
+    except EastMoneyDatacenterError as exc:
+        logger.warning("EastMoney treasury indicator fetch skipped: %s", exc)
+        treasury = []
     for item in treasury:
         val = item.get("TENYEAR")
         if val is not None:
@@ -88,12 +92,16 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
                 }
             )
 
-    shibor = fetch_datacenter(
-        client,
-        _SHIBOR_REPORT,
-        _SHIBOR_COLUMNS,
-        filter_expr=f"(TRADE_DATE='{ds}')",
-    )
+    try:
+        shibor = fetch_datacenter(
+            client,
+            _SHIBOR_REPORT,
+            _SHIBOR_COLUMNS,
+            filter_expr=f"(TRADE_DATE='{ds}')",
+        )
+    except EastMoneyDatacenterError as exc:
+        logger.warning("EastMoney SHIBOR indicator fetch skipped: %s", exc)
+        shibor = []
     for item in shibor:
         val = item.get("SHIBOR_3M")
         if val is not None:
@@ -106,12 +114,16 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
                 }
             )
 
-    lpr = fetch_datacenter(
-        client,
-        _LPR_REPORT,
-        _LPR_COLUMNS,
-        filter_expr=f"(TRADE_DATE='{ds}')",
-    )
+    try:
+        lpr = fetch_datacenter(
+            client,
+            _LPR_REPORT,
+            _LPR_COLUMNS,
+            filter_expr=f"(TRADE_DATE='{ds}')",
+        )
+    except EastMoneyDatacenterError as exc:
+        logger.warning("EastMoney LPR indicator fetch skipped: %s", exc)
+        lpr = []
     for item in lpr:
         val = item.get("LPR1Y")
         if val is not None:

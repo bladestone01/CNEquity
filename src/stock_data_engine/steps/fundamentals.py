@@ -22,6 +22,7 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
         "valuation_metrics",
         fetch_valuation_metrics,
         source="eastmoney",
+        allow_empty=True,
     )
 
 

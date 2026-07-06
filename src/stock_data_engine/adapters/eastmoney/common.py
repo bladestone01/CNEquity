@@ -9,6 +9,22 @@ DATACENTER_BASE = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 PUSH2_CLIST = "https://push2.eastmoney.com/api/qt/clist/get"
 
 
+def symbol_from_secucode(secucode: str | None) -> str | None:
+    """Parse ``600519.SH`` / ``000001.SZ`` style codes from datacenter rows."""
+    if not secucode:
+        return None
+    text = str(secucode).strip().upper()
+    if "." not in text:
+        return None
+    code, exchange = text.split(".", 1)
+    code = code.zfill(6)
+    if exchange not in {"SH", "SZ", "BJ"}:
+        return None
+    if not is_all_a_symbol(code, exchange):
+        return None
+    return format_symbol(code, exchange)
+
+
 def symbol_from_em(code: str, market_id: int) -> str | None:
     code = str(code).zfill(6)
     exchange = "SH" if market_id == 1 else ("BJ" if market_id == 2 else "SZ")

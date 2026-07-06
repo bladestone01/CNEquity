@@ -10,6 +10,10 @@ from stock_data_engine.adapters.eastmoney.common import exchange_from_datacenter
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
+_BOARD_REPORT = "RPT_BOARD_CONSTITUENT"
+_BOARD_COLUMNS = "SECURITY_CODE,BOARD_CODE,BOARD_NAME,BOARD_TYPE_NEW"
+_INDUSTRY_BOARD_TYPE = "2"
+
 
 def fetch_industry_members(
     as_of_date: date,
@@ -22,8 +26,9 @@ def fetch_industry_members(
 
     raw = fetch_datacenter(
         client,
-        "RPT_STOCK_INDUSTRY",
-        "SECURITY_CODE,INDUSTRY_CODE,INDUSTRY_NAME,INDUSTRY_TYPE",
+        _BOARD_REPORT,
+        _BOARD_COLUMNS,
+        filter_expr=f'(BOARD_TYPE_NEW="{_INDUSTRY_BOARD_TYPE}")',
         page_size=5000,
     )
     rows: list[dict] = []
@@ -33,13 +38,12 @@ def fetch_industry_members(
         sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
         if not sym:
             continue
-        system = str(item.get("INDUSTRY_TYPE") or "eastmoney").lower()
         rows.append(
             {
                 "symbol": sym,
-                "classification_system": system,
-                "industry_code": str(item.get("INDUSTRY_CODE") or ""),
-                "industry_name": str(item.get("INDUSTRY_NAME") or ""),
+                "classification_system": "eastmoney",
+                "industry_code": str(item.get("BOARD_CODE") or ""),
+                "industry_name": str(item.get("BOARD_NAME") or ""),
                 "as_of_date": as_of_date,
             }
         )

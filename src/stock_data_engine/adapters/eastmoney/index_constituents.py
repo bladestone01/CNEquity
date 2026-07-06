@@ -50,7 +50,7 @@ def fetch_index_constituents(
         raw = fetch_datacenter(
             client,
             "RPT_INDEX_CONSTITUENT",
-            "INDEX_CODE,SECURITY_CODE,WEIGHT",
+            "INDEX_CODE,SECURITY_CODE,TRADE_DATE",
             filter_expr=f'(INDEX_CODE="{index_code}")',
             page_size=5000,
         )
@@ -65,7 +65,8 @@ def fetch_index_constituents(
                     "index_symbol": _index_symbol(item.get("INDEX_CODE") or index_code),
                     "symbol": sym,
                     "as_of_date": as_of_date,
-                    "weight": float(item.get("WEIGHT") or 0),
+                    # EastMoney RPT_INDEX_CONSTITUENT no longer exposes constituent weights.
+                    "weight": 0.0,
                 }
             )
 

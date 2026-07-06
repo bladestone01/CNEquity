@@ -10,6 +10,11 @@ from stock_data_engine.adapters.eastmoney.common import exchange_from_datacenter
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
+_BOARD_REPORT = "RPT_BOARD_CONSTITUENT"
+_BOARD_COLUMNS = "SECURITY_CODE,BOARD_CODE,BOARD_NAME,BOARD_TYPE_NEW"
+# EastMoney concept/theme boards use BOARD_TYPE_NEW=3 (regional/theme) and 4 (concept tags).
+_CONCEPT_BOARD_TYPES = {"3", "4"}
+
 
 def fetch_sector_members(as_of_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
     owns = client is None
@@ -17,12 +22,14 @@ def fetch_sector_members(as_of_date: date, *, client: EastMoneyClient | None = N
         client = EastMoneyClient()
     raw = fetch_datacenter(
         client,
-        "RPT_CONCEPT_BOARD_CONSTITUENT",
-        "SECURITY_CODE,BOARD_CODE,BOARD_NAME",
+        _BOARD_REPORT,
+        _BOARD_COLUMNS,
         page_size=5000,
     )
     rows = []
     for item in raw:
+        if str(item.get("BOARD_TYPE_NEW") or "") not in _CONCEPT_BOARD_TYPES:
+            continue
         code = str(item.get("SECURITY_CODE", "")).zfill(6)
         exch = exchange_from_datacenter(item)
         sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))

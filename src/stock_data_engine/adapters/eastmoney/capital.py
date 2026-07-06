@@ -8,7 +8,11 @@ from datetime import date
 import polars as pl
 
 from stock_data_engine.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
-from stock_data_engine.adapters.eastmoney.common import exchange_from_datacenter, symbol_from_em
+from stock_data_engine.adapters.eastmoney.common import (
+    exchange_from_datacenter,
+    symbol_from_em,
+    symbol_from_secucode,
+)
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 from stock_data_engine.domain.symbols import format_symbol
@@ -16,18 +20,56 @@ from stock_data_engine.domain.symbols import format_symbol
 logger = logging.getLogger(__name__)
 
 _FUND_FLOW_FIELDS = "f12,f13,f62,f66,f72,f78,f84"
-_MARGIN_COLUMNS = "SECURITY_CODE,TRADE_DATE,MARGIN_BALANCE,MARGIN_BUY,SHORT_BALANCE,SHORT_SELL_VOLUME"
-_NORTH_HOLD_COLUMNS = "SECURITY_CODE,TRADE_DATE,MUTUAL_TYPE,HOLD_SHARES,HOLD_MARKETCAP,HOLD_RATIO"
-_NORTH_FLOW_COLUMNS = "TRADE_DATE,MUTUAL_TYPE,NET_BUY_AMT,BUY_AMT,SELL_AMT"
-_DRAGON_COLUMNS = "SECURITY_CODE,TRADE_DATE,EXPLANATION,BUY_AMT,SELL_AMT,NET_AMT"
-_BLOCK_COLUMNS = "SECURITY_CODE,TRADE_DATE,DEAL_PRICE,DEAL_VOLUME,DEAL_AMT,PREMIUM_RATIO"
+_MARGIN_REPORT = "RPTA_WEB_RZRQ_GGMX"
+_MARGIN_COLUMNS = "DATE,SCODE,SECUCODE,RZYE,RZMRE,RQYE,RQMCL"
+_NORTH_HOLD_REPORT = "RPT_MUTUAL_HOLDSTOCKNORTH_STA"
+_NORTH_HOLD_COLUMNS = (
+    "SECUCODE,TRADE_DATE,MUTUAL_TYPE,HOLD_SHARES,HOLD_MARKET_CAP,HOLD_SHARES_RATIO"
+)
+_DRAGON_COLUMNS = (
+    "SECURITY_CODE,TRADE_DATE,EXPLANATION,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,BILLBOARD_NET_AMT"
+)
+_BLOCK_COLUMNS = "SECURITY_CODE,TRADE_DATE,VOLUME,DEAL_AMT,AVERAGE_PRICE,PREMIUM_RATIO"
+_FFLOW_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
+_KAMT_URL = "https://push2.eastmoney.com/api/qt/kamt/get"
 
 
 def _channel(mutual_type: str | int | None) -> str:
-    text = str(mutual_type or "").upper()
-    if "SH" in text or text in {"1", "沪"}:
+    text = str(mutual_type or "")
+    if text in {"001", "1"} or "沪" in text or "SH" in text.upper():
         return "SH"
     return "SZ"
+
+
+def _margin_symbol(item: dict) -> str | None:
+    sym = symbol_from_secucode(item.get("SECUCODE"))
+    if sym:
+        return sym
+    code = str(item.get("SCODE", "")).zfill(6)
+    market = str(item.get("TRADE_MARKET") or item.get("MARKET") or "")
+    if "沪" in market or "科创" in market:
+        exch = "SH"
+    elif "京" in market or "北" in market:
+        exch = "BJ"
+    else:
+        exch = "SZ"
+    return symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+
+
+def _northbound_kline_lines(client: EastMoneyClient, *, limit: int = 120) -> list[str]:
+    url = (
+        f"{_FFLOW_KLINE_URL}?secid=1.000001&klt=101&lmt={limit}"
+        "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56"
+    )
+    try:
+        resp = client.get(url)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        logger.warning("EastMoney northbound kline fetch failed: %s", exc)
+        return []
+    data = payload.get("data") or {}
+    return data.get("klines") or []
 
 
 def fetch_fund_flow(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
@@ -60,25 +102,23 @@ def fetch_margin_trading(trade_date: date, *, client: EastMoneyClient | None = N
     ds = trade_date.isoformat()
     raw = fetch_datacenter(
         client,
-        "RPTA_WEB_RZRQ_GGMX",
+        _MARGIN_REPORT,
         _MARGIN_COLUMNS,
-        filter_expr=f"(TRADE_DATE='{ds}')",
+        filter_expr=f"(DATE='{ds}')",
     )
     rows = []
     for item in raw:
-        code = str(item.get("SECURITY_CODE", "")).zfill(6)
-        exch = exchange_from_datacenter(item)
-        sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+        sym = _margin_symbol(item)
         if not sym:
             continue
         rows.append(
             {
                 "symbol": sym,
                 "trade_date": trade_date,
-                "margin_balance": float(item.get("MARGIN_BALANCE") or 0),
-                "margin_buy": float(item.get("MARGIN_BUY") or 0),
-                "short_balance": float(item.get("SHORT_BALANCE") or 0),
-                "short_sell_volume": float(item.get("SHORT_SELL_VOLUME") or 0),
+                "margin_balance": float(item.get("RZYE") or 0),
+                "margin_buy": float(item.get("RZMRE") or 0),
+                "short_balance": float(item.get("RQYE") or 0),
+                "short_sell_volume": float(item.get("RQMCL") or 0),
             }
         )
     if owns:
@@ -93,15 +133,17 @@ def fetch_northbound_holdings(trade_date: date, *, client: EastMoneyClient | Non
     ds = trade_date.isoformat()
     raw = fetch_datacenter(
         client,
-        "RPT_MUTUAL_HOLDSTOCKND",
+        _NORTH_HOLD_REPORT,
         _NORTH_HOLD_COLUMNS,
         filter_expr=f"(TRADE_DATE='{ds}')",
     )
     rows = []
     for item in raw:
-        code = str(item.get("SECURITY_CODE", "")).zfill(6)
-        exch = exchange_from_datacenter(item)
-        sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+        sym = symbol_from_secucode(item.get("SECUCODE"))
+        if not sym:
+            code = str(item.get("SECURITY_CODE", "")).zfill(6)
+            exch = exchange_from_datacenter(item)
+            sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
         if not sym:
             continue
         rows.append(
@@ -110,8 +152,8 @@ def fetch_northbound_holdings(trade_date: date, *, client: EastMoneyClient | Non
                 "trade_date": trade_date,
                 "channel": _channel(item.get("MUTUAL_TYPE")),
                 "holding_shares": float(item.get("HOLD_SHARES") or 0),
-                "holding_mv": float(item.get("HOLD_MARKETCAP") or 0),
-                "holding_ratio": float(item.get("HOLD_RATIO") or 0),
+                "holding_mv": float(item.get("HOLD_MARKET_CAP") or 0),
+                "holding_ratio": float(item.get("HOLD_SHARES_RATIO") or 0),
             }
         )
     if owns:
@@ -123,26 +165,63 @@ def fetch_northbound_flows(trade_date: date, *, client: EastMoneyClient | None =
     owns = client is None
     if client is None:
         client = EastMoneyClient()
-    ds = trade_date.isoformat()
-    raw = fetch_datacenter(
-        client,
-        "RPT_MUTUAL_NETBUY",
-        _NORTH_FLOW_COLUMNS,
-        filter_expr=f"(TRADE_DATE='{ds}')",
-    )
-    rows = []
-    for item in raw:
-        td_raw = item.get("TRADE_DATE") or ds
-        td = date.fromisoformat(str(td_raw)[:10])
-        rows.append(
-            {
-                "trade_date": td,
-                "channel": _channel(item.get("MUTUAL_TYPE")),
-                "net_buy": float(item.get("NET_BUY_AMT") or 0),
-                "buy_amount": float(item.get("BUY_AMT") or 0),
-                "sell_amount": float(item.get("SELL_AMT") or 0),
-            }
+
+    rows: list[dict] = []
+    for line in _northbound_kline_lines(client):
+        parts = line.split(",")
+        if len(parts) < 3:
+            continue
+        try:
+            row_date = date.fromisoformat(parts[0])
+        except ValueError:
+            continue
+        if row_date != trade_date:
+            continue
+        rows.extend(
+            [
+                {
+                    "trade_date": row_date,
+                    "channel": "SH",
+                    "net_buy": float(parts[1]),
+                    "buy_amount": 0.0,
+                    "sell_amount": 0.0,
+                },
+                {
+                    "trade_date": row_date,
+                    "channel": "SZ",
+                    "net_buy": float(parts[2]),
+                    "buy_amount": 0.0,
+                    "sell_amount": 0.0,
+                },
+            ]
         )
+        break
+
+    if not rows:
+        try:
+            resp = client.get(f"{_KAMT_URL}?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56")
+            resp.raise_for_status()
+            data = resp.json().get("data") or {}
+        except Exception as exc:
+            logger.warning("EastMoney kamt northbound fetch failed: %s", exc)
+            data = {}
+        for key, channel in (("hk2sh", "SH"), ("hk2sz", "SZ")):
+            block = data.get(key) or {}
+            date2 = str(block.get("date2") or "")[:10]
+            if date2 != trade_date.isoformat():
+                continue
+            # dayNetAmtIn is 万元 on EastMoney kamt API.
+            net = float(block.get("dayNetAmtIn") or 0) * 10_000
+            rows.append(
+                {
+                    "trade_date": trade_date,
+                    "channel": channel,
+                    "net_buy": net,
+                    "buy_amount": 0.0,
+                    "sell_amount": 0.0,
+                }
+            )
+
     if owns:
         client.close()
     return pl.DataFrame(rows) if rows else pl.DataFrame()
@@ -171,9 +250,9 @@ def fetch_dragon_tiger(trade_date: date, *, client: EastMoneyClient | None = Non
                 "symbol": sym,
                 "trade_date": trade_date,
                 "reason": str(item.get("EXPLANATION") or ""),
-                "buy_amount": float(item.get("BUY_AMT") or 0),
-                "sell_amount": float(item.get("SELL_AMT") or 0),
-                "net_amount": float(item.get("NET_AMT") or 0),
+                "buy_amount": float(item.get("BILLBOARD_BUY_AMT") or 0),
+                "sell_amount": float(item.get("BILLBOARD_SELL_AMT") or 0),
+                "net_amount": float(item.get("BILLBOARD_NET_AMT") or 0),
             }
         )
     if owns:
@@ -203,8 +282,8 @@ def fetch_block_trades(trade_date: date, *, client: EastMoneyClient | None = Non
             {
                 "symbol": sym,
                 "trade_date": trade_date,
-                "price": float(item.get("DEAL_PRICE") or 0),
-                "volume": float(item.get("DEAL_VOLUME") or 0),
+                "price": float(item.get("AVERAGE_PRICE") or 0),
+                "volume": float(item.get("VOLUME") or 0),
                 "amount": float(item.get("DEAL_AMT") or 0),
                 "premium_ratio": float(item.get("PREMIUM_RATIO") or 0),
             }

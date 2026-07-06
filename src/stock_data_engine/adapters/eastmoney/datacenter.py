@@ -11,6 +11,8 @@ from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)
 
+_EMPTY_RESULT_MESSAGES = frozenset({"返回数据为空"})
+
 
 class EastMoneyDatacenterError(RuntimeError):
     """Raised when datacenter pagination fails after partial or zero results."""
@@ -60,6 +62,16 @@ def fetch_datacenter(
             raise EastMoneyDatacenterError(
                 f"EastMoney datacenter {report} page {page} failed after {max_retries} attempts"
             ) from last_exc
+
+        if payload.get("success") is False:
+            msg = str(payload.get("message") or "")
+            if msg not in _EMPTY_RESULT_MESSAGES:
+                code = payload.get("code")
+                raise EastMoneyDatacenterError(
+                    f"EastMoney datacenter {report} page {page} rejected: {msg}"
+                    + (f" (code={code})" if code is not None else "")
+                )
+            break
 
         batch = (payload.get("result") or {}).get("data") or []
         if not batch:

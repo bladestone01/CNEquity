@@ -27,7 +27,7 @@ class FakeDatacenterClient:
                 return None
 
             def json(self):
-                return {"result": {"data": self._data}}
+                return {"success": True, "result": {"data": self._data}}
 
         for key, rows in self.batches.items():
             if key in url:

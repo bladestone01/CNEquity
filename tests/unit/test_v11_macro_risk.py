@@ -27,7 +27,7 @@ class FakeDatacenterClient:
                 return None
 
             def json(self):
-                return {"result": {"data": self._data}}
+                return {"success": True, "result": {"data": self._data}}
 
         for key, rows in self.batches.items():
             if key in url:
@@ -111,13 +111,13 @@ def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
 def test_share_unlock_schedule_parses():
     client = FakeDatacenterClient(
         {
-            "RPTA_WEB_XSJJMX": [
+            "RPT_LIFT_STAGE": [
                 {
                     "SECURITY_CODE": "600519",
                     "FREE_DATE": "2024-08-01",
-                    "FREE_SHARES": 1_000_000,
+                    "ABLE_FREE_SHARES": 1_000_000,
                     "FREE_RATIO": 0.5,
-                    "FREE_TYPE": "首发原股东",
+                    "FREE_SHARES_TYPE": "首发原股东",
                 }
             ]
         }

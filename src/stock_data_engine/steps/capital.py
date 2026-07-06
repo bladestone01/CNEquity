@@ -23,6 +23,8 @@ def _run_capital_step(
     run_id: str,
     dataset: str,
     fetch_fn,
+    *,
+    allow_empty: bool = True,
 ) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
@@ -33,6 +35,7 @@ def _run_capital_step(
         dataset,
         fetch_fn,
         source="eastmoney",
+        allow_empty=allow_empty,
     )
 
 

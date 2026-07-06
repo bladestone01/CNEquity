@@ -32,11 +32,23 @@ def test_fetch_datacenter_raises_on_page_failure():
         fetch_datacenter(client, "RPT_TEST", "COL", max_retries=3, retry_backoff_seconds=0)
 
 
+def test_fetch_datacenter_treats_empty_result_as_no_rows():
+    client = FakeClient([{"success": False, "message": "返回数据为空", "code": 0}])
+    rows = fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
+    assert rows == []
+
+
+def test_fetch_datacenter_raises_on_api_rejection():
+    client = FakeClient([{"success": False, "message": "TRADE_DATE列不存在", "code": 9501}])
+    with pytest.raises(EastMoneyDatacenterError, match="TRADE_DATE列不存在"):
+        fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
+
+
 def test_fetch_datacenter_paginates_until_short_page():
     client = FakeClient(
         [
-            {"result": {"data": [{"x": 1}] * 5000}},
-            {"result": {"data": [{"x": 2}]}},
+            {"success": True, "result": {"data": [{"x": 1}] * 5000}},
+            {"success": True, "result": {"data": [{"x": 2}]}},
         ]
     )
     rows = fetch_datacenter(client, "RPT_TEST", "COL", page_size=5000)

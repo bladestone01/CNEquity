@@ -35,6 +35,7 @@ def step_market_breadth(config: Config, trade_date: date, run_id: str, context: 
         "market_breadth",
         lambda d: compute_market_breadth(config, d),
         source="derived",
+        allow_empty=True,
     )
 
 
@@ -51,6 +52,7 @@ def step_share_unlock_schedule(
         "share_unlock_schedule",
         fetch_share_unlock_schedule,
         source="eastmoney",
+        allow_empty=True,
     )
 
 

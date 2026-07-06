@@ -13,8 +13,10 @@ from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)
 
-_UNLOCK_REPORT = "RPTA_WEB_XSJJMX"
-_UNLOCK_COLUMNS = "SECURITY_CODE,FREE_DATE,FREE_SHARES,FREE_RATIO,FREE_TYPE,NOTICE_DATE"
+_UNLOCK_REPORT = "RPT_LIFT_STAGE"
+_UNLOCK_COLUMNS = (
+    "SECURITY_CODE,FREE_DATE,ABLE_FREE_SHARES,FREE_RATIO,FREE_SHARES_TYPE,CURRENT_FREE_SHARES"
+)
 
 
 def fetch_share_unlock_schedule(
@@ -34,6 +36,8 @@ def fetch_share_unlock_schedule(
         _UNLOCK_REPORT,
         _UNLOCK_COLUMNS,
         filter_expr=f"(FREE_DATE>='{start}')(FREE_DATE<='{end}')",
+        sort_columns="FREE_DATE",
+        sort_types="1",
     )
     if owns:
         client.close()
@@ -53,13 +57,16 @@ def fetch_share_unlock_schedule(
             unlock_date = date.fromisoformat(str(unlock_raw)[:10])
         except ValueError:
             continue
+        shares = item.get("ABLE_FREE_SHARES")
+        if shares is None:
+            shares = item.get("CURRENT_FREE_SHARES")
         rows.append(
             {
                 "symbol": sym,
                 "unlock_date": unlock_date,
-                "unlock_shares": float(item.get("FREE_SHARES") or 0),
+                "unlock_shares": float(shares or 0),
                 "unlock_ratio": float(item.get("FREE_RATIO") or 0),
-                "unlock_type": str(item.get("FREE_TYPE") or ""),
+                "unlock_type": str(item.get("FREE_SHARES_TYPE") or ""),
             }
         )
 
