@@ -223,9 +223,39 @@ def derive(name: str, config_path: str):
 @cli.command()
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option("--run-id", default=None)
-def audit(config_path: str, run_id: str | None):
-    """Run quality audit."""
+@click.option(
+    "--full",
+    "full",
+    is_flag=True,
+    help="Whole-lake health snapshot (current state + freshness), not a per-run file.",
+)
+def audit(config_path: str, run_id: str | None, full: bool):
+    """Run quality audit, or --full for a current whole-lake health snapshot."""
     cfg = _cfg(config_path)
+
+    if full:
+        from stock_data_engine.quality.audit import lake_health
+
+        health = lake_health(cfg, date.today())
+        sev = health["findings_by_severity"]
+        click.echo(f"Lake health @ last trading day {health['last_trading_day']}")
+        click.echo(
+            f"  findings: {sev.get('error', 0)} error, "
+            f"{sev.get('warning', 0)} warning, {sev.get('info', 0)} info"
+        )
+        if health["empty_datasets"]:
+            click.echo(f"  empty datasets: {', '.join(health['empty_datasets'])}")
+        if health["stale_datasets"]:
+            click.echo(f"  STALE datasets: {', '.join(health['stale_datasets'])}")
+        for f in health["error_findings"]:
+            click.echo(f"  [error]   {f.get('dataset', ''):22} {f.get('message', '')}")
+        for f in health["warning_findings"]:
+            click.echo(f"  [warning] {f.get('dataset', ''):22} {f.get('message', '')}")
+        click.echo("HEALTHY" if health["healthy"] else "UNHEALTHY")
+        if not health["healthy"]:
+            raise SystemExit(1)
+        return
+
     manifest = Manifest(cfg.manifest_path)
     latest = manifest.latest_run() if not run_id else None
     rid = run_id or (latest["run_id"] if latest else "manual")

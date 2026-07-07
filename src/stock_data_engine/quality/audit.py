@@ -15,7 +15,10 @@ from stock_data_engine.quality.source_diff import run_source_diffs
 from stock_data_engine.query.universe import coverage_start_date, trading_status_coverage_start
 
 
-def run_audit(config: Config, run_id: str, trade_date: date, context: dict | None = None) -> int:
+def _collect_lake_findings(
+    config: Config, trade_date: date, context: dict | None = None
+) -> list[dict]:
+    """All quality findings for the current curated lake (run-independent)."""
     findings: list[dict] = []
     context = context or {}
 
@@ -94,6 +97,11 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
                 trade_date,
             )
         )
+    return findings
+
+
+def run_audit(config: Config, run_id: str, trade_date: date, context: dict | None = None) -> int:
+    findings = _collect_lake_findings(config, trade_date, context)
 
     out_dir = config.meta_root / "quality" / "findings"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -109,3 +117,62 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
 
     diffs = run_source_diffs(config, run_id, trade_date)
     return len(findings) + len(diffs)
+
+
+def lake_health(config: Config, trade_date: date) -> dict:
+    """Whole-lake health snapshot: current findings + per-dataset freshness.
+
+    Independent of any run's stale per-run findings file. Writes a stable
+    ``meta/quality/health-latest.json`` and returns the summary.
+    """
+    from stock_data_engine.query.reader import list_datasets
+
+    findings = _collect_lake_findings(config, trade_date, None)
+    by_severity: dict[str, int] = {}
+    for f in findings:
+        sev = f.get("severity", "info")
+        by_severity[sev] = by_severity.get(sev, 0) + 1
+
+    anchor = _last_trading_day(config, trade_date)
+    catalog = list_datasets(config=config)
+    stale: list[str] = []
+    empty: list[str] = []
+    for row in catalog.iter_rows(named=True):
+        if not row["has_data"]:
+            empty.append(row["dataset"])
+            continue
+        if not row["watermarked"]:
+            continue
+        mark = row["watermark"] or row["coverage_end"]
+        if mark is not None and mark < anchor:
+            stale.append(row["dataset"])
+
+    health = {
+        "trade_date": trade_date.isoformat(),
+        "last_trading_day": anchor.isoformat(),
+        "findings_by_severity": by_severity,
+        "error_findings": [f for f in findings if f.get("severity") == "error"],
+        "warning_findings": [f for f in findings if f.get("severity") == "warning"],
+        "stale_datasets": sorted(stale),
+        "empty_datasets": sorted(empty),
+        "healthy": by_severity.get("error", 0) == 0 and not stale,
+    }
+
+    out_dir = config.meta_root / "quality"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "health-latest.json", "w", encoding="utf-8") as f:
+        json.dump(health, f, ensure_ascii=False, indent=2, default=str)
+    return health
+
+
+def _last_trading_day(config: Config, trade_date: date) -> date:
+    from datetime import timedelta
+
+    from stock_data_engine.steps.common import is_trading_day
+
+    d = trade_date
+    for _ in range(15):
+        if is_trading_day(config, d):
+            return d
+        d -= timedelta(days=1)
+    return trade_date
