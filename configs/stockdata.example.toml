@@ -17,6 +17,25 @@ connect_timeout_sec = 10
 # failing when the TDX source is unavailable. Never enable in production.
 allow_mock = false
 
+# Preferred standard-market host pool. When servers="auto", these are probed
+# in parallel (first that returns real data wins) before the mootdx bundled
+# list. Fill with hosts known-good for your network; leave empty to rely on
+# the bundled list. Extended (HK/futures) hosts do not serve A-share bars.
+[tdx_protocol.hosts]
+standard = [
+    "120.76.1.198:7709",
+    "123.125.108.101:7709",
+    "114.141.177.118:7709",
+    "114.141.177.40:7709",
+    "27.151.2.113:7709",
+    "27.151.2.38:7709",
+    "202.100.166.12:7709",
+    "182.118.8.9:7709",
+    "1.202.143.37:7709",
+    "111.203.134.118:7709",
+    "117.133.128.226:7709",
+]
+
 [sources.eastmoney]
 enabled = true
 min_interval_seconds = 1.0

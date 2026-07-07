@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import as_completed as _as_completed
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -57,6 +58,7 @@ _TDX_SERVER_CACHE: tuple[str, int] | None = None
 _TDX_TCP_TIMEOUT = 1.5
 _TDX_PROBE_SYMBOL = "000001"  # SSE composite; market=1
 _TDX_MAX_CANDIDATES = 16
+_TDX_PROBE_CONCURRENCY = 8  # parallel probes; first live responder wins
 _TDX_FETCH_ATTEMPTS = 3  # server rotations before a bar fetch fails loud
 
 
@@ -81,39 +83,87 @@ def _reachable(host: str, port: int, timeout: float = _TDX_TCP_TIMEOUT) -> bool:
 
 
 def _serves_data(host: str, port: int, timeout: int) -> bool:
-    """A server passes only if it returns a real bar — filters dead feeds."""
+    """A server passes only if it returns a real bar — filters dead feeds.
+
+    Uses ``heartbeat=False`` so the throwaway probe leaves no lingering thread.
+    """
     from mootdx.quotes import Quotes
 
+    client = None
     try:
         client = Quotes.factory(
-            market="std", server=(host, int(port)), timeout=timeout, heartbeat=True
+            market="std", server=(host, int(port)), timeout=timeout, heartbeat=False
         )
         df = client.bars(symbol=_TDX_PROBE_SYMBOL, frequency=9, market=1, start=0, offset=1)
         return df is not None and len(df) > 0
     except Exception:
         return False
+    finally:
+        client_obj = getattr(client, "client", None)
+        close = getattr(client_obj, "close", None) or getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
-def _pick_reachable_server(timeout: int = 10) -> tuple[str, int]:
-    """Return a bundled TDX host that is reachable *and* serves real data."""
+def _candidate_servers(config: Config | None) -> list[tuple[str, int]]:
+    """Configured host pool first (in order), then mootdx bundled hosts."""
     import random
 
     from mootdx.consts import HQ_HOSTS
 
-    hosts = list(HQ_HOSTS)
-    random.shuffle(hosts)
-    tried = 0
-    for _name, host, port in hosts:
-        if tried >= _TDX_MAX_CANDIDATES:
-            break
-        if not _reachable(host, port):
-            continue
-        tried += 1
-        if _serves_data(host, port, timeout):
-            return (host, int(port))
+    ordered: list[tuple[str, int]] = []
+    if config is not None and config.tdx_host_pool:
+        for entry in config.tdx_host_pool:
+            host, _, port = entry.rpartition(":")
+            if host and port.isdigit():
+                ordered.append((host, int(port)))
+
+    bundled = [(host, int(port)) for _name, host, port in HQ_HOSTS]
+    random.shuffle(bundled)  # spread load across the fallback list
+    ordered.extend(bundled)
+
+    seen: set[tuple[str, int]] = set()
+    out: list[tuple[str, int]] = []
+    for hp in ordered:
+        if hp not in seen:
+            seen.add(hp)
+            out.append(hp)
+    return out
+
+
+def _probe(host: str, port: int, timeout: int) -> bool:
+    return _reachable(host, port) and _serves_data(host, port, timeout)
+
+
+def _pick_reachable_server(
+    config: Config | None = None, timeout: int = 10
+) -> tuple[str, int]:
+    """Probe candidates in parallel; return the first that serves real data.
+
+    Parallel probing means the first future to resolve true is effectively the
+    lowest-latency live server, so selection is both fast and fastest-first.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    candidates = _candidate_servers(config)[:_TDX_MAX_CANDIDATES]
+    if not candidates:
+        raise TdxSourceError("no TDX candidate servers configured or bundled")
+
+    with ThreadPoolExecutor(max_workers=min(len(candidates), _TDX_PROBE_CONCURRENCY)) as pool:
+        futures = {pool.submit(_probe, h, p, timeout): (h, p) for h, p in candidates}
+        try:
+            for fut in _as_completed(futures):
+                if fut.result():
+                    return futures[fut]
+        finally:
+            for fut in futures:
+                fut.cancel()
     raise TdxSourceError(
-        "no TDX server among bundled hosts returned data "
-        f"(tried {tried} reachable host(s); network down or feeds degraded)"
+        f"no TDX server responded with data (probed {len(candidates)} host(s); "
+        "network down or all feeds degraded)"
     )
 
 
@@ -134,7 +184,7 @@ def _quotes_client(config: Config | None = None):
     }
     if servers.lower() == "auto":
         if _TDX_SERVER_CACHE is None:
-            _TDX_SERVER_CACHE = _pick_reachable_server(timeout=timeout)
+            _TDX_SERVER_CACHE = _pick_reachable_server(config, timeout=timeout)
         kwargs["server"] = _TDX_SERVER_CACHE
     else:
         host, sep, port = servers.partition(":")

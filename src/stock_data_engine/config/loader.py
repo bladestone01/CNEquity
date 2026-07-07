@@ -45,6 +45,9 @@ class Config:
     tdx_min_interval_ms: int = 50
     tdx_servers: str = "auto"
     tdx_connect_timeout_sec: int = 10
+    # Preferred standard-market host pool ("ip:port"). When set and servers=auto,
+    # these are probed (in parallel) before the mootdx bundled list.
+    tdx_host_pool: list[str] = field(default_factory=list)
     # Test/demo escape hatch only: lets TDX adapters return fabricated rows
     # (labeled source="mock") instead of failing the batch.
     tdx_allow_mock: bool = False
@@ -108,6 +111,26 @@ class Config:
 
 def _expand(path_str: str, data_root: Path) -> Path:
     return Path(path_str.replace("{data.root}", str(data_root))).expanduser().resolve()
+
+
+def _parse_tdx_host_pool(hosts_raw: object) -> list[str]:
+    """Parse ``[tdx_protocol.hosts]``: a flat list, or {standard, extended}.
+
+    Only ``standard`` (A-share main sites) feed stock/index fetches; extended
+    (HK/futures) hosts do not serve A-share bars, so they are ignored here.
+    """
+    if isinstance(hosts_raw, list):
+        entries = hosts_raw
+    elif isinstance(hosts_raw, dict):
+        entries = hosts_raw.get("standard", [])
+    else:
+        entries = []
+    pool: list[str] = []
+    for entry in entries:
+        text = str(entry).strip()
+        if ":" in text:
+            pool.append(text)
+    return pool
 
 
 def load_config(path: str | Path) -> Config:
@@ -188,6 +211,7 @@ def load_config(path: str | Path) -> Config:
         tdx_min_interval_ms=int(tdx.get("min_interval_ms", 50)),
         tdx_servers=str(tdx.get("servers", "auto")),
         tdx_connect_timeout_sec=int(tdx.get("connect_timeout_sec", 10)),
+        tdx_host_pool=_parse_tdx_host_pool(tdx.get("hosts", {})),
         tdx_allow_mock=bool(tdx.get("allow_mock", False)),
         sources=sources,
         source_intervals=source_intervals,
