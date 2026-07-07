@@ -108,3 +108,41 @@ def test_incremental_mid_page_failure_returns_partial():
     assert len(rows) == 2
     assert {r["trade_date"] for r in rows} == {date(2024, 6, 26), date(2024, 6, 27)}
     assert client.calls == 2
+
+
+class FakeIndexClient:
+    """Records which method (bars vs index) was called."""
+
+    def __init__(self, page: list[dict]):
+        self.page = page
+        self.used_index = False
+        self.used_bars = False
+
+    def bars(self, symbol, frequency, market, start, offset):
+        self.used_bars = True
+        return pl.DataFrame(self.page) if start == 0 else pl.DataFrame([])
+
+    def index(self, symbol, frequency, start, offset):
+        self.used_index = True
+        return pl.DataFrame(self.page) if start == 0 else pl.DataFrame([])
+
+
+def _bar(d):
+    return {"datetime": d, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1}
+
+
+def test_index_symbol_uses_index_method_not_bars():
+    client = FakeIndexClient([_bar(date(2024, 6, 27))])
+    rows = fetch_bars_paginated(
+        client, "399001.SZ", date(2024, 6, 1), date(2024, 6, 27), is_index=True
+    )
+    assert rows and rows[0]["symbol"] == "399001.SZ"
+    assert client.used_index is True
+    assert client.used_bars is False
+
+
+def test_stock_symbol_uses_bars_method():
+    client = FakeIndexClient([_bar(date(2024, 6, 27))])
+    fetch_bars_paginated(client, "600519.SH", date(2024, 6, 1), date(2024, 6, 27))
+    assert client.used_bars is True
+    assert client.used_index is False

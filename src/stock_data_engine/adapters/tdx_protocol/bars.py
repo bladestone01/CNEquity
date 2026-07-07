@@ -79,8 +79,13 @@ def fetch_bars_paginated(
     rate_limit: RateLimitSpec | None = None,
     backfill: bool = False,
     on_page: Callable[[], None] | None = None,
+    is_index: bool = False,
 ) -> list[dict]:
-    """Fetch daily bars for *sym* in [start, end], paging through TDX history."""
+    """Fetch daily bars for *sym* in [start, end], paging through TDX history.
+
+    Indices must use mootdx's ``index()`` method — ``bars()`` with a stock
+    market id returns corrupt datetimes for index codes (e.g. 399001.SZ).
+    """
     code, exch = sym.split(".")
     market = 1 if exch == "SH" else (0 if exch == "SZ" else 2)
     offset_pos = 0
@@ -89,13 +94,21 @@ def fetch_bars_paginated(
     while True:
         wait_spec(rate_limit)
         try:
-            raw = client.bars(
-                symbol=code,
-                frequency=9,
-                market=market,
-                start=offset_pos,
-                offset=_PAGE_SIZE,
-            )
+            if is_index:
+                raw = client.index(
+                    symbol=code,
+                    frequency=9,
+                    start=offset_pos,
+                    offset=_PAGE_SIZE,
+                )
+            else:
+                raw = client.bars(
+                    symbol=code,
+                    frequency=9,
+                    market=market,
+                    start=offset_pos,
+                    offset=_PAGE_SIZE,
+                )
         except Exception as exc:
             if offset_pos == 0 or backfill:
                 raise TdxBarsPaginationError(

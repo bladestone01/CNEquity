@@ -447,7 +447,8 @@ def fetch_index_bars(
         for sym in symbols:
             try:
                 sym_rows = fetch_bars_paginated(
-                    client, sym, start, end, rate_limit=rate_limit, backfill=backfill
+                    client, sym, start, end, rate_limit=rate_limit, backfill=backfill,
+                    is_index=True,
                 )
             except Exception as exc:
                 if backfill:
