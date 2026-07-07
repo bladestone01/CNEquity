@@ -72,7 +72,7 @@ _SPECS = [
         pit=True,
     ),
     DatasetSpec("valuation_metrics", partition_col="trade_date", fetch_semantics="snapshot"),
-    DatasetSpec("analyst_consensus", partition_col="forecast_date"),
+    DatasetSpec("analyst_consensus", partition_col="forecast_date", fetch_semantics="snapshot"),
     # L4 capital flows
     DatasetSpec("fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
     DatasetSpec("margin_trading", partition_col="trade_date"),

@@ -55,6 +55,7 @@ def test_financial_statement_items_parses_notice_date():
             "RPT_LICO_FN_CPD": [
                 {
                     "SECURITY_CODE": "600519",
+                    "SECUCODE": "600519.SH",
                     "REPORTDATE": "2024-03-31",
                     "NOTICE_DATE": "2024-04-28",
                     "TOTAL_OPERATE_INCOME": 100.0,
@@ -68,6 +69,42 @@ def test_financial_statement_items_parses_notice_date():
     assert set(df["item_code"].to_list()) >= {"revenue", "roe"}
     assert df["announce_date"][0] == date(2024, 4, 28)
     assert df["report_period"][0] == "2024Q1"
+
+
+def test_financial_statement_items_drops_non_a_share():
+    """NEEQ (.NQ) rows dominate same-day announcements; they must be filtered out."""
+    client = FakeDatacenterClient(
+        {
+            "RPT_LICO_FN_CPD": [
+                {
+                    "SECURITY_CODE": "834948",
+                    "SECUCODE": "834948.NQ",
+                    "REPORTDATE": "2024-03-31",
+                    "NOTICE_DATE": "2024-04-28",
+                    "TOTAL_OPERATE_INCOME": 100.0,
+                },
+                {
+                    "SECURITY_CODE": "000001",
+                    "SECUCODE": "000001.SZ",
+                    "REPORTDATE": "2024-03-31",
+                    "NOTICE_DATE": "2024-04-28",
+                    "TOTAL_OPERATE_INCOME": 200.0,
+                },
+            ]
+        }
+    )
+    df = fetch_financial_statement_items(date(2024, 4, 28), client=client)  # type: ignore[arg-type]
+    assert set(df["symbol"].to_list()) == {"000001.SZ"}
+
+
+def test_financial_statement_items_backfill_walks_report_periods():
+    from stock_data_engine.adapters.eastmoney.fundamentals import _report_period_dates
+
+    periods = _report_period_dates(date(2026, 7, 7))
+    assert "2016-03-31" in periods
+    assert "2026-03-31" in periods
+    assert "2026-09-30" not in periods  # future quarter excluded
+    assert periods == sorted(periods, reverse=True)
 
 
 def test_index_constituents_schema():

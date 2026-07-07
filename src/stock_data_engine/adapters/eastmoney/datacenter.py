@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 _EMPTY_RESULT_MESSAGES = frozenset({"返回数据为空"})
 
+# EastMoney datacenter caps pageSize at 500; requesting more returns only 500
+# rows and — because the short page looks like the last one — silently
+# truncates every high-volume report. Clamp so pagination stays correct.
+_MAX_PAGE_SIZE = 500
+
 
 class EastMoneyDatacenterError(RuntimeError):
     """Raised when datacenter pagination fails after partial or zero results."""
@@ -30,6 +35,7 @@ def fetch_datacenter(
     max_retries: int = 3,
     retry_backoff_seconds: float = 5.0,
 ) -> list[dict]:
+    page_size = min(page_size, _MAX_PAGE_SIZE)
     rows: list[dict] = []
     page = 1
     while True:

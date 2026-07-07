@@ -57,3 +57,25 @@ def test_fetch_datacenter_paginates_until_short_page():
     rows = fetch_datacenter(client, "RPT_TEST", "COL", page_size=5000)
     assert len(rows) == 5001
     assert client.calls == 2
+
+
+def test_fetch_datacenter_clamps_page_size_to_500():
+    """pageSize>500 must be clamped or EM silently truncates high-volume reports."""
+    captured = {}
+
+    class CapClient:
+        def get(self, url: str, **kwargs):
+            captured["url"] = url
+
+            class Resp:
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"success": True, "result": {"data": []}}
+
+            return Resp()
+
+    fetch_datacenter(CapClient(), "RPT_TEST", "COL", page_size=5000, max_retries=1)
+    assert "pageSize=500" in captured["url"]
+    assert "pageSize=5000" not in captured["url"]

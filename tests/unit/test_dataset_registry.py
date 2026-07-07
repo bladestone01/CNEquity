@@ -55,6 +55,7 @@ def test_legacy_tables_match_registry():
         "sector_members",
         "index_constituents",
         "industry_members",
+        "analyst_consensus",
     }
     assert fetch_semantics("fund_flow") == "snapshot"
     assert fetch_semantics("daily_bars") == "by_date"

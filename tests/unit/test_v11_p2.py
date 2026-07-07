@@ -51,40 +51,54 @@ def test_example_config_validates_research_group():
 
 
 def test_institutional_holdings_parses():
+    # Current RPT_MAIN_ORGHOLD schema: keyed by REPORT_DATE (no NOTICE_DATE),
+    # HOULD_NUM / HOLD_VALUE / TOTALSHARES_RATIO, A-share via SECUCODE.
     client = FakeDatacenterClient(
         {
             "RPT_MAIN_ORGHOLD": [
                 {
                     "SECURITY_CODE": "600519",
+                    "SECUCODE": "600519.SH",
                     "REPORT_DATE": "2024-03-31",
-                    "ORG_TYPE": "基金",
-                    "ORG_NUM": 120,
-                    "HOLD_RATIO": 8.5,
-                    "HOLD_MARKET_CAP": 1_000_000_000,
-                    "NOTICE_DATE": "2024-04-28",
-                }
+                    "ORG_TYPE_NAME": "基金",
+                    "HOULD_NUM": 120,
+                    "TOTALSHARES_RATIO": 8.5,
+                    "HOLD_VALUE": 1_000_000_000,
+                },
+                {  # NEEQ must be dropped
+                    "SECURITY_CODE": "834948",
+                    "SECUCODE": "834948.NQ",
+                    "REPORT_DATE": "2024-03-31",
+                    "ORG_TYPE_NAME": "基金",
+                    "HOULD_NUM": 1,
+                },
             ]
         }
     )
     df = fetch_institutional_holdings(date(2024, 4, 28), client=client)  # type: ignore[arg-type]
     assert df.height == 1
+    assert df["symbol"][0] == "600519.SH"
     assert df["holder_type"][0] == "fund"
     assert df["report_period"][0] == "2024Q1"
+    assert df["holding_ratio"][0] == 8.5
 
 
 def test_analyst_consensus_parses():
+    # Current RPT_WEB_RESPREDICT snapshot: EPS1/YEAR1, target = avg(min,max),
+    # rating from the dominant RATING_*_NUM bucket, stamped forecast_date.
     client = FakeDatacenterClient(
         {
-            "RPTA_WEB_RES_PROFIT": [
+            "RPT_WEB_RESPREDICT": [
                 {
                     "SECURITY_CODE": "600519",
-                    "PUBLISH_DATE": "2024-06-28",
-                    "FORECAST_YEAR": 2024,
-                    "FORECAST_EPS": 50.5,
-                    "FORECAST_PE": 25.0,
-                    "TARGET_PRICE": 1800.0,
-                    "RATING": "买入",
-                    "ORG_NUM": 12,
+                    "SECUCODE": "600519.SH",
+                    "YEAR1": 2024,
+                    "EPS1": 50.5,
+                    "DEC_AIMPRICEMAX": 1900.0,
+                    "DEC_AIMPRICEMIN": 1700.0,
+                    "RATING_ORG_NUM": 12,
+                    "RATING_BUY_NUM": 10,
+                    "RATING_ADD_NUM": 2,
                 }
             ]
         }
@@ -93,6 +107,10 @@ def test_analyst_consensus_parses():
     assert df.height == 1
     assert df["symbol"][0] == "600519.SH"
     assert df["eps_forecast"][0] == 50.5
+    assert df["forecast_date"][0] == date(2024, 6, 28)
+    assert df["target_price"][0] == 1800.0
+    assert df["rating"][0] == "buy"
+    assert df["analyst_count"][0] == 12
 
 
 @pytest.fixture

@@ -1,4 +1,9 @@
-"""EastMoney analyst consensus / earnings forecast (daily incremental)."""
+"""EastMoney analyst consensus / earnings forecast (current-snapshot).
+
+EastMoney retired the dated ``RPTA_WEB_RES_PROFIT`` report. ``RPT_WEB_RESPREDICT``
+is a live per-stock consensus snapshot (no date filter), so this dataset is
+snapshot semantics: stamped with ``forecast_date=trade_date``, no history.
+"""
 
 from __future__ import annotations
 
@@ -7,67 +12,89 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.adapters.eastmoney.common import exchange_from_datacenter, symbol_from_em
+from stock_data_engine.adapters.eastmoney.common import symbol_from_secucode
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
+from stock_data_engine.config import Config
 
 logger = logging.getLogger(__name__)
 
-_CONSENSUS_REPORT = "RPTA_WEB_RES_PROFIT"
+_CONSENSUS_REPORT = "RPT_WEB_RESPREDICT"
 _CONSENSUS_COLUMNS = (
-    "SECURITY_CODE,PUBLISH_DATE,FORECAST_YEAR,FORECAST_EPS,FORECAST_PE,"
-    "RATING,ORG_NUM,TARGET_PRICE"
+    "SECUCODE,SECURITY_CODE,RATING_ORG_NUM,RATING_BUY_NUM,RATING_ADD_NUM,"
+    "RATING_NEUTRAL_NUM,RATING_REDUCE_NUM,RATING_SALE_NUM,YEAR1,EPS1,"
+    "DEC_AIMPRICEMAX,DEC_AIMPRICEMIN"
+)
+
+# rating bucket -> canonical label, in preference order for ties
+_RATING_BUCKETS = (
+    ("RATING_BUY_NUM", "buy"),
+    ("RATING_ADD_NUM", "overweight"),
+    ("RATING_NEUTRAL_NUM", "neutral"),
+    ("RATING_REDUCE_NUM", "underweight"),
+    ("RATING_SALE_NUM", "sell"),
 )
 
 
-def _parse_date(value: object, fallback: date) -> date:
-    if value is None:
-        return fallback
+def _num(value: object, default: float = 0.0) -> float:
     try:
-        return date.fromisoformat(str(value)[:10])
-    except ValueError:
-        return fallback
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _dominant_rating(item: dict) -> str:
+    best_label = ""
+    best_count = -1.0
+    for field, label in _RATING_BUCKETS:
+        count = _num(item.get(field), 0.0)
+        if count > best_count:
+            best_count = count
+            best_label = label
+    return best_label if best_count > 0 else ""
 
 
 def fetch_analyst_consensus(
     trade_date: date,
     *,
     client: EastMoneyClient | None = None,
+    config: Config | None = None,
 ) -> pl.DataFrame:
+    """Fetch the current analyst consensus snapshot, stamped with *trade_date*."""
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
 
-    ds = trade_date.isoformat()
-    raw = fetch_datacenter(
-        client,
-        _CONSENSUS_REPORT,
-        _CONSENSUS_COLUMNS,
-        filter_expr=f"(PUBLISH_DATE='{ds}')",
-        page_size=5000,
-    )
-    if owns:
-        client.close()
+    try:
+        if config is not None:
+            config.rate_limit("eastmoney")
+        raw = fetch_datacenter(client, _CONSENSUS_REPORT, _CONSENSUS_COLUMNS)
+    finally:
+        if owns:
+            client.close()
 
     rows: list[dict] = []
     for item in raw:
-        code = str(item.get("SECURITY_CODE", "")).zfill(6)
-        exch = exchange_from_datacenter(item)
-        sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+        sym = symbol_from_secucode(item.get("SECUCODE"))
         if not sym:
             continue
-        forecast_date = _parse_date(item.get("PUBLISH_DATE"), trade_date)
-        forecast_year = item.get("FORECAST_YEAR")
+        year = item.get("YEAR1")
+        pmax = item.get("DEC_AIMPRICEMAX")
+        pmin = item.get("DEC_AIMPRICEMIN")
+        if pmax is not None and pmin is not None:
+            target = (_num(pmax) + _num(pmin)) / 2.0
+        else:
+            target = _num(pmax if pmax is not None else pmin)
         rows.append(
             {
                 "symbol": sym,
-                "forecast_date": forecast_date,
-                "forecast_year": int(forecast_year) if forecast_year is not None else None,
-                "eps_forecast": float(item.get("FORECAST_EPS") or 0),
-                "pe_forecast": float(item.get("FORECAST_PE") or 0),
-                "target_price": float(item.get("TARGET_PRICE") or 0),
-                "rating": str(item.get("RATING") or ""),
-                "analyst_count": int(item.get("ORG_NUM") or 0),
+                "forecast_date": trade_date,
+                "forecast_year": int(year) if year is not None else None,
+                "eps_forecast": _num(item.get("EPS1")),
+                "pe_forecast": 0.0,  # not exposed by RPT_WEB_RESPREDICT
+                "target_price": target,
+                "rating": _dominant_rating(item),
+                "analyst_count": int(_num(item.get("RATING_ORG_NUM"))),
             }
         )
 

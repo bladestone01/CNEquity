@@ -9,7 +9,7 @@ from stock_data_engine.adapters.eastmoney.institutional import fetch_institution
 from stock_data_engine.config import Config
 from stock_data_engine.derive.sentiment_scores import compute_sentiment_scores
 from stock_data_engine.orchestrator.registry import register_step
-from stock_data_engine.steps.http_common import run_incremental_fetched
+from stock_data_engine.steps.http_common import run_incremental_fetched, write_fetched
 
 
 @register_step("institutional_holdings", group="research", depends_on=["instruments"])
@@ -18,30 +18,24 @@ def step_institutional_holdings(
 ) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("institutional_holdings: eastmoney source disabled in config")
-    return run_incremental_fetched(
-        config,
-        trade_date,
-        run_id,
-        "institutional_holdings",
-        fetch_institutional_holdings,
-        source="eastmoney",
-        allow_empty=True,
-    )
+    # Quarterly by REPORT_DATE: daily refreshes the latest quarter, backfill
+    # walks all quarters from 2016.
+    backfill = getattr(config, "_backfill", False)
+    df = fetch_institutional_holdings(trade_date, backfill=backfill, config=config)
+    if df.is_empty():
+        return {"rows_read": 0, "rows_written": 0}
+    return write_fetched(config, run_id, "institutional_holdings", df, source="eastmoney")
 
 
 @register_step("analyst_consensus", group="research", depends_on=["instruments"])
 def step_analyst_consensus(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("analyst_consensus: eastmoney source disabled in config")
-    return run_incremental_fetched(
-        config,
-        trade_date,
-        run_id,
-        "analyst_consensus",
-        fetch_analyst_consensus,
-        source="eastmoney",
-        allow_empty=True,
-    )
+    # Live consensus snapshot stamped with trade_date (no dated EM report).
+    df = fetch_analyst_consensus(trade_date, config=config)
+    if df.is_empty():
+        return {"rows_read": 0, "rows_written": 0}
+    return write_fetched(config, run_id, "analyst_consensus", df, source="eastmoney")
 
 
 @register_step("sentiment_scores", group="research", depends_on=["announcement_index"])
