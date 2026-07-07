@@ -9,11 +9,11 @@ import polars as pl
 
 import stock_data_engine.steps  # noqa: F401 — register steps
 from stock_data_engine.config import load_config, validate_config
-from stock_data_engine.domain.datasets import fetch_semantics
 from stock_data_engine.derive.adj_factors import compute_adj_factors
+from stock_data_engine.domain.datasets import fetch_semantics
 from stock_data_engine.orchestrator.engine import JobEngine
-from stock_data_engine.orchestrator.run_lock import RunLockError
 from stock_data_engine.orchestrator.manifest import Manifest
+from stock_data_engine.orchestrator.run_lock import RunLockError
 from stock_data_engine.quality.audit import run_audit
 from stock_data_engine.query.on_demand import OnDemandService
 from stock_data_engine.query.views import ensure_duckdb_views

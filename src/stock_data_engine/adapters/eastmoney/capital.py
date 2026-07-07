@@ -10,10 +10,10 @@ import polars as pl
 
 from stock_data_engine.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
 from stock_data_engine.adapters.eastmoney.common import (
+    _to_float,
     exchange_from_datacenter,
     symbol_from_em,
     symbol_from_secucode,
-    _to_float,
 )
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient

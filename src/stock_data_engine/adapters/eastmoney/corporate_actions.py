@@ -7,7 +7,10 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.adapters.eastmoney.datacenter import EastMoneyDatacenterError, fetch_datacenter
+from stock_data_engine.adapters.eastmoney.datacenter import (
+    EastMoneyDatacenterError,
+    fetch_datacenter,
+)
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 from stock_data_engine.config import Config
 from stock_data_engine.domain.symbols import format_symbol

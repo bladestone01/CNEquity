@@ -9,7 +9,10 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.adapters.eastmoney.datacenter import EastMoneyDatacenterError, fetch_datacenter
+from stock_data_engine.adapters.eastmoney.datacenter import (
+    EastMoneyDatacenterError,
+    fetch_datacenter,
+)
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)

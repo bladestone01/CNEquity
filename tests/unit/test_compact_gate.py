@@ -5,7 +5,7 @@ import polars as pl
 import stock_data_engine.steps  # noqa: F401
 from stock_data_engine.config import Config
 from stock_data_engine.orchestrator.manifest import Manifest
-from stock_data_engine.steps.finalize import step_compact, step_audit
+from stock_data_engine.steps.finalize import step_audit, step_compact
 from stock_data_engine.storage import StagingWriter
 from stock_data_engine.storage.state import StateStore
 

@@ -24,7 +24,7 @@ from stock_data_engine.orchestrator.init_phases import (
 )
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.orchestrator.registry import get_step
-from stock_data_engine.orchestrator.run_lock import RunLockError, run_lock
+from stock_data_engine.orchestrator.run_lock import run_lock
 from stock_data_engine.steps.common import is_trading_day
 
 logger = logging.getLogger(__name__)

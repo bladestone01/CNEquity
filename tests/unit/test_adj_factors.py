@@ -285,7 +285,7 @@ def test_resolve_factors_raises_without_cache(adj_config, monkeypatch):
 
 
 def test_compute_adj_factors_fails_over_threshold(adj_config, monkeypatch):
-    from stock_data_engine.derive.adj_factors import AdjFactorsDeriveError, FAIL_RATIO_THRESHOLD
+    from stock_data_engine.derive.adj_factors import FAIL_RATIO_THRESHOLD, AdjFactorsDeriveError
     from stock_data_engine.steps.finalize import step_derive_adj_factors
 
     def boom(*_a, **_kw):

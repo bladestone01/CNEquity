@@ -7,12 +7,11 @@ from datetime import date
 import polars as pl
 
 from stock_data_engine.config import Config
+from stock_data_engine.domain.datasets import PARTITION_COLS, WATERMARK_SKIP, fetch_semantics
 from stock_data_engine.orchestrator.registry import register_step
 from stock_data_engine.storage import StagingWriter, compact_dataset
 from stock_data_engine.storage.instruments import compact_instruments
 from stock_data_engine.storage.state import StateStore
-
-from stock_data_engine.domain.datasets import PARTITION_COLS, WATERMARK_SKIP, fetch_semantics
 
 
 def _max_partition_date(config: Config, dataset: str, partition_col: str) -> date | None:

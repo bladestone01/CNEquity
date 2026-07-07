@@ -1,6 +1,9 @@
 import pytest
 
-from stock_data_engine.adapters.eastmoney.datacenter import EastMoneyDatacenterError, fetch_datacenter
+from stock_data_engine.adapters.eastmoney.datacenter import (
+    EastMoneyDatacenterError,
+    fetch_datacenter,
+)
 
 
 class FakeClient:

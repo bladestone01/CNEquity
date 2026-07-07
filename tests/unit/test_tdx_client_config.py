@@ -1,7 +1,7 @@
 import pytest
 
-from stock_data_engine.config import Config
 from stock_data_engine.adapters.tdx_protocol import client as tdx
+from stock_data_engine.config import Config
 
 
 def test_quotes_client_auto_uses_bestip_and_config_timeout(monkeypatch):

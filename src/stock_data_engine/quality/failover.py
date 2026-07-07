@@ -126,7 +126,9 @@ def snapshot_corporate_actions_tdx_backup(
     if spec is None or not symbols or not config.tdx_enabled:
         return
     from stock_data_engine.adapters.tdx_protocol.client import quotes_client_factory
-    from stock_data_engine.adapters.tdx_protocol.corporate_actions import fetch_corporate_actions_tdx
+    from stock_data_engine.adapters.tdx_protocol.corporate_actions import (
+        fetch_corporate_actions_tdx,
+    )
 
     tdx_df = fetch_corporate_actions_tdx(
         symbols,

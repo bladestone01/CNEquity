@@ -6,7 +6,11 @@ import logging
 import time
 from urllib.parse import urlencode
 
-from stock_data_engine.adapters.eastmoney.common import ALL_A_FS, PUSH2_CLIST_HOSTS, symbol_from_clist
+from stock_data_engine.adapters.eastmoney.common import (
+    ALL_A_FS,
+    PUSH2_CLIST_HOSTS,
+    symbol_from_clist,
+)
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)

@@ -2,7 +2,6 @@ from datetime import date
 from unittest.mock import patch
 
 import polars as pl
-import pytest
 
 import stock_data_engine.steps  # noqa: F401
 from stock_data_engine.config import Config

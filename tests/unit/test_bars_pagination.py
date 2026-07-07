@@ -1,7 +1,6 @@
 from datetime import date
 
 import polars as pl
-
 import pytest
 
 from stock_data_engine.adapters.tdx_protocol.bars import (
