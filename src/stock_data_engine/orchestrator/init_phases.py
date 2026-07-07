@@ -15,8 +15,15 @@ INIT_PHASE_STEPS: dict[str, list[str]] = {
 
 INIT_BACKFILL_PHASES = frozenset(
     {
+        # trading_calendar must span the full bar history (2016+) or historical
+        # PIT/trading-day alignment falls back to a Mon–Fri heuristic. instruments
+        # ignores the date window, so backfilling phase1 is safe.
+        "phase1_reference",
         "phase2a_corporate_actions",
         "phase2c_daily_bars_backfill",
+        # index_bars needs the same 2016+ history as daily_bars for market/beta
+        # factors. trading_status ignores backfill (single-day snapshot fetch).
+        "phase3_index_and_status",
     }
 )
 
@@ -52,6 +59,10 @@ def step_backfill(step: str, phases: list[str]) -> bool:
         return "phase2a_corporate_actions" in phases
     if step == "daily_bars":
         return "phase2c_daily_bars_backfill" in phases
+    if step in ("instruments", "trading_calendar"):
+        return "phase1_reference" in phases
+    if step in ("index_bars", "trading_status"):
+        return "phase3_index_and_status" in phases
     return False
 
 

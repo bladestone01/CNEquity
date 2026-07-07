@@ -150,3 +150,20 @@ def test_resume_init_finds_latest_incomplete(cfg, monkeypatch):
     result = engine.run_init_phases(resume=True)
     assert result["resumed"] is True
     assert seen["run_id"] == run_id
+
+
+def test_reference_and_index_phases_backfill_history():
+    """index_bars and trading_calendar must backfill 2016+ during init, like daily_bars."""
+    from stock_data_engine.orchestrator.init_phases import (
+        DEFAULT_INIT_PHASES,
+        phase_backfill,
+        step_backfill,
+    )
+
+    assert phase_backfill("phase1_reference") is True
+    assert phase_backfill("phase3_index_and_status") is True
+    phases = DEFAULT_INIT_PHASES
+    assert step_backfill("trading_calendar", phases) is True
+    assert step_backfill("index_bars", phases) is True
+    # instruments/trading_status are date-insensitive but flagged consistently
+    assert step_backfill("index_bars", ["phase1_reference"]) is False
