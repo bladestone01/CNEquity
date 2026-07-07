@@ -31,6 +31,10 @@ INDEX_SYMBOLS = [
     ("399001", "SZ"),
     ("399006", "SZ"),
     ("000688", "SH"),
+    ("000016", "SH"),
+    ("000300", "SH"),
+    ("000905", "SH"),
+    ("000852", "SH"),
 ]
 
 
@@ -292,15 +296,25 @@ def fetch_index_bars(
     try:
         client = _quotes_client(config)
         rows: list[dict] = []
+        missing: list[str] = []
         for sym in symbols:
             try:
-                rows.extend(
-                    fetch_bars_paginated(
-                        client, sym, start, end, rate_limit=rate_limit, backfill=backfill
-                    )
+                sym_rows = fetch_bars_paginated(
+                    client, sym, start, end, rate_limit=rate_limit, backfill=backfill
                 )
             except Exception as exc:
+                if backfill:
+                    raise TdxSourceError(f"index bars backfill failed for {sym}: {exc}") from exc
                 logger.warning("TDX index bars failed for %s: %s", sym, exc)
+                continue
+            if not sym_rows:
+                missing.append(sym)
+                continue
+            rows.extend(sym_rows)
+        if backfill and missing:
+            raise TdxSourceError(
+                "index bars backfill returned no rows for: " + ", ".join(missing)
+            )
         if rows:
             return pl.DataFrame(rows).with_columns(pl.lit("1d").alias("frequency"))
         reason = "TDX returned no index bars"
