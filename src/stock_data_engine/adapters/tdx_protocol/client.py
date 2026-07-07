@@ -41,9 +41,10 @@ INDEX_SYMBOLS = [
 class TdxSourceError(RuntimeError):
     """Raised when the TDX source cannot deliver real data.
 
-    Fabricated fallback data is only allowed behind an explicit
-    `allow_mock=True` (config `[tdx_protocol].allow_mock`), and is then
-    labeled `source="mock"` so audit can reject it.
+    Fabricated data is only allowed behind an explicit `allow_mock=True`
+    (config `[tdx_protocol].allow_mock`), which skips the network entirely —
+    the mootdx bestip scan can block indefinitely offline — and returns rows
+    labeled `source="mock"` so audit can reject them.
     """
 
 
@@ -182,12 +183,17 @@ def _fail_or_mock(
     return mock_df
 
 
+_MOCK_SHORT_CIRCUIT = "allow_mock enabled; skipping network fetch"
+
+
 def fetch_instruments(
     *,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
     config: Config | None = None,
 ) -> pl.DataFrame:
+    if allow_mock:
+        return _fail_or_mock("instruments", _MOCK_SHORT_CIRCUIT, True, _mock_instruments())
     wait_spec(rate_limit)
     try:
         client = _quotes_client(config)
@@ -256,6 +262,8 @@ def fetch_daily_bars(
     config: Config | None = None,
     on_heartbeat: Callable[[], None] | None = None,
 ) -> pl.DataFrame:
+    if allow_mock:
+        return _fail_or_mock("daily_bars", _MOCK_SHORT_CIRCUIT, True, _mock_bars(symbols, start, end))
     try:
         client = _quotes_client(config)
         rows = []
@@ -293,6 +301,13 @@ def fetch_index_bars(
     config: Config | None = None,
 ) -> pl.DataFrame:
     symbols = [format_symbol(c, e) for c, e in INDEX_SYMBOLS]
+    if allow_mock:
+        return _fail_or_mock(
+            "index_bars",
+            _MOCK_SHORT_CIRCUIT,
+            True,
+            _mock_bars(symbols, start, end).with_columns(pl.lit("1d").alias("frequency")),
+        )
     try:
         client = _quotes_client(config)
         rows: list[dict] = []
@@ -340,7 +355,6 @@ def fetch_corporate_actions(
     primary_only: bool = False,
     config: Config | None = None,
 ) -> pl.DataFrame:
-    wait_spec(rate_limit)
     empty = pl.DataFrame(
         schema={
             "symbol": pl.Utf8,
@@ -353,6 +367,9 @@ def fetch_corporate_actions(
             "allotment_price": pl.Float64,
         }
     )
+    if allow_mock:
+        return _fail_or_mock("corporate_actions", _MOCK_SHORT_CIRCUIT, True, empty)
+    wait_spec(rate_limit)
 
     frames: list[pl.DataFrame] = []
     try:
@@ -409,6 +426,21 @@ def fetch_trading_status(
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
 ) -> pl.DataFrame:
+    def _mock_status() -> pl.DataFrame:
+        rows = [
+            {
+                "symbol": sym,
+                "trade_date": trade_date,
+                "is_trading": True,
+                "status": "normal",
+            }
+            for sym in symbols
+        ]
+        return _mark_mock(pl.DataFrame(rows))
+
+    if allow_mock:
+        return _fail_or_mock("trading_status", _MOCK_SHORT_CIRCUIT, True, _mock_status())
+
     wait_spec(rate_limit)
     try:
         df = fetch_trading_status_eastmoney(symbols, trade_date)
@@ -418,20 +450,11 @@ def fetch_trading_status(
     except Exception as exc:
         reason = f"EastMoney trading_status failed: {exc}"
 
-    rows = [
-        {
-            "symbol": sym,
-            "trade_date": trade_date,
-            "is_trading": True,
-            "status": "normal",
-        }
-        for sym in symbols
-    ]
     return _fail_or_mock(
         "trading_status",
         reason,
         allow_mock,
-        _mark_mock(pl.DataFrame(rows)),
+        _mock_status(),
     )
 
 
