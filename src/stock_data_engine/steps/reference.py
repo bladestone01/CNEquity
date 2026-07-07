@@ -14,7 +14,12 @@ from stock_data_engine.adapters.tdx_protocol.client import (
 from stock_data_engine.config import Config
 from stock_data_engine.domain.schemas import with_provenance
 from stock_data_engine.orchestrator.registry import register_step
-from stock_data_engine.steps.common import fetch_incremental_daily, load_symbols, write_simple
+from stock_data_engine.steps.common import (
+    BACKFILL_START,
+    fetch_incremental_daily,
+    load_symbols,
+    write_simple,
+)
 
 
 @register_step("instruments", group="core", requires_workers=False)
@@ -30,7 +35,10 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
 
 @register_step("trading_calendar", group="core")
 def step_trading_calendar(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    start = trade_date - timedelta(days=30)
+    if getattr(config, "_backfill", False):
+        start = BACKFILL_START
+    else:
+        start = trade_date - timedelta(days=30)
     end = trade_date + timedelta(days=365)
     rl = config.tdx_rate_limit_spec()
     seed_path = config.meta_root / "seeds" / "trading_calendar.csv"
