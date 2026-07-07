@@ -50,10 +50,14 @@ class TdxSourceError(RuntimeError):
 
 # A validated (host, port) reused across fetches in this process. mootdx's
 # bestip scan is slow (~75s) and intermittently selects a server that then
-# fails the actual fetch with "No route to host"; we instead TCP-probe the
-# bundled host list and cache the first that answers.
+# fails the actual fetch. Worse, some bundled hosts are TCP-reachable but
+# return zero rows for every symbol (dead data feed), so we validate a
+# candidate by actually fetching a known bar before trusting it.
 _TDX_SERVER_CACHE: tuple[str, int] | None = None
-_TDX_PROBE_TIMEOUT = 1.5
+_TDX_TCP_TIMEOUT = 1.5
+_TDX_PROBE_SYMBOL = "000001"  # SSE composite; market=1
+_TDX_MAX_CANDIDATES = 16
+_TDX_FETCH_ATTEMPTS = 3  # server rotations before a bar fetch fails loud
 
 
 def reset_tdx_server_cache() -> None:
@@ -62,7 +66,7 @@ def reset_tdx_server_cache() -> None:
     _TDX_SERVER_CACHE = None
 
 
-def _reachable(host: str, port: int, timeout: float = _TDX_PROBE_TIMEOUT) -> bool:
+def _reachable(host: str, port: int, timeout: float = _TDX_TCP_TIMEOUT) -> bool:
     import socket
 
     sock = socket.socket()
@@ -76,20 +80,40 @@ def _reachable(host: str, port: int, timeout: float = _TDX_PROBE_TIMEOUT) -> boo
         sock.close()
 
 
-def _pick_reachable_server() -> tuple[str, int]:
-    """Return the first TCP-reachable bundled TDX host (shuffled to spread load)."""
+def _serves_data(host: str, port: int, timeout: int) -> bool:
+    """A server passes only if it returns a real bar — filters dead feeds."""
+    from mootdx.quotes import Quotes
+
+    try:
+        client = Quotes.factory(
+            market="std", server=(host, int(port)), timeout=timeout, heartbeat=True
+        )
+        df = client.bars(symbol=_TDX_PROBE_SYMBOL, frequency=9, market=1, start=0, offset=1)
+        return df is not None and len(df) > 0
+    except Exception:
+        return False
+
+
+def _pick_reachable_server(timeout: int = 10) -> tuple[str, int]:
+    """Return a bundled TDX host that is reachable *and* serves real data."""
     import random
 
     from mootdx.consts import HQ_HOSTS
 
     hosts = list(HQ_HOSTS)
     random.shuffle(hosts)
+    tried = 0
     for _name, host, port in hosts:
-        if _reachable(host, port):
+        if tried >= _TDX_MAX_CANDIDATES:
+            break
+        if not _reachable(host, port):
+            continue
+        tried += 1
+        if _serves_data(host, port, timeout):
             return (host, int(port))
     raise TdxSourceError(
-        "no reachable TDX server among bundled hosts "
-        "(network down, or all servers unreachable)"
+        "no TDX server among bundled hosts returned data "
+        f"(tried {tried} reachable host(s); network down or feeds degraded)"
     )
 
 
@@ -110,7 +134,7 @@ def _quotes_client(config: Config | None = None):
     }
     if servers.lower() == "auto":
         if _TDX_SERVER_CACHE is None:
-            _TDX_SERVER_CACHE = _pick_reachable_server()
+            _TDX_SERVER_CACHE = _pick_reachable_server(timeout=timeout)
         kwargs["server"] = _TDX_SERVER_CACHE
     else:
         host, sep, port = servers.partition(":")
@@ -365,7 +389,8 @@ def fetch_index_bars(
             True,
             _mock_bars(symbols, start, end).with_columns(pl.lit("1d").alias("frequency")),
         )
-    try:
+
+    def _fetch_once() -> tuple[list[dict], list[str]]:
         client = _quotes_client(config)
         rows: list[dict] = []
         missing: list[str] = []
@@ -376,25 +401,44 @@ def fetch_index_bars(
                 )
             except Exception as exc:
                 if backfill:
-                    raise TdxSourceError(f"index bars backfill failed for {sym}: {exc}") from exc
+                    # Rotate server and retry the whole set — some TDX hosts
+                    # return corrupt bytes for deep index history.
+                    raise TdxSourceError(f"index bars failed for {sym}: {exc}") from exc
                 logger.warning("TDX index bars failed for %s: %s", sym, exc)
                 continue
             if not sym_rows:
                 missing.append(sym)
                 continue
             rows.extend(sym_rows)
-        if backfill and missing:
-            raise TdxSourceError(
-                "index bars backfill returned no rows for: " + ", ".join(missing)
-            )
-        if rows:
-            return pl.DataFrame(rows).with_columns(pl.lit("1d").alias("frequency"))
-        reason = "TDX returned no index bars"
+        return rows, missing
+
+    reason = "TDX returned no index bars"
+    try:
+        last_exc: Exception | None = None
+        for attempt in range(_TDX_FETCH_ATTEMPTS):
+            try:
+                rows, missing = _fetch_once()
+                if backfill and missing:
+                    raise TdxSourceError(
+                        "index bars backfill returned no rows for: " + ", ".join(missing)
+                    )
+                if rows:
+                    return pl.DataFrame(rows).with_columns(pl.lit("1d").alias("frequency"))
+                break
+            except TdxSourceError as exc:
+                last_exc = exc
+                reset_tdx_server_cache()
+                logger.warning(
+                    "index bars attempt %d/%d failed: %s; rotating server",
+                    attempt + 1,
+                    _TDX_FETCH_ATTEMPTS,
+                    exc,
+                )
+        if last_exc is not None:
+            reason = f"TDX fetch failed: {last_exc}"
     except ImportError:
         reason = "mootdx not installed"
     except Exception as exc:
-        # Drop the cached server so the next attempt (batch retry) re-probes
-        # for a live one instead of hammering the same dead host.
         reset_tdx_server_cache()
         reason = f"TDX fetch failed: {exc}"
     return _fail_or_mock(
