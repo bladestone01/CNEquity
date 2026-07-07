@@ -184,6 +184,33 @@ def test_tradable_universe_excludes_delisted_symbol(tmp_path):
     assert set(out["symbol"].to_list()) == {"600519.SH"}
 
 
+def test_tradable_universe_excludes_cdr(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    curated_path = cfg.curated_root / "instruments" / "part-merged.parquet"
+    curated_path.parent.mkdir(parents=True)
+    # exclusion is prefix-based, so even a stale asset_type="stock" row is dropped
+    pl.DataFrame(
+        [
+            _instrument("600519.SH", list_date=date(2001, 8, 27)),
+            _instrument("689009.SH", list_date=date(2020, 10, 29)),
+        ]
+    ).write_parquet(curated_path)
+
+    out = tradable_symbols_on_date(cfg, date(2024, 6, 28))
+    assert out is not None
+    assert set(out["symbol"].to_list()) == {"600519.SH"}
+
+
+def test_tdx_instrument_frame_marks_cdr_asset_type():
+    from stock_data_engine.adapters.tdx_protocol.client import _filter_instrument_frame
+
+    pdf = pl.DataFrame({"code": ["600519", "689009"], "name": ["Moutai", "Ninebot"]})
+    out = _filter_instrument_frame(pdf, "SH")
+    types = dict(zip(out["symbol"].to_list(), out["asset_type"].to_list(), strict=True))
+    assert types == {"600519.SH": "stock", "689009.SH": "cdr"}
+
+
 def test_enrich_instrument_list_dates_fills_nulls(tmp_path, monkeypatch):
     from stock_data_engine.adapters.eastmoney import instruments as em_inst
 

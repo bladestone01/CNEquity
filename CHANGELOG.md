@@ -7,6 +7,15 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **CDR handling (689xxx segment)** — classify CDRs and exclude them from `all_a`
+  - `is_cdr_symbol` in `domain/symbols`; tdx instruments adapter emits
+    `asset_type="cdr"`; the `all_a` universe excludes SH 689xxx (depositary
+    receipts, no sina/tdx-xdxr factor coverage — 689009.SH has real dividends,
+    so `factor=1.0` would be wrong). `derive_adj_factors` skips CDR symbols
+    instead of emitting a fetch-failure finding each run. CDR bars stay in the
+    lake; direct `symbols=` loads report `adj_is_exact=False`. Lake patched:
+    689009.SH `asset_type=cdr`, `list_date=2020-10-29`. Fixes strict_adj
+    `ReaderError` in downstream `load(..., universe="all_a", strict_adj=True)`.
 - **R-19 — TDX daily bars pagination early stop**
   - Stop paging when the oldest date in a page is before the requested start window.
 - **R-22 — fail-loud EastMoney/CNINFO pagination**

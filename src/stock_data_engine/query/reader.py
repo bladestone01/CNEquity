@@ -262,7 +262,10 @@ def load(
     universe:
         ``all_a`` — drop unlisted/delisted rows per day via ``instruments``, and
         drop ST/suspended rows when ``trading_status`` has data for that day.
-        Only valid for ``daily_bars`` (not ``index_bars``).
+        CDRs (SH 689xxx, e.g. 689009.SH) are excluded: they are depositary
+        receipts with no adj-factor source coverage; query them via ``symbols=``
+        without a universe if needed. Only valid for ``daily_bars`` (not
+        ``index_bars``).
 
         **Limitation:** ``trading_status`` is daily-only (no historical ST
         backfill). Dates before the curated coverage start (see audit check
