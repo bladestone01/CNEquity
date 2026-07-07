@@ -17,6 +17,7 @@ from stock_data_engine.adapters.eastmoney.common import (
 )
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
+from stock_data_engine.config import Config
 from stock_data_engine.domain.symbols import format_symbol
 
 logger = logging.getLogger(__name__)
@@ -139,38 +140,70 @@ def fetch_margin_trading(trade_date: date, *, client: EastMoneyClient | None = N
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
-def fetch_northbound_holdings(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
+_NORTH_BACKFILL_START_YEAR = 2016
+_NORTH_QUARTER_END_MMDD = (("03", "31"), ("06", "30"), ("09", "30"), ("12", "31"))
+
+
+def _quarter_end_dates(trade_date: date) -> list[str]:
+    """Quarter-end dates from 2016 through *trade_date*, most recent first."""
+    out: list[str] = []
+    for year in range(_NORTH_BACKFILL_START_YEAR, trade_date.year + 1):
+        for mm, dd in _NORTH_QUARTER_END_MMDD:
+            ds = f"{year}-{mm}-{dd}"
+            if date.fromisoformat(ds) <= trade_date:
+                out.append(ds)
+    return sorted(out, reverse=True)
+
+
+def fetch_northbound_holdings(
+    trade_date: date,
+    *,
+    backfill: bool = False,
+    client: EastMoneyClient | None = None,
+    config: Config | None = None,
+) -> pl.DataFrame:
+    # Since Aug 2024 CSRC publishes per-stock northbound holdings only on
+    # quarter-ends (no daily feed), so fetch by quarter-end TRADE_DATE: daily
+    # keeps the latest quarter fresh, backfill walks every quarter from 2016.
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
-    ds = trade_date.isoformat()
-    raw = fetch_datacenter(
-        client,
-        _NORTH_HOLD_REPORT,
-        _NORTH_HOLD_COLUMNS,
-        filter_expr=f"(TRADE_DATE='{ds}')",
-    )
-    rows = []
-    for item in raw:
-        sym = symbol_from_secucode(item.get("SECUCODE"))
-        if not sym:
-            code = str(item.get("SECURITY_CODE", "")).zfill(6)
-            exch = exchange_from_datacenter(item)
-            sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
-        if not sym:
-            continue
-        rows.append(
-            {
-                "symbol": sym,
-                "trade_date": trade_date,
-                "channel": _channel(item.get("MUTUAL_TYPE")),
-                "holding_shares": float(item.get("HOLD_SHARES") or 0),
-                "holding_mv": float(item.get("HOLD_MARKET_CAP") or 0),
-                "holding_ratio": float(item.get("HOLD_SHARES_RATIO") or 0),
-            }
-        )
-    if owns:
-        client.close()
+        client = EastMoneyClient(config=config)
+
+    periods = _quarter_end_dates(trade_date)
+    if not backfill:
+        # latest 2 quarters: the just-ended one may not be published yet, so
+        # keep the last complete quarter fresh too.
+        periods = periods[:2]
+
+    rows: list[dict] = []
+    try:
+        for period in periods:
+            if config is not None:
+                config.rate_limit("eastmoney")
+            raw = fetch_datacenter(
+                client,
+                _NORTH_HOLD_REPORT,
+                _NORTH_HOLD_COLUMNS,
+                filter_expr=f"(TRADE_DATE='{period}')",
+            )
+            period_date = date.fromisoformat(period)
+            for item in raw:
+                sym = symbol_from_secucode(item.get("SECUCODE"))
+                if not sym:
+                    continue
+                rows.append(
+                    {
+                        "symbol": sym,
+                        "trade_date": period_date,
+                        "channel": _channel(item.get("MUTUAL_TYPE")),
+                        "holding_shares": float(item.get("HOLD_SHARES") or 0),
+                        "holding_mv": float(item.get("HOLD_MARKET_CAP") or 0),
+                        "holding_ratio": float(item.get("HOLD_SHARES_RATIO") or 0),
+                    }
+                )
+    finally:
+        if owns:
+            client.close()
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 

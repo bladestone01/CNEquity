@@ -46,9 +46,17 @@ def step_fund_flow(config: Config, trade_date: date, run_id: str, context: dict)
 
 @register_step("northbound_holdings", group="capital", depends_on=["instruments"])
 def step_northbound_holdings(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    return _run_capital_step(
-        config, trade_date, run_id, "northbound_holdings", fetch_northbound_holdings
-    )
+    if not config.sources.get("eastmoney", True):
+        raise RuntimeError("northbound_holdings: eastmoney source disabled in config")
+    # Quarterly since Aug 2024: daily refreshes the latest quarter, backfill
+    # walks all quarter-ends from 2016.
+    from stock_data_engine.steps.http_common import write_fetched
+
+    backfill = getattr(config, "_backfill", False)
+    df = fetch_northbound_holdings(trade_date, backfill=backfill, config=config)
+    if df.is_empty():
+        return {"rows_read": 0, "rows_written": 0}
+    return write_fetched(config, run_id, "northbound_holdings", df, source="eastmoney")
 
 
 @register_step("northbound_flows", group="capital")
