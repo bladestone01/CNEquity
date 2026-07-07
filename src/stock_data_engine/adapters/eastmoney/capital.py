@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 
 import polars as pl
@@ -31,7 +32,11 @@ _DRAGON_COLUMNS = (
     "SECURITY_CODE,TRADE_DATE,EXPLANATION,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,BILLBOARD_NET_AMT"
 )
 _BLOCK_COLUMNS = "SECURITY_CODE,TRADE_DATE,VOLUME,DEAL_AMT,AVERAGE_PRICE,PREMIUM_RATIO"
-_FFLOW_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
+_FFLOW_KLINE_URLS = (
+    "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
+    "?secid=1.000001&klt=101&lmt={limit}&fields1=f1,f2,f3,f7"
+    "&fields2=f51,f52,f53,f54,f55,f56",
+)
 _KAMT_URL = "https://push2.eastmoney.com/api/qt/kamt/get"
 
 
@@ -57,20 +62,27 @@ def _margin_symbol(item: dict) -> str | None:
     return symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
 
 
-def _northbound_kline_lines(client: EastMoneyClient, *, limit: int = 120) -> list[str]:
-    url = (
-        f"{_FFLOW_KLINE_URL}?secid=1.000001&klt=101&lmt={limit}"
-        "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56"
-    )
-    try:
-        resp = client.get(url)
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception as exc:
-        logger.warning("EastMoney northbound kline fetch failed: %s", exc)
-        return []
-    data = payload.get("data") or {}
-    return data.get("klines") or []
+def _northbound_kline_lines(
+    client: EastMoneyClient, *, limit: int = 120, max_retries: int = 3
+) -> list[str]:
+    url = _FFLOW_KLINE_URLS.format(limit=limit)
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            resp = client.get(url, timeout=30.0)
+            resp.raise_for_status()
+            payload = resp.json()
+            data = payload.get("data") or {}
+            lines = data.get("klines") or []
+            if lines:
+                return lines
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < max_retries:
+                time.sleep(1.0 * (attempt + 1))
+    if last_exc is not None:
+        logger.warning("EastMoney northbound kline fetch failed: %s", last_exc)
+    return []
 
 
 def fetch_fund_flow(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:

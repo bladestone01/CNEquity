@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 
 _TREASURY_REPORT = "RPTA_WEB_TREASURYYIELD"
 _TREASURY_COLUMNS = "SOLAR_DATE,EMM00166466"
-_SHIBOR_REPORT = "RPTA_WEB_SHIBOR"
-_SHIBOR_COLUMNS = "TRADE_DATE,SHIBOR_3M"
+_SHIBOR_REPORT = "RPT_IMP_INTRESTRATEN"
+_SHIBOR_COLUMNS = "REPORT_DATE,IR_RATE"
+_SHIBOR_FILTER = '(MARKET_CODE="001")(CURRENCY_CODE="CNY")(INDICATOR_ID="203")'
 _LPR_REPORT = "RPTA_WEB_RATE"
 _LPR_COLUMNS = "TRADE_DATE,LPR1Y"
 
@@ -97,18 +98,18 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
             client,
             _SHIBOR_REPORT,
             _SHIBOR_COLUMNS,
-            filter_expr=f"(TRADE_DATE='{ds}')",
+            filter_expr=f"{_SHIBOR_FILTER}(REPORT_DATE='{ds}')",
         )
     except EastMoneyDatacenterError as exc:
         logger.warning("EastMoney SHIBOR indicator fetch skipped: %s", exc)
         shibor = []
     for item in shibor:
-        val = item.get("SHIBOR_3M")
+        val = item.get("IR_RATE")
         if val is not None:
             rows.append(
                 {
                     "indicator_id": "shibor_3m",
-                    "obs_date": _parse_obs_date(item.get("TRADE_DATE"), trade_date),
+                    "obs_date": _parse_obs_date(item.get("REPORT_DATE"), trade_date),
                     "value": float(val),
                     "frequency": "daily",
                 }

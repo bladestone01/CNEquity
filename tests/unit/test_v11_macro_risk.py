@@ -90,7 +90,7 @@ def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
     client = FakeDatacenterClient(
         {
             "RPTA_WEB_TREASURYYIELD": [{"SOLAR_DATE": "2024-06-28", "EMM00166466": 2.25}],
-            "RPTA_WEB_SHIBOR": [{"TRADE_DATE": "2024-06-28", "SHIBOR_3M": 1.85}],
+            "RPT_IMP_INTRESTRATEN": [{"REPORT_DATE": "2024-06-28", "IR_RATE": 1.85}],
             "RPTA_WEB_RATE": [{"TRADE_DATE": "2024-06-28", "LPR1Y": 3.45}],
         }
     )
