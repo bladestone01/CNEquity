@@ -48,8 +48,57 @@ class TdxSourceError(RuntimeError):
     """
 
 
+# A validated (host, port) reused across fetches in this process. mootdx's
+# bestip scan is slow (~75s) and intermittently selects a server that then
+# fails the actual fetch with "No route to host"; we instead TCP-probe the
+# bundled host list and cache the first that answers.
+_TDX_SERVER_CACHE: tuple[str, int] | None = None
+_TDX_PROBE_TIMEOUT = 1.5
+
+
+def reset_tdx_server_cache() -> None:
+    """Forget the cached TDX server so the next client re-probes (on failure)."""
+    global _TDX_SERVER_CACHE
+    _TDX_SERVER_CACHE = None
+
+
+def _reachable(host: str, port: int, timeout: float = _TDX_PROBE_TIMEOUT) -> bool:
+    import socket
+
+    sock = socket.socket()
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _pick_reachable_server() -> tuple[str, int]:
+    """Return the first TCP-reachable bundled TDX host (shuffled to spread load)."""
+    import random
+
+    from mootdx.consts import HQ_HOSTS
+
+    hosts = list(HQ_HOSTS)
+    random.shuffle(hosts)
+    for _name, host, port in hosts:
+        if _reachable(host, port):
+            return (host, int(port))
+    raise TdxSourceError(
+        "no reachable TDX server among bundled hosts "
+        "(network down, or all servers unreachable)"
+    )
+
+
 def _quotes_client(config: Config | None = None):
-    """Build a mootdx client; isolated so tests can monkeypatch it."""
+    """Build a mootdx client bound to a reachable, cached TDX server.
+
+    Isolated so tests can monkeypatch it.
+    """
+    global _TDX_SERVER_CACHE
     from mootdx.quotes import Quotes
 
     timeout = config.tdx_connect_timeout_sec if config else 10
@@ -60,7 +109,9 @@ def _quotes_client(config: Config | None = None):
         "timeout": timeout,
     }
     if servers.lower() == "auto":
-        kwargs["bestip"] = True
+        if _TDX_SERVER_CACHE is None:
+            _TDX_SERVER_CACHE = _pick_reachable_server()
+        kwargs["server"] = _TDX_SERVER_CACHE
     else:
         host, sep, port = servers.partition(":")
         if not sep:
@@ -224,6 +275,9 @@ def fetch_instruments(
     except ImportError:
         reason = "mootdx not installed"
     except Exception as exc:
+        # Drop the cached server so the next attempt (batch retry) re-probes
+        # for a live one instead of hammering the same dead host.
+        reset_tdx_server_cache()
         reason = f"TDX fetch failed: {exc}"
     return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
 
@@ -287,6 +341,9 @@ def fetch_daily_bars(
     except ImportError:
         reason = "mootdx not installed"
     except Exception as exc:
+        # Drop the cached server so the next attempt (batch retry) re-probes
+        # for a live one instead of hammering the same dead host.
+        reset_tdx_server_cache()
         reason = f"TDX fetch failed: {exc}"
     return _fail_or_mock("daily_bars", reason, allow_mock, _mock_bars(symbols, start, end))
 
@@ -336,6 +393,9 @@ def fetch_index_bars(
     except ImportError:
         reason = "mootdx not installed"
     except Exception as exc:
+        # Drop the cached server so the next attempt (batch retry) re-probes
+        # for a live one instead of hammering the same dead host.
+        reset_tdx_server_cache()
         reason = f"TDX fetch failed: {exc}"
     return _fail_or_mock(
         "index_bars",
