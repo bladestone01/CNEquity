@@ -7,7 +7,11 @@ from datetime import date
 import polars as pl
 
 from stock_data_engine.config import Config
-from stock_data_engine.domain.symbols import EXCLUDED_PREFIXES, PREFIX_WHITELIST
+from stock_data_engine.domain.symbols import (
+    CDR_PREFIXES,
+    EXCLUDED_PREFIXES,
+    PREFIX_WHITELIST,
+)
 from stock_data_engine.query.parquet_scan import (
     collect_parquet_root,
     coverage_start_from_partitions,
@@ -23,6 +27,10 @@ def _all_a_symbol_expr(symbol_col: str = "symbol") -> pl.Expr:
     excluded = pl.lit(False)
     for prefix in EXCLUDED_PREFIXES:
         excluded = excluded | code.str.starts_with(prefix)
+    # CDRs (SH 689xxx) are depositary receipts, not common stock; they stay in
+    # the lake but are not part of the all_a selection universe.
+    for prefix in CDR_PREFIXES:
+        excluded = excluded | ((exchange == "SH") & code.str.starts_with(prefix))
     allowed = pl.lit(False)
     for exch, prefixes in PREFIX_WHITELIST.items():
         for prefix in prefixes:

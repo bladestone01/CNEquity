@@ -10,6 +10,12 @@ PREFIX_WHITELIST = {
 
 EXCLUDED_PREFIXES = tuple(f"{p}" for p in range(81, 90))
 
+# SSE reserves 689xxx for CDRs (存托凭证). They trade on SH and stay in fetch
+# scope (is_all_a_symbol), but are not common stock: primary sources (sina adj
+# factors, tdx xdxr) have no coverage and the all_a selection universe excludes
+# them (see query/universe.py).
+CDR_PREFIXES = ("689",)
+
 
 @dataclass(frozen=True)
 class SymbolInfo:
@@ -37,6 +43,11 @@ def is_all_a_symbol(code: str, exchange: str) -> bool:
         return False
     prefixes = PREFIX_WHITELIST.get(exchange.upper(), ())
     return any(code.startswith(p) for p in prefixes)
+
+
+def is_cdr_symbol(code: str, exchange: str) -> bool:
+    """Whether *code* is a CDR (Chinese Depositary Receipt, SH 689xxx segment)."""
+    return exchange.upper() == "SH" and any(code.startswith(p) for p in CDR_PREFIXES)
 
 
 def normalize_market_code(code: str, market: str) -> tuple[str, str]:

@@ -164,6 +164,28 @@ def _write_factor_cache(cfg, symbol: str, trade_date: date, factor: float = 0.5)
     pl.DataFrame({"trade_date": [trade_date], "factor": [factor]}).write_parquet(path)
 
 
+def test_compute_adj_factors_skips_cdr(adj_config, monkeypatch):
+    _write_bar(adj_config, "689009.SH", date(2024, 6, 28))
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.5]})
+
+    monkeypatch.setattr(
+        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+    assert calls == ["600519.SH"]
+    assert result.failed == []
+    assert result.findings == []
+    out = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
+    df = pl.read_parquet(out)
+    assert set(df["symbol"].to_list()) == {"600519.SH"}
+
+
 def test_compute_adj_factors_reuses_cache_on_non_event_day(adj_config, monkeypatch):
     _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28))
     _write_bar(adj_config, "600519.SH", date(2024, 6, 29))

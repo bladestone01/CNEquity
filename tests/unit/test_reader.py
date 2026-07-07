@@ -132,6 +132,60 @@ def test_load_daily_bars_universe_filters_st_and_suspended(lake):
     assert set(df["symbol"].to_list()) == {"600519.SH"}
 
 
+def test_load_universe_excludes_cdr_despite_missing_factors(lake):
+    """CDR bars without adj_factors must not break strict_adj all_a loads."""
+    inst_path = lake.curated_root / "instruments" / "part-merged.parquet"
+    inst = pl.read_parquet(inst_path)
+    cdr = pl.DataFrame(
+        {
+            "symbol": ["689009.SH"],
+            "name": ["Ninebot"],
+            "exchange": ["SH"],
+            "asset_type": ["cdr"],
+            "list_date": [date(2020, 10, 29)],
+            "delist_date": [None],
+            **_prov(),
+        }
+    )
+    pl.concat([inst, cdr], how="diagonal_relaxed").write_parquet(inst_path)
+    bars_dir = lake.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    pl.DataFrame(
+        {
+            "symbol": ["689009.SH"],
+            "trade_date": [date(2024, 6, 27)],
+            "open": [40.0],
+            "high": [41.0],
+            "low": [39.0],
+            "close": [40.5],
+            "volume": [4000],
+            "amount": [162000.0],
+            **_prov(),
+        }
+    ).write_parquet(bars_dir / "part-1.parquet")
+
+    df = load(
+        "daily_bars",
+        start="2024-06-27",
+        end="2024-06-27",
+        adjust="hfq",
+        universe="all_a",
+        strict_adj=True,
+        config=lake,
+    )
+    assert set(df["symbol"].to_list()) == {"600519.SH"}
+
+    # direct symbol queries still work, honestly flagged as inexact
+    direct = load(
+        "daily_bars",
+        start="2024-06-27",
+        end="2024-06-27",
+        adjust="hfq",
+        symbols=["689009.SH"],
+        config=lake,
+    )
+    assert direct["adj_is_exact"].to_list() == [False]
+
+
 def test_load_daily_bars_qfq_derived_from_hfq(lake):
     bars_dir = lake.curated_root / "daily_bars" / "trade_date=2024-06-26"
     bars_dir.mkdir(parents=True, exist_ok=True)

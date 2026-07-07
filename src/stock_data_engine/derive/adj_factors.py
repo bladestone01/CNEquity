@@ -12,6 +12,7 @@ from stock_data_engine.adapters.sina.adj_factors import fetch_adj_factor_series
 from stock_data_engine.config import Config
 from stock_data_engine.domain.rate_limit import wait_source
 from stock_data_engine.domain.schemas import with_provenance
+from stock_data_engine.domain.symbols import is_cdr_symbol, parse_symbol
 from stock_data_engine.storage.atomic import write_parquet_atomic
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,14 @@ class AdjFactorsResult:
         if not self.task_count:
             return 0.0
         return len(self.failed) / self.task_count
+
+
+def _is_cdr(symbol: str) -> bool:
+    try:
+        info = parse_symbol(symbol)
+    except ValueError:
+        return False
+    return is_cdr_symbol(info.code, info.exchange)
 
 
 def _load_daily_bar_dates(config: Config) -> pl.DataFrame:
@@ -258,12 +267,23 @@ def compute_adj_factors(
     workers = max(1, min(config.workers, 16))
 
     tasks: list[tuple[str, str, pl.DataFrame, bool]] = []
+    skipped_cdr: list[str] = []
     for group in bars.partition_by("symbol"):
         sym = group["symbol"][0]
+        if _is_cdr(sym):
+            skipped_cdr.append(sym)
+            continue
         sym_bars = group.select("trade_date").sort("trade_date")
         force = sym in refresh_set
         for adj in adjust_types:
             tasks.append((sym, adj, sym_bars, force))
+    if skipped_cdr:
+        logger.info(
+            "adj_factors: skipping %d CDR symbol(s) %s — sina has no CDR factor "
+            "coverage and all_a excludes CDRs; loads report adj_is_exact=False",
+            len(skipped_cdr),
+            skipped_cdr,
+        )
 
     frames: list[pl.DataFrame] = []
     failed: list[str] = []

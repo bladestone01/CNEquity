@@ -18,7 +18,11 @@ from stock_data_engine.adapters.tdx_protocol.corporate_actions import fetch_corp
 from stock_data_engine.config import Config
 from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
 from stock_data_engine.domain.schemas import MOCK_SOURCE, with_provenance
-from stock_data_engine.domain.symbols import PREFIX_WHITELIST, format_symbol, is_all_a_symbol
+from stock_data_engine.domain.symbols import (
+    PREFIX_WHITELIST,
+    format_symbol,
+    is_cdr_symbol,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +106,7 @@ def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
                 "symbol": format_symbol(code, exch),
                 "name": str(row[name_col]),
                 "exchange": exch,
-                "asset_type": "stock",
+                "asset_type": "cdr" if is_cdr_symbol(code, exch) else "stock",
                 "list_date": None,
                 "delist_date": None,
                 "prev_symbol": None,
