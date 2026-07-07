@@ -78,6 +78,64 @@ def test_align_factors_to_bars_forward_fill():
     assert aligned["factor"].to_list() == [1.0, 0.5, 0.5]
 
 
+def test_align_factors_to_bars_asof_carries_pre_history_level():
+    # Sina emits a sparse step function; the last event predates the first bar and does not
+    # land on a bar date. The factor on the first bar must carry that level forward, not
+    # reset to 1.0 (which previously turned the next in-window event into a huge fake jump).
+    bars = pl.DataFrame(
+        {"trade_date": [date(2016, 1, 4), date(2016, 7, 25), date(2016, 7, 26)]}
+    )
+    factors = pl.DataFrame(
+        {
+            "trade_date": [date(1990, 12, 19), date(2015, 8, 18), date(2016, 7, 25)],
+            "factor": [1.0, 5478.66, 5526.12],
+        }
+    )
+    aligned = _align_factors_to_bars(bars, "600651.SH", factors, "hfq").sort("trade_date")
+    assert aligned["factor"].to_list() == [5478.66, 5526.12, 5526.12]
+
+
+def test_align_factors_to_bars_leading_bar_before_any_event_defaults_one():
+    bars = pl.DataFrame({"trade_date": [date(2024, 6, 26), date(2024, 6, 27)]})
+    factors = pl.DataFrame({"trade_date": [date(2024, 6, 27)], "factor": [0.5]})
+    aligned = _align_factors_to_bars(bars, "600519.SH", factors, "hfq").sort("trade_date")
+    assert aligned["factor"].to_list() == [1.0, 0.5]
+
+
+def test_factor_continuity_findings_flags_break():
+    from stock_data_engine.derive.adj_factors import _factor_continuity_findings
+
+    out = pl.DataFrame(
+        {
+            "symbol": ["600651.SH"] * 3,
+            "adjust_type": ["hfq"] * 3,
+            "trade_date": [date(2016, 7, 22), date(2016, 7, 25), date(2016, 7, 26)],
+            "factor": [1.0, 5526.12, 5526.12],
+        }
+    )
+    findings = _factor_continuity_findings(out)
+    assert len(findings) == 1
+    assert findings[0]["check"] == "adj_factor_continuity"
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["symbol"] == "600651.SH"
+    assert findings[0]["trade_date"] == "2016-07-25"
+
+
+def test_factor_continuity_findings_allows_normal_steps():
+    from stock_data_engine.derive.adj_factors import _factor_continuity_findings
+
+    # A real 10-for-1 split (10x) and small dividend steps are within bounds.
+    out = pl.DataFrame(
+        {
+            "symbol": ["600651.SH"] * 3,
+            "adjust_type": ["hfq"] * 3,
+            "trade_date": [date(1991, 8, 26), date(1992, 12, 10), date(1993, 3, 22)],
+            "factor": [5.0, 50.0, 93.47],
+        }
+    )
+    assert _factor_continuity_findings(out) == []
+
+
 @pytest.fixture
 def adj_config(tmp_path, monkeypatch):
     cfg_path = tmp_path / "test.toml"

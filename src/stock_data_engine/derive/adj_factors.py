@@ -23,6 +23,15 @@ STORED_ADJUST_TYPE = "hfq"
 # Derive step fails when uncached fetch failures exceed this share of symbol×type tasks.
 FAIL_RATIO_THRESHOLD = 0.05
 
+# A single trading day's hfq factor step beyond this ratio cannot come from any real
+# corporate action — even the largest historical splits step the factor by ~10x. Such a
+# jump signals a factor break (a dropped/misaligned event date or a corrupt source series),
+# so we surface it as a fail-loud finding. This is a coarse tripwire for gross corruption;
+# it deliberately does not try to catch ~2x breaks, which are indistinguishable from a real
+# 10-for-10 bonus at the factor level alone and are guarded downstream via raw-vs-adjusted
+# return divergence.
+MAX_FACTOR_STEP_RATIO = 20.0
+
 
 class AdjFactorsFetchError(RuntimeError):
     """Raised when adj factor fetch fails and no cache is available."""
@@ -89,8 +98,15 @@ def _align_factors_to_bars(
     if sym_dates.is_empty():
         return pl.DataFrame()
 
-    aligned = sym_dates.join(factors, on="trade_date", how="left").sort("trade_date")
-    aligned = aligned.with_columns(pl.col("factor").forward_fill().fill_null(1.0))
+    # Sina emits a sparse step function: one row per corporate-action date, with the
+    # factor level that applies from that date forward. The factor on any trading day is
+    # therefore the most recent event on or before it — an as-of (backward) join, not an
+    # exact-date join. An exact join drops every event date that isn't itself a bar date
+    # (e.g. all pre-history events when bars start long after IPO), leaving leading bars to
+    # default to 1.0 and turning the first in-window event into a spurious >1000x jump.
+    factors_sorted = factors.select(["trade_date", "factor"]).sort("trade_date")
+    aligned = sym_dates.join_asof(factors_sorted, on="trade_date", strategy="backward")
+    aligned = aligned.with_columns(pl.col("factor").fill_null(1.0))
     return aligned.with_columns(
         pl.lit(symbol).alias("symbol"),
         pl.lit(adjust_type).alias("adjust_type"),
@@ -199,6 +215,64 @@ def _resolve_factors(
             ) from exc
         logger.warning("External adj factors failed for %s (%s): %s", symbol, adjust_type, exc)
         return cached
+
+
+def _factor_continuity_findings(out: pl.DataFrame) -> list[dict]:
+    """Flag symbols whose stored factor jumps beyond any plausible corporate action.
+
+    hfq factors are a step function that moves only on ex-dates by a bounded ratio; a
+    day-over-day jump above MAX_FACTOR_STEP_RATIO (or a symmetric collapse) means the
+    aligned series is broken. Emits one finding per offending symbol at its worst step.
+    """
+    if out.is_empty() or out.height < 2:
+        return []
+    ratios = (
+        out.sort(["symbol", "adjust_type", "trade_date"])
+        .with_columns(
+            (pl.col("factor") / pl.col("factor").shift(1))
+            .over(["symbol", "adjust_type"])
+            .alias("_step_ratio")
+        )
+        .filter(pl.col("_step_ratio").is_not_null() & (pl.col("factor") > 0))
+        .filter(
+            (pl.col("_step_ratio") > MAX_FACTOR_STEP_RATIO)
+            | (pl.col("_step_ratio") < 1.0 / MAX_FACTOR_STEP_RATIO)
+        )
+    )
+    if ratios.is_empty():
+        return []
+
+    ratios = ratios.with_columns(
+        pl.max_horizontal(
+            pl.col("_step_ratio"), (1.0 / pl.col("_step_ratio"))
+        ).alias("_severity")
+    )
+    worst = (
+        ratios.sort("_severity", descending=True)
+        .group_by(["symbol", "adjust_type"], maintain_order=True)
+        .first()
+    )
+    findings: list[dict] = []
+    for row in worst.iter_rows(named=True):
+        td = row["trade_date"]
+        td_str = td.isoformat() if isinstance(td, date) else str(td)
+        findings.append(
+            {
+                "dataset": "adj_factors",
+                "severity": "error",
+                "check": "adj_factor_continuity",
+                "message": (
+                    f"{row['symbol']} ({row['adjust_type']}) factor jumps "
+                    f"{row['_step_ratio']:.1f}x on {td_str} to {row['factor']:.4g} "
+                    f"(>{MAX_FACTOR_STEP_RATIO:.0f}x); likely a factor break, not a "
+                    f"corporate action"
+                ),
+                "symbol": row["symbol"],
+                "adjust_type": row["adjust_type"],
+                "trade_date": td_str,
+            }
+        )
+    return findings
 
 
 def _fetch_failure_finding(symbol: str, adjust_type: str, exc: Exception) -> dict:
@@ -329,6 +403,7 @@ def compute_adj_factors(
     out = pl.concat(frames, how="diagonal_relaxed").unique(
         subset=["symbol", "trade_date", "adjust_type"], keep="last"
     )
+    findings.extend(_factor_continuity_findings(out))
     out = with_provenance(out, source=config.adj_factors_source, data_version="v1")
 
     total = 0
