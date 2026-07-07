@@ -231,3 +231,32 @@ def test_parse_series_obs_date_handles_month_formats():
     assert _parse_series_obs_date("2024年12月") == date(2024, 12, 31)
     assert _parse_series_obs_date("garbage") is None
     assert _parse_series_obs_date(None) is None
+
+
+def test_lake_health_snapshot(tmp_path):
+    import polars as pl
+
+    from stock_data_engine.config import Config
+    from stock_data_engine.quality.audit import lake_health
+
+    cfg = Config(data_root=tmp_path / "data")
+    # one populated dataset up to date, calendar seed present via bundled seed
+    part = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
+            "volume": [1], "amount": [1.0],
+            "source": ["tdx_protocol"], "data_version": ["v1"],
+            "fetched_at": ["2024-06-28T00:00:00+00:00"],
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+    health = lake_health(cfg, date(2024, 6, 28))
+    assert "findings_by_severity" in health
+    assert "daily_bars" not in health["empty_datasets"]
+    # most datasets have no data in this minimal lake
+    assert "fund_flow" in health["empty_datasets"]
+    assert (cfg.meta_root / "quality" / "health-latest.json").exists()
