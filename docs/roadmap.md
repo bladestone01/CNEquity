@@ -62,15 +62,15 @@
 
 ## Phase B 实盘闭环运行保障（~1–2 周）
 
-Workbench M3（`wb daily`）上线后，引擎从「研究工具」变成「生产依赖」。这一 Phase 补齐 [architecture.md §2](architecture.md) 的第 6 层。
+Workbench M3（`wb daily`）上线后，引擎从「研究工具」变成「生产依赖」。这一 Phase 补齐 [architecture.md §2](architecture.md) 的第 6 层。运维手册见 [ops-runbook.md](ops-runbook.md)。
 
-| # | 任务 | 缺口 | 验收 |
-|---|------|------|------|
-| B1 | 调度落地：macOS launchd（或 cron）每交易日 16:05 起按 schedule_groups 错峰执行；遵守 `workers=1` 约束（mootdx 与 ProcessPool 不兼容） | G4 | 连续两周无人工干预日更成功率 ≥99%（PRD §12 指标首次真正可度量） |
-| B2 | freshness SLO + 告警：`sde audit --full` 定时执行，UNHEALTHY / run failed / 水位滞后 → 非零退出 + 本地通知（macOS osascript 或邮件），失败当晚可见 | G4 | 人为注入一次失败，10 分钟内收到通知 |
-| B3 | 备份：manifest.db + `meta/state/` 每日快照（简单 tar 轮换即可） | G7 | 删库演练：从备份恢复水位与运行历史 |
-| B4 | snapshot 数据集稳定积累：B1 上线即自动生效——估值/资金流/成分/行业自此每日 +1 分区，历史向前滚动 | G2 | 湖内分区数随交易日线性增长，audit 无 STALE |
-| B5 | audit 护栏补全（G5 剩余）：跨数据集对账扩展（bars×calendar 覆盖率、valuation×bars 市值合理性）；R-22 残留的分页 soft-error 改 fail-loud | G5 | 每类检查有单测 + 注入式集成测试 |
+| # | 任务 | 缺口 | 验收 | 状态 |
+|---|------|------|------|------|
+| B1 | 调度落地：macOS launchd（或 cron）每交易日 16:05 起按 schedule_groups 错峰执行；遵守 `workers=1` 约束（mootdx 与 ProcessPool 不兼容） | G4 | 连续两周无人工干预日更成功率 ≥99%（PRD §12 指标首次真正可度量） | 🟢 脚本就绪（2026-07-09）：`scripts/daily_pipeline.sh` 串行跑 6 组 + `install_scheduler.sh` 生成 launchd plist（16:05）；`run daily` 加失败退出码。**待用户执行安装 + 两周实测成功率** |
+| B2 | freshness SLO + 告警：`sde audit --full` 定时执行，UNHEALTHY / run failed / 水位滞后 → 非零退出 + 本地通知（macOS osascript 或邮件），失败当晚可见 | G4 | 人为注入一次失败，10 分钟内收到通知 | 🟢 已完成（2026-07-09）：`scripts/health_notify.sh` 包 `audit --full` + `status --datasets`，异常 osascript 通知 + 退出 1；pipeline 末尾串联 |
+| B3 | 备份：manifest.db + `meta/state/` 每日快照（简单 tar 轮换即可） | G7 | 删库演练：从备份恢复水位与运行历史 | 🟢 已完成（2026-07-09）：`scripts/backup_meta.sh` sqlite `.backup` 一致性快照 + state/quality，14 天轮换；恢复步骤见 runbook |
+| B4 | snapshot 数据集稳定积累：B1 上线即自动生效——估值/资金流/成分/行业自此每日 +1 分区，历史向前滚动 | G2 | 湖内分区数随交易日线性增长，audit 无 STALE | ⏳ 随 B1 安装自动生效 |
+| B5 | audit 护栏补全（G5 剩余）：跨数据集对账扩展（bars×calendar 覆盖率、valuation×bars 市值合理性）；R-22 残留的分页 soft-error 改 fail-loud | G5 | 每类检查有单测 + 注入式集成测试 | 🔴 未开始 |
 
 ---
 

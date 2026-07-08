@@ -156,6 +156,10 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
     else:
         result = engine.run_job("daily", backfill=backfill)
     click.echo(json.dumps({"run_id": result["run_id"], "status": result["status"]}, indent=2))
+    # Exit non-zero on failure so schedulers (launchd/cron) and the daily
+    # pipeline can detect it; a non-trading-day skip is a success (exit 0).
+    if result["status"] not in ("success", "skipped_non_trading_day"):
+        raise SystemExit(1)
 
 
 @cli.command()
