@@ -33,10 +33,10 @@ _DRAGON_COLUMNS = (
     "SECURITY_CODE,TRADE_DATE,EXPLANATION,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,BILLBOARD_NET_AMT"
 )
 _BLOCK_COLUMNS = "SECURITY_CODE,TRADE_DATE,VOLUME,DEAL_AMT,AVERAGE_PRICE,PREMIUM_RATIO"
-_FFLOW_KLINE_URLS = (
+_FFLOW_KLINE_URL = (
     "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
     "?secid=1.000001&klt=101&lmt={limit}&fields1=f1,f2,f3,f7"
-    "&fields2=f51,f52,f53,f54,f55,f56",
+    "&fields2=f51,f52,f53,f54,f55,f56"
 )
 _KAMT_URL = "https://push2.eastmoney.com/api/qt/kamt/get"
 
@@ -66,7 +66,7 @@ def _margin_symbol(item: dict) -> str | None:
 def _northbound_kline_lines(
     client: EastMoneyClient, *, limit: int = 120, max_retries: int = 3
 ) -> list[str]:
-    url = _FFLOW_KLINE_URLS.format(limit=limit)
+    url = _FFLOW_KLINE_URL.format(limit=limit)
     last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:

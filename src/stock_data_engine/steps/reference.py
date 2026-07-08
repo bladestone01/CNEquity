@@ -59,9 +59,20 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
     symbols = context.get("symbols") or load_symbols(config)
     rl = config.tdx_rate_limit_spec()
 
+    # Supplement EM's ST list with AKShare's when enabled (robustness).
+    extra_st: set[str] = set()
+    if config.sources.get("akshare", False):
+        from stock_data_engine.adapters.akshare.trading_status import fetch_st_symbols_akshare
+
+        extra_st = fetch_st_symbols_akshare()
+
     def _fetch(day: date):
         return fetch_trading_status(
-            symbols, day, rate_limit=rl, allow_mock=config.tdx_allow_mock
+            symbols,
+            day,
+            rate_limit=rl,
+            allow_mock=config.tdx_allow_mock,
+            extra_st_symbols=extra_st,
         )
 
     df, _findings = fetch_incremental_daily(

@@ -77,3 +77,21 @@ def test_registered_fetch_steps_cover_curated_datasets():
     # their dataset names; instruments etc. match step names directly.
     missing = [name for name in curated_dataset_names() if name not in STEP_REGISTRY]
     assert not missing, f"curated datasets without a registered step: {missing}"
+
+
+def test_is_stale_respects_per_dataset_tolerance():
+    from datetime import date
+
+    from stock_data_engine.domain.datasets import is_stale
+
+    anchor = date(2026, 7, 8)
+    # daily default tolerance = 1 → 07-07 fresh, 07-06 stale
+    assert is_stale("daily_bars", date(2026, 7, 7), anchor) is False
+    assert is_stale("daily_bars", date(2026, 7, 6), anchor) is True
+    # margin_trading tolerance = 2 (T+1) → 07-06 still fresh
+    assert is_stale("margin_trading", date(2026, 7, 6), anchor) is False
+    # northbound_holdings quarterly tolerance = 100 → last quarter-end fresh
+    assert is_stale("northbound_holdings", date(2026, 6, 30), anchor) is False
+    # None / unknown handled
+    assert is_stale("daily_bars", None, anchor) is False
+    assert is_stale("nope", date(2026, 7, 1), anchor) is True  # default tol=1

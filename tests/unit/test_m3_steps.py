@@ -95,3 +95,11 @@ def test_validate_config_accepts_capital_group(tmp_path):
         },
     )
     assert validate_config(cfg) == []
+
+
+def test_fflow_kline_url_is_formattable_string():
+    """Regression: _FFLOW_KLINE_URL must be a str (a stray comma made it a tuple)."""
+    from stock_data_engine.adapters.eastmoney import capital
+
+    assert isinstance(capital._FFLOW_KLINE_URL, str)
+    assert "lmt=5" in capital._FFLOW_KLINE_URL.format(limit=5)

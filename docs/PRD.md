@@ -1,8 +1,11 @@
 # StockDataEngine 产品需求文档（PRD）
 
-版本：v2.2（v2.1 基础上完成 2026-07-06 全库架构评审：状态标注与代码同步；新增风险 R-15–R-25 与 §11.1 v1.2 修复计划）
+版本：v2.3（v2.2 基础上：新增独立架构文档与路线图并交叉引用；清理附录 C 过期 R-15 警告；R-20 补注 ADR-0004 已定案）
 状态：Draft（Living Document）
-日期：2026-07-06
+日期：2026-07-07
+
+> 分工：本文管**数据集需求、schema 契约与风险登记**；设计分层与差距分析见
+> [docs/architecture.md](architecture.md)；优先级与排期见 [docs/roadmap.md](roadmap.md)。
 产品定位：整合多方数据源的 A 股辅助数据平台 —— 采集、编排、标准化，交付可直接查询的 Parquet 数据湖
 
 > 阅读约定：本文每条能力都标注**实现状态**，避免「愿景当现状」。
@@ -72,6 +75,8 @@ StockDataEngine 在 mootdx（TDX 协议）与多个 HTTP 数据源之上，提�
 ---
 
 ## 3. 系统架构
+
+> 完整的设计分层（含目标态六层与差距分析）见 [docs/architecture.md](architecture.md)；本章保留与源码目录对应的实现视图。
 
 ### 3.1 分层架构
 
@@ -195,7 +200,7 @@ Meta：`ingestion_runs`, `ingestion_batches`（🟢，daily_bars 批级）、`qu
 | northbound_flows | 北向净流入 | L4 | eastmoney | — | 外资流向、市场宽度 | (trade_date, channel) | 🟡 已实现，受 R-15 |
 | margin_trading | 融资融券 | L4 | eastmoney | akshare | 杠杆情绪、融资买入 | (symbol, trade_date) | 🟡 已实现，受 R-15 |
 | sector_members | 板块成分 | L5 | eastmoney | tdx_protocol | 板块归属、主题选股 | (symbol, sector_code, as_of_date) | 🟡 已实现，受 R-15 |
-| valuation_metrics | 估值指标 | L3 | eastmoney | tencent | PE/PB/PS、价值因子 | (symbol, trade_date) | 🟡 已实现，受 R-15 |
+| valuation_metrics | 估值指标 | L3 | eastmoney（日更快照）+ baostock（历史回填） | tencent | PE/PB/PS、价值因子 | (symbol, trade_date) | 🟢 日更 + `sde backfill` 历史回填（PE/PB/PS 至 2016；市值历史待补） |
 | announcement_index | 公告索引 | L2 | cninfo | — | 事件触发、公告类型过滤 | (announcement_id) | 🟡 已实现，受 R-15 |
 
 **schedule_groups 同批 step（signals 组）：**
@@ -514,7 +519,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | R-17 | corporate_actions daily 路径自相矛盾（…） | **高**：… | daily canonical=EM、backfill=TDX；per-dataset 主源见 ADR-0003 | 🟢 P0 已修复 |
 | R-18 | 部分批失败仍推进（…） | **高**：… | compact manifest 门禁 + per-dataset 水位 + retry 自动 compact | 🟢 P0 已修复 |
 | R-19 | TDX 日线分页无早停（…） | 中：… | 页内最老日期 < start 即 break | 🟢 P0 已修复 |
-| R-20 | adj_factors 缓存/静默陈旧（…） | 中：… | 无缓存 fail-loud；append-only 待 P2 | 🟡 P1 部分 |
+| R-20 | adj_factors 缓存/静默陈旧（…） | 中：… | 存储语义已由 [ADR-0004](adr/0004-store-hfq-derive-qfq-at-query.md) 定案（hfq-only 存储、qfq 查询期派生）；append-only merge 与断裂根治排期见 [roadmap Phase A1](roadmap.md) | 🟡 P1 部分 |
 | R-21 | EastMoney 限速 per-client（…） | 中：… | `EastMoneyClient(config=…)` | 🟡 P1 部分 |
 | R-22 | HTTP 分页静默截断（…） | **高**：… | datacenter 重试+抛错；EM backfill 全分页 | 🟡 P1 部分 |
 | R-23 | compact/audit/finalize 依赖缺失，拓扑按字母序：finalize wave 实际执行顺序为 audit → compact → derive_adj_factors | **高**：当日数据永远审计不到；source_diffs 比对的是昨日 curated | `audit` 声明 `depends_on`；`deps.py` 对 finalize 步骤强制 `compact→derive→audit` 顺序 | 🟢 P0 已修复 |
@@ -525,6 +530,9 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 ---
 
 ## 11. 里程碑
+
+> 后续排期不再在本章扩展：以「Workbench 实盘闭环」为北极星的 Phase A–D 路线图见
+> [docs/roadmap.md](roadmap.md)（v1.2 未完成的 P1/P2 项已并入其中）。
 
 | 阶段 | 交付 | 重点 |
 |------|------|------|
@@ -1127,9 +1135,10 @@ Per-dataset source, update frequency, and known limitations (ashare-data-warehou
 
 | Item | Value |
 |------|-------|
-| Primary source | eastmoney |
-| Backup | tencent |
+| Daily source | eastmoney（clist 实时快照，盖当日 trade_date） |
+| History source | baostock（`sde backfill valuation_metrics`；per-symbol 每日 PE/PB/PS 回填至 2016） |
 | PK | (symbol, trade_date) |
+| Known limits | baostock 历史仅含 pe_ttm/pb/ps_ttm；total_mv/float_mv 历史置 null（不在 baostock k-data），由日更 EM 快照向前补 |
 
 #### announcement_index
 
@@ -1200,10 +1209,9 @@ After `sde init`:
 
 ### T+1 daily schedule (cron example)
 
-> ⚠️ **R-15 修复前，分组模式（`--group`）产出不会进入 curated**（组内 compact 缺失或
-> 空跑）。修复上线前，生产日更请使用不带 `--group` 的完整 Wave 模式
-> `sde run daily --config configs/stockdata.toml`（其 finalize wave 会 compact，
-> 但注意 audit 顺序缺陷 R-23）。以下为修复后的目标态：
+> R-15/R-23 已修复：分组模式（`--group`）各组末尾自动追加 compact→audit，产出正常
+> 进入 curated，以下 cron 为生产可用配置。自动化调度与告警的落地排期见
+> [roadmap Phase B](roadmap.md)：
 
 ```cron
 # Core reference + bars + derive (Mon-Fri 16:05)

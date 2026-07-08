@@ -15,7 +15,11 @@ from stock_data_engine.domain.datasets import PARTITION_COLS
 from stock_data_engine.quality.dataset_checks import audit_curated_dataset
 from stock_data_engine.quality.source_diff import run_source_diffs
 from stock_data_engine.query.parquet_scan import dataset_has_parquet, scan_parquet_root
-from stock_data_engine.query.universe import coverage_start_date, trading_status_coverage_start
+from stock_data_engine.query.universe import (
+    coverage_start_date,
+    st_coverage_start,
+    trading_status_coverage_start,
+)
 
 # Sample missing/orphan dates surfaced in a coverage finding.
 _INDEX_COVERAGE_SAMPLE = 8
@@ -140,25 +144,36 @@ def _collect_lake_findings(
     ts_start = trading_status_coverage_start(config)
     if ts_start is not None:
         bars_start = coverage_start_date(config, "daily_bars")
-        gap = bars_start is not None and ts_start > bars_start
-        if gap:
+        st_start = st_coverage_start(config)
+        # Suspension is reconstructed from bar gaps across the whole history, so
+        # the only residual universe-filter gap is ST *labels* before st_start.
+        st_gap = (
+            st_start is not None and bars_start is not None and st_start > bars_start
+        )
+        if st_start is None:
             message = (
-                f"trading_status coverage starts at {ts_start.isoformat()} but "
-                f"daily_bars starts at {bars_start.isoformat()}; universe=all_a does not "
-                "filter ST/suspended before trading_status coverage"
+                "trading_status has suspension history (from bar gaps) but no ST "
+                "labels yet; universe=all_a does not exclude ST names — run the "
+                "trading_status step with AKShare/EM ST enabled"
+            )
+        elif st_gap:
+            message = (
+                f"suspension covered from {ts_start.isoformat()}; ST labels only "
+                f"from {st_start.isoformat()} (daily_bars start {bars_start.isoformat()}) "
+                "— ST names not excluded in earlier backtest windows"
             )
         else:
             message = (
-                f"trading_status coverage starts at {ts_start.isoformat()}; "
-                "universe=all_a ST/suspended filter applies only on/after this date"
+                f"trading_status: suspension + ST labels cover from {ts_start.isoformat()}"
             )
         findings.append(
             {
                 "dataset": "trading_status",
-                "severity": "warning" if gap else "info",
+                "severity": "warning" if (st_gap or st_start is None) else "info",
                 "check": "trading_status_coverage_start",
                 "message": message,
                 "coverage_start": ts_start.isoformat(),
+                "st_coverage_start": st_start.isoformat() if st_start else None,
                 "daily_bars_start": bars_start.isoformat() if bars_start else None,
             }
         )
@@ -202,6 +217,7 @@ def lake_health(config: Config, trade_date: date) -> dict:
     Independent of any run's stale per-run findings file. Writes a stable
     ``meta/quality/health-latest.json`` and returns the summary.
     """
+    from stock_data_engine.domain.datasets import is_stale
     from stock_data_engine.query.reader import list_datasets
 
     findings = _collect_lake_findings(config, trade_date, None)
@@ -221,7 +237,9 @@ def lake_health(config: Config, trade_date: date) -> dict:
         if not row["watermarked"]:
             continue
         mark = row["watermark"] or row["coverage_end"]
-        if mark is not None and mark < anchor:
+        # Tolerance per dataset cadence (T+1, quarterly …) so inherent lag is
+        # not mistaken for a stuck pipeline.
+        if is_stale(row["dataset"], mark, anchor):
             stale.append(row["dataset"])
 
     health = {

@@ -167,6 +167,20 @@ def _pick_reachable_server(
     )
 
 
+def _close_quotes_client(client: object) -> None:
+    """Close a mootdx client so its heartbeat thread dies (else the process
+    can't exit — a serial daily run creates one client per fetch)."""
+    if client is None:
+        return
+    inner = getattr(client, "client", None)
+    close = getattr(inner, "close", None) or getattr(client, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def _quotes_client(config: Config | None = None):
     """Build a mootdx client bound to a reachable, cached TDX server.
 
@@ -320,6 +334,7 @@ def fetch_instruments(
     if allow_mock:
         return _fail_or_mock("instruments", _MOCK_SHORT_CIRCUIT, True, _mock_instruments())
     wait_spec(rate_limit)
+    client = None
     try:
         client = _quotes_client(config)
         frames = []
@@ -353,6 +368,8 @@ def fetch_instruments(
         # for a live one instead of hammering the same dead host.
         reset_tdx_server_cache()
         reason = f"TDX fetch failed: {exc}"
+    finally:
+        _close_quotes_client(client)
     return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
 
 
@@ -392,6 +409,7 @@ def fetch_daily_bars(
 ) -> pl.DataFrame:
     if allow_mock:
         return _fail_or_mock("daily_bars", _MOCK_SHORT_CIRCUIT, True, _mock_bars(symbols, start, end))
+    client = None
     try:
         client = _quotes_client(config)
         rows = []
@@ -419,6 +437,8 @@ def fetch_daily_bars(
         # for a live one instead of hammering the same dead host.
         reset_tdx_server_cache()
         reason = f"TDX fetch failed: {exc}"
+    finally:
+        _close_quotes_client(client)
     return _fail_or_mock("daily_bars", reason, allow_mock, _mock_bars(symbols, start, end))
 
 
@@ -444,23 +464,26 @@ def fetch_index_bars(
         client = _quotes_client(config)
         rows: list[dict] = []
         missing: list[str] = []
-        for sym in symbols:
-            try:
-                sym_rows = fetch_bars_paginated(
-                    client, sym, start, end, rate_limit=rate_limit, backfill=backfill,
-                    is_index=True,
-                )
-            except Exception as exc:
-                if backfill:
-                    # Rotate server and retry the whole set — some TDX hosts
-                    # return corrupt bytes for deep index history.
-                    raise TdxSourceError(f"index bars failed for {sym}: {exc}") from exc
-                logger.warning("TDX index bars failed for %s: %s", sym, exc)
-                continue
-            if not sym_rows:
-                missing.append(sym)
-                continue
-            rows.extend(sym_rows)
+        try:
+            for sym in symbols:
+                try:
+                    sym_rows = fetch_bars_paginated(
+                        client, sym, start, end, rate_limit=rate_limit, backfill=backfill,
+                        is_index=True,
+                    )
+                except Exception as exc:
+                    if backfill:
+                        # Rotate server and retry the whole set — some TDX hosts
+                        # return corrupt bytes for deep index history.
+                        raise TdxSourceError(f"index bars failed for {sym}: {exc}") from exc
+                    logger.warning("TDX index bars failed for %s: %s", sym, exc)
+                    continue
+                if not sym_rows:
+                    missing.append(sym)
+                    continue
+                rows.extend(sym_rows)
+        finally:
+            _close_quotes_client(client)
         return rows, missing
 
     reason = "TDX returned no index bars"
@@ -580,6 +603,7 @@ def fetch_trading_status(
     *,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
+    extra_st_symbols: set[str] | None = None,
 ) -> pl.DataFrame:
     def _mock_status() -> pl.DataFrame:
         rows = [
@@ -598,7 +622,9 @@ def fetch_trading_status(
 
     wait_spec(rate_limit)
     try:
-        df = fetch_trading_status_eastmoney(symbols, trade_date)
+        df = fetch_trading_status_eastmoney(
+            symbols, trade_date, extra_st_symbols=extra_st_symbols
+        )
         if df.height:
             return df
         reason = "EastMoney returned no trading status rows"

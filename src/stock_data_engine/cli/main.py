@@ -10,7 +10,7 @@ import polars as pl
 import stock_data_engine.steps  # noqa: F401 — register steps
 from stock_data_engine.config import load_config, validate_config
 from stock_data_engine.derive.adj_factors import compute_adj_factors
-from stock_data_engine.domain.datasets import fetch_semantics
+from stock_data_engine.domain.datasets import fetch_semantics, get_dataset
 from stock_data_engine.orchestrator.engine import JobEngine
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.orchestrator.run_lock import RunLockError
@@ -163,7 +163,7 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 def backfill(dataset: str, config_path: str):
     """Backfill a dataset."""
-    if fetch_semantics(dataset) == "snapshot":
+    if fetch_semantics(dataset) == "snapshot" and not get_dataset(dataset).backfill_source:
         raise click.ClickException(
             f"{dataset}: backfill not supported — fetch semantics are snapshot "
             "(live page stamped with trade_date; historical values unavailable). "
@@ -216,6 +216,11 @@ def derive(name: str, config_path: str):
                 f"({result.fail_ratio:.1%})",
                 err=True,
             )
+    elif name == "trading_status":
+        from stock_data_engine.derive.trading_status_history import derive_suspension_history
+
+        rows = derive_suspension_history(cfg)
+        click.echo(f"Derived historical suspension: {rows} rows into trading_status")
     else:
         raise click.ClickException(f"Unknown derive target: {name}")
 
@@ -292,24 +297,27 @@ def status(config_path: str, show_datasets: bool):
     if show_datasets:
         import polars as pl_mod
 
+        from stock_data_engine.domain.datasets import is_stale
         from stock_data_engine.query.reader import list_datasets
 
         anchor = _last_trading_day(cfg, date.today())
         df = list_datasets(config=cfg)
+
+        def _freshness(row: dict) -> str:
+            if not row["has_data"]:
+                return "empty"
+            # Datasets keyed by report_period (no daily watermark) are not
+            # judged on a daily cadence.
+            if not row["watermarked"]:
+                return "n/a"
+            mark = row["watermark"] or row["coverage_end"]
+            # Per-dataset tolerance (T+1, quarterly …) — inherent lag is not STALE.
+            return "STALE" if is_stale(row["dataset"], mark, anchor) else "fresh"
+
         df = df.with_columns(
-            pl_mod.when(~pl_mod.col("has_data"))
-            .then(pl_mod.lit("empty"))
-            # Quarterly/report_period datasets have no daily watermark; their
-            # coverage_end is a report date and must not be judged daily-stale.
-            .when(~pl_mod.col("watermarked"))
-            .then(pl_mod.lit("n/a"))
-            .when(
-                pl_mod.coalesce(pl_mod.col("watermark"), pl_mod.col("coverage_end"))
-                < anchor
+            pl_mod.Series(
+                "freshness", [_freshness(r) for r in df.iter_rows(named=True)]
             )
-            .then(pl_mod.lit("STALE"))
-            .otherwise(pl_mod.lit("fresh"))
-            .alias("freshness")
         )
         click.echo(f"last trading day: {anchor.isoformat()}")
         with pl_mod.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
