@@ -93,6 +93,27 @@ def trading_status_coverage_start(config: Config) -> date | None:
     return coverage_start_date(config, "trading_status")
 
 
+def st_coverage_start(config: Config) -> date | None:
+    """First trade_date with an ``st``/``*st`` label in trading_status.
+
+    Suspension is reconstructed from bar gaps (whole history), but ST labels
+    come only from live ST snapshots, so this is the real ST-history boundary.
+    """
+    root = config.curated_root / "trading_status"
+    if not root.exists():
+        return None
+    try:
+        return (
+            scan_parquet_root(root, partition_col="trade_date")
+            .filter(pl.col("status").is_in(["st", "*st"]))
+            .select(pl.col("trade_date").min())
+            .collect()
+            .item()
+        )
+    except FileNotFoundError:
+        return None
+
+
 def tradable_symbols_on_date(
     config: Config,
     trade_date: date,
