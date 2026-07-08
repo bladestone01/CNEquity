@@ -1,5 +1,5 @@
 trade_date,is_trading
-2016-01-01,True
+2016-01-01,False
 2016-01-02,False
 2016-01-03,False
 2016-01-04,True

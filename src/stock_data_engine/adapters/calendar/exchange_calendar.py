@@ -94,13 +94,22 @@ def build_trading_calendar(
     seed_path: Path | None = None,
     curated_root: Path | None = None,
 ) -> pl.DataFrame:
-    """Return calendar rows for [start, end] from seed, extended by index bars."""
+    """Return calendar rows for [start, end] from seed, extended by index bars.
+
+    The seed is authoritative for every date it covers: index-bars derivation
+    only fills dates outside the seed's range (e.g. future dates beyond the
+    bundled holiday schedule). This prevents a spurious index_bars row from
+    flipping a seed ``is_trading=False`` (a known holiday) to ``True``.
+    """
     seed = load_seed_calendar(seed_path)
     seed = seed.filter((pl.col("trade_date") >= start) & (pl.col("trade_date") <= end))
 
-    trading_days = set(seed.filter(pl.col("is_trading"))["trade_date"].to_list())
+    seed_dates = set(seed["trade_date"].to_list())
+    index_trading_days: set[date] = set()
     if curated_root is not None:
-        trading_days |= _trading_days_from_index_bars(curated_root)
+        # Only consider index-bars-derived trading days for dates the seed
+        # does not cover; within the seed range the seed wins outright.
+        index_trading_days = _trading_days_from_index_bars(curated_root) - seed_dates
 
     rows: list[dict] = []
     d = start
@@ -108,19 +117,11 @@ def build_trading_calendar(
         in_seed = seed.filter(pl.col("trade_date") == d)
         if not in_seed.is_empty():
             is_trading = bool(in_seed["is_trading"][0])
-        elif d in trading_days:
+        elif d in index_trading_days:
             is_trading = True
         else:
             is_trading = _is_trading_day(d)
         rows.append({"trade_date": d, "is_trading": is_trading})
         d += timedelta(days=1)
 
-    out = pl.DataFrame(rows)
-    if curated_root is not None and trading_days:
-        out = out.with_columns(
-            pl.when(pl.col("trade_date").is_in(list(trading_days)))
-            .then(pl.lit(True))
-            .otherwise(pl.col("is_trading"))
-            .alias("is_trading")
-        )
-    return out.sort("trade_date")
+    return pl.DataFrame(rows).sort("trade_date")
