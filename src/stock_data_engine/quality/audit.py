@@ -140,6 +140,7 @@ def lake_health(config: Config, trade_date: date) -> dict:
     Independent of any run's stale per-run findings file. Writes a stable
     ``meta/quality/health-latest.json`` and returns the summary.
     """
+    from stock_data_engine.domain.datasets import is_stale
     from stock_data_engine.query.reader import list_datasets
 
     findings = _collect_lake_findings(config, trade_date, None)
@@ -159,7 +160,9 @@ def lake_health(config: Config, trade_date: date) -> dict:
         if not row["watermarked"]:
             continue
         mark = row["watermark"] or row["coverage_end"]
-        if mark is not None and mark < anchor:
+        # Tolerance per dataset cadence (T+1, quarterly …) so inherent lag is
+        # not mistaken for a stuck pipeline.
+        if is_stale(row["dataset"], mark, anchor):
             stale.append(row["dataset"])
 
     health = {

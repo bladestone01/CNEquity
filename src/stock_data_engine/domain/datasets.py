@@ -53,6 +53,11 @@ class DatasetSpec:
     watermark: bool = True
     pit: bool = False
     backfill_source: str | None = None
+    # How many days the freshest data may lag the last trading day before it is
+    # flagged STALE. 1 tolerates normal T+1 EOD publication; larger values mark
+    # sources with a slower cadence (margin T+1, quarterly northbound holdings)
+    # so their inherent lag is not mistaken for a stuck pipeline.
+    max_staleness_days: int = 1
 
     @property
     def query_date_col(self) -> str | None:
@@ -86,9 +91,11 @@ _SPECS = [
     DatasetSpec("analyst_consensus", partition_col="forecast_date", fetch_semantics="snapshot"),
     # L4 capital flows
     DatasetSpec("fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
-    DatasetSpec("margin_trading", partition_col="trade_date"),
-    DatasetSpec("northbound_holdings", partition_col="trade_date"),
-    DatasetSpec("northbound_flows", partition_col="trade_date"),
+    DatasetSpec("margin_trading", partition_col="trade_date", max_staleness_days=2),
+    # Per-stock northbound holdings are quarterly since Aug 2024; tolerate the
+    # gap to the next quarter-end before flagging stale.
+    DatasetSpec("northbound_holdings", partition_col="trade_date", max_staleness_days=100),
+    DatasetSpec("northbound_flows", partition_col="trade_date", max_staleness_days=2),
     DatasetSpec("dragon_tiger", partition_col="trade_date"),
     DatasetSpec("block_trades", partition_col="trade_date"),
     DatasetSpec("institutional_holdings", partition_col="report_period", watermark=False),
@@ -133,6 +140,19 @@ def pit_dataset_names() -> frozenset[str]:
 def fetch_semantics(dataset: str) -> FetchSemantics:
     spec = DATASETS.get(dataset)
     return spec.fetch_semantics if spec else "by_date"
+
+
+def is_stale(dataset: str, mark, anchor) -> bool:
+    """Whether *dataset*'s freshest date (*mark*) lags *anchor* beyond tolerance.
+
+    *mark* and *anchor* are ``datetime.date`` (or None). A dataset with no mark
+    is not judged here (callers treat empty separately).
+    """
+    if mark is None or anchor is None:
+        return False
+    spec = DATASETS.get(dataset)
+    tolerance = spec.max_staleness_days if spec else 1
+    return (anchor - mark).days > tolerance
 
 
 # ---------------------------------------------------------------------------

@@ -297,24 +297,27 @@ def status(config_path: str, show_datasets: bool):
     if show_datasets:
         import polars as pl_mod
 
+        from stock_data_engine.domain.datasets import is_stale
         from stock_data_engine.query.reader import list_datasets
 
         anchor = _last_trading_day(cfg, date.today())
         df = list_datasets(config=cfg)
+
+        def _freshness(row: dict) -> str:
+            if not row["has_data"]:
+                return "empty"
+            # Datasets keyed by report_period (no daily watermark) are not
+            # judged on a daily cadence.
+            if not row["watermarked"]:
+                return "n/a"
+            mark = row["watermark"] or row["coverage_end"]
+            # Per-dataset tolerance (T+1, quarterly …) — inherent lag is not STALE.
+            return "STALE" if is_stale(row["dataset"], mark, anchor) else "fresh"
+
         df = df.with_columns(
-            pl_mod.when(~pl_mod.col("has_data"))
-            .then(pl_mod.lit("empty"))
-            # Quarterly/report_period datasets have no daily watermark; their
-            # coverage_end is a report date and must not be judged daily-stale.
-            .when(~pl_mod.col("watermarked"))
-            .then(pl_mod.lit("n/a"))
-            .when(
-                pl_mod.coalesce(pl_mod.col("watermark"), pl_mod.col("coverage_end"))
-                < anchor
+            pl_mod.Series(
+                "freshness", [_freshness(r) for r in df.iter_rows(named=True)]
             )
-            .then(pl_mod.lit("STALE"))
-            .otherwise(pl_mod.lit("fresh"))
-            .alias("freshness")
         )
         click.echo(f"last trading day: {anchor.isoformat()}")
         with pl_mod.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
