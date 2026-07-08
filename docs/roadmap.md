@@ -38,17 +38,19 @@
 
 **验收**：全市场 bar-to-bar |adj_ret| 极值扫描无无事件解释的假收益；Workbench quality guard 剔除数 → ~0；同窗口重跑 derive 结果逐字节一致。
 
-### A2 valuation_metrics 历史回填（G2 的价值策略部分）🟡 代码就绪，待实跑
+### A2 valuation_metrics 历史回填（G2 的价值策略部分）🟢 已完成（2026-07-09）
 
-现状：湖内仅 2026-07-07 一天。Workbench Phase 1 价值策略 = 估值分位，需要 ≥5 年 PE/PB 历史，当前无法回测。
+背景：湖内曾仅 2026-07-07 一天。Workbench Phase 1 价值策略 = 估值分位，需要 ≥5 年 PE/PB 历史。
 
-**已定方案（2026-07-08 拍板 baostock）**：EM `clist` 只有当日快照、无历史；财报科目仅 net_profit/revenue/roe（缺净资产与股本），自研派生走不通。改由 **baostock 作历史源**——per-symbol 每日 PE/PB/PS 回填至 2016。为 snapshot 语义数据集加 `DatasetSpec.backfill_source`，`sde backfill valuation_metrics` 由此放行；日更仍走 EM 快照。
+**方案（2026-07-08 拍板 baostock）**：EM `clist` 只有当日快照、无历史；财报科目仅 net_profit/revenue/roe（缺净资产与股本），自研派生走不通。改由 **baostock 作历史源**——per-symbol 每日 PE/PB/PS 回填至 2016。为 snapshot 语义数据集加 `DatasetSpec.backfill_source`，`sde backfill valuation_metrics` 由此放行；日更仍走 EM 快照。约束：baostock k-data 无市值，`total_mv/float_mv` 历史置 null（由 EM 日更向前补）。
 
-**已完成（代码）**：`adapters/baostock/valuation.py`（符号转换 / login fail-loud / 逐 symbol 抓取）、`step_valuation_metrics` backfill 路由、CLI 门放行、离线测试 5 项全绿。约束：baostock k-data 无市值，`total_mv/float_mv` 历史置 null（由 EM 日更向前补）。
+**实跑教训（2026-07-08→09）**：首次全量被 baostock 限流断连、旧 adapter 静默跳过 90% symbol 仍报 success（fail-loud 缺陷）。已加固（commit ef1deac）：逐 symbol 重试 + 每 300 只重登 + 区分 query 错误/合法空 + 返回 failed_symbols；step 续跑（跳过已回填）。
 
-**待做（实跑，需联网 + `pip install -e '.[valuation]'`）**：`sde backfill valuation_metrics` 实跑回填；标杆股（600519.SH 等）PE/PB 与行情软件抽查一致；与 EM 当日快照交叉校验（source_diffs）。
+**已完成（2026-07-09）**：湖内 valuation_metrics = **10.34M 行，5204/5206 symbol，2016-01-04 → 2026-07-08**；每只行数中位数 2498。600519.SH 2552 行、PE 16.4(2016)→73.3(2021 顶)→18.1(现)口径正确。仅 2 只次新股（301583.SZ / 688806.SH，list_date 未登记）无 baostock 覆盖。
 
-**验收**：2018 起全市场 PE/PB 历史可用；标杆股抽查一致（±2%）；Workbench 估值分位因子可回测。
+**遗留**：`total_mv/float_mv` 历史仍 null（价值分位不依赖，size 因子待补）；与 EM 当日快照的 source_diffs 交叉校验未做（可选）。
+
+**验收达成**：全市场 2016 起 PE/PB 历史可用；标杆股口径正确；Workbench 估值分位因子可回测。✅
 
 ### A3 index_bars 缺口验证与补齐（G6b）
 
