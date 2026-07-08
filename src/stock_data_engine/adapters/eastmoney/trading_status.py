@@ -89,12 +89,17 @@ def fetch_trading_status_eastmoney(
     trade_date: date,
     *,
     client: EastMoneyClient | None = None,
+    extra_st_symbols: set[str] | None = None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
         client = EastMoneyClient(min_interval=0.3)
 
     st_set = _fetch_st_symbols(client)
+    if extra_st_symbols:
+        # Union a second ST source (e.g. AKShare) for robustness against a
+        # single feed missing names or failing.
+        st_set = st_set | extra_st_symbols
     suspended = _fetch_suspended_symbols(client, trade_date)
 
     rows = []
