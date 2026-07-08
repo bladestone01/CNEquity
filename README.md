@@ -196,11 +196,17 @@ sde run daily --group research --config configs/stockdata.toml       # 18:30（�
 | P1 | 消费层 lazy scan + 分区裁剪；adj_factors 改 append-only | R-25/R-20（无缓存 fail-loud + `adj_is_exact` 标记） |
 | P1 | CLI 默认 config、`job.init.phases.names`、`sde compact`/`backfill` | R-26 ✅ |
 
+### Phase 5 之后
+
+后续排期以「下游 Workbench 实盘闭环」为北极星，按 Phase A（数据可信止血）→ B（调度/告警等运行保障）→ C（策略广度）→ D（长期健壮）推进，详见 [docs/roadmap.md](docs/roadmap.md)；设计分层与差距分析见 [docs/architecture.md](docs/architecture.md)。
+
 ---
 
 ## 文档
 
-- [docs/PRD.md](docs/PRD.md) — **统一需求文档**（产品定义、架构、数据清单、里程碑；附录 A Schema 契约 / B 数据集目录 / C 运维手册）
+- [docs/PRD.md](docs/PRD.md) — **统一需求文档**（产品定义、数据清单、风险登记；附录 A Schema 契约 / B 数据集目录 / C 运维手册）
+- [docs/architecture.md](docs/architecture.md) — **架构设计**（六层分层、引擎↔Workbench 契约、以实盘闭环为镜头的差距分析）
+- [docs/roadmap.md](docs/roadmap.md) — **路线图**（Phase A–D 优先级与验收标准）
 - [docs/adr/](docs/adr/) — 架构决策记录
 - [CONTRIBUTING.md](CONTRIBUTING.md) — 开发约定与新数据集 definition-of-done
 - [CHANGELOG.md](CHANGELOG.md) — 变更记录
