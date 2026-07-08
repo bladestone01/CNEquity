@@ -40,7 +40,9 @@ def test_no_weekend_makeup_sessions():
 
 def test_new_year_holiday_not_trading():
     # 元旦 closures were systematically missing from CLOSED_DATES for 2019+.
+    # 2016-01-01 (a Friday) was also missing and regressed curated data.
     for d in (
+        date(2016, 1, 1),
         date(2019, 1, 1),
         date(2020, 1, 1),
         date(2021, 1, 1),
@@ -48,9 +50,23 @@ def test_new_year_holiday_not_trading():
         date(2023, 1, 2),
         date(2024, 1, 1),
         date(2025, 1, 1),
+        date(2026, 1, 1),
+        date(2027, 1, 1),
     ):
         cal = build_trading_calendar(d, d)
         assert cal["is_trading"][0] is False, d
+
+
+def test_seed_is_authoritative_over_index_bars(tmp_path):
+    # A spurious index_bars row on a seed holiday must not flip it to trading.
+    holiday = date(2027, 1, 1)
+    bars_dir = tmp_path / "index_bars" / f"trade_date={holiday.isoformat()}"
+    bars_dir.mkdir(parents=True)
+    pl.DataFrame({"trade_date": [holiday], "symbol": ["000001"]}).write_parquet(
+        bars_dir / "part.parquet"
+    )
+    cal = build_trading_calendar(holiday, holiday, curated_root=tmp_path)
+    assert cal["is_trading"][0] is False
 
 
 def test_calendar_forward_coverage_days():

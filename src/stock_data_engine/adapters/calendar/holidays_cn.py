@@ -10,6 +10,7 @@ from __future__ import annotations
 CLOSED_DATES: frozenset[str] = frozenset(
     {
         # 2016
+        "2016-01-01",
         "2016-02-08",
         "2016-02-09",
         "2016-02-10",
