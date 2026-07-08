@@ -38,6 +38,11 @@ class DatasetSpec:
     pit:
         Point-in-time dataset — ``load()`` requires ``as_of`` and filters on
         ``announce_date``.
+    backfill_source:
+        Name of an external historical source that can replay this dataset even
+        though daily ``fetch_semantics`` is ``snapshot`` (e.g. valuation_metrics:
+        EastMoney live snapshot daily, baostock for history). ``sde backfill``
+        is allowed for snapshot datasets only when this is set.
     """
 
     name: str
@@ -47,6 +52,7 @@ class DatasetSpec:
     fetch_semantics: FetchSemantics = "by_date"
     watermark: bool = True
     pit: bool = False
+    backfill_source: str | None = None
 
     @property
     def query_date_col(self) -> str | None:
@@ -71,7 +77,12 @@ _SPECS = [
         watermark=False,
         pit=True,
     ),
-    DatasetSpec("valuation_metrics", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec(
+        "valuation_metrics",
+        partition_col="trade_date",
+        fetch_semantics="snapshot",
+        backfill_source="baostock",
+    ),
     DatasetSpec("analyst_consensus", partition_col="forecast_date", fetch_semantics="snapshot"),
     # L4 capital flows
     DatasetSpec("fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),

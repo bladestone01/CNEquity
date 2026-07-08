@@ -10,7 +10,7 @@ import polars as pl
 import stock_data_engine.steps  # noqa: F401 — register steps
 from stock_data_engine.config import load_config, validate_config
 from stock_data_engine.derive.adj_factors import compute_adj_factors
-from stock_data_engine.domain.datasets import fetch_semantics
+from stock_data_engine.domain.datasets import fetch_semantics, get_dataset
 from stock_data_engine.orchestrator.engine import JobEngine
 from stock_data_engine.orchestrator.manifest import Manifest
 from stock_data_engine.orchestrator.run_lock import RunLockError
@@ -163,7 +163,7 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 def backfill(dataset: str, config_path: str):
     """Backfill a dataset."""
-    if fetch_semantics(dataset) == "snapshot":
+    if fetch_semantics(dataset) == "snapshot" and not get_dataset(dataset).backfill_source:
         raise click.ClickException(
             f"{dataset}: backfill not supported — fetch semantics are snapshot "
             "(live page stamped with trade_date; historical values unavailable). "

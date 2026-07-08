@@ -6,6 +6,19 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **valuation_metrics historical backfill via baostock (G2 / roadmap A2)**
+  - `adapters/baostock/valuation.py` fetches per-symbol daily `peTTM`/`pbMRQ`/`psTTM`
+    back to 2016; EastMoney's clist endpoint is a live snapshot only, so the lake
+    previously held a single day of PE/PB/PS — blocking value-percentile backtests.
+  - `DatasetSpec.backfill_source` lets a snapshot dataset opt into `sde backfill`
+    (`valuation_metrics.backfill_source="baostock"`); daily ingestion still uses the
+    EastMoney snapshot. `total_mv`/`float_mv` stay null on the historical path (not in
+    baostock k-data); the daily snapshot fills them going forward.
+  - New optional extra `baostock`; offline tests cover symbol mapping, null market cap,
+    uncovered-symbol skip, and login fail-loud. Actual backfill run pending (needs network
+    + `pip install -e '.[valuation]'`).
+
 ### Fixed
 - **CDR handling (689xxx segment)** — classify CDRs and exclude them from `all_a`
   - `is_cdr_symbol` in `domain/symbols`; tdx instruments adapter emits
