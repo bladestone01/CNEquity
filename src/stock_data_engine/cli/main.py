@@ -216,6 +216,11 @@ def derive(name: str, config_path: str):
                 f"({result.fail_ratio:.1%})",
                 err=True,
             )
+    elif name == "trading_status":
+        from stock_data_engine.derive.trading_status_history import derive_suspension_history
+
+        rows = derive_suspension_history(cfg)
+        click.echo(f"Derived historical suspension: {rows} rows into trading_status")
     else:
         raise click.ClickException(f"Unknown derive target: {name}")
 
