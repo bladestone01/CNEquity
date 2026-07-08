@@ -39,17 +39,26 @@ class _FakeResultSet:
 
 
 class _FakeBaostock:
-    def __init__(self, per_symbol: dict[str, list[list[str]]], login_ok: bool = True):
+    def __init__(
+        self,
+        per_symbol: dict[str, list[list[str]]],
+        login_ok: bool = True,
+        error_codes: dict[str, str] | None = None,
+    ):
         self._per_symbol = per_symbol
         self._login_ok = login_ok
+        # code -> error_code to return, mutable so a test can heal on retry
+        self._error_codes = error_codes or {}
         self.logged_out = False
+        self.logins = 0
 
     def login(self):
+        self.logins += 1
         return _FakeResultSet([], error_code="0" if self._login_ok else "10001")
 
     def query_history_k_data_plus(self, code, fields, **kwargs):
-        # code is baostock form e.g. "sh.600519"
-        return _FakeResultSet(self._per_symbol.get(code, []))
+        err = self._error_codes.get(code, "0")
+        return _FakeResultSet(self._per_symbol.get(code, []), error_code=err)
 
     def logout(self):
         self.logged_out = True
@@ -67,11 +76,12 @@ def test_fetch_valuation_history_maps_and_nulls_market_cap():
             ],
         }
     )
-    df = fetch_valuation_history(
+    df, failed = fetch_valuation_history(
         ["600519.SH", "000001.SZ"], date(2016, 1, 1), date(2016, 1, 5), bs=bs
     )
 
     assert bs.logged_out is True
+    assert failed == []
     assert df.height == 3
     # schema matches the curated contract (market cap columns present but null)
     assert set(df.columns) == set(VALUATION_METRICS_SCHEMA) - {
@@ -90,12 +100,27 @@ def test_fetch_valuation_history_maps_and_nulls_market_cap():
 
 def test_fetch_valuation_history_skips_uncovered_symbol():
     bs = _FakeBaostock({"sh.600519": [["2016-01-04", "sh.600519", "12.5", "3.1", "8.0"]]})
-    # 999999.SH has no baostock coverage -> query returns empty, symbol skipped
-    df = fetch_valuation_history(
+    # 999999.SH has no coverage -> error_code 0 with no rows -> legit empty, NOT a failure
+    df, failed = fetch_valuation_history(
         ["600519.SH", "999999.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs
     )
     assert df.height == 1
     assert df["symbol"].unique().to_list() == ["600519.SH"]
+    assert failed == []
+
+
+def test_fetch_valuation_history_reports_failed_symbols_fail_loud():
+    # sz.000001 errors on every attempt -> reported as failed, not silently dropped
+    bs = _FakeBaostock(
+        {"sh.600519": [["2016-01-04", "sh.600519", "12.5", "3.1", "8.0"]]},
+        error_codes={"sz.000001": "10002"},
+    )
+    df, failed = fetch_valuation_history(
+        ["600519.SH", "000001.SZ"], date(2016, 1, 1), date(2016, 1, 5), bs=bs, sleep=lambda _s: None
+    )
+    assert df.height == 1
+    assert failed == ["000001.SZ"]
+    assert bs.logins > 1  # re-login attempted on failure
 
 
 def test_fetch_valuation_history_fails_loud_on_login_error():

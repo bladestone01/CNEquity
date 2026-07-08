@@ -34,14 +34,59 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
 
 
 def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -> dict:
-    """Historical PE/PB/PS from baostock over the all_a universe (2016 → today)."""
+    """Historical PE/PB/PS from baostock over the all_a universe (2016 → today).
+
+    Resumable: symbols already carrying baostock rows in the lake are skipped, so
+    a re-run only retries the ones a throttled session dropped. Symbols that still
+    fail are surfaced as an audit finding (fail-loud) — a partial backfill must
+    never look like a clean success.
+    """
     from stock_data_engine.adapters.baostock.valuation import fetch_valuation_history
 
-    symbols = [s for s in load_symbols(config) if _is_all_a(s)]
-    df = fetch_valuation_history(symbols, _VALUATION_BACKFILL_START, trade_date)
-    if df.is_empty():
-        return {"rows_read": 0, "rows_written": 0}
-    return write_fetched(config, run_id, "valuation_metrics", df, source="baostock")
+    universe = [s for s in load_symbols(config) if _is_all_a(s)]
+    todo = _symbols_needing_backfill(config, universe)
+    if not todo:
+        return {"rows_read": 0, "rows_written": 0, "note": "all symbols already backfilled"}
+
+    df, failed = fetch_valuation_history(todo, _VALUATION_BACKFILL_START, trade_date)
+
+    result: dict = {"rows_read": 0, "rows_written": 0}
+    if not df.is_empty():
+        result = write_fetched(config, run_id, "valuation_metrics", df, source="baostock")
+    if failed:
+        result["failed_symbols"] = len(failed)
+        finding = {
+            "dataset": "valuation_metrics",
+            "severity": "warning",
+            "code": "baostock_backfill_incomplete",
+            "message": (
+                f"{len(failed)}/{len(todo)} symbols failed baostock backfill "
+                f"(throttled/dropped); re-run `sde backfill valuation_metrics` to resume."
+            ),
+        }
+        result.setdefault("context_updates", {})["audit_findings"] = [finding]
+    return result
+
+
+def _symbols_needing_backfill(config: Config, universe: list[str]) -> list[str]:
+    """Universe symbols that have no baostock history in the lake yet (resume set)."""
+    import polars as pl
+
+    part = config.curated_root / "valuation_metrics"
+    files = list(part.glob("**/*.parquet")) if part.exists() else []
+    if not files:
+        return universe
+    done = (
+        pl.scan_parquet(files)
+        .filter(pl.col("source") == "baostock")
+        .select("symbol")
+        .unique()
+        .collect()
+        .get_column("symbol")
+        .to_list()
+    )
+    done_set = set(done)
+    return [s for s in universe if s not in done_set]
 
 
 def _is_all_a(symbol: str) -> bool:
