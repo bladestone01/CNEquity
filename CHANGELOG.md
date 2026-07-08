@@ -7,6 +7,21 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Trading calendar over-reported non-trading days** — 75 closed weekends/holidays
+  were flagged `is_trading=True` (2016–2026), shrinking the index/benchmark sample
+  downstream (e.g. `000300.SH` had 2087 bars vs 2148 calendar days over
+  2016-06..2024-12). Root cause in `adapters/calendar/holidays_cn`: (1)
+  `EXTRA_TRADING_DATES` misapplied China's 调休 make-up **workday** calendar — the
+  SSE/SZSE never open on those weekends, so the set is now empty; (2) New Year (元旦)
+  closures were systematically missing from `CLOSED_DATES` for 2019+. Verified against
+  `daily_bars`/`index_bars` presence: every corrected day had zero trades, and the
+  patched calendar has 0 false-positives/0 false-negatives across the empirical range.
+  Regenerated the bundled seed CSV and rebuilt the 78 affected curated
+  `trading_calendar` partitions. `index_bars` was complete all along — nothing was
+  missing there.
+- **Audit: `index_bars` vs `trading_calendar` coverage check** — new
+  `index_bars_calendar_coverage` finding flags any index symbol with calendar
+  trading days that have no bar, or bars on non-trading days, within its covered span.
 - **CDR handling (689xxx segment)** — classify CDRs and exclude them from `all_a`
   - `is_cdr_symbol` in `domain/symbols`; tdx instruments adapter emits
     `asset_type="cdr"`; the `all_a` universe excludes SH 689xxx (depositary

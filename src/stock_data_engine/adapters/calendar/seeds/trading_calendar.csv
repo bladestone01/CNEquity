@@ -35,7 +35,7 @@ trade_date,is_trading
 2016-02-03,True
 2016-02-04,True
 2016-02-05,True
-2016-02-06,True
+2016-02-06,False
 2016-02-07,False
 2016-02-08,False
 2016-02-09,False
@@ -43,7 +43,7 @@ trade_date,is_trading
 2016-02-11,False
 2016-02-12,False
 2016-02-13,False
-2016-02-14,True
+2016-02-14,False
 2016-02-15,True
 2016-02-16,True
 2016-02-17,True
@@ -162,7 +162,7 @@ trade_date,is_trading
 2016-06-09,False
 2016-06-10,False
 2016-06-11,False
-2016-06-12,True
+2016-06-12,False
 2016-06-13,True
 2016-06-14,True
 2016-06-15,True
@@ -260,7 +260,7 @@ trade_date,is_trading
 2016-09-15,False
 2016-09-16,False
 2016-09-17,False
-2016-09-18,True
+2016-09-18,False
 2016-09-19,True
 2016-09-20,True
 2016-09-21,True
@@ -280,8 +280,8 @@ trade_date,is_trading
 2016-10-05,False
 2016-10-06,False
 2016-10-07,False
-2016-10-08,True
-2016-10-09,True
+2016-10-08,False
+2016-10-09,False
 2016-10-10,True
 2016-10-11,True
 2016-10-12,True
@@ -386,7 +386,7 @@ trade_date,is_trading
 2017-01-19,True
 2017-01-20,True
 2017-01-21,False
-2017-01-22,True
+2017-01-22,False
 2017-01-23,True
 2017-01-24,True
 2017-01-25,True
@@ -399,7 +399,7 @@ trade_date,is_trading
 2017-02-01,False
 2017-02-02,False
 2017-02-03,True
-2017-02-04,True
+2017-02-04,False
 2017-02-05,False
 2017-02-06,True
 2017-02-07,True
@@ -455,7 +455,7 @@ trade_date,is_trading
 2017-03-29,True
 2017-03-30,True
 2017-03-31,True
-2017-04-01,True
+2017-04-01,False
 2017-04-02,False
 2017-04-03,False
 2017-04-04,False
@@ -511,7 +511,7 @@ trade_date,is_trading
 2017-05-24,True
 2017-05-25,True
 2017-05-26,True
-2017-05-27,True
+2017-05-27,False
 2017-05-28,False
 2017-05-29,False
 2017-05-30,False
@@ -637,7 +637,7 @@ trade_date,is_trading
 2017-09-27,True
 2017-09-28,True
 2017-09-29,True
-2017-09-30,True
+2017-09-30,False
 2017-10-01,False
 2017-10-02,False
 2017-10-03,False
@@ -771,7 +771,7 @@ trade_date,is_trading
 2018-02-08,True
 2018-02-09,True
 2018-02-10,False
-2018-02-11,True
+2018-02-11,False
 2018-02-12,True
 2018-02-13,True
 2018-02-14,True
@@ -784,7 +784,7 @@ trade_date,is_trading
 2018-02-21,False
 2018-02-22,True
 2018-02-23,True
-2018-02-24,True
+2018-02-24,False
 2018-02-25,False
 2018-02-26,True
 2018-02-27,True
@@ -827,7 +827,7 @@ trade_date,is_trading
 2018-04-05,False
 2018-04-06,False
 2018-04-07,False
-2018-04-08,True
+2018-04-08,False
 2018-04-09,True
 2018-04-10,True
 2018-04-11,True
@@ -1001,8 +1001,8 @@ trade_date,is_trading
 2018-09-26,True
 2018-09-27,True
 2018-09-28,True
-2018-09-29,True
-2018-09-30,True
+2018-09-29,False
+2018-09-30,False
 2018-10-01,False
 2018-10-02,False
 2018-10-03,False
@@ -1094,8 +1094,8 @@ trade_date,is_trading
 2018-12-28,True
 2018-12-29,False
 2018-12-30,False
-2018-12-31,True
-2019-01-01,True
+2018-12-31,False
+2019-01-01,False
 2019-01-02,True
 2019-01-03,True
 2019-01-04,True
@@ -1127,8 +1127,8 @@ trade_date,is_trading
 2019-01-30,True
 2019-01-31,True
 2019-02-01,True
-2019-02-02,True
-2019-02-03,True
+2019-02-02,False
+2019-02-03,False
 2019-02-04,False
 2019-02-05,False
 2019-02-06,False
@@ -1212,14 +1212,14 @@ trade_date,is_trading
 2019-04-25,True
 2019-04-26,True
 2019-04-27,False
-2019-04-28,True
+2019-04-28,False
 2019-04-29,True
 2019-04-30,True
 2019-05-01,False
 2019-05-02,False
 2019-05-03,False
 2019-05-04,False
-2019-05-05,True
+2019-05-05,False
 2019-05-06,True
 2019-05-07,True
 2019-05-08,True
@@ -1366,7 +1366,7 @@ trade_date,is_trading
 2019-09-26,True
 2019-09-27,True
 2019-09-28,False
-2019-09-29,True
+2019-09-29,False
 2019-09-30,True
 2019-10-01,False
 2019-10-02,False
@@ -1379,7 +1379,7 @@ trade_date,is_trading
 2019-10-09,True
 2019-10-10,True
 2019-10-11,True
-2019-10-12,True
+2019-10-12,False
 2019-10-13,False
 2019-10-14,True
 2019-10-15,True
@@ -1460,7 +1460,7 @@ trade_date,is_trading
 2019-12-29,False
 2019-12-30,True
 2019-12-31,True
-2020-01-01,True
+2020-01-01,False
 2020-01-02,True
 2020-01-03,True
 2020-01-04,False
@@ -1478,7 +1478,7 @@ trade_date,is_trading
 2020-01-16,True
 2020-01-17,True
 2020-01-18,False
-2020-01-19,True
+2020-01-19,False
 2020-01-20,True
 2020-01-21,True
 2020-01-22,True
@@ -1576,7 +1576,7 @@ trade_date,is_trading
 2020-04-23,True
 2020-04-24,True
 2020-04-25,False
-2020-04-26,True
+2020-04-26,False
 2020-04-27,True
 2020-04-28,True
 2020-04-29,True
@@ -1589,7 +1589,7 @@ trade_date,is_trading
 2020-05-06,True
 2020-05-07,True
 2020-05-08,True
-2020-05-09,True
+2020-05-09,False
 2020-05-10,False
 2020-05-11,True
 2020-05-12,True
@@ -1639,7 +1639,7 @@ trade_date,is_trading
 2020-06-25,False
 2020-06-26,False
 2020-06-27,False
-2020-06-28,True
+2020-06-28,False
 2020-06-29,True
 2020-06-30,True
 2020-07-01,True
@@ -1730,7 +1730,7 @@ trade_date,is_trading
 2020-09-24,True
 2020-09-25,True
 2020-09-26,False
-2020-09-27,True
+2020-09-27,False
 2020-09-28,True
 2020-09-29,True
 2020-09-30,True
@@ -1743,7 +1743,7 @@ trade_date,is_trading
 2020-10-07,False
 2020-10-08,False
 2020-10-09,True
-2020-10-10,True
+2020-10-10,False
 2020-10-11,False
 2020-10-12,True
 2020-10-13,True
@@ -1826,7 +1826,7 @@ trade_date,is_trading
 2020-12-29,True
 2020-12-30,True
 2020-12-31,True
-2021-01-01,True
+2021-01-01,False
 2021-01-02,False
 2021-01-03,False
 2021-01-04,True
@@ -1863,7 +1863,7 @@ trade_date,is_trading
 2021-02-04,True
 2021-02-05,True
 2021-02-06,False
-2021-02-07,True
+2021-02-07,False
 2021-02-08,True
 2021-02-09,True
 2021-02-10,True
@@ -1876,7 +1876,7 @@ trade_date,is_trading
 2021-02-17,False
 2021-02-18,True
 2021-02-19,True
-2021-02-20,True
+2021-02-20,False
 2021-02-21,False
 2021-02-22,True
 2021-02-23,True
@@ -1940,7 +1940,7 @@ trade_date,is_trading
 2021-04-22,True
 2021-04-23,True
 2021-04-24,False
-2021-04-25,True
+2021-04-25,False
 2021-04-26,True
 2021-04-27,True
 2021-04-28,True
@@ -1953,7 +1953,7 @@ trade_date,is_trading
 2021-05-05,False
 2021-05-06,True
 2021-05-07,True
-2021-05-08,True
+2021-05-08,False
 2021-05-09,False
 2021-05-10,True
 2021-05-11,True
@@ -2086,7 +2086,7 @@ trade_date,is_trading
 2021-09-15,True
 2021-09-16,True
 2021-09-17,True
-2021-09-18,True
+2021-09-18,False
 2021-09-19,False
 2021-09-20,False
 2021-09-21,False
@@ -2094,7 +2094,7 @@ trade_date,is_trading
 2021-09-23,True
 2021-09-24,True
 2021-09-25,False
-2021-09-26,True
+2021-09-26,False
 2021-09-27,True
 2021-09-28,True
 2021-09-29,True
@@ -2107,7 +2107,7 @@ trade_date,is_trading
 2021-10-06,False
 2021-10-07,False
 2021-10-08,True
-2021-10-09,True
+2021-10-09,False
 2021-10-10,False
 2021-10-11,True
 2021-10-12,True
@@ -2193,7 +2193,7 @@ trade_date,is_trading
 2021-12-31,True
 2022-01-01,False
 2022-01-02,False
-2022-01-03,True
+2022-01-03,False
 2022-01-04,True
 2022-01-05,True
 2022-01-06,True
@@ -2219,8 +2219,8 @@ trade_date,is_trading
 2022-01-26,True
 2022-01-27,True
 2022-01-28,True
-2022-01-29,True
-2022-01-30,True
+2022-01-29,False
+2022-01-30,False
 2022-01-31,False
 2022-02-01,False
 2022-02-02,False
@@ -2282,7 +2282,7 @@ trade_date,is_trading
 2022-03-30,True
 2022-03-31,True
 2022-04-01,True
-2022-04-02,True
+2022-04-02,False
 2022-04-03,False
 2022-04-04,False
 2022-04-05,False
@@ -2317,7 +2317,7 @@ trade_date,is_trading
 2022-05-04,False
 2022-05-05,True
 2022-05-06,True
-2022-05-07,True
+2022-05-07,False
 2022-05-08,False
 2022-05-09,True
 2022-05-10,True
@@ -2471,8 +2471,8 @@ trade_date,is_trading
 2022-10-05,False
 2022-10-06,False
 2022-10-07,False
-2022-10-08,True
-2022-10-09,True
+2022-10-08,False
+2022-10-09,False
 2022-10-10,True
 2022-10-11,True
 2022-10-12,True
@@ -2557,7 +2557,7 @@ trade_date,is_trading
 2022-12-30,True
 2022-12-31,False
 2023-01-01,False
-2023-01-02,True
+2023-01-02,False
 2023-01-03,True
 2023-01-04,True
 2023-01-05,True
@@ -2583,8 +2583,8 @@ trade_date,is_trading
 2023-01-25,False
 2023-01-26,False
 2023-01-27,False
-2023-01-28,True
-2023-01-29,True
+2023-01-28,False
+2023-01-29,False
 2023-01-30,True
 2023-01-31,True
 2023-02-01,True
@@ -2668,7 +2668,7 @@ trade_date,is_trading
 2023-04-20,True
 2023-04-21,True
 2023-04-22,False
-2023-04-23,True
+2023-04-23,False
 2023-04-24,True
 2023-04-25,True
 2023-04-26,True
@@ -2681,7 +2681,7 @@ trade_date,is_trading
 2023-05-03,False
 2023-05-04,True
 2023-05-05,True
-2023-05-06,True
+2023-05-06,False
 2023-05-07,False
 2023-05-08,True
 2023-05-09,True
@@ -2731,7 +2731,7 @@ trade_date,is_trading
 2023-06-22,False
 2023-06-23,False
 2023-06-24,False
-2023-06-25,True
+2023-06-25,False
 2023-06-26,True
 2023-06-27,True
 2023-06-28,True
@@ -2835,8 +2835,8 @@ trade_date,is_trading
 2023-10-04,False
 2023-10-05,False
 2023-10-06,False
-2023-10-07,True
-2023-10-08,True
+2023-10-07,False
+2023-10-08,False
 2023-10-09,True
 2023-10-10,True
 2023-10-11,True
@@ -2921,7 +2921,7 @@ trade_date,is_trading
 2023-12-29,True
 2023-12-30,False
 2023-12-31,False
-2024-01-01,True
+2024-01-01,False
 2024-01-02,True
 2024-01-03,True
 2024-01-04,True
@@ -2955,7 +2955,7 @@ trade_date,is_trading
 2024-02-01,True
 2024-02-02,True
 2024-02-03,False
-2024-02-04,True
+2024-02-04,False
 2024-02-05,True
 2024-02-06,True
 2024-02-07,True
@@ -2969,7 +2969,7 @@ trade_date,is_trading
 2024-02-15,False
 2024-02-16,False
 2024-02-17,False
-2024-02-18,True
+2024-02-18,False
 2024-02-19,True
 2024-02-20,True
 2024-02-21,True
@@ -3018,7 +3018,7 @@ trade_date,is_trading
 2024-04-04,False
 2024-04-05,False
 2024-04-06,False
-2024-04-07,True
+2024-04-07,False
 2024-04-08,True
 2024-04-09,True
 2024-04-10,True
@@ -3039,7 +3039,7 @@ trade_date,is_trading
 2024-04-25,True
 2024-04-26,True
 2024-04-27,False
-2024-04-28,True
+2024-04-28,False
 2024-04-29,True
 2024-04-30,True
 2024-05-01,False
@@ -3052,7 +3052,7 @@ trade_date,is_trading
 2024-05-08,True
 2024-05-09,True
 2024-05-10,True
-2024-05-11,True
+2024-05-11,False
 2024-05-12,False
 2024-05-13,True
 2024-05-14,True
@@ -3178,7 +3178,7 @@ trade_date,is_trading
 2024-09-11,True
 2024-09-12,True
 2024-09-13,True
-2024-09-14,True
+2024-09-14,False
 2024-09-15,False
 2024-09-16,False
 2024-09-17,False
@@ -3193,7 +3193,7 @@ trade_date,is_trading
 2024-09-26,True
 2024-09-27,True
 2024-09-28,False
-2024-09-29,True
+2024-09-29,False
 2024-09-30,True
 2024-10-01,False
 2024-10-02,False
@@ -3206,7 +3206,7 @@ trade_date,is_trading
 2024-10-09,True
 2024-10-10,True
 2024-10-11,True
-2024-10-12,True
+2024-10-12,False
 2024-10-13,False
 2024-10-14,True
 2024-10-15,True
@@ -3287,7 +3287,7 @@ trade_date,is_trading
 2024-12-29,False
 2024-12-30,True
 2024-12-31,True
-2025-01-01,True
+2025-01-01,False
 2025-01-02,True
 2025-01-03,True
 2025-01-04,False
@@ -3312,7 +3312,7 @@ trade_date,is_trading
 2025-01-23,True
 2025-01-24,True
 2025-01-25,False
-2025-01-26,True
+2025-01-26,False
 2025-01-27,True
 2025-01-28,False
 2025-01-29,False
@@ -3325,7 +3325,7 @@ trade_date,is_trading
 2025-02-05,True
 2025-02-06,True
 2025-02-07,True
-2025-02-08,True
+2025-02-08,False
 2025-02-09,False
 2025-02-10,True
 2025-02-11,True
@@ -3403,7 +3403,7 @@ trade_date,is_trading
 2025-04-24,True
 2025-04-25,True
 2025-04-26,False
-2025-04-27,True
+2025-04-27,False
 2025-04-28,True
 2025-04-29,True
 2025-04-30,True
@@ -3557,7 +3557,7 @@ trade_date,is_trading
 2025-09-25,True
 2025-09-26,True
 2025-09-27,False
-2025-09-28,True
+2025-09-28,False
 2025-09-29,True
 2025-09-30,True
 2025-10-01,False
@@ -3570,7 +3570,7 @@ trade_date,is_trading
 2025-10-08,False
 2025-10-09,True
 2025-10-10,True
-2025-10-11,True
+2025-10-11,False
 2025-10-12,False
 2025-10-13,True
 2025-10-14,True
@@ -3652,8 +3652,8 @@ trade_date,is_trading
 2025-12-29,True
 2025-12-30,True
 2025-12-31,True
-2026-01-01,True
-2026-01-02,True
+2026-01-01,False
+2026-01-02,False
 2026-01-03,False
 2026-01-04,False
 2026-01-05,True
@@ -3696,7 +3696,7 @@ trade_date,is_trading
 2026-02-11,True
 2026-02-12,True
 2026-02-13,True
-2026-02-14,True
+2026-02-14,False
 2026-02-15,False
 2026-02-16,False
 2026-02-17,False
@@ -3705,12 +3705,12 @@ trade_date,is_trading
 2026-02-20,False
 2026-02-21,False
 2026-02-22,False
-2026-02-23,True
+2026-02-23,False
 2026-02-24,True
 2026-02-25,True
 2026-02-26,True
 2026-02-27,True
-2026-02-28,True
+2026-02-28,False
 2026-03-01,False
 2026-03-02,True
 2026-03-03,True
@@ -3780,7 +3780,7 @@ trade_date,is_trading
 2026-05-06,True
 2026-05-07,True
 2026-05-08,True
-2026-05-09,True
+2026-05-09,False
 2026-05-10,False
 2026-05-11,True
 2026-05-12,True
@@ -3921,7 +3921,7 @@ trade_date,is_trading
 2026-09-24,True
 2026-09-25,False
 2026-09-26,False
-2026-09-27,True
+2026-09-27,False
 2026-09-28,True
 2026-09-29,True
 2026-09-30,True
@@ -3934,7 +3934,7 @@ trade_date,is_trading
 2026-10-07,False
 2026-10-08,True
 2026-10-09,True
-2026-10-10,True
+2026-10-10,False
 2026-10-11,False
 2026-10-12,True
 2026-10-13,True
@@ -4017,7 +4017,7 @@ trade_date,is_trading
 2026-12-29,True
 2026-12-30,True
 2026-12-31,True
-2027-01-01,True
+2027-01-01,False
 2027-01-02,False
 2027-01-03,False
 2027-01-04,True

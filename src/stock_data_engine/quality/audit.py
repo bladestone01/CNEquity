@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import polars as pl
+
 from stock_data_engine.adapters.calendar.exchange_calendar import (
     CALENDAR_FORWARD_COVERAGE_WARN_DAYS,
     calendar_forward_coverage_days,
@@ -12,7 +14,80 @@ from stock_data_engine.config import Config
 from stock_data_engine.domain.datasets import PARTITION_COLS
 from stock_data_engine.quality.dataset_checks import audit_curated_dataset
 from stock_data_engine.quality.source_diff import run_source_diffs
+from stock_data_engine.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from stock_data_engine.query.universe import coverage_start_date, trading_status_coverage_start
+
+# Sample missing/orphan dates surfaced in a coverage finding.
+_INDEX_COVERAGE_SAMPLE = 8
+
+
+def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict]:
+    """Flag index symbols whose curated bars don't match the trading calendar.
+
+    An index quotes every trading day, so within a symbol's covered span every
+    calendar trading day must have a bar (missing days) and every bar day must
+    be a calendar trading day (orphan bars). Divergence means either a fetch
+    gap in index_bars or a wrong trading_calendar — both shrink the benchmark
+    sample used downstream for excess-return / tracking-error stats.
+    """
+    findings: list[dict] = []
+    cal_root = config.curated_root / "trading_calendar"
+    ib_root = config.curated_root / "index_bars"
+    if not dataset_has_parquet(cal_root) or not dataset_has_parquet(ib_root):
+        return findings
+
+    cal = (
+        scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date)
+        .filter(pl.col("is_trading"))
+        .select("trade_date")
+        .unique()
+        .collect()
+    )
+    trading_days = set(cal["trade_date"].to_list())
+    if not trading_days:
+        return findings
+
+    ib = (
+        scan_parquet_root(ib_root, partition_col="trade_date", end=trade_date)
+        .select("symbol", "trade_date")
+        .unique()
+        .collect()
+    )
+    if ib.is_empty():
+        return findings
+
+    for sym in sorted(ib["symbol"].unique().to_list()):
+        days = sorted(ib.filter(pl.col("symbol") == sym)["trade_date"].to_list())
+        first, last = days[0], days[-1]
+        have = set(days)
+        expected = {d for d in trading_days if first <= d <= last}
+        missing = sorted(expected - have)
+        orphan = sorted(d for d in days if d not in trading_days)
+        if not missing and not orphan:
+            continue
+        parts = []
+        if missing:
+            parts.append(f"{len(missing)} calendar trading day(s) with no bar")
+        if orphan:
+            parts.append(f"{len(orphan)} bar(s) on non-trading days")
+        findings.append(
+            {
+                "dataset": "index_bars",
+                "symbol": sym,
+                "severity": "warning",
+                "check": "index_bars_calendar_coverage",
+                "message": (
+                    f"{sym}: " + "; ".join(parts) + f" over {first.isoformat()}..{last.isoformat()}"
+                ),
+                "covered_days": len(have),
+                "expected_days": len(expected),
+                "missing_count": len(missing),
+                "orphan_count": len(orphan),
+                "missing_sample": [d.isoformat() for d in missing[:_INDEX_COVERAGE_SAMPLE]],
+                "orphan_sample": [d.isoformat() for d in orphan[:_INDEX_COVERAGE_SAMPLE]],
+            }
+        )
+    return findings
 
 
 def _collect_lake_findings(
@@ -87,6 +162,8 @@ def _collect_lake_findings(
                 "daily_bars_start": bars_start.isoformat() if bars_start else None,
             }
         )
+
+    findings.extend(_index_bars_coverage_findings(config, trade_date))
 
     for ds, pcol in PARTITION_COLS.items():
         findings.extend(
