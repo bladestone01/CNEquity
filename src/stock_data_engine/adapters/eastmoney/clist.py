@@ -89,8 +89,13 @@ def fetch_clist_pages(
                 active_host = host
                 break
             if active_host is None:
-                logger.warning("EastMoney clist page %s failed on all hosts", page)
-                break
+                # Full-universe snapshot: returning the rows gathered so far
+                # would silently truncate the list (R-22). Fail loud so the
+                # batch is marked failed and retried, not persisted short.
+                raise RuntimeError(
+                    f"EastMoney clist page {page} failed on all hosts "
+                    f"({len(rows)} rows fetched before failure)"
+                )
         else:
             try:
                 page_rows, total = _fetch_clist_page(
@@ -102,10 +107,11 @@ def fetch_clist_pages(
                     page_size=page_size,
                 )
             except Exception as exc:
-                logger.warning(
-                    "EastMoney clist page %s failed on %s: %s", page, active_host, exc
-                )
-                break
+                # Mid-pagination failure = truncated snapshot; fail loud.
+                raise RuntimeError(
+                    f"EastMoney clist page {page} failed on {active_host} "
+                    f"({len(rows)} rows fetched before failure)"
+                ) from exc
 
         if not page_rows:
             break
