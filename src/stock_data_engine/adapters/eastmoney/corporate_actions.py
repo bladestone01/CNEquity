@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 _REPORT = "RPT_SHAREBONUS_DET"
 # EastMoney renamed these columns (EX_DIV_DATE→EX_DIVIDEND_DATE,
 # CASH_BTAX_RMB→PRETAX_BONUS_RMB, TRANSFER_RATIO→IT_RATIO) ~2026; the old names
-# now 404 the whole report (code=9501). Amounts/ratios are per-10-shares,
-# pretax — matching the prior contract.
+# now 404 the whole report (code=9501). EM quotes amounts/ratios per-10-shares,
+# pretax; _parse_row divides by 10 to honor the per-share CORPORATE_ACTIONS
+# unit contract (schemas.py). Do NOT stage the raw per-10 values.
 _EX_DATE_COL = "EX_DIVIDEND_DATE"
 _COLUMNS = (
     "SECURITY_CODE,SECUCODE,EX_DIVIDEND_DATE,EQUITY_RECORD_DATE,PRETAX_BONUS_RMB,"
@@ -78,9 +79,10 @@ def _parse_row(row: dict) -> dict | None:
     if not action_type:
         return None
 
-    cash = _num(row.get("PRETAX_BONUS_RMB"))
-    bonus = _num(row.get("BONUS_RATIO"))
-    transfer = _num(row.get("IT_RATIO"))
+    # EM values are per-10-shares; divide by 10 for the per-share contract.
+    cash = _num(row.get("PRETAX_BONUS_RMB")) / 10.0
+    bonus = _num(row.get("BONUS_RATIO")) / 10.0
+    transfer = _num(row.get("IT_RATIO")) / 10.0
     return {
         "symbol": symbol,
         "ex_date": ex_date,

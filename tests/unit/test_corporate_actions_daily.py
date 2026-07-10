@@ -60,11 +60,12 @@ def test_parse_row_maps_current_eastmoney_columns():
             "IMPL_PLAN_PROFILE": "10派8.50元(含税,扣税后7.65元)",
         }
     )
+    # per-share contract: EM "10派8.50元" (8.5 per 10 shares) → 0.85 per share
     assert cash == {
         "symbol": "605009.SH",
         "ex_date": date(2026, 7, 6),
         "action_type": "cash_dividend",
-        "cash_dividend": 8.5,
+        "cash_dividend": 0.85,
         "bonus_ratio": 0.0,
         "transfer_ratio": 0.0,
         "allotment_ratio": None,
@@ -80,8 +81,9 @@ def test_parse_row_maps_current_eastmoney_columns():
             "IMPL_PLAN_PROFILE": "10转4.00股",
         }
     )
+    # per-share contract: EM "10转4.00股" (4.0 per 10 shares) → 0.4 per share
     assert transfer["action_type"] == "transfer"
-    assert transfer["transfer_ratio"] == 4.0
+    assert transfer["transfer_ratio"] == 0.4
     assert transfer["symbol"] == "000001.SZ"
 
     # no ex-date → skipped (not yet ex-dividend)

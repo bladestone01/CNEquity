@@ -20,6 +20,25 @@ the project adheres to [Semantic Versioning](https://semver.org/).
     + `pip install -e '.[valuation]'`).
 
 ### Fixed
+- **corporate_actions unit inconsistency (per-share vs per-10-share)** — the
+  curated dataset mixed dimensions: `cash_dividend` was per-share while
+  `bonus_ratio`/`transfer_ratio`/`allotment_ratio` were the raw per-10-share
+  ("每10股") values sources quote, silently breaking any downstream real-share
+  accounting (StockWorkbench's ledger backtest compensated locally with a `/10`
+  fudge; fast-vs-ledger reconciliation diverged 48% until then). Worse,
+  `cash_dividend` itself was **cross-source inconsistent**: the TDX `xdxr`
+  adapter divided by 10 (per-share) but the EastMoney backup staged the raw
+  per-10 value, so the same field was 10× off depending on which source
+  produced the row. Fix: adopted a **per-share unit contract** — every
+  ratio/amount is per one held share. TDX now divides 送转/配 by 10; EastMoney
+  divides cash/送/转 by 10. Contract is documented in
+  `schemas.py CORPORATE_ACTIONS_SCHEMA` and PRD §schema. `allotment_price`
+  stays a per-share price (un-divided). Existing on-disk
+  `curated/corporate_actions` (63,111 rows) was migrated in place by a
+  deterministic transform (bonus/transfer/allotment ÷10 for all rows;
+  cash_dividend ÷10 for `source=eastmoney` rows only, since TDX cash was
+  already per-share) — no network re-backfill needed, coverage preserved.
+  Downstream consumers should drop any `/10` compensation.
 - **Trading calendar over-reported non-trading days** — 75 closed weekends/holidays
   were flagged `is_trading=True` (2016–2026), shrinking the index/benchmark sample
   downstream (e.g. `000300.SH` had 2087 bars vs 2148 calendar days over
