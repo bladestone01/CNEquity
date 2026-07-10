@@ -1,9 +1,41 @@
 # StockWorkbench 详细设计（v0.1 草案）
 
-> 独立于 stock-data-engine 的 A 股研究与选股分析系统。本文档暂存于引擎仓库 `docs/`，
-> StockWorkbench 仓库初始化后应随代码迁走，并以彼处版本为准。
+> 独立于 stock-data-engine 的 A 股研究与选股分析系统。**已在 `/Users/chaosun/code/StockWorkbench`
+> 落地实现**（本设计文档暂留引擎仓库 `docs/`，以代码仓库为准）。
 >
-> 状态：已评审采纳（2026-07-06），MVP Phase 1 范围见 §14.1 ｜ 依赖：stock-data-engine（唯一数据源）
+> 状态：M0–M4 + Phase 1.5 全部完成（2026-07-08）｜ 依赖：stock-data-engine（唯一数据源）
+
+---
+
+## 0. 实施状态（2026-07-08）
+
+MVP Phase 1 + 1.5 全部落地，111 测试全绿。核心闭环贯通：数据护栏 → 12 因子 →
+三策略 + 融合 → fast/ledger 双模式对账回测 → 每日 `wb daily` 信号（append-only
+ledger）→ 月度复盘。
+
+| 里程碑 | 交付 | 状态 |
+|--------|------|------|
+| M0 骨架 | DataView（hfq-only/strict-adj/日历越界 fail-loud）、水位缓存、tradable_mask、`wb data status` 门禁、data/quality.py 坏复权护栏、引擎契约测试 | ✅ |
+| M1 因子 | Factor 协议 + FactorStore 增量引擎（与全量重算逐字节一致）+ 6 量价因子 + IC/分层报告 | ✅ |
+| M2 回测 | fast 引擎（T+1/涨跌停/停牌/退市/整手/成本、sell-then-scale-buy 防杠杆）+ 策略层 + 绩效 + BacktestReport + 涨跌停/T+1 golden tests | ✅ |
+| M3 闭环 | `wb daily`（新鲜度门→算因子→目标持仓 diff→写信号→DailyBrief）+ SQLite ledger + RiskRules 黑名单 + regime | ✅ |
+| M4 强化 | RegimeOverlay 择时 + walk-forward + `wb review --month` + ledger 精确引擎 + **fast/ledger 双模式对账（D5 自检，实测差 0.15%）** | ✅ |
+| Phase 1.5 | PIT 基本面因子（roe/net_profit_yoy/revenue_yoy）+ 价值因子（ep_ttm/bp/sp_ttm）+ 3 个 Notebook | ✅ |
+
+**因子库 12 个**：6 量价（mom_20d/mom_60d/rev_5d/vol_20d/amount_20d/amihud_20d）
++ 3 基本面 PIT（roe/net_profit_yoy/revenue_yoy）+ 3 价值（ep_ttm/bp/sp_ttm）。
+
+**实证结论（全市场，仅供参考）**：vol_20d（ICIR 0.54）与 bp（ICIR 0.40、单调 +1.0）
+最强；A 股 60 日动量呈反转，EP 弱于 BP（亏损股 1/PE 伪影）。三因子融合
+`vol_20d+bp+roe`（低波+价值+质量）CAGR 12.95%/Sharpe 0.84/最大回撤 -16.8%/超额 +13.2%
+——多因子分散把回撤砍到单因子的一半，是系统核心成果。
+
+**通过本项目反向发现并上报的引擎数据问题**：① adj_factors hfq 历史断裂（22.6% 股票，已修）
+② trading_calendar 调休 75 天误标 ③ index_bars 覆盖 ④ corporate_actions 分红每股/送转每10股
+量纲不一致（ledger 已本地兼容 /10，对账从差 48% 收敛到 0.15%）。
+
+**待引擎数据的剩余缺口**：size 因子/市值中性化（valuation total_mv 为 null）、
+行业中性化（industry_members）、资金面（fund_flow 需先验证北向口径）、大师预设插件（远期）。
 
 ---
 
