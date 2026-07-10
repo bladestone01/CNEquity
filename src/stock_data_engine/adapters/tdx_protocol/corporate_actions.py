@@ -57,7 +57,10 @@ def _rows_from_xdxr(symbol: str, pdf: pl.DataFrame) -> list[dict]:
                     "ex_date": ex_date,
                     "action_type": _ACTION_TYPES["bonus"],
                     "cash_dividend": 0.0,
-                    "bonus_ratio": songzhuangu,
+                    # per-share contract: TDX songzhuangu is 每10股 (combined
+                    # 送+转); divide by 10. All total goes to bonus_ratio —
+                    # xdxr does not split 送 vs 转, but total mult is exact.
+                    "bonus_ratio": songzhuangu / 10.0,
                     "transfer_ratio": 0.0,
                     "allotment_ratio": None,
                     "allotment_price": None,
@@ -72,7 +75,9 @@ def _rows_from_xdxr(symbol: str, pdf: pl.DataFrame) -> list[dict]:
                     "cash_dividend": 0.0,
                     "bonus_ratio": 0.0,
                     "transfer_ratio": 0.0,
-                    "allotment_ratio": peigu,
+                    # per-share contract: peigu is 每10股, divide by 10.
+                    # peigujia is already a per-share price — leave as-is.
+                    "allotment_ratio": peigu / 10.0,
                     "allotment_price": peigujia if peigujia else None,
                 }
             )

@@ -57,15 +57,22 @@ TRADING_STATUS_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# UNIT CONTRACT (per-share): every ratio/amount below is per ONE held share,
+# NOT the "每10股" convention Chinese sources quote raw. Adapters divide raw
+# per-10-share source values by 10 before staging. So "10派8.5元" → 0.85,
+# "10送8股" → 0.8, "10转4股" → 0.4, "10配3股" → 0.3. Downstream real-share
+# accounting is uniform: shares_after = shares * (1 + bonus_ratio +
+# transfer_ratio); cash = shares * cash_dividend. No /10 magic numbers.
+# allotment_price stays a per-share price (yuan paid per allotted share).
 CORPORATE_ACTIONS_SCHEMA = {
     "symbol": pl.Utf8,
     "ex_date": pl.Date,
     "action_type": pl.Utf8,
-    "cash_dividend": pl.Float64,
-    "bonus_ratio": pl.Float64,
-    "transfer_ratio": pl.Float64,
-    "allotment_ratio": pl.Float64,
-    "allotment_price": pl.Float64,
+    "cash_dividend": pl.Float64,  # per share (yuan), pretax
+    "bonus_ratio": pl.Float64,  # per share (送股: new shares per held share)
+    "transfer_ratio": pl.Float64,  # per share (转股: new shares per held share)
+    "allotment_ratio": pl.Float64,  # per share (配股: offered shares per held share)
+    "allotment_price": pl.Float64,  # per allotted share (yuan), NOT a ratio
     "source": pl.Utf8,
     "data_version": pl.Utf8,
     "fetched_at": FETCHED_AT_DTYPE,

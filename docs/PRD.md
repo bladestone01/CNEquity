@@ -728,14 +728,25 @@ Same as daily_bars plus `frequency` (default `1d`), `asset_type=index`.
 | symbol | string | |
 | ex_date | date | |
 | action_type | string | cash_dividend/bonus/transfer/allotment |
-| cash_dividend | float64 | per share |
-| bonus_ratio | float64 | per 10 shares |
-| transfer_ratio | float64 | per 10 shares |
-| allotment_ratio | float64 | nullable |
-| allotment_price | float64 | nullable |
+| cash_dividend | float64 | **per share** (yuan, pretax) |
+| bonus_ratio | float64 | **per share** (送股: new shares per held share) |
+| transfer_ratio | float64 | **per share** (转股: new shares per held share) |
+| allotment_ratio | float64 | **per share** (配股: offered shares per held share), nullable |
+| allotment_price | float64 | per allotted share (yuan), NOT a ratio, nullable |
 | source | string | |
 | data_version | string | |
 | fetched_at | timestamp | |
+
+> **Unit contract (per-share).** All ratios/amounts are per ONE held share, not
+> the raw "每10股" convention that TDX (`xdxr`) and EastMoney quote. Adapters
+> divide raw per-10-share source values by 10 before staging (e.g. "10派8.5元"
+> → 0.85, "10送8股" → 0.8, "10转4股" → 0.4, "10配3股" → 0.3). Downstream
+> real-share accounting is uniform with no /10 magic numbers:
+> `shares_after = shares × (1 + bonus_ratio + transfer_ratio)`,
+> `cash = shares × cash_dividend`. `allotment_price` is a per-share price, not
+> a ratio, and is left un-divided. Note: TDX `xdxr` does not split 送 vs 转 —
+> it puts the combined 送转 total into `bonus_ratio` (transfer_ratio=0); the
+> total mult is exact but the 送/转 split is only distinguished on EM daily.
 
 #### adj_factors
 
