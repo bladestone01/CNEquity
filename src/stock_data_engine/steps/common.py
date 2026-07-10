@@ -187,3 +187,26 @@ def load_symbols(config: Config) -> list[str]:
         config=config,
     )
     return df["symbol"].to_list()
+
+
+def load_bar_universe(config: Config) -> set[str]:
+    """Symbols that carry at least one ``daily_bars`` row anywhere in the lake.
+
+    This is the *tradable* universe as daily_bars actually realises it: delisted
+    names (source returns no bars) and never-traded instrument placeholders (IPO
+    listed but not yet trading) are absent. Live snapshots such as the EastMoney
+    valuation clist return those dead names, so filtering to this set keeps
+    valuation_metrics in lock-step with daily_bars coverage (audit check
+    ``valuation_bars_orphan_symbol``). A genuine IPO enters this set the same day
+    it first trades and gets a bar.
+
+    Returns an empty set when no bars exist yet; callers must treat that as
+    "cannot reconcile" and skip filtering rather than dropping every row.
+    """
+    bars_root = config.curated_root / "daily_bars"
+    files = list(bars_root.glob("**/*.parquet")) if bars_root.exists() else []
+    if not files:
+        return set()
+    return set(
+        pl.scan_parquet(files).select("symbol").unique().collect()["symbol"].to_list()
+    )

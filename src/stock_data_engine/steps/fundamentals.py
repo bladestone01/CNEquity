@@ -9,7 +9,7 @@ from stock_data_engine.adapters.eastmoney.valuation import fetch_valuation_metri
 from stock_data_engine.config import Config
 from stock_data_engine.domain.symbols import is_all_a_symbol, parse_symbol
 from stock_data_engine.orchestrator.registry import register_step
-from stock_data_engine.steps.common import load_symbols
+from stock_data_engine.steps.common import load_bar_universe, load_symbols
 from stock_data_engine.steps.http_common import run_incremental_fetched, write_fetched
 
 # EastMoney's valuation clist is a live snapshot only; history comes from baostock.
@@ -22,6 +22,10 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
         return _backfill_valuation_metrics(config, trade_date, run_id)
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("valuation_metrics: eastmoney source disabled in config")
+    # The EastMoney clist snapshot returns delisted / non-tradable names that
+    # never have a price bar (audit: valuation_bars_orphan_symbol). Pin the daily
+    # snapshot to the same universe daily_bars actually realises so PE/PB rows are
+    # only written for symbols that trade.
     return run_incremental_fetched(
         config,
         trade_date,
@@ -30,6 +34,7 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
         fetch_valuation_metrics,
         source="eastmoney",
         allow_empty=True,
+        universe=load_bar_universe(config),
     )
 
 
@@ -44,6 +49,13 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
     from stock_data_engine.adapters.baostock.valuation import fetch_valuation_history
 
     universe = [s for s in load_symbols(config) if _is_all_a(s)]
+    # Only backfill symbols that actually have price bars: a delisted name still
+    # sitting in the instruments list (e.g. 退市创兴) otherwise gets years of
+    # baostock PE/PB with no bar to join against (audit: orphan symbol). Skip the
+    # constraint on a bars-less lake so a first-time backfill still runs.
+    bar_universe = load_bar_universe(config)
+    if bar_universe:
+        universe = [s for s in universe if s in bar_universe]
     todo = _symbols_needing_backfill(config, universe)
     if not todo:
         return {"rows_read": 0, "rows_written": 0, "note": "all symbols already backfilled"}

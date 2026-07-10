@@ -33,6 +33,7 @@ def run_incremental_fetched(
     *,
     source: str,
     allow_empty: bool = False,
+    universe: set[str] | None = None,
 ) -> dict:
     df, findings = fetch_incremental_daily(
         config,
@@ -41,6 +42,12 @@ def run_incremental_fetched(
         fetch_fn,
         allow_empty=allow_empty,
     )
+    if universe and not df.is_empty():
+        # Constrain a live snapshot (e.g. EastMoney valuation clist) to the
+        # tradable universe: the source returns delisted / never-traded names the
+        # lake must not carry. An empty universe means "cannot reconcile" — skip
+        # filtering rather than dropping every row.
+        df = df.filter(pl.col("symbol").is_in(list(universe)))
     if df.is_empty():
         out: dict = {"rows_read": 0, "rows_written": 0}
         if findings:
