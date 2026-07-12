@@ -73,18 +73,24 @@ def to_baostock_symbol(symbol: str) -> str:
 
 
 def _force_close_baostock_socket() -> None:
-    """Close baostock's live socket so a blocked/slowloris read raises at once.
+    """Interrupt baostock's live socket so a blocked/slowloris read raises at once.
 
-    baostock keeps the connection as a module global; closing it out from under
-    the read is the only way to interrupt a stall it will not time out on. The
-    next retry relogins and gets a fresh socket.
+    baostock keeps the connection as a module global. ``shutdown(SHUT_RDWR)`` —
+    not ``close()`` — is what reliably wakes a ``recv`` blocked in another thread:
+    ``close()`` only drops this thread's reference and the peer's read can keep
+    hanging. Shut down then close; the next retry relogins onto a fresh socket.
     """
     try:
         import baostock.common.context as bctx  # noqa: PLC0415 — optional dep, lazy
 
         sock = getattr(bctx, "default_socket", None)
-        if sock is not None:
-            sock.close()
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # already torn down / not connected
+        sock.close()
     except Exception:  # noqa: BLE001 — best-effort interrupt; never raise from the timer
         pass
 
