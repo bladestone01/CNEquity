@@ -26,9 +26,16 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.domain.symbols import parse_symbol
+from stock_data_engine.adapters.baostock._session import (
+    fetch_per_symbol,
+    to_baostock_symbol,
+)
 
 logger = logging.getLogger(__name__)
+
+# Re-exported for backwards compatibility (``adapters.baostock.valuation`` was
+# the original home of this helper before the shared session driver).
+__all__ = ["fetch_valuation_history", "to_baostock_symbol"]
 
 # baostock k-data field order requested per row.
 _FIELDS = "date,code,peTTM,pbMRQ,psTTM"
@@ -43,19 +50,6 @@ _OUTPUT_SCHEMA = {
     "float_mv": pl.Float64,
 }
 
-_MAX_RETRIES = 3
-_BACKOFF_SECONDS = (1.0, 3.0, 8.0)
-# Refresh the session periodically; a single long-held session dies mid-sweep.
-_RELOGIN_EVERY = 300
-
-
-def to_baostock_symbol(symbol: str) -> str:
-    """``600519.SH`` -> ``sh.600519`` (baostock's market-prefixed form)."""
-    info = parse_symbol(symbol)
-    prefix = {"SH": "sh", "SZ": "sz", "BJ": "bj"}.get(info.exchange, info.exchange.lower())
-    return f"{prefix}.{info.code}"
-
-
 def _to_float(raw: str | None) -> float | None:
     if raw is None or raw == "":
         return None
@@ -63,31 +57,6 @@ def _to_float(raw: str | None) -> float | None:
         return float(raw)
     except (TypeError, ValueError):
         return None
-
-
-def _import_baostock():
-    try:
-        import baostock as bs  # noqa: PLC0415 — optional dependency, imported lazily
-    except ImportError as exc:  # pragma: no cover - optional dep
-        raise RuntimeError(
-            "baostock is not installed; historical valuation backfill requires it. "
-            "Install with `pip install -e '.[valuation]'`."
-        ) from exc
-    return bs
-
-
-def _login(bs) -> None:
-    login = bs.login()
-    if getattr(login, "error_code", "0") != "0":
-        raise RuntimeError(f"baostock login failed: {getattr(login, 'error_msg', 'unknown')}")
-
-
-def _relogin(bs) -> None:
-    try:
-        bs.logout()
-    except Exception:  # noqa: BLE001 - logout on a dead socket may raise; ignore
-        pass
-    _login(bs)
 
 
 def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
@@ -143,33 +112,8 @@ def fetch_valuation_history(
 
     ``bs`` / ``sleep`` are injectable for offline tests.
     """
-    if bs is None:
-        bs = _import_baostock()
-
-    _login(bs)
-    rows: list[dict] = []
-    failed: list[str] = []
-    try:
-        for i, symbol in enumerate(symbols):
-            if i and _RELOGIN_EVERY and i % _RELOGIN_EVERY == 0:
-                _relogin(bs)
-            got: list[dict] | None = None
-            for attempt in range(_MAX_RETRIES):
-                got = _fetch_one(bs, symbol, start, end)
-                if got is not None:
-                    break
-                sleep(_BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)])
-                _relogin(bs)
-            if got is None:
-                logger.warning("baostock valuation failed for %s after retries", symbol)
-                failed.append(symbol)
-            else:
-                rows.extend(got)
-    finally:
-        try:
-            bs.logout()
-        except Exception:  # noqa: BLE001
-            pass
-
+    rows, failed = fetch_per_symbol(
+        symbols, start, end, _fetch_one, bs=bs, sleep=sleep, label="baostock valuation"
+    )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     return df, failed

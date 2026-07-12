@@ -88,7 +88,7 @@ Workbench M3（`wb daily`）上线后，引擎从「研究工具」变成「生�
 | C1 | financial_statement_items PIT 质量抽查：announce_date 覆盖率、修正报表处理（同科目多次公告取 as_of 时点值） | 质量/成长因子（Phase 1.5） | 抽 20 只股 × 8 期财报，announce_date 与巨潮公告日一致 |
 | C2 | index_constituents / industry_members 历史方案：行业中性化与指数增强需要**历史**归属，快照积累太慢；评估申万/中证历史成分源或第三方回填 | 行业中性、指数增强（Phase 1.5） | 2020 起月度行业归属可用；成分变更日对齐调样公告 |
 | C3 | 北向/资金流口径预验证（G6a）：确认 2024-08 后可得口径（季末持股）对策略是否仍有信息量；不可行则明确放弃，不再挂在路线图上 | 资金流策略（Phase 2 守门员） | 一页结论：可用口径 + IC 初筛，或明确否决 |
-| C4 | trading_status 历史 ST 近似方案（G3）：第三方历史 ST 名单（如 akshare/baostock）或 instruments 历史名称快照推断（名称含 ST） | 消除回测 universe 前视偏差 | 2016 起历史 ST 可过滤；audit 覆盖起点警告消除 |
+| C4 🟡 机制就绪，待跑回填（2026-07-12） | trading_status 历史 ST（G3）：**baostock k-data 的每日 `isST` 标志**为历史源（同 A2 估值回填的源与会话机制）。新增 `adapters/baostock/st_history.py::fetch_st_history`（抽出共享会话驱动 `_session.py`，valuation 一并改用、行为不变）+ `step_trading_status` 的 `_backfill` 分支（`sde backfill trading_status`）：扫 all_a×有 bar 的票，ST 交易日落 `status="st"`（`isST` 二值、不分 ST/*ST，够 universe 过滤）；停牌仍由 bar-gap 派生，互不冲突。**断点续跑**：swept-symbol 标记（meta/state），throttle 掉的票重跑续扫（~85% 从不 ST、无行可依据数据存在性判断，故需显式标记）。7 单测 + 实源验证（000017.SZ 276 ST 日、茅台 0）。**待执行全市场回填**（~5200 票、数小时，同 A2） | 消除回测 universe 前视偏差 | 2016 起历史 ST 可过滤；audit 覆盖起点警告消除 |
 
 ---
 
