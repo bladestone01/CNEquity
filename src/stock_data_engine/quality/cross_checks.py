@@ -17,9 +17,10 @@ own sentinels can see:
   applied hfq adjustment (``adj_close = close × factor``) against the events that
   should explain it (roadmap G5 / A1 defence line). Two classes, split by whether
   the *adjusted* series stays continuous:
-  - a discontinuous adjusted move (adj jumps and diverges from raw) is a factor
-    break that poisons every downstream factor/backtest → **error** (this ports
-    the Workbench guard into the engine so the lake is authoritative);
+  - a discontinuous adjusted move (adj jumps and diverges from raw) between two
+    consecutive trading days is a factor break that poisons every downstream
+    factor/backtest → **error** (ports the Workbench guard into the engine and
+    refines it: adjacency spares legitimate suspension-resume repricing);
   - a continuous adjusted move whose raw price nonetheless dropped past any board
     limit with no corporate action on record is a real ex-event missing from
     ``corporate_actions`` → **warning** (hfq research is fine; ledger accounting
@@ -41,14 +42,15 @@ _SAMPLE = 8
 # symbols that have bars is flagged as a coverage gap.
 _VALUATION_COVERAGE_WARN_RATIO = 0.7
 
-# Adjusted-return discontinuity (the "factor break" class). A day whose hfq
-# *adjusted* (total-return) move exceeds this AND diverges from the raw move by
-# the same margin cannot come from a real corporate action — a real ex-event
-# keeps adj≈raw — so it is a factor break that injects an impossible return into
-# every downstream factor and backtest. This ports the Workbench guard
-# (``data/quality.py::ADJ_DISCONTINUITY_THRESHOLD``) into the engine so the lake
-# is the authoritative defence and that downstream guard can eventually retire.
-# Error severity; corporate_actions cannot excuse a discontinuous adjusted series.
+# Adjusted-return discontinuity (the "factor break" class). On two *consecutive*
+# trading days a hfq *adjusted* (total-return) move this large that also diverges
+# from the raw move by the same margin cannot come from a real corporate action
+# (a real ex-event keeps adj≈raw) nor a real price move (board limit ±10–20%): it
+# is a factor break that injects an impossible return into every downstream factor
+# and backtest. Ports the Workbench guard (``data/quality.py``) into the engine —
+# and improves on it: the engine restricts to adjacent trading days, so a
+# suspension resume (a large *legitimate* move over a long halt) is not
+# false-flagged the way the downstream flat-threshold guard does. Error severity.
 ADJ_DISCONTINUITY_RET = 0.35
 
 # Missing corporate action (the lower-severity completeness class). The adjusted
@@ -352,6 +354,31 @@ def _worst_per_symbol(df: pl.DataFrame, by: str) -> pl.DataFrame:
     )
 
 
+def _trading_day_successors(config: Config, trade_date: date) -> pl.DataFrame | None:
+    """[prev_trade_date, next_td] — each trading day paired with the next one.
+
+    Used to keep the discontinuity error to *consecutive* trading days. Returns
+    ``None`` when the calendar is absent (then adjacency cannot be judged and the
+    error stays fail-loud — every discontinuity is reported).
+    """
+    cal_root = config.curated_root / "trading_calendar"
+    if not dataset_has_parquet(cal_root):
+        return None
+    cal = (
+        scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date)
+        .filter(pl.col("is_trading"))
+        .select("trade_date")
+        .unique()
+        .collect()
+        .sort("trade_date")
+    )
+    if cal.is_empty():
+        return None
+    return cal.with_columns(pl.col("trade_date").shift(-1).alias("next_td")).rename(
+        {"trade_date": "prev_trade_date"}
+    )
+
+
 def _iso(value) -> str:
     return value.isoformat() if isinstance(value, date) else str(value)
 
@@ -359,11 +386,12 @@ def _iso(value) -> str:
 def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list[dict]:
     """Reconcile the applied hfq adjustment against corporate_actions (G5).
 
-    Emits an *error* per symbol whose adjusted series is discontinuous (a factor
-    break — the Workbench guard, now engine-side) and a *warning* per symbol with
-    a continuous adjustment whose raw price nonetheless jumped past a board limit
-    with no corporate action to explain it (a missing event). Each class is
-    ranked worst-first and capped with an overflow summary.
+    Emits an *error* per symbol whose adjusted series is discontinuous between two
+    consecutive trading days (a factor break — the Workbench guard, now
+    engine-side and refined to spare suspension resumes) and a *warning* per
+    symbol with a continuous adjustment whose raw price nonetheless jumped past a
+    board limit with no corporate action to explain it (a missing event). Each
+    class is ranked worst-first and capped with an overflow summary.
     """
     rets = _adjusted_returns(config, trade_date)
     if rets is None or rets.is_empty():
@@ -371,15 +399,22 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
 
     findings: list[dict] = []
 
-    # Error: adjusted-return discontinuity (a factor break). Corporate actions
-    # cannot excuse a discontinuous adjusted series, so this needs no ex-dates.
-    breaks = _worst_per_symbol(
-        rets.filter(
-            (pl.col("adj_ret").abs() > ADJ_DISCONTINUITY_RET)
-            & (pl.col("divergence") > ADJ_DISCONTINUITY_RET)
-        ),
-        by="divergence",
+    # Error: adjusted-return discontinuity (a factor break). A >35% adjusted move
+    # is physically impossible only between *consecutive* trading days (board
+    # limit); across a suspension the same threshold false-flags a legitimate
+    # resume repricing (e.g. an 8-month restructuring halt), so restrict to
+    # adjacent trading days. Corporate actions cannot excuse a consecutive-day
+    # discontinuity, so this needs no ex-dates.
+    disc = rets.filter(
+        (pl.col("adj_ret").abs() > ADJ_DISCONTINUITY_RET)
+        & (pl.col("divergence") > ADJ_DISCONTINUITY_RET)
     )
+    successors = _trading_day_successors(config, trade_date)
+    if successors is not None and not disc.is_empty():
+        disc = disc.join(successors, on="prev_trade_date", how="left").filter(
+            pl.col("next_td") == pl.col("trade_date")
+        )
+    breaks = _worst_per_symbol(disc, by="divergence")
     break_syms = set(breaks["symbol"].to_list())
     if not breaks.is_empty():
         findings += _capped_findings(
@@ -392,8 +427,8 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
                 "message": (
                     f"{row['symbol']}: hfq adjusted return {row['adj_ret']:+.0%} on "
                     f"{_iso(row['trade_date'])} diverges {row['divergence']:.0%} from the "
-                    f"raw move ({row['raw_ret']:+.0%}) — a factor break, not a corporate "
-                    "action"
+                    f"raw move ({row['raw_ret']:+.0%}) on consecutive trading days — a "
+                    "factor break, not a corporate action"
                 ),
                 "trade_date": _iso(row["trade_date"]),
                 "prev_trade_date": _iso(row["prev_trade_date"]),

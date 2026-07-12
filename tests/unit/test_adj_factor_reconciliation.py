@@ -71,6 +71,17 @@ def _write_corp_actions(root, rows):
         ).write_parquet(part / "part.parquet")
 
 
+def _write_calendar(root, days, *, trading=True):
+    """days: list of dates, all marked is_trading=`trading`."""
+    base = root / "curated" / "trading_calendar"
+    for d in days:
+        part = base / f"trade_date={d.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"trade_date": [d], "is_trading": [trading]}).write_parquet(
+            part / "part.parquet"
+        )
+
+
 _D = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5), date(2024, 6, 6)]
 
 # A decoy event on an unrelated symbol so the corporate_actions dataset exists
@@ -103,11 +114,13 @@ def test_normal_down_day_not_flagged(tmp_path):
 
 
 def test_factor_break_is_error(tmp_path):
-    # Factor doubles while the raw price is flat: the adjusted series jumps 2x.
+    # Factor doubles between two consecutive trading days while the raw price is
+    # flat: the adjusted series jumps 2x — impossible under the board limit.
     cfg = Config(data_root=tmp_path / "data")
     _write_bars(cfg.data_root, [("A", d, 10.0) for d in _D])
     _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
                                    ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_calendar(cfg.data_root, _D)
     # No corporate_actions dataset at all: an adjustment break is still an error.
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
     assert len(findings) == 1
@@ -120,15 +133,40 @@ def test_factor_break_is_error(tmp_path):
 
 
 def test_break_is_error_even_with_a_corp_action(tmp_path):
-    # A corporate action on the ex-date cannot excuse a discontinuous adjustment.
+    # A corporate action cannot excuse a consecutive-day discontinuous adjustment.
     cfg = Config(data_root=tmp_path / "data")
     _write_bars(cfg.data_root, [("A", d, 10.0) for d in _D])
     _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
                                    ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_calendar(cfg.data_root, _D)
     _write_corp_actions(cfg.data_root, [("A", _D[2])])
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
     assert _checks(findings) == {"adj_close_discontinuity"}
     assert findings[0]["severity"] == "error"
+
+
+def test_suspension_resume_reprice_is_not_a_break(tmp_path):
+    # 600733-style: bars only on _D[0] and _D[3] (an 8-month halt in reality). The
+    # factor steps 3.5x for a bonus during the halt, and the adjusted price
+    # genuinely reprices -36% on resume. |adj_ret|>0.35 but the days are NOT
+    # consecutive, so it must not be flagged as a break.
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(cfg.data_root, [("A", _D[0], 52.0), ("A", _D[3], 9.5)])
+    _write_factors(cfg.data_root, [("A", _D[0], 2.34), ("A", _D[3], 8.19)])
+    _write_calendar(cfg.data_root, _D)  # _D[1], _D[2] traded — halt, not adjacency
+    _write_corp_actions(cfg.data_root, [("A", _D[2])])  # the bonus during the halt
+    assert adj_factor_reconciliation_findings(cfg, _D[-1]) == []
+
+
+def test_discontinuity_fail_loud_without_calendar(tmp_path):
+    # Without a calendar, adjacency cannot be judged, so a discontinuity is still
+    # reported (fail-loud) rather than silently dropped.
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(cfg.data_root, [("A", d, 10.0) for d in _D])
+    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
+                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    findings = adj_factor_reconciliation_findings(cfg, _D[-1])
+    assert _checks(findings) == {"adj_close_discontinuity"}
 
 
 def test_missing_corp_action_is_warning(tmp_path):
@@ -180,6 +218,7 @@ def test_break_symbol_not_double_counted_as_warning(tmp_path):
                                 ("A", _D[2], 10.0), ("A", _D[3], 5.0)])
     _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 2.0),
                                    ("A", _D[2], 2.0), ("A", _D[3], 4.0)])
+    _write_calendar(cfg.data_root, _D)
     _write_corp_actions(cfg.data_root, _DECOY)
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
     assert _checks(findings) == {"adj_close_discontinuity"}
@@ -213,6 +252,7 @@ def test_overflow_summary_caps_error_findings(tmp_path, monkeypatch):
         factors += [(sym, _D[0], 1.0), (sym, _D[1], 1.0), (sym, _D[2], 2.0), (sym, _D[3], 2.0)]
     _write_bars(cfg.data_root, bars)
     _write_factors(cfg.data_root, factors)
+    _write_calendar(cfg.data_root, _D)
 
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
     per_symbol = [f for f in findings if f["check"] == "adj_close_discontinuity"]

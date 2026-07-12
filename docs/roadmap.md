@@ -26,17 +26,22 @@
 
 回测数据说谎是当前最大的赚钱风险。三项任务全部有湖内实测证据（2026-07-07）。
 
-### A1 根治 adj_factors hfq 历史断裂（G1，最高优先级）
+### A1 根治 adj_factors hfq 历史断裂（G1，最高优先级）🟢 诊断完成，断裂已清零（2026-07-12）
 
-现状：1479/6555（22.6%）股票 hfq 因子历史断裂，单日假收益达千倍级；Workbench 靠自建 quality guard（|adj_ret|>0.35 剔除）自保，回测 universe 被迫缩水 23%。已挂 task_8f0ab24f。
+原始现状：1479/6555（22.6%）股票 hfq 因子历史断裂，单日假收益达千倍级；Workbench 靠自建 quality guard（|adj_ret|>0.35 剔除）自保，回测 universe 被迫缩水 23%。已挂 task_8f0ab24f。
 
-| 步骤 | 内容 |
-|------|------|
-| 诊断 | 对 1479 只断裂股分类归因：Sina 源序列本身断裂 vs 引擎对齐/缓存缺陷 vs 老股除权事件缺失 |
-| 修复 | 落地 [ADR-0004](adr/0004-store-hfq-derive-qfq-at-query.md) 的 append-only 增量 merge（除权日/新股驱动刷新，不再全历史重写）；对源断裂股确定备源或事件法重算（corporate_actions 推导比率） |
-| 防线 🟢 已落地（2026-07-12） | `quality/cross_checks.py::adj_factor_reconciliation_findings` 接入 audit：按 `adj_close=close×factor` 重建复权收益，与 corporate_actions 对账。**error** `adj_close_discontinuity`（\|adj_ret\|>0.35 且与 raw 背离——移植 Workbench guard，引擎自此为权威防线）；**warning** `missing_corporate_action`（复权连续但 raw 越板块限价跳动却无除权事件——真实 ex-event 缺登记，仅影响 ledger）。11 单测。实跑全湖：1 error（600733.SH 真断裂，A1 需清的存量）+ 36 warning（缺登记除权），`sde audit --full` 报 UNHEALTHY。**待 A1 修复源断裂后 error → 0** |
+**诊断结论（2026-07-12，防线落地后全湖实测）**：**当前湖内已无真断裂**——先前的 1479 只在 derive 侧 20x 粗筛 + 数据重算后已清零（A2 重跑期间一并修复）。防线扫全湖（2016→2026-07）仅剩：
 
-**验收**：全市场 bar-to-bar |adj_ret| 极值扫描无无事件解释的假收益；Workbench quality guard 剔除数 → ~0；同窗口重跑 derive 结果逐字节一致。
+- **1 个"疑似断裂"实为假阳**：600733.SH（前锋股份→北汽蓝谷借壳）停牌 2018-02-01→09-26 约 8 个月，2018-09-27 复权 -37% 复牌；factor 2.34→8.19（×3.5）**恰等于 10送25 送股比例、因子完全正确**，-37% 是重组真实重定价。Workbench 的平阈值 guard 会误杀它，引擎防线加 **相邻交易日门控** 后正确豁免（大跳变仅在连续交易日才物理不可能）。
+- **36 个 `missing_corporate_action`**：factor 正确、复权连续，但 raw 越板块限价跳动却在 corporate_actions **无对应 ex-date**——根因在 **corporate_actions 源不全**（非 adj_factors 断裂）。不污染 hfq 研究，仅影响 ledger 分红记账与 fast/ledger reconcile。
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 诊断 | 对断裂股分类归因：Sina 源序列断裂 vs 引擎对齐/缓存缺陷 vs 老股除权事件缺失 | 🟢 完成：真断裂 0；残留 36 为 corporate_actions 缺事件（下沉为 corp_actions 补全，见下） |
+| 修复 | 落地 [ADR-0004](adr/0004-store-hfq-derive-qfq-at-query.md) 的 append-only 增量 merge；对源断裂股备源/事件法重算 | ⏳ adj_factors 侧无断裂需修；append-only 增量 merge 仍为独立优化项（性能/可重算，非纠错） |
+| 防线 🟢 已落地（2026-07-12） | `quality/cross_checks.py::adj_factor_reconciliation_findings` 接入 audit：按 `adj_close=close×factor`（实测逐字节相等）重建复权收益，与 corporate_actions 对账。**error** `adj_close_discontinuity`（\|adj_ret\|>0.35 且与 raw 背离、**且相邻交易日**——移植 Workbench guard 并改进：相邻门控豁免停牌复牌重定价，引擎自此为权威且比下游更准）；**warning** `missing_corporate_action`（复权连续但 raw 越限价跳动却无除权事件）。13 单测。实跑全湖：**0 error + 36 warning**（`sde audit --full` 就断裂而言 HEALTHY） | 🟢 |
+
+**验收达成**：全市场 bar-to-bar |adj_ret| 极值扫描无「无事件解释的假收益」（0 真断裂）；Workbench quality guard 剔除数实测已 →1（且该 1 为假阳，引擎侧已正确豁免，Workbench guard 可后续放宽/退役）。✅ **遗留**：36 条缺登记除权 → 转 corporate_actions 源补全（并入 A1 诊断的「老股除权事件缺失」，root cause 在 corp_actions 源，非 adj_factors）。
 
 ### A2 valuation_metrics 历史回填（G2 的价值策略部分）🟢 已完成（2026-07-09）
 
