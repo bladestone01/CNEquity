@@ -11,6 +11,7 @@ rather than ship a silent partial backfill.
 from __future__ import annotations
 
 import logging
+import socket
 import time
 from collections.abc import Callable
 from datetime import date
@@ -23,6 +24,12 @@ _MAX_RETRIES = 3
 _BACKOFF_SECONDS = (1.0, 3.0, 8.0)
 # Refresh the session periodically; a single long-held session dies mid-sweep.
 _RELOGIN_EVERY = 300
+# A single k-data query returns a few thousand rows and should finish in
+# seconds. baostock can silently drop the connection yet leave the socket
+# ESTABLISHED, so a blocking read never returns and the whole sweep hangs
+# indefinitely (observed: 8h of wall time, 13s of CPU). Bound every socket op so
+# a stall raises instead of hanging; the retry loop then relogins and continues.
+_SOCKET_TIMEOUT_SECONDS = 30.0
 
 
 def import_baostock():
@@ -77,6 +84,8 @@ def fetch_per_symbol(
     if bs is None:
         bs = import_baostock()
 
+    prev_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(_SOCKET_TIMEOUT_SECONDS)
     _login(bs)
     rows: list[dict] = []
     failed: list[str] = []
@@ -86,7 +95,13 @@ def fetch_per_symbol(
                 _relogin(bs)
             got: list[dict] | None = None
             for attempt in range(_MAX_RETRIES):
-                got = fetch_one(bs, symbol, start, end)
+                try:
+                    got = fetch_one(bs, symbol, start, end)
+                except Exception as exc:  # noqa: BLE001 — stalled socket / broken pipe
+                    # A socket timeout or dropped connection raises here; treat it
+                    # like a query error so the symbol is retried on a fresh login.
+                    logger.warning("%s query error for %s: %s", label, symbol, exc)
+                    got = None
                 if got is not None:
                     break
                 sleep(_BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)])
@@ -97,6 +112,7 @@ def fetch_per_symbol(
             else:
                 rows.extend(got)
     finally:
+        socket.setdefaulttimeout(prev_timeout)
         try:
             bs.logout()
         except Exception:  # noqa: BLE001

@@ -105,3 +105,32 @@ def test_fails_loud_on_login_error():
     bs = _FakeBaostock({}, login_ok=False)
     with pytest.raises(RuntimeError, match="login failed"):
         fetch_st_history(["000017.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs)
+
+
+class _StallingBaostock(_FakeBaostock):
+    """A query that raises (a stalled/timed-out socket) instead of returning."""
+
+    def __init__(self, per_symbol, stall_codes):
+        super().__init__(per_symbol)
+        self._stall_codes = stall_codes
+
+    def query_history_k_data_plus(self, code, fields, **kwargs):
+        if code in self._stall_codes:
+            raise TimeoutError("timed out")
+        return super().query_history_k_data_plus(code, fields, **kwargs)
+
+
+def test_stalled_socket_is_retried_then_reported_failed():
+    # A raised socket timeout must not crash the sweep: it is retried on a fresh
+    # login and, if it never recovers, reported as failed (fail-loud) — not hung.
+    bs = _StallingBaostock(
+        {"sz.000017": _rows("sz.000017", [("2020-04-29", "1", "1")])},
+        stall_codes={"sh.600145"},
+    )
+    df, failed = fetch_st_history(
+        ["000017.SZ", "600145.SH"], date(2020, 1, 1), date(2020, 12, 31),
+        bs=bs, sleep=lambda _s: None,
+    )
+    assert df.height == 1
+    assert failed == ["600145.SH"]
+    assert bs.logins > 1  # relogin attempted after the stall
