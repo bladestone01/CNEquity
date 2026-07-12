@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import threading
 import time
 from collections.abc import Callable
 from datetime import date
@@ -24,6 +25,13 @@ _MAX_RETRIES = 3
 _BACKOFF_SECONDS = (1.0, 3.0, 8.0)
 # Refresh the session periodically; a single long-held session dies mid-sweep.
 _RELOGIN_EVERY = 300
+# Hard per-symbol wall-clock deadline. The socket timeout below catches a fully
+# blocked read, but baostock can *slowloris* a query — trickle keepalive bytes so
+# every recv returns just before the timeout yet the terminator never arrives, so
+# the read loops forever at ~0 CPU (observed: 8h hang). A watchdog closes the
+# live socket past this deadline, unblocking the read so it raises and retries.
+# Set well above the ~6s normal query so a slow-but-alive fetch is never killed.
+_PER_SYMBOL_DEADLINE_SECONDS = 45.0
 # A single k-data query returns a few thousand rows and should finish in
 # seconds. baostock can silently drop the connection yet leave the socket
 # ESTABLISHED, so a blocking read never returns and the whole sweep hangs
@@ -64,6 +72,23 @@ def to_baostock_symbol(symbol: str) -> str:
     return f"{prefix}.{info.code}"
 
 
+def _force_close_baostock_socket() -> None:
+    """Close baostock's live socket so a blocked/slowloris read raises at once.
+
+    baostock keeps the connection as a module global; closing it out from under
+    the read is the only way to interrupt a stall it will not time out on. The
+    next retry relogins and gets a fresh socket.
+    """
+    try:
+        import baostock.common.context as bctx  # noqa: PLC0415 — optional dep, lazy
+
+        sock = getattr(bctx, "default_socket", None)
+        if sock is not None:
+            sock.close()
+    except Exception:  # noqa: BLE001 — best-effort interrupt; never raise from the timer
+        pass
+
+
 def fetch_per_symbol(
     symbols: list[str],
     start: date,
@@ -73,6 +98,8 @@ def fetch_per_symbol(
     bs=None,
     sleep=time.sleep,
     label: str = "baostock",
+    deadline: float = _PER_SYMBOL_DEADLINE_SECONDS,
+    on_deadline: Callable[[], None] = _force_close_baostock_socket,
 ) -> tuple[list[dict], list[str]]:
     """Drive ``fetch_one(bs, symbol, start, end)`` over ``symbols`` with retry/relogin.
 
@@ -95,13 +122,18 @@ def fetch_per_symbol(
                 _relogin(bs)
             got: list[dict] | None = None
             for attempt in range(_MAX_RETRIES):
+                watchdog = threading.Timer(deadline, on_deadline)
+                watchdog.start()
                 try:
                     got = fetch_one(bs, symbol, start, end)
                 except Exception as exc:  # noqa: BLE001 — stalled socket / broken pipe
-                    # A socket timeout or dropped connection raises here; treat it
-                    # like a query error so the symbol is retried on a fresh login.
+                    # A socket timeout, dropped connection, or watchdog-closed
+                    # socket raises here; treat it like a query error so the
+                    # symbol is retried on a fresh login.
                     logger.warning("%s query error for %s: %s", label, symbol, exc)
                     got = None
+                finally:
+                    watchdog.cancel()
                 if got is not None:
                     break
                 sleep(_BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)])
