@@ -13,6 +13,7 @@ from stock_data_engine.adapters.calendar.exchange_calendar import (
 from stock_data_engine.config import Config
 from stock_data_engine.domain.datasets import PARTITION_COLS
 from stock_data_engine.quality.cross_checks import (
+    adj_factor_reconciliation_findings,
     daily_bars_calendar_findings,
     valuation_bars_coverage_findings,
 )
@@ -185,6 +186,7 @@ def _collect_lake_findings(
     findings.extend(_index_bars_coverage_findings(config, trade_date))
     findings.extend(daily_bars_calendar_findings(config, trade_date))
     findings.extend(valuation_bars_coverage_findings(config, trade_date))
+    findings.extend(adj_factor_reconciliation_findings(config, trade_date))
 
     for ds, pcol in PARTITION_COLS.items():
         findings.extend(

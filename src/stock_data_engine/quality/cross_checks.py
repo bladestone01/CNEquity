@@ -13,6 +13,17 @@ own sentinels can see:
   the same symbol/day; large divergence on a shared day is a valuation fetch
   gap. Absolute market-cap sanity is intentionally skipped while baostock leaves
   ``total_mv``/``float_mv`` null.
+* ``daily_bars`` × ``adj_factors`` × ``corporate_actions`` — reconciles the
+  applied hfq adjustment (``adj_close = close × factor``) against the events that
+  should explain it (roadmap G5 / A1 defence line). Two classes, split by whether
+  the *adjusted* series stays continuous:
+  - a discontinuous adjusted move (adj jumps and diverges from raw) is a factor
+    break that poisons every downstream factor/backtest → **error** (this ports
+    the Workbench guard into the engine so the lake is authoritative);
+  - a continuous adjusted move whose raw price nonetheless dropped past any board
+    limit with no corporate action on record is a real ex-event missing from
+    ``corporate_actions`` → **warning** (hfq research is fine; ledger accounting
+    is not).
 """
 
 from __future__ import annotations
@@ -29,6 +40,29 @@ _SAMPLE = 8
 # A shared trading day where valuation covers less than this fraction of the
 # symbols that have bars is flagged as a coverage gap.
 _VALUATION_COVERAGE_WARN_RATIO = 0.7
+
+# Adjusted-return discontinuity (the "factor break" class). A day whose hfq
+# *adjusted* (total-return) move exceeds this AND diverges from the raw move by
+# the same margin cannot come from a real corporate action — a real ex-event
+# keeps adj≈raw — so it is a factor break that injects an impossible return into
+# every downstream factor and backtest. This ports the Workbench guard
+# (``data/quality.py::ADJ_DISCONTINUITY_THRESHOLD``) into the engine so the lake
+# is the authoritative defence and that downstream guard can eventually retire.
+# Error severity; corporate_actions cannot excuse a discontinuous adjusted series.
+ADJ_DISCONTINUITY_RET = 0.35
+
+# Missing corporate action (the lower-severity completeness class). The adjusted
+# series is *continuous* (|adj_ret| below the first bound) yet raw and adjusted
+# diverge past the second bound — wider than any board price limit, so a real
+# ex-event (bonus / large dividend) was adjusted correctly but is absent from
+# corporate_actions. hfq research is unaffected (adj is continuous); only ledger
+# / dividend accounting is, so this is a warning, not an error.
+MISSING_EVENT_MAX_ADJ_RET = 0.15
+MISSING_EVENT_MIN_DIVERGENCE = 0.11
+
+# Cap on per-symbol findings per class, so a catastrophic regression floods
+# neither the findings file nor health-latest.json. Overflow is summarised.
+_MAX_RECON_FINDINGS = 50
 
 
 def _trading_days(config: Config, trade_date: date) -> set[date]:
@@ -232,5 +266,212 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
                 "coverage_ratio": round(ratio, 4),
                 "warn_ratio": _VALUATION_COVERAGE_WARN_RATIO,
             }
+        )
+    return findings
+
+
+def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
+    """Per (symbol, day) hfq adjusted vs raw returns, plus the previous bar date.
+
+    ``adj_close = close × factor`` holds exactly for stored hfq factors, so the
+    adjusted return is reconstructed by joining ``daily_bars`` (raw close) to the
+    derived ``adj_factors`` — no dependency on the query-layer adjustment. Returns
+    ``None`` when either dataset is absent (cannot reconcile).
+    """
+    bars_root = config.curated_root / "daily_bars"
+    af_root = config.derived_root / "adj_factors"
+    if not dataset_has_parquet(bars_root) or not dataset_has_parquet(af_root):
+        return None
+
+    bars = (
+        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+        .select("symbol", "trade_date", "close")
+        .collect()
+    )
+    factors = (
+        scan_parquet_root(af_root, partition_col="trade_date", end=trade_date)
+        .filter(pl.col("adjust_type") == "hfq")
+        .select("symbol", "trade_date", "factor")
+        .collect()
+    )
+    if bars.height < 2 or factors.is_empty():
+        return None
+
+    joined = bars.join(factors, on=["symbol", "trade_date"], how="inner").filter(
+        pl.col("close").is_not_null() & (pl.col("close") > 0) & (pl.col("factor") > 0)
+    )
+    if joined.height < 2:
+        return None
+
+    return (
+        joined.with_columns((pl.col("close") * pl.col("factor")).alias("_adj"))
+        .sort(["symbol", "trade_date"])
+        .with_columns(
+            (pl.col("close") / pl.col("close").shift(1).over("symbol") - 1).alias("raw_ret"),
+            (pl.col("_adj") / pl.col("_adj").shift(1).over("symbol") - 1).alias("adj_ret"),
+            pl.col("trade_date").shift(1).over("symbol").alias("prev_trade_date"),
+        )
+        .filter(pl.col("prev_trade_date").is_not_null())
+        .with_columns(
+            (pl.col("adj_ret") - pl.col("raw_ret")).abs().alias("divergence")
+        )
+        .select(
+            "symbol", "prev_trade_date", "trade_date", "raw_ret", "adj_ret", "divergence"
+        )
+    )
+
+
+def _capped_findings(
+    ranked: pl.DataFrame, build_one, *, dataset: str, check: str, severity: str, noun: str
+) -> list[dict]:
+    """Emit one finding per row up to the cap, plus an overflow summary."""
+    findings = [build_one(row) for row in ranked.head(_MAX_RECON_FINDINGS).iter_rows(named=True)]
+    overflow = ranked.height - _MAX_RECON_FINDINGS
+    if overflow > 0:
+        findings.append(
+            {
+                "dataset": dataset,
+                "severity": severity,
+                "check": f"{check}_overflow",
+                "message": (
+                    f"{ranked.height} symbols have {noun}; {overflow} beyond the first "
+                    f"{_MAX_RECON_FINDINGS} are not listed individually"
+                ),
+                "total_symbols": ranked.height,
+                "listed": _MAX_RECON_FINDINGS,
+            }
+        )
+    return findings
+
+
+def _worst_per_symbol(df: pl.DataFrame, by: str) -> pl.DataFrame:
+    return (
+        df.sort(by, descending=True)
+        .group_by("symbol", maintain_order=True)
+        .first()
+    )
+
+
+def _iso(value) -> str:
+    return value.isoformat() if isinstance(value, date) else str(value)
+
+
+def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list[dict]:
+    """Reconcile the applied hfq adjustment against corporate_actions (G5).
+
+    Emits an *error* per symbol whose adjusted series is discontinuous (a factor
+    break — the Workbench guard, now engine-side) and a *warning* per symbol with
+    a continuous adjustment whose raw price nonetheless jumped past a board limit
+    with no corporate action to explain it (a missing event). Each class is
+    ranked worst-first and capped with an overflow summary.
+    """
+    rets = _adjusted_returns(config, trade_date)
+    if rets is None or rets.is_empty():
+        return []
+
+    findings: list[dict] = []
+
+    # Error: adjusted-return discontinuity (a factor break). Corporate actions
+    # cannot excuse a discontinuous adjusted series, so this needs no ex-dates.
+    breaks = _worst_per_symbol(
+        rets.filter(
+            (pl.col("adj_ret").abs() > ADJ_DISCONTINUITY_RET)
+            & (pl.col("divergence") > ADJ_DISCONTINUITY_RET)
+        ),
+        by="divergence",
+    )
+    break_syms = set(breaks["symbol"].to_list())
+    if not breaks.is_empty():
+        findings += _capped_findings(
+            breaks.sort("divergence", descending=True),
+            lambda row: {
+                "dataset": "adj_factors",
+                "symbol": row["symbol"],
+                "severity": "error",
+                "check": "adj_close_discontinuity",
+                "message": (
+                    f"{row['symbol']}: hfq adjusted return {row['adj_ret']:+.0%} on "
+                    f"{_iso(row['trade_date'])} diverges {row['divergence']:.0%} from the "
+                    f"raw move ({row['raw_ret']:+.0%}) — a factor break, not a corporate "
+                    "action"
+                ),
+                "trade_date": _iso(row["trade_date"]),
+                "prev_trade_date": _iso(row["prev_trade_date"]),
+                "adj_ret": round(float(row["adj_ret"]), 4),
+                "raw_ret": round(float(row["raw_ret"]), 4),
+                "divergence": round(float(row["divergence"]), 4),
+            },
+            dataset="adj_factors",
+            check="adj_close_discontinuity",
+            severity="error",
+            noun="a discontinuous hfq adjustment",
+        )
+
+    # Warning: a continuous adjustment absorbing a real ex-event that is missing
+    # from corporate_actions. Skip symbols already flagged as breaks.
+    ca_root = config.curated_root / "corporate_actions"
+    if not dataset_has_parquet(ca_root):
+        return findings
+
+    candidates = rets.filter(
+        (pl.col("adj_ret").abs() <= MISSING_EVENT_MAX_ADJ_RET)
+        & (pl.col("divergence") > MISSING_EVENT_MIN_DIVERGENCE)
+        & ~pl.col("symbol").is_in(list(break_syms))
+    ).sort(["symbol", "trade_date"])
+    if candidates.is_empty():
+        return findings
+
+    ex_dates = (
+        scan_parquet_root(ca_root, partition_col="ex_date", end=trade_date)
+        .select("symbol", "ex_date")
+        .unique()
+        .collect()
+        .sort(["symbol", "ex_date"])
+    )
+    if ex_dates.is_empty():
+        matched = candidates.with_columns(pl.lit(None, dtype=pl.Date).alias("_last_ex"))
+    else:
+        # A step from bar t_prev to bar t is explained iff a corporate action's
+        # ex-date lies in (t_prev, t]; the interval covers suspensions of any
+        # length (the adjustment lands on the resume bar). join_asof backward
+        # gives the latest ex-date ≤ t; it explains the step when it is > t_prev.
+        matched = candidates.join_asof(
+            ex_dates.rename({"ex_date": "_last_ex"}),
+            left_on="trade_date",
+            right_on="_last_ex",
+            by="symbol",
+            strategy="backward",
+            check_sortedness=False,
+        )
+    missing = _worst_per_symbol(
+        matched.filter(
+            pl.col("_last_ex").is_null() | (pl.col("_last_ex") <= pl.col("prev_trade_date"))
+        ),
+        by="divergence",
+    )
+    if not missing.is_empty():
+        findings += _capped_findings(
+            missing.sort("divergence", descending=True),
+            lambda row: {
+                "dataset": "corporate_actions",
+                "symbol": row["symbol"],
+                "severity": "warning",
+                "check": "missing_corporate_action",
+                "message": (
+                    f"{row['symbol']}: raw return {row['raw_ret']:+.0%} on "
+                    f"{_iso(row['trade_date'])} diverges {row['divergence']:.0%} from the "
+                    f"hfq adjusted return ({row['adj_ret']:+.0%}) with no corporate action "
+                    "on record for that day — an unrecorded ex-event"
+                ),
+                "trade_date": _iso(row["trade_date"]),
+                "prev_trade_date": _iso(row["prev_trade_date"]),
+                "adj_ret": round(float(row["adj_ret"]), 4),
+                "raw_ret": round(float(row["raw_ret"]), 4),
+                "divergence": round(float(row["divergence"]), 4),
+            },
+            dataset="corporate_actions",
+            check="missing_corporate_action",
+            severity="warning",
+            noun="a raw move with no corporate action on record",
         )
     return findings

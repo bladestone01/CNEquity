@@ -34,7 +34,7 @@
 |------|------|
 | 诊断 | 对 1479 只断裂股分类归因：Sina 源序列本身断裂 vs 引擎对齐/缓存缺陷 vs 老股除权事件缺失 |
 | 修复 | 落地 [ADR-0004](adr/0004-store-hfq-derive-qfq-at-query.md) 的 append-only 增量 merge（除权日/新股驱动刷新，不再全历史重写）；对源断裂股确定备源或事件法重算（corporate_actions 推导比率） |
-| 防线 | audit 新增 adj 连续性检查：单日 factor 跳变超阈值且当日无对应 corporate_actions 事件 → error finding（G5 的第一块拼图） |
+| 防线 🟢 已落地（2026-07-12） | `quality/cross_checks.py::adj_factor_reconciliation_findings` 接入 audit：按 `adj_close=close×factor` 重建复权收益，与 corporate_actions 对账。**error** `adj_close_discontinuity`（\|adj_ret\|>0.35 且与 raw 背离——移植 Workbench guard，引擎自此为权威防线）；**warning** `missing_corporate_action`（复权连续但 raw 越板块限价跳动却无除权事件——真实 ex-event 缺登记，仅影响 ledger）。11 单测。实跑全湖：1 error（600733.SH 真断裂，A1 需清的存量）+ 36 warning（缺登记除权），`sde audit --full` 报 UNHEALTHY。**待 A1 修复源断裂后 error → 0** |
 
 **验收**：全市场 bar-to-bar |adj_ret| 极值扫描无无事件解释的假收益；Workbench quality guard 剔除数 → ~0；同窗口重跑 derive 结果逐字节一致。
 
@@ -52,11 +52,11 @@
 
 **验收达成**：全市场 2016 起 PE/PB 历史可用；标杆股口径正确；Workbench 估值分位因子可回测。✅
 
-### A3 index_bars 缺口验证与补齐（G6b）
+### A3 index_bars 缺口验证与补齐（G6b）🟢 已验证（2026-07-12）
 
 现状：Workbench 记录 ~3% 交易日缺失（task_265958c4）；引擎 4152a08 修复了 index 抓取路径，可能已根治但未验证。
 
-**验收**：对 trading_calendar 全交易日 × 核心指数（000300/000905/000852 等）做覆盖率扫描 = 100%；缺口回填后 Workbench 基准对齐无 gap。
+**验收达成**：对 trading_calendar 全交易日（2016-01-04→2026-07-10，2554 日）× 全部 8 个指数做覆盖率扫描——核心指数 000300/000905/000852 及 000001/000016/399001/399006 各 2553 bar、零内部缺口（唯一"缺"的 2026-07-10 是尚未入库的当日新鲜度滞后）；000688.SH（科创50）2019-12-31 起为指数成立日、非缺口。`audit.py::_index_bars_coverage_findings` 对全湖返回 0 finding。~3% 历史缺口已被 4152a08 根治，Workbench 基准对齐无 gap。✅
 
 ---
 

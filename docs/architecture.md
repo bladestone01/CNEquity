@@ -128,7 +128,7 @@ load(dataset, *, start, end,
 
 | # | 缺口 | 证据 | 影响 |
 |---|------|------|------|
-| **G5** | **audit 缺「收益率级别」护栏，防线错位** | G1 是 Workbench 算因子时才发现的——引擎 audit 有 PK/行数突变/跨源 diff，但没有「数据经济含义合理性」检查：无 adj_factors × corporate_actions 对账（因子跳变是否有对应除权事件解释）、无 bar-to-bar 收益极值扫描 | 数据投毒只能靠下游事后发现。正确的防线位置在引擎：**数据不合理就不该出湖** |
+| **G5** 🟢 收益率级护栏已落地（2026-07-12） | ~~audit 缺「收益率级别」护栏，防线错位~~ | 原缺口：引擎 audit 有 PK/行数突变/跨源 diff，但无「数据经济含义合理性」检查。**已补**：`adj_factor_reconciliation_findings` 接入 `lake_health` / `sde audit --full`——bar-to-bar 复权收益极值扫描（`adj_close_discontinuity`，error）+ adj_factors×corporate_actions 对账（`missing_corporate_action`，warning）。防线自此在引擎侧：G1 类断裂数据出湖即报 UNHEALTHY，不再只靠下游 Workbench guard 事后发现 | 残留：源断裂存量（A1）修复后 error → 0；市值合理性检查待市值源（B5 遗留） |
 | G7 | 运维韧性弱 | manifest.db 无备份；`meta/source_snapshots/` 按 run_id 无限累积且 `read_latest` 全量 concat 越跑越慢；消费层 lazy scan 无分区裁剪下推（R-25） | 长期成本与恢复能力问题，不阻塞当前闭环 |
 
 ### 4.4 已解决、不再是缺口（避免按旧印象重复投入）
