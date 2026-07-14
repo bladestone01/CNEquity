@@ -17,6 +17,7 @@ from stock_data_engine.quality.cross_checks import (
     daily_bars_calendar_findings,
     valuation_bars_coverage_findings,
 )
+from stock_data_engine.quality.sector_bars import sector_bars_hybrid_findings
 from stock_data_engine.quality.dataset_checks import audit_curated_dataset
 from stock_data_engine.quality.source_diff import run_source_diffs
 from stock_data_engine.query.parquet_scan import dataset_has_parquet, scan_parquet_root
@@ -187,6 +188,7 @@ def _collect_lake_findings(
     findings.extend(daily_bars_calendar_findings(config, trade_date))
     findings.extend(valuation_bars_coverage_findings(config, trade_date))
     findings.extend(adj_factor_reconciliation_findings(config, trade_date))
+    findings.extend(sector_bars_hybrid_findings(config, trade_date))
 
     for ds, pcol in PARTITION_COLS.items():
         findings.extend(
