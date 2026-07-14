@@ -60,6 +60,8 @@ def test_legacy_tables_match_registry():
         "sector_bars",
         "sector_fund_flow",
         "news_headlines",
+        "flash_news_wire",
+        "economic_calendar",
     }
     assert fetch_semantics("fund_flow") == "snapshot"
     assert fetch_semantics("daily_bars") == "by_date"

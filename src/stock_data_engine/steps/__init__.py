@@ -7,6 +7,7 @@ from stock_data_engine.steps import (  # noqa: F401
     finalize,
     fundamentals,
     macro_risk,
+    newsboard,
     reference,
     research,
     rotation,

@@ -360,6 +360,38 @@ NEWS_HEADLINES_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+FLASH_NEWS_WIRE_SCHEMA = {
+    "wire_id": pl.Utf8,
+    "wire_source": pl.Utf8,
+    "item_hash": pl.Utf8,
+    "publish_date": pl.Date,
+    "publish_time": pl.Utf8,
+    "title": pl.Utf8,
+    "summary": pl.Utf8,
+    "related_symbols": pl.Utf8,
+    "importance": pl.Int8,
+    "channel": pl.Utf8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+ECONOMIC_CALENDAR_SCHEMA = {
+    "event_id": pl.Utf8,
+    "event_date": pl.Date,
+    "event_time": pl.Utf8,
+    "country": pl.Utf8,
+    "indicator": pl.Utf8,
+    "importance": pl.Int8,
+    "forecast": pl.Float64,
+    "previous": pl.Float64,
+    "actual": pl.Float64,
+    "unit": pl.Utf8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 DATASET_SCHEMAS = {
     "instruments": INSTRUMENTS_SCHEMA,
     "trading_calendar": TRADING_CALENDAR_SCHEMA,
@@ -391,6 +423,8 @@ DATASET_SCHEMAS = {
     "sector_bars": SECTOR_BARS_SCHEMA,
     "sector_fund_flow": SECTOR_FUND_FLOW_SCHEMA,
     "news_headlines": NEWS_HEADLINES_SCHEMA,
+    "flash_news_wire": FLASH_NEWS_WIRE_SCHEMA,
+    "economic_calendar": ECONOMIC_CALENDAR_SCHEMA,
 }
 
 PRIMARY_KEYS = {
@@ -424,6 +458,8 @@ PRIMARY_KEYS = {
     "sector_bars": ["sector_code", "trade_date"],
     "sector_fund_flow": ["sector_code", "trade_date"],
     "news_headlines": ["news_id"],
+    "flash_news_wire": ["wire_id", "wire_source"],
+    "economic_calendar": ["event_id"],
 }
 
 

@@ -117,6 +117,8 @@ _SPECS = [
     ),
     DatasetSpec("sector_fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
     DatasetSpec("news_headlines", partition_col="publish_date", fetch_semantics="snapshot"),
+    DatasetSpec("flash_news_wire", partition_col="publish_date", fetch_semantics="snapshot"),
+    DatasetSpec("economic_calendar", partition_col="event_date", fetch_semantics="snapshot"),
     # L8 risk
     DatasetSpec("share_unlock_schedule", partition_col="unlock_date"),
     DatasetSpec("regulatory_events", partition_col="event_date"),
