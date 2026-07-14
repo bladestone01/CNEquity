@@ -48,6 +48,25 @@
 
 成功时自动 compact 当前 run。
 
+### sector_bars
+
+| 选项 | 说明 |
+|------|------|
+| `--retry-failed` | 跳过 checkpoint 中已完成的板块，只重试失败项 |
+| `--force` | 清空 checkpoint 后全量重拉（与 `--retry-failed` 互斥） |
+
+Checkpoint：`meta/state/sector_bars_backfill.json`。失败超过 50% 时 step 状态为 `warning` 但仍写入已成功部分。
+
+**网络**：历史 kline 走 `push2his.eastmoney.com`，需国内或大陆出口代理；日更 clist 在海外通常可用。
+
+```bash
+# 首次或换源后全量（建议在国内机器）
+sde backfill sector_bars --config configs/stockdata.toml --force
+
+# 续跑失败板
+sde backfill sector_bars --config configs/stockdata.toml --retry-failed
+```
+
 ---
 
 ## sde compact
@@ -66,6 +85,7 @@
 |------|------|
 | `adj_factors`（默认） | 计算 Sina hfq 因子 |
 | `trading_status` | 派生历史停牌记录 |
+| `sector_routing` | 可选：EM 板块 × TDX 88xxxx 名称映射表（**不驱动** sector_bars 采集） |
 
 ---
 

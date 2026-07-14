@@ -23,6 +23,12 @@
 4. 若 TDX 问题：`sde servers test`；换 `[tdx_protocol.hosts].standard`
 5. 若单数据集持续失败：`sde backfill <dataset>`（需支持 backfill）
 
+### sector_bars backfill 大量失败
+
+- **现象**：日志 `sector kline failed for BKxxxx on all push2his hosts`；`failed_sectors` 接近 991。
+- **原因**：`push2his.eastmoney.com` 在海外 IP 常不可用；日更 clist 仍可能正常。
+- **处理**：在大陆出口或 `HTTPS_PROXY` 下 `sde backfill sector_bars --retry-failed`；全量换源后 `--force`。Checkpoint：`meta/state/sector_bars_backfill.json`。
+
 ---
 
 ## 症状：audit --full UNHEALTHY

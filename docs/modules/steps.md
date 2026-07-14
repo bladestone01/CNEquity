@@ -89,6 +89,17 @@ from stock_data_engine.steps import reference, bars, events, ...  # noqa
 | analyst_consensus | analyst_consensus |
 | sentiment_scores | sentiment_scores（derive） |
 
+### rotation.py（L7 轮动）
+
+| Step | 数据集 | 主源 |
+|------|--------|------|
+| hot_rank | hot_rank | eastmoney |
+| sector_bars | sector_bars | eastmoney clist（日更）；backfill → push2his kline |
+| sector_fund_flow | sector_fund_flow | eastmoney |
+| news_headlines | news_headlines | eastmoney |
+
+`sector_bars` 为 snapshot 语义；历史由 `sde backfill sector_bars` 写入（需国内网络，一次性）。
+
 ### finalize.py
 
 | Step | 作用 |

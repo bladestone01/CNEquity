@@ -80,11 +80,17 @@
 
 ---
 
-## L7 舆情
+## L7 舆情 / 轮动
 
-| 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 |
-|--------|--------|------|------|------|------|
-| sentiment_scores | trade_date | symbol, trade_date, score_channel | by_date | ✓ | derived |
+| 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
+|--------|--------|------|------|------|------|------|
+| sentiment_scores | trade_date | symbol, trade_date, score_channel | by_date | ✓ | derived | |
+| hot_rank | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 人气榜 top500 |
+| sector_bars | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | backfill: eastmoney_kline（push2his） |
+| sector_fund_flow | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 板块主力净流入 |
+| news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 7×24 快讯 |
+
+`sector_bars` 日更只有当日 OHLC；历史由 `sde backfill sector_bars` 一次性写入（国内网络）。Workbench 板块动量/RRG 依赖此历史。
 
 ---
 
@@ -118,6 +124,7 @@
 | structure.py | sector_members, index_constituents, industry_members |
 | macro_risk.py | macro_indicators, market_breadth, share_unlock_schedule, regulatory_events |
 | research.py | institutional_holdings, analyst_consensus, sentiment_scores |
+| rotation.py | hot_rank, sector_bars, sector_fund_flow, news_headlines |
 | finalize.py | compact, derive_adj_factors, audit |
 
 ---

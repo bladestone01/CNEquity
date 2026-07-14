@@ -37,6 +37,7 @@
 | `consensus.py` | analyst_consensus |
 | `share_unlock.py` | share_unlock_schedule |
 | `stock_news.py` | stock_news（on-demand / sentiment） |
+| `rotation.py` | hot_rank, sector_bars, sector_fund_flow, news_headlines |
 
 ---
 
@@ -47,6 +48,16 @@
 `valuation_metrics`、`fund_flow`、`sector_members` 等接口返回**当前页面快照**，step 用 `trade_date` 打戳写入。历史值不可伪造 — 见 `fetch_semantics="snapshot"`。
 
 历史估值：`valuation_metrics` 的 `backfill_source=baostock`。
+
+### sector_bars（板块 OHLC）
+
+- **日更**：板块 clist（概念 + 行业），当日快照。
+- **历史回填**：`push2his` 板块 kline（`secid=90.BKxxxx`），`backfill_source="eastmoney_kline"`。
+- clist 只有当日截面；动量/RRG 需在国内网络跑一次 `sde backfill sector_bars`（~991 板 × 400 日历日）。
+- push2his 在海外 IP 常不可用；clist 日更一般仍可用。Checkpoint：`meta/state/sector_bars_backfill.json`；`--retry-failed` / `--force` 见 [CLI](../reference/cli.md)。
+- 板块指数无公司行为，`fqt=0`。
+
+可选 `sde derive sector_routing` 生成 EM×TDX 名称映射（**不参与** sector_bars 采集）。
 
 ### 北向持股
 
