@@ -1,9 +1,10 @@
 # StockWorkbench 详细设计（v0.1 草案）
 
 > 独立于 stock-data-engine 的 A 股研究与选股分析系统。**已在 `/Users/chaosun/code/StockWorkbench`
-> 落地实现**（本设计文档暂留引擎仓库 `docs/`，以代码仓库为准）。
+> 落地实现。
 >
-> 状态：M0–M4 + Phase 1.5 全部完成（2026-07-08）｜ 依赖：stock-data-engine（唯一数据源）
+> **当前架构文档**（攻/守双轨、L7 轮动）：Workbench 仓库 [`docs/architecture.md`](../../StockWorkbench/docs/architecture.md)。
+> 本文档为 v0.1 草案，部分章节（因子数、里程碑）已过时，以 Workbench 代码与 `docs/overview.md` 为准。
 
 ---
 

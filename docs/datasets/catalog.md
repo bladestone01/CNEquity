@@ -133,3 +133,4 @@
 
 - [查询指南](query-guide.md)
 - [PRD 附录 B 数据源限制](../PRD.md)
+- [Workbench 攻/守架构](../../StockWorkbench/docs/architecture.md)
