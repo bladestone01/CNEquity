@@ -8,6 +8,8 @@ import os
 import tempfile
 from datetime import date, timedelta
 
+import polars as pl
+
 from stock_data_engine.adapters.eastmoney.rotation import (
     fetch_hot_rank,
     fetch_news_headlines,
@@ -15,13 +17,15 @@ from stock_data_engine.adapters.eastmoney.rotation import (
     fetch_sector_fund_flow,
 )
 from stock_data_engine.config import Config
+from stock_data_engine.derive.sector_routing import OHLC_EM, OHLC_TDX, load_sector_routing
 from stock_data_engine.orchestrator.registry import register_step
 from stock_data_engine.steps.http_common import run_incremental_fetched, write_fetched
 
 # Board kline history depth for `sde backfill sector_bars` — enough for the
 # workbench's sector momentum / RRG lookbacks with a year of slack.
 _SECTOR_BARS_BACKFILL_DAYS = 400
-_SECTOR_BARS_BACKFILL_STATE = "sector_bars_backfill"
+_SECTOR_BARS_BACKFILL_LEGACY = "sector_bars_backfill"
+_SECTOR_BARS_BACKFILL_TRACKS = ("tdx", "em")
 _SECTOR_BARS_FAILURE_THRESHOLD = 0.5
 
 
@@ -59,27 +63,39 @@ def step_sector_bars(config: Config, trade_date: date, run_id: str, context: dic
     return _run_rotation_step(config, trade_date, run_id, "sector_bars", fetch_sector_bars)
 
 
-def _sector_bars_backfill_state_path(config: Config):
-    return config.meta_root / "state" / f"{_SECTOR_BARS_BACKFILL_STATE}.json"
+def _sector_bars_backfill_state_path(config: Config, track: str) -> os.PathLike:
+    return config.meta_root / "state" / f"sector_bars_backfill_{track}.json"
 
 
-def _sector_bars_completed(config: Config) -> set[str]:
-    path = _sector_bars_backfill_state_path(config)
-    if not path.exists():
-        return set()
-    return set(json.loads(path.read_text(encoding="utf-8")).get("completed", []))
+def _sector_bars_legacy_state_path(config: Config) -> os.PathLike:
+    return config.meta_root / "state" / f"{_SECTOR_BARS_BACKFILL_LEGACY}.json"
+
+
+def _sector_bars_completed(config: Config, track: str) -> set[str]:
+    path = _sector_bars_backfill_state_path(config, track)
+    if path.exists():
+        return set(json.loads(path.read_text(encoding="utf-8")).get("completed", []))
+    if track == "em":
+        legacy = _sector_bars_legacy_state_path(config)
+        if legacy.exists():
+            return set(json.loads(legacy.read_text(encoding="utf-8")).get("completed", []))
+    return set()
 
 
 def clear_sector_bars_backfill_state(config: Config) -> None:
-    path = _sector_bars_backfill_state_path(config)
-    if path.exists():
-        path.unlink()
+    for track in _SECTOR_BARS_BACKFILL_TRACKS:
+        path = _sector_bars_backfill_state_path(config, track)
+        if path.exists():
+            path.unlink()
+    legacy = _sector_bars_legacy_state_path(config)
+    if legacy.exists():
+        legacy.unlink()
 
 
-def _mark_sector_bars_completed(config: Config, sector_codes: list[str]) -> None:
-    path = _sector_bars_backfill_state_path(config)
+def _mark_sector_bars_completed(config: Config, track: str, sector_codes: list[str]) -> None:
+    path = _sector_bars_backfill_state_path(config, track)
     path.parent.mkdir(parents=True, exist_ok=True)
-    completed = sorted(_sector_bars_completed(config) | set(sector_codes))
+    completed = sorted(_sector_bars_completed(config, track) | set(sector_codes))
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -92,24 +108,55 @@ def _mark_sector_bars_completed(config: Config, sector_codes: list[str]) -> None
 
 
 def _backfill_sector_bars(config: Config, trade_date: date, run_id: str) -> dict:
-    """Historical board bars via the EastMoney kline API (the daily clist
-    snapshot only sees today). Partial sweeps surface as an audit finding."""
+    """Historical board bars via TDX (routed) + EastMoney kline (EM-only boards).
+
+    Requires ``meta/sector_ohlc_routing.parquet`` from ``sde derive sector_routing``.
+    Partial sweeps surface as an audit finding per track."""
     from stock_data_engine.adapters.eastmoney.rotation import fetch_sector_bars_history
+    from stock_data_engine.adapters.tdx_protocol.sector_bars import fetch_sector_index_bars_batch
 
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("sector_bars: eastmoney source disabled in config")
+
+    routing = load_sector_routing(config)
+    if routing.is_empty():
+        raise RuntimeError(
+            "sector_bars backfill requires meta/sector_ohlc_routing.parquet; "
+            "run `sde derive sector_routing` first"
+        )
+
     if getattr(config, "_sector_bars_force", False):
         clear_sector_bars_backfill_state(config)
 
     start = trade_date - timedelta(days=_SECTOR_BARS_BACKFILL_DAYS)
-    completed = _sector_bars_completed(config)
-    df, failed, succeeded = fetch_sector_bars_history(
+    tdx_completed = _sector_bars_completed(config, "tdx")
+    em_completed = _sector_bars_completed(config, "em")
+    em_sectors = set(
+        routing.filter(pl.col("ohlc_source") == OHLC_EM)["sector_code"].to_list()
+    )
+
+    tdx_df = pl.DataFrame()
+    tdx_failed: list[str] = []
+    tdx_succeeded: list[str] = []
+    if config.sources.get("tdx", True):
+        tdx_df, tdx_failed, tdx_succeeded = fetch_sector_index_bars_batch(
+            routing,
+            start,
+            trade_date,
+            config=config,
+            skip_sectors=tdx_completed,
+            backfill=True,
+        )
+
+    em_df, em_failed, em_succeeded = fetch_sector_bars_history(
         start,
         trade_date,
         config=config,
-        skip_sectors=completed,
+        skip_sectors=em_completed,
+        only_sectors=em_sectors,
     )
-    attempted = len(succeeded) + len(failed)
+
+    attempted = len(tdx_succeeded) + len(tdx_failed) + len(em_succeeded) + len(em_failed)
     if attempted == 0:
         return {
             "rows_read": 0,
@@ -117,22 +164,35 @@ def _backfill_sector_bars(config: Config, trade_date: date, run_id: str) -> dict
             "note": "all boards already sector_bars-backfilled",
         }
 
+    parts: list[pl.DataFrame] = []
+    if not tdx_df.is_empty():
+        parts.append(tdx_df.with_columns(pl.lit(OHLC_TDX).alias("source")))
+    if not em_df.is_empty():
+        parts.append(em_df.with_columns(pl.lit(OHLC_EM).alias("source")))
+    df = pl.concat(parts, how="diagonal_relaxed") if parts else pl.DataFrame()
+
     result: dict = {"rows_read": 0, "rows_written": 0}
     if not df.is_empty():
-        result = write_fetched(config, run_id, "sector_bars", df, source="eastmoney")
+        result = write_fetched(config, run_id, "sector_bars", df, source="hybrid")
 
-    if succeeded:
-        _mark_sector_bars_completed(config, succeeded)
+    if tdx_succeeded:
+        _mark_sector_bars_completed(config, "tdx", tdx_succeeded)
+    if em_succeeded:
+        _mark_sector_bars_completed(config, "em", em_succeeded)
 
+    failed = tdx_failed + em_failed
     if failed:
         result["failed_sectors"] = len(failed)
         result["attempted_sectors"] = attempted
+        result["tdx_failed"] = len(tdx_failed)
+        result["em_failed"] = len(em_failed)
         finding = {
             "dataset": "sector_bars",
             "severity": "warning",
             "code": "sector_bars_backfill_incomplete",
             "message": (
-                f"{len(failed)}/{attempted} board(s) failed the kline history sweep; "
+                f"{len(failed)}/{attempted} board(s) failed the hybrid history sweep "
+                f"(tdx={len(tdx_failed)}, em={len(em_failed)}); "
                 "re-run `sde backfill sector_bars --retry-failed` to resume."
             ),
         }

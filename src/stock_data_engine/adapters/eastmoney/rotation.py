@@ -235,6 +235,7 @@ def fetch_sector_bars_history(
     *,
     config: Config | None = None,
     skip_sectors: set[str] | None = None,
+    only_sectors: set[str] | None = None,
 ) -> tuple[pl.DataFrame, list[str], list[str]]:
     """Historical daily board bars via the EastMoney kline API (secid ``90.BKxxxx``).
 
@@ -254,6 +255,8 @@ def fetch_sector_bars_history(
             + _fetch_board_rows(client, _INDUSTRY_FS, "industry")
         )
         todo = [b for b in boards if b["sector_code"] not in skip]
+        if only_sectors is not None:
+            todo = [b for b in todo if b["sector_code"] in only_sectors]
         for board in todo:
             try:
                 rows.extend(_fetch_board_kline_rows(client, board, start, end))
