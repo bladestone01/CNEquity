@@ -13,9 +13,9 @@ import polars as pl
 from stock_data_engine.adapters.eastmoney.rotation import (
     fetch_hot_rank,
     fetch_news_headlines,
-    fetch_sector_bars,
     fetch_sector_fund_flow,
 )
+from stock_data_engine.adapters.hybrid.sector_bars import fetch_hybrid_sector_bars
 from stock_data_engine.config import Config
 from stock_data_engine.derive.sector_routing import OHLC_EM, OHLC_TDX, load_sector_routing
 from stock_data_engine.orchestrator.registry import register_step
@@ -60,7 +60,16 @@ def step_hot_rank(config: Config, trade_date: date, run_id: str, context: dict) 
 def step_sector_bars(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_backfill", False):
         return _backfill_sector_bars(config, trade_date, run_id)
-    return _run_rotation_step(config, trade_date, run_id, "sector_bars", fetch_sector_bars)
+    if not config.sources.get("eastmoney", True):
+        raise RuntimeError("sector_bars: eastmoney source disabled in config")
+    return run_incremental_fetched(
+        config,
+        trade_date,
+        run_id,
+        "sector_bars",
+        lambda td: fetch_hybrid_sector_bars(td, config=config),
+        source="hybrid",
+    )
 
 
 def _sector_bars_backfill_state_path(config: Config, track: str) -> os.PathLike:
