@@ -8,7 +8,7 @@ import click
 import polars as pl
 
 import stock_data_engine.steps  # noqa: F401 — register steps
-from stock_data_engine.config import load_config, validate_config
+from stock_data_engine.config import WaveConfig, load_config, validate_config
 from stock_data_engine.derive.adj_factors import compute_adj_factors
 from stock_data_engine.domain.datasets import fetch_semantics, get_dataset
 from stock_data_engine.orchestrator.engine import JobEngine
@@ -144,17 +144,20 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
     """Run daily ingestion job (Wave DAG or schedule group)."""
     cfg = _cfg(config_path)
     engine = JobEngine(cfg)
-    if group_name:
-        group = cfg.schedule_groups.get(group_name)
-        if not group:
-            raise click.ClickException(f"Unknown group: {group_name}")
-        result = engine.run_job(
-            f"daily:{group_name}",
-            steps=group.steps,
-            backfill=backfill,
-        )
-    else:
-        result = engine.run_job("daily", backfill=backfill)
+    try:
+        if group_name:
+            group = cfg.schedule_groups.get(group_name)
+            if not group:
+                raise click.ClickException(f"Unknown group: {group_name}")
+            result = engine.run_job(
+                f"daily:{group_name}",
+                waves=[WaveConfig(name=f"group:{group_name}", parallel=False, steps=group.steps)],
+                backfill=backfill,
+            )
+        else:
+            result = engine.run_job("daily", backfill=backfill)
+    except RunLockError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps({"run_id": result["run_id"], "status": result["status"]}, indent=2))
     # Exit non-zero on failure so schedulers (launchd/cron) and the daily
     # pipeline can detect it; a non-trading-day skip is a success (exit 0).
@@ -381,13 +384,37 @@ def retry(config_path: str, run_id: str):
         "not lost, but the retry becomes a full re-run)."
     ),
 )
-def clean(config_path: str, dry_run: bool, orphan_retention_days: int, force: bool):
+@click.option(
+    "--reconcile-runs",
+    is_flag=True,
+    help="Mark runs stuck in 'running' (crashed workers) as failed before cleanup.",
+)
+@click.option(
+    "--reconcile-after-seconds",
+    default=300,
+    show_default=True,
+    help="Only reconcile runs idle longer than this many seconds.",
+)
+def clean(
+    config_path: str,
+    dry_run: bool,
+    orphan_retention_days: int,
+    force: bool,
+    reconcile_runs: bool,
+    reconcile_after_seconds: int,
+):
     """Remove staging for successful compacted runs and aged orphans.
 
     Failed/incomplete runs keep their staging (it is resumable state) unless
     --force is given.
     """
     cfg = _cfg(config_path)
+    reconciled: dict[str, int] | None = None
+    if reconcile_runs:
+        manifest = Manifest(cfg.manifest_path)
+        reconciled = manifest.reconcile_orphaned_runs(
+            stale_after_seconds=float(reconcile_after_seconds)
+        )
     result = clean_staging(
         cfg,
         dry_run=dry_run,
@@ -398,6 +425,7 @@ def clean(config_path: str, dry_run: bool, orphan_retention_days: int, force: bo
         json.dumps(
             {
                 "dry_run": dry_run,
+                "reconciled": reconciled,
                 "removed_run_ids": result.removed_run_ids,
                 "orphan_run_ids": result.orphan_run_ids,
                 "force_removed_run_ids": result.force_removed_run_ids,

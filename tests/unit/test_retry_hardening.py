@@ -75,3 +75,30 @@ def test_run_lock_blocks_concurrent_retry(tmp_path):
                 raise AssertionError("should not acquire twice")
         except RunLockError:
             pass
+
+
+def test_daily_ingestion_lock_blocks_overlapping_runs(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    monkeypatch.setattr(engine, "_run_wave", lambda *args, **kwargs: ([], 0, 0, False))
+
+    with run_lock(cfg.meta_root, "daily_ingestion"):
+        try:
+            engine.run_job("daily:core", date(2024, 6, 28), waves=[])
+        except RunLockError:
+            pass
+        else:
+            raise AssertionError("expected RunLockError")
+
+
+def test_reconcile_orphaned_runs_closes_stale_running(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core", {})
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars")
+    out = manifest.reconcile_orphaned_runs(stale_after_seconds=0)
+    assert out["runs_closed"] == 1
+    assert out["batches_closed"] == 1
+    assert manifest.get_run(run_id)["status"] == "failed"

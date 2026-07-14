@@ -7,6 +7,7 @@ from datetime import date
 
 import polars as pl
 
+from stock_data_engine.adapters.tdx_protocol.session import TDX_SESSION_LOCK, close_quotes_client
 from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
 
 logger = logging.getLogger(__name__)
@@ -119,16 +120,20 @@ def fetch_corporate_actions_tdx(
     client_factory,
     rate_limit: RateLimitSpec | None = None,
 ) -> pl.DataFrame:
-    client = client_factory()
+    client = None
     frames: list[pl.DataFrame] = []
     on_date = None if backfill else trade_date
-
-    for sym in symbols:
-        df = fetch_xdxr_for_symbol(
-            client, sym, rate_limit=rate_limit, on_date=on_date
-        )
-        if df.height:
-            frames.append(df)
+    try:
+        with TDX_SESSION_LOCK:
+            client = client_factory()
+            for sym in symbols:
+                df = fetch_xdxr_for_symbol(
+                    client, sym, rate_limit=rate_limit, on_date=on_date
+                )
+                if df.height:
+                    frames.append(df)
+    finally:
+        close_quotes_client(client)
 
     if not frames:
         return pl.DataFrame(

@@ -350,6 +350,56 @@ class Manifest:
             "stale_to_failed": stale_to_failed,
         }
 
+    def reconcile_orphaned_runs(
+        self,
+        *,
+        stale_after_seconds: float = 300,
+        error_message: str = "reconciled: worker exited without finish_run",
+    ) -> dict[str, int]:
+        """Close runs/batches stuck in running/stale with no heartbeat past *stale_after_seconds*."""
+        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        runs_closed = 0
+        batches_closed = 0
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT run_id, started_at FROM ingestion_runs WHERE status = 'running'"
+            )
+            orphan_run_ids: list[str] = []
+            for row in cur:
+                started = datetime.fromisoformat(row["started_at"])
+                if started > cutoff:
+                    continue
+                orphan_run_ids.append(row["run_id"])
+            now = _utcnow()
+            for run_id in orphan_run_ids:
+                conn.execute(
+                    """
+                    UPDATE ingestion_runs
+                    SET status = 'failed', finished_at = ?, error_message = ?
+                    WHERE run_id = ?
+                    """,
+                    (now, error_message, run_id),
+                )
+                runs_closed += 1
+                batch_cur = conn.execute(
+                    """
+                    SELECT batch_id FROM ingestion_batches
+                    WHERE run_id = ? AND status IN ('running', 'stale')
+                    """,
+                    (run_id,),
+                )
+                for batch_row in batch_cur:
+                    conn.execute(
+                        """
+                        UPDATE ingestion_batches
+                        SET status = 'failed', finished_at = ?, error_message = ?
+                        WHERE run_id = ? AND batch_id = ?
+                        """,
+                        (now, error_message, run_id, batch_row["batch_id"]),
+                    )
+                    batches_closed += 1
+        return {"runs_closed": runs_closed, "batches_closed": batches_closed}
+
     def mark_stale_running_batches_failed(
         self, run_id: str, *, stale_after_seconds: float
     ) -> int:

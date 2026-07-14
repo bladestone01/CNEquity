@@ -46,6 +46,13 @@ def test_cyclic_dependency_raises():
         step_execution_levels([name_a, name_b])
 
 
+def test_core_group_level1_has_concurrent_tdx_steps():
+    """corporate_actions (xdxr) and index_bars must not run in parallel without TDX lock."""
+    levels = step_execution_levels(["corporate_actions", "index_bars"])
+    assert len(levels) == 1
+    assert set(levels[0]) == {"corporate_actions", "index_bars"}
+
+
 def test_compact_runs_after_fetch_steps_in_core_group():
     steps = [
         "instruments",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -73,63 +74,73 @@ class JobEngine:
             }
 
         metadata = {"trade_date": trade_date.isoformat(), "backfill": backfill}
-        if not run_id:
-            run_id = self.manifest.start_run(job_name, metadata)
-        else:
-            merged = self.manifest.get_run_metadata(run_id)
-            merged.update(metadata)
-            self.manifest.update_run_metadata(run_id, merged)
+        lock_name = "daily_ingestion" if job_name.startswith("daily") else None
+        with self._optional_job_lock(lock_name):
+            if not run_id:
+                run_id = self.manifest.start_run(job_name, metadata)
+            else:
+                merged = self.manifest.get_run_metadata(run_id)
+                merged.update(metadata)
+                self.manifest.update_run_metadata(run_id, merged)
 
-        wave_list = waves or self.config.daily_waves
-        if steps:
-            wave_list = [WaveConfig(name="targeted", parallel=True, steps=steps)]
+            wave_list = waves or self.config.daily_waves
+            if steps and waves is None:
+                wave_list = [WaveConfig(name="targeted", parallel=True, steps=steps)]
 
-        all_steps = [name for wave in wave_list for name in wave.steps]
-        validate_steps_registered(all_steps)
+            all_steps = [name for wave in wave_list for name in wave.steps]
+            validate_steps_registered(all_steps)
 
-        context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
-        results: list[dict[str, Any]] = []
-        total_read = 0
-        total_written = 0
-        had_error = False
+            context: dict[str, Any] = {"run_id": run_id, "trade_date": trade_date}
+            results: list[dict[str, Any]] = []
+            total_read = 0
+            total_written = 0
+            had_error = False
 
-        for wave in wave_list:
-            logger.info("Wave %s: %s (parallel=%s)", wave.name, wave.steps, wave.parallel)
-            wave_results, wave_read, wave_written, wave_error = self._run_wave(
-                wave, wave.steps, trade_date, run_id, context
-            )
-            results.extend(wave_results)
-            total_read += wave_read
-            total_written += wave_written
-            had_error = had_error or wave_error
-
-            if "daily_bars" in wave.steps:
-                promoted = self.manifest.promote_running_to_stale(
-                    run_id, stale_after_seconds=self.config.batch_stale_seconds
+            for wave in wave_list:
+                logger.info("Wave %s: %s (parallel=%s)", wave.name, wave.steps, wave.parallel)
+                wave_results, wave_read, wave_written, wave_error = self._run_wave(
+                    wave, wave.steps, trade_date, run_id, context
                 )
-                if promoted:
-                    logger.warning(
-                        "Promoted %s running batch(es) to stale after wave %s",
-                        promoted,
-                        wave.name,
-                    )
+                results.extend(wave_results)
+                total_read += wave_read
+                total_written += wave_written
+                had_error = had_error or wave_error
 
-        status = "failed" if had_error else "success"
-        if finalize_run:
-            self.manifest.finish_run(
-                run_id,
-                status,
-                rows_read=total_read,
-                rows_written=total_written,
-                error_message="one or more steps failed" if had_error else None,
-            )
-        return {
-            "run_id": run_id,
-            "status": status,
-            "results": results,
-            "rows_read": total_read,
-            "rows_written": total_written,
-        }
+                if "daily_bars" in wave.steps:
+                    promoted = self.manifest.promote_running_to_stale(
+                        run_id, stale_after_seconds=self.config.batch_stale_seconds
+                    )
+                    if promoted:
+                        logger.warning(
+                            "Promoted %s running batch(es) to stale after wave %s",
+                            promoted,
+                            wave.name,
+                        )
+
+            status = "failed" if had_error else "success"
+            if finalize_run:
+                self.manifest.finish_run(
+                    run_id,
+                    status,
+                    rows_read=total_read,
+                    rows_written=total_written,
+                    error_message="one or more steps failed" if had_error else None,
+                )
+            return {
+                "run_id": run_id,
+                "status": status,
+                "results": results,
+                "rows_read": total_read,
+                "rows_written": total_written,
+            }
+
+    @contextlib.contextmanager
+    def _optional_job_lock(self, lock_name: str | None):
+        if lock_name is None:
+            yield
+            return
+        with run_lock(self.config.meta_root, lock_name, blocking=False):
+            yield
 
     def _run_wave(
         self,

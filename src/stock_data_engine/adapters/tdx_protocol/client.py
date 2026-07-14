@@ -16,6 +16,7 @@ from stock_data_engine.adapters.eastmoney.corporate_actions import fetch_corpora
 from stock_data_engine.adapters.eastmoney.trading_status import fetch_trading_status_eastmoney
 from stock_data_engine.adapters.tdx_protocol.bars import fetch_bars_paginated
 from stock_data_engine.adapters.tdx_protocol.corporate_actions import fetch_corporate_actions_tdx
+from stock_data_engine.adapters.tdx_protocol.session import TDX_SESSION_LOCK, close_quotes_client
 from stock_data_engine.config import Config
 from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
 from stock_data_engine.domain.schemas import MOCK_SOURCE, with_provenance
@@ -26,6 +27,8 @@ from stock_data_engine.domain.symbols import (
 )
 
 logger = logging.getLogger(__name__)
+
+_close_quotes_client = close_quotes_client
 
 INDEX_SYMBOLS = [
     ("000001", "SH"),
@@ -165,20 +168,6 @@ def _pick_reachable_server(
         f"no TDX server responded with data (probed {len(candidates)} host(s); "
         "network down or all feeds degraded)"
     )
-
-
-def _close_quotes_client(client: object) -> None:
-    """Close a mootdx client so its heartbeat thread dies (else the process
-    can't exit — a serial daily run creates one client per fetch)."""
-    if client is None:
-        return
-    inner = getattr(client, "client", None)
-    close = getattr(inner, "close", None) or getattr(client, "close", None)
-    if callable(close):
-        try:
-            close()
-        except Exception:
-            pass
 
 
 def _quotes_client(config: Config | None = None):
@@ -336,31 +325,32 @@ def fetch_instruments(
     wait_spec(rate_limit)
     client = None
     try:
-        client = _quotes_client(config)
-        frames = []
-        market_errors: list[str] = []
-        for market, exch in _TDX_STOCK_MARKETS:
-            try:
-                raw = client.stocks(market=market)
-            except Exception as exc:
-                market_errors.append(f"{exch}: {exc}")
-                continue
-            if raw is None or len(raw) == 0:
-                market_errors.append(f"{exch}: empty response")
-                continue
-            pdf = pl.from_pandas(raw) if hasattr(raw, "columns") else pl.DataFrame(raw)
-            part = _filter_instrument_frame(pdf, exch)
-            if part.height:
-                frames.append(part)
-            else:
-                market_errors.append(f"{exch}: no qualifying instruments")
-        if market_errors:
-            reason = "market fetch failed: " + "; ".join(market_errors)
-            return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
-        if not frames:
-            reason = "TDX returned no instruments"
-            return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
-        return pl.concat(frames, how="diagonal_relaxed")
+        with TDX_SESSION_LOCK:
+            client = _quotes_client(config)
+            frames = []
+            market_errors: list[str] = []
+            for market, exch in _TDX_STOCK_MARKETS:
+                try:
+                    raw = client.stocks(market=market)
+                except Exception as exc:
+                    market_errors.append(f"{exch}: {exc}")
+                    continue
+                if raw is None or len(raw) == 0:
+                    market_errors.append(f"{exch}: empty response")
+                    continue
+                pdf = pl.from_pandas(raw) if hasattr(raw, "columns") else pl.DataFrame(raw)
+                part = _filter_instrument_frame(pdf, exch)
+                if part.height:
+                    frames.append(part)
+                else:
+                    market_errors.append(f"{exch}: no qualifying instruments")
+            if market_errors:
+                reason = "market fetch failed: " + "; ".join(market_errors)
+                return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
+            if not frames:
+                reason = "TDX returned no instruments"
+                return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
+            return pl.concat(frames, how="diagonal_relaxed")
     except ImportError:
         reason = "mootdx not installed"
     except Exception as exc:
@@ -411,25 +401,26 @@ def fetch_daily_bars(
         return _fail_or_mock("daily_bars", _MOCK_SHORT_CIRCUIT, True, _mock_bars(symbols, start, end))
     client = None
     try:
-        client = _quotes_client(config)
-        rows = []
-        for sym in symbols:
-            if on_heartbeat is not None:
-                on_heartbeat()
-            rows.extend(
-                fetch_bars_paginated(
-                    client,
-                    sym,
-                    start,
-                    end,
-                    rate_limit=rate_limit,
-                    backfill=backfill,
-                    on_page=on_heartbeat,
+        with TDX_SESSION_LOCK:
+            client = _quotes_client(config)
+            rows = []
+            for sym in symbols:
+                if on_heartbeat is not None:
+                    on_heartbeat()
+                rows.extend(
+                    fetch_bars_paginated(
+                        client,
+                        sym,
+                        start,
+                        end,
+                        rate_limit=rate_limit,
+                        backfill=backfill,
+                        on_page=on_heartbeat,
+                    )
                 )
-            )
-        if rows:
-            return pl.DataFrame(rows)
-        reason = "TDX returned no bars"
+            if rows:
+                return pl.DataFrame(rows)
+            reason = "TDX returned no bars"
     except ImportError:
         reason = "mootdx not installed"
     except Exception as exc:
@@ -461,30 +452,31 @@ def fetch_index_bars(
         )
 
     def _fetch_once() -> tuple[list[dict], list[str]]:
-        client = _quotes_client(config)
-        rows: list[dict] = []
-        missing: list[str] = []
-        try:
-            for sym in symbols:
-                try:
-                    sym_rows = fetch_bars_paginated(
-                        client, sym, start, end, rate_limit=rate_limit, backfill=backfill,
-                        is_index=True,
-                    )
-                except Exception as exc:
-                    if backfill:
-                        # Rotate server and retry the whole set — some TDX hosts
-                        # return corrupt bytes for deep index history.
-                        raise TdxSourceError(f"index bars failed for {sym}: {exc}") from exc
-                    logger.warning("TDX index bars failed for %s: %s", sym, exc)
-                    continue
-                if not sym_rows:
-                    missing.append(sym)
-                    continue
-                rows.extend(sym_rows)
-        finally:
-            _close_quotes_client(client)
-        return rows, missing
+        with TDX_SESSION_LOCK:
+            client = _quotes_client(config)
+            rows: list[dict] = []
+            missing: list[str] = []
+            try:
+                for sym in symbols:
+                    try:
+                        sym_rows = fetch_bars_paginated(
+                            client, sym, start, end, rate_limit=rate_limit, backfill=backfill,
+                            is_index=True,
+                        )
+                    except Exception as exc:
+                        if backfill:
+                            # Rotate server and retry the whole set — some TDX hosts
+                            # return corrupt bytes for deep index history.
+                            raise TdxSourceError(f"index bars failed for {sym}: {exc}") from exc
+                        logger.warning("TDX index bars failed for %s: %s", sym, exc)
+                        continue
+                    if not sym_rows:
+                        missing.append(sym)
+                        continue
+                    rows.extend(sym_rows)
+            finally:
+                _close_quotes_client(client)
+            return rows, missing
 
     reason = "TDX returned no index bars"
     try:
