@@ -1,5 +1,7 @@
 # StockDataEngine 运维 Runbook（Phase B 运行保障）
 
+> **已迁移**：完整运维文档见 [operations/runbook.md](operations/runbook.md)，并配套 [脚本说明](operations/scripts.md)、[故障排查](operations/troubleshooting.md)。
+
 面向自用实盘：`wb daily` 上线后引擎是生产依赖，本文覆盖每日无人值守运行、失败告警、备份恢复。对应 [roadmap.md](roadmap.md) Phase B、[architecture.md](architecture.md) 第 6 层（运行保障）。
 
 ## 组件一览

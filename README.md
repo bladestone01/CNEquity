@@ -204,12 +204,18 @@ sde run daily --group research --config configs/stockdata.toml       # 18:30（�
 
 ## 文档
 
-- [docs/PRD.md](docs/PRD.md) — **统一需求文档**（产品定义、数据清单、风险登记；附录 A Schema 契约 / B 数据集目录 / C 运维手册）
-- [docs/architecture.md](docs/architecture.md) — **架构设计**（六层分层、引擎↔Workbench 契约、以实盘闭环为镜头的差距分析）
-- [docs/roadmap.md](docs/roadmap.md) — **路线图**（Phase A–D 优先级与验收标准）
-- [docs/adr/](docs/adr/) — 架构决策记录
-- [CONTRIBUTING.md](CONTRIBUTING.md) — 开发约定与新数据集 definition-of-done
-- [CHANGELOG.md](CHANGELOG.md) — 变更记录
+**入口**：[docs/README.md](docs/README.md) — 按模块组织的完整文档中心
+
+| 分类 | 文档 |
+|------|------|
+| 入门 | [安装](docs/getting-started/installation.md) · [快速开始](docs/getting-started/quickstart.md) · [配置](docs/getting-started/configuration.md) |
+| 架构 | [总览](docs/architecture/overview.md) · [数据流](docs/architecture/data-flow.md) · [数据湖](docs/architecture/lake-layout.md) · [差距分析](docs/architecture.md) |
+| 模块 | [模块索引](docs/modules/README.md)（config / orchestrator / steps / adapters / query …） |
+| 数据集 | [目录](docs/datasets/catalog.md) · [查询指南](docs/datasets/query-guide.md) · [Schema 契约](docs/PRD.md) |
+| 运维 | [Runbook](docs/operations/runbook.md) · [故障排查](docs/operations/troubleshooting.md) |
+| 开发 | [新增数据集](docs/development/adding-dataset.md) · [测试](docs/development/testing.md) |
+| 参考 | [CLI](docs/reference/cli.md) · [Python API](docs/reference/python-api.md) |
+| 其他 | [PRD](docs/PRD.md) · [路线图](docs/roadmap.md) · [ADR](docs/adr/) · [CHANGELOG](CHANGELOG.md) · [CONTRIBUTING](CONTRIBUTING.md) |
 
 ## License
 

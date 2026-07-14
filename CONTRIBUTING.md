@@ -44,4 +44,4 @@ pytest tests/integration
 2. `@register_step` with correct `depends_on` / `group` / `requires_workers`.
 3. Write-time schema validation passes.
 4. Unit test covering normalization + at least one edge case.
-5. Entry added to the dataset catalog (`docs/PRD.md` appendix B).
+5. Entry added to the dataset catalog ([`docs/datasets/catalog.md`](docs/datasets/catalog.md) and `docs/PRD.md` appendix B).

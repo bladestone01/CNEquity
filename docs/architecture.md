@@ -3,6 +3,9 @@
 版本：v1.0
 日期：2026-07-07
 定位：本文回答「系统怎么分层、边界在哪、离支撑实盘赚钱还差什么」。
+
+> 模块级文档已拆分至 [architecture/](architecture/overview.md) 子目录；运维见 [operations/runbook.md](operations/runbook.md)。
+
 数据集需求与风险登记见 [PRD](PRD.md)；排期与优先级见 [roadmap](roadmap.md)；关键决策见 [ADR](adr/)。
 
 ---

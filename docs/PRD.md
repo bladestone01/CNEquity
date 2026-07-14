@@ -4,6 +4,7 @@
 状态：Draft（Living Document）
 日期：2026-07-07
 
+> **文档中心**：[docs/README.md](README.md) — 按模块拆分的完整技术文档（架构、模块、数据集、运维、API）。
 > 分工：本文管**数据集需求、schema 契约与风险登记**；设计分层与差距分析见
 > [docs/architecture.md](architecture.md)；优先级与排期见 [docs/roadmap.md](roadmap.md)。
 产品定位：整合多方数据源的 A 股辅助数据平台 —— 采集、编排、标准化，交付可直接查询的 Parquet 数据湖
