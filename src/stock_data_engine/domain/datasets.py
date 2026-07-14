@@ -109,7 +109,12 @@ _SPECS = [
     # L7 sentiment / rotation
     DatasetSpec("sentiment_scores", partition_col="trade_date"),
     DatasetSpec("hot_rank", partition_col="trade_date", fetch_semantics="snapshot"),
-    DatasetSpec("sector_bars", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec(
+        "sector_bars",
+        partition_col="trade_date",
+        fetch_semantics="snapshot",
+        backfill_source="eastmoney_kline",
+    ),
     DatasetSpec("sector_fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
     DatasetSpec("news_headlines", partition_col="publish_date", fetch_semantics="snapshot"),
     # L8 risk

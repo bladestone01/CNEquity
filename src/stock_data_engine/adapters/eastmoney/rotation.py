@@ -23,6 +23,10 @@ _CONCEPT_FS = "m:90+t:3"
 _INDUSTRY_FS = "m:90+t:2"
 _BOARD_FIELDS = "f12,f14,f2,f3,f15,f16,f17,f5,f6,f8,f62"
 
+_BOARD_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+# f51..f61: date,open,close,high,low,volume,amount,amplitude,change_pct,change,turnover
+_KLINE_FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+
 
 def _hot_symbol(sc: str) -> str | None:
     text = str(sc or "").strip().upper()
@@ -139,6 +143,71 @@ def fetch_sector_bars(trade_date: date) -> pl.DataFrame:
                 }
             )
     return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+
+def _board_kline_rows(
+    client: EastMoneyClient, board: dict, start: date, end: date
+) -> list[dict]:
+    params = urlencode(
+        {
+            "secid": f"90.{board['sector_code']}",
+            "klt": 101,  # daily
+            "fqt": 0,    # board indices carry no corporate actions; raw == adjusted
+            "beg": start.strftime("%Y%m%d"),
+            "end": end.strftime("%Y%m%d"),
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": _KLINE_FIELDS2,
+        }
+    )
+    resp = client.get(f"{_BOARD_KLINE_URL}?{params}", timeout=30.0)
+    resp.raise_for_status()
+    klines = ((resp.json().get("data") or {}).get("klines")) or []
+    out: list[dict] = []
+    for line in klines:
+        parts = str(line).split(",")
+        if len(parts) < 9:
+            continue
+        out.append(
+            {
+                "sector_code": board["sector_code"],
+                "sector_name": board["sector_name"],
+                "board_type": board["board_type"],
+                "trade_date": date.fromisoformat(parts[0]),
+                "open": float(parts[1]),
+                "close": float(parts[2]),
+                "high": float(parts[3]),
+                "low": float(parts[4]),
+                "volume": int(float(parts[5])),
+                "amount": float(parts[6]),
+                "change_pct": float(parts[8]),
+            }
+        )
+    return out
+
+
+def fetch_sector_bars_history(start: date, end: date) -> tuple[pl.DataFrame, list[str]]:
+    """Historical daily board bars via the EastMoney kline API (secid ``90.BKxxxx``).
+
+    The daily clist snapshot only sees today, so ``sde backfill sector_bars``
+    replays history through this path instead. Returns
+    ``(frame, failed_sector_codes)`` — a partial sweep must be visible to the
+    caller (audit finding), never silently dropped.
+    """
+    rows: list[dict] = []
+    failed: list[str] = []
+    with EastMoneyClient() as client:
+        boards = _fetch_board_rows(client, _CONCEPT_FS, "concept") + _fetch_board_rows(
+            client, _INDUSTRY_FS, "industry"
+        )
+        for b in boards:
+            try:
+                rows.extend(_board_kline_rows(client, b, start, end))
+            except Exception:  # noqa: BLE001 — keep sweeping, report at the end
+                logger.warning(
+                    "sector_bars history: %s (%s) failed", b["sector_code"], b["sector_name"]
+                )
+                failed.append(b["sector_code"])
+    return (pl.DataFrame(rows) if rows else pl.DataFrame()), failed
 
 
 def fetch_sector_fund_flow(trade_date: date) -> pl.DataFrame:
