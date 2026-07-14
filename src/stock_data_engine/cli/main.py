@@ -244,6 +244,11 @@ def derive(name: str, config_path: str):
 
         rows = derive_suspension_history(cfg)
         click.echo(f"Derived historical suspension: {rows} rows into trading_status")
+    elif name == "sector_routing":
+        from stock_data_engine.derive.sector_routing import derive_sector_routing
+
+        summary = derive_sector_routing(cfg)
+        click.echo(json.dumps(summary, indent=2, default=str))
     else:
         raise click.ClickException(f"Unknown derive target: {name}")
 
