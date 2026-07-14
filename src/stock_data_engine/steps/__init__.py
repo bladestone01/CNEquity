@@ -9,5 +9,6 @@ from stock_data_engine.steps import (  # noqa: F401
     macro_risk,
     reference,
     research,
+    rotation,
     structure,
 )

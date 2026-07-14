@@ -129,7 +129,8 @@ steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulat
 
 [job.daily.groups.research]
 at = "18:30"
-steps = ["institutional_holdings", "analyst_consensus", "sentiment_scores", "compact"]
+steps = ["institutional_holdings", "analyst_consensus", "sentiment_scores",
+  "hot_rank", "sector_bars", "sector_fund_flow", "news_headlines", "compact"]
 
 [job.init.phases]
 names = [

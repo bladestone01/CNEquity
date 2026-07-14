@@ -4,9 +4,9 @@ from datetime import date
 
 import pytest
 
+from stock_data_engine.adapters.cninfo.regulatory import fetch_regulatory_events
 from stock_data_engine.adapters.eastmoney import clist
 from stock_data_engine.adapters.eastmoney.clist import fetch_clist_pages
-from stock_data_engine.adapters.cninfo.regulatory import fetch_regulatory_events
 
 
 class _Resp:

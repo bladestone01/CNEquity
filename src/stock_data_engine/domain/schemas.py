@@ -306,6 +306,60 @@ SENTIMENT_SCORES_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+HOT_RANK_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "rank": pl.Int64,
+    "rank_change": pl.Int64,
+    "hist_rank": pl.Int64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+SECTOR_BARS_SCHEMA = {
+    "sector_code": pl.Utf8,
+    "sector_name": pl.Utf8,
+    "board_type": pl.Utf8,
+    "trade_date": pl.Date,
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    "volume": pl.Int64,
+    "amount": pl.Float64,
+    "change_pct": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+SECTOR_FUND_FLOW_SCHEMA = {
+    "sector_code": pl.Utf8,
+    "sector_name": pl.Utf8,
+    "board_type": pl.Utf8,
+    "trade_date": pl.Date,
+    "main_net_inflow": pl.Float64,
+    "change_pct": pl.Float64,
+    "turnover_pct": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+NEWS_HEADLINES_SCHEMA = {
+    "news_id": pl.Utf8,
+    "publish_date": pl.Date,
+    "publish_time": pl.Utf8,
+    "title": pl.Utf8,
+    "summary": pl.Utf8,
+    "related_symbols": pl.Utf8,
+    "channel": pl.Utf8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 DATASET_SCHEMAS = {
     "instruments": INSTRUMENTS_SCHEMA,
     "trading_calendar": TRADING_CALENDAR_SCHEMA,
@@ -333,6 +387,10 @@ DATASET_SCHEMAS = {
     "institutional_holdings": INSTITUTIONAL_HOLDINGS_SCHEMA,
     "analyst_consensus": ANALYST_CONSENSUS_SCHEMA,
     "sentiment_scores": SENTIMENT_SCORES_SCHEMA,
+    "hot_rank": HOT_RANK_SCHEMA,
+    "sector_bars": SECTOR_BARS_SCHEMA,
+    "sector_fund_flow": SECTOR_FUND_FLOW_SCHEMA,
+    "news_headlines": NEWS_HEADLINES_SCHEMA,
 }
 
 PRIMARY_KEYS = {
@@ -362,6 +420,10 @@ PRIMARY_KEYS = {
     "institutional_holdings": ["symbol", "holder_type", "report_period"],
     "analyst_consensus": ["symbol", "forecast_date"],
     "sentiment_scores": ["symbol", "trade_date", "score_channel"],
+    "hot_rank": ["symbol", "trade_date"],
+    "sector_bars": ["sector_code", "trade_date"],
+    "sector_fund_flow": ["sector_code", "trade_date"],
+    "news_headlines": ["news_id"],
 }
 
 

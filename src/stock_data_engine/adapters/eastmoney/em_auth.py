@@ -107,6 +107,12 @@ class EastMoneyClient:
         headers.update(build_eastmoney_headers(url))
         return self._client.get(url, headers=headers, **kwargs)
 
+    def post(self, url: str, **kwargs) -> httpx.Response:
+        self._throttle()
+        headers = kwargs.pop("headers", {})
+        headers.update(build_eastmoney_headers(url))
+        return self._client.post(url, headers=headers, **kwargs)
+
     def close(self) -> None:
         self._client.close()
 

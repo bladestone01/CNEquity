@@ -106,8 +106,12 @@ _SPECS = [
     # L6 macro
     DatasetSpec("macro_indicators", partition_col="obs_date"),
     DatasetSpec("market_breadth", partition_col="trade_date"),
-    # L7 sentiment
+    # L7 sentiment / rotation
     DatasetSpec("sentiment_scores", partition_col="trade_date"),
+    DatasetSpec("hot_rank", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec("sector_bars", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec("sector_fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec("news_headlines", partition_col="publish_date", fetch_semantics="snapshot"),
     # L8 risk
     DatasetSpec("share_unlock_schedule", partition_col="unlock_date"),
     DatasetSpec("regulatory_events", partition_col="event_date"),
