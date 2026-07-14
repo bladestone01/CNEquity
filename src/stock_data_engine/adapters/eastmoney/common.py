@@ -11,6 +11,10 @@ PUSH2_CLIST_HOSTS = (
     "https://push2delay.eastmoney.com",
 )
 PUSH2_CLIST = f"{PUSH2_CLIST_HOSTS[0]}/api/qt/clist/get"
+PUSH2HIS_KLINE_HOSTS = (
+    "https://push2his.eastmoney.com",
+    "https://91.push2his.eastmoney.com",
+)
 
 
 def symbol_from_secucode(secucode: str | None) -> str | None:

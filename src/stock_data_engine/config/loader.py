@@ -70,6 +70,7 @@ class Config:
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
     _backfill: bool = False
+    _sector_bars_force: bool = False
     _rate_limiters: object | None = field(default=None, repr=False)
 
     def rate_limit(self, source: str) -> None:

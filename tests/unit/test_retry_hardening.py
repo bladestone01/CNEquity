@@ -81,7 +81,7 @@ def test_daily_ingestion_lock_blocks_overlapping_runs(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "data")
     init_data_layout(cfg)
     engine = JobEngine(cfg)
-    monkeypatch.setattr(engine, "_run_wave", lambda *args, **kwargs: ([], 0, 0, False))
+    monkeypatch.setattr(engine, "_run_wave", lambda *args, **kwargs: ([], 0, 0, False, False))
 
     with run_lock(cfg.meta_root, "daily_ingestion"):
         try:

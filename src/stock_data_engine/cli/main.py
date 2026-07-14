@@ -168,7 +168,17 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
 @cli.command()
 @click.argument("dataset")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-def backfill(dataset: str, config_path: str):
+@click.option(
+    "--retry-failed",
+    is_flag=True,
+    help="Resume sector_bars backfill (skip boards already written to checkpoint).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Clear sector_bars backfill checkpoint and re-fetch all boards.",
+)
+def backfill(dataset: str, config_path: str, retry_failed: bool, force: bool):
     """Backfill a dataset."""
     if fetch_semantics(dataset) == "snapshot" and not get_dataset(dataset).backfill_source:
         raise click.ClickException(
@@ -177,12 +187,18 @@ def backfill(dataset: str, config_path: str):
             "Run daily ingestion on trading days instead."
         )
     cfg = _cfg(config_path)
+    if dataset == "sector_bars":
+        if retry_failed and force:
+            raise click.ClickException("Use either --retry-failed or --force, not both.")
+        cfg._sector_bars_force = force
     engine = JobEngine(cfg)
     result = engine.run_job("backfill", steps=[dataset], backfill=True)
     if result["status"] == "success":
         compact_out = step_compact(cfg, date.today(), result["run_id"], {})
         result["compact"] = compact_out
     click.echo(json.dumps(result, indent=2, default=str))
+    if result["status"] != "success":
+        raise SystemExit(1)
 
 
 @cli.command()

@@ -24,7 +24,12 @@ _EASTMONEY_DOMAINS = (
     "np-weblist.eastmoney.com",
     "anonflow2.eastmoney.com",
 )
-_PUSH2_DOMAINS = ("push2.eastmoney.com",)
+_PUSH2_DOMAINS = (
+    "push2.eastmoney.com",
+    "push2his.eastmoney.com",
+    "91.push2his.eastmoney.com",
+)
+_QUOTE_REFERER = "https://quote.eastmoney.com/"
 
 
 def fetch_nid(client: httpx.Client | None = None) -> str:
@@ -68,6 +73,7 @@ def get_nid() -> str:
 def build_eastmoney_headers(url: str) -> dict[str, str]:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     if any(d in url for d in _PUSH2_DOMAINS):
+        headers["Referer"] = _QUOTE_REFERER
         return headers
     if any(d in url for d in _EASTMONEY_DOMAINS):
         nid = get_nid()

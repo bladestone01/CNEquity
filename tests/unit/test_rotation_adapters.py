@@ -106,15 +106,13 @@ def test_fetch_sector_bars_history_parses_klines(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
+        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
     )
-    df, failed = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
+    df, failed, succeeded = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
     assert failed == []
-    # board list is fetched for both concept and industry fs → 2 boards, 2 bars each
-    assert df.height == 4
-    day = df.filter(
-        (pl.col("trade_date") == date(2026, 7, 13)) & (pl.col("board_type") == "concept")
-    )
+    assert succeeded == ["BK1630"]
+    assert df.height == 2
+    day = df.filter(pl.col("trade_date") == date(2026, 7, 13))
     assert day["open"][0] == 100.0
     assert day["close"][0] == 102.0
     assert day["high"][0] == 103.0
@@ -139,11 +137,87 @@ def test_fetch_sector_bars_history_reports_failures(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
+        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
     )
-    df, failed = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
+    df, failed, succeeded = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
     assert df.is_empty()
-    assert failed == ["BK9999", "BK9999"]  # concept + industry sweeps both failed
+    assert failed == ["BK9999"]
+    assert succeeded == []
+
+
+def test_fetch_sector_bars_history_failover_host(monkeypatch):
+    mock_client = MagicMock()
+    bad = MagicMock()
+    bad.get.side_effect = RuntimeError("disconnect")
+    good = MagicMock()
+    good.json.return_value = {
+        "data": {
+            "klines": ["2026-07-13,100.0,102.0,103.0,99.0,1200,6000000.0,4.0,2.0,2.0,2.1"],
+        }
+    }
+    calls = {"n": 0}
+
+    def get_side_effect(url, **kwargs):
+        calls["n"] += 1
+        if "push2his.eastmoney.com" in url and "91." not in url:
+            raise RuntimeError("disconnect")
+        resp = MagicMock()
+        resp.json.return_value = good.json.return_value
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    mock_client.get.side_effect = get_side_effect
+    monkeypatch.setattr(
+        "stock_data_engine.adapters.eastmoney.rotation.fetch_clist_pages",
+        lambda client, **kw: [{"f12": "BK1630", "f14": "测试板块"}],
+    )
+
+    class CM:
+        def __enter__(self):
+            return mock_client
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(
+        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
+    )
+    df, failed, succeeded = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
+    assert failed == []
+    assert succeeded == ["BK1630"]
+    assert df.height == 1
+    assert calls["n"] >= 2
+
+
+def test_fetch_sector_bars_history_skips_completed(monkeypatch):
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"data": {"klines": []}}
+    mock_client.get.return_value = mock_resp
+    monkeypatch.setattr(
+        "stock_data_engine.adapters.eastmoney.rotation.fetch_clist_pages",
+        lambda client, **kw: [
+            {"f12": "BK1630", "f14": "已完成"},
+            {"f12": "BK1631", "f14": "待拉"},
+        ],
+    )
+
+    class CM:
+        def __enter__(self):
+            return mock_client
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(
+        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
+    )
+    df, failed, succeeded = fetch_sector_bars_history(
+        date(2026, 6, 1), date(2026, 7, 14), skip_sectors={"BK1630"}
+    )
+    assert "BK1630" not in succeeded
+    assert "BK1631" in succeeded
+    assert mock_client.get.call_count >= 1
 
 
 def test_fetch_news_headlines_filters_date(monkeypatch):

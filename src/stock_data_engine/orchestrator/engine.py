@@ -95,16 +95,18 @@ class JobEngine:
             total_read = 0
             total_written = 0
             had_error = False
+            had_warning = False
 
             for wave in wave_list:
                 logger.info("Wave %s: %s (parallel=%s)", wave.name, wave.steps, wave.parallel)
-                wave_results, wave_read, wave_written, wave_error = self._run_wave(
+                wave_results, wave_read, wave_written, wave_error, wave_warning = self._run_wave(
                     wave, wave.steps, trade_date, run_id, context
                 )
                 results.extend(wave_results)
                 total_read += wave_read
                 total_written += wave_written
                 had_error = had_error or wave_error
+                had_warning = had_warning or wave_warning
 
                 if "daily_bars" in wave.steps:
                     promoted = self.manifest.promote_running_to_stale(
@@ -117,7 +119,12 @@ class JobEngine:
                             wave.name,
                         )
 
-            status = "failed" if had_error else "success"
+            if had_error:
+                status = "failed"
+            elif had_warning:
+                status = "warning"
+            else:
+                status = "success"
             if finalize_run:
                 self.manifest.finish_run(
                     run_id,
@@ -149,20 +156,23 @@ class JobEngine:
         trade_date: date,
         run_id: str,
         context: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], int, int, bool]:
+    ) -> tuple[list[dict[str, Any]], int, int, bool, bool]:
         levels = step_execution_levels(step_names)
         results: list[dict[str, Any]] = []
         total_read = 0
         total_written = 0
         had_error = False
+        had_warning = False
         context_lock = threading.Lock()
 
         def merge_result(result: dict[str, Any]) -> None:
-            nonlocal total_read, total_written, had_error
+            nonlocal total_read, total_written, had_error, had_warning
             results.append(result)
             total_read += result.get("rows_read", 0)
             total_written += result.get("rows_written", 0)
-            had_error = had_error or result.get("status") == "failed"
+            step_status = result.get("status", "success")
+            had_error = had_error or step_status == "failed"
+            had_warning = had_warning or step_status == "warning"
             updates = result.get("context_updates")
             if updates:
                 with context_lock:
@@ -189,7 +199,7 @@ class JobEngine:
                 for name in level:
                     merge_result(self._run_step(name, trade_date, run_id, context))
 
-        return results, total_read, total_written, had_error
+        return results, total_read, total_written, had_error, had_warning
 
     def _run_step(
         self, name: str, trade_date: date, run_id: str, context: dict[str, Any]
@@ -213,9 +223,10 @@ class JobEngine:
                     rows_written=out.get("rows_written", 0),
                 )
             logger.info("Step %s OK in %.1fs (%s rows)", name, elapsed, out.get("rows_written", 0))
+            step_status = out.pop("status", "success")
             return {
                 "step": name,
-                "status": "success",
+                "status": step_status,
                 "elapsed": elapsed,
                 **out,
             }

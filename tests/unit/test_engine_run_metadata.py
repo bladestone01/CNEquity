@@ -10,7 +10,7 @@ def test_reused_run_id_metadata_merge_new_values_win(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "data")
     init_data_layout(cfg)
     engine = JobEngine(cfg)
-    monkeypatch.setattr(engine, "_run_wave", lambda *args, **kwargs: ([], 0, 0, False))
+    monkeypatch.setattr(engine, "_run_wave", lambda *args, **kwargs: ([], 0, 0, False, False))
 
     run_id = engine.manifest.start_run("init", {"phases": ["phase1", "phase2c"]})
     engine.run_job(
@@ -43,7 +43,7 @@ def test_explicit_waves_not_overridden_by_steps(tmp_path, monkeypatch):
 
     def _capture_wave(wave, *args, **kwargs):
         captured.append(wave.parallel)
-        return ([], 0, 0, False)
+        return ([], 0, 0, False, False)
 
     monkeypatch.setattr(engine, "_run_wave", _capture_wave)
     waves = [WaveConfig(name="group:core", parallel=False, steps=["instruments"])]
