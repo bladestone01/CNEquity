@@ -86,6 +86,7 @@ sde backfill sector_bars --config configs/stockdata.toml --retry-failed
 | `adj_factors`（默认） | 计算 Sina hfq 因子 |
 | `trading_status` | 派生历史停牌记录 |
 | `sector_routing` | 可选：EM 板块 × TDX 88xxxx 名称映射表（**不驱动** sector_bars 采集） |
+| `sector_code_map` | BK* ↔ BOARD_CODE 身份映射（lake-only；推荐成分 join） |
 
 ---
 

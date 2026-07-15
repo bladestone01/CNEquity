@@ -10,6 +10,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **L7 rotation datasets** — `hot_rank`, `sector_bars`, `sector_fund_flow`, `news_headlines` (Workbench 热点轮动).
 - **sector_bars historical backfill** — EastMoney push2his board kline (`backfill_source=eastmoney_kline`); checkpoint `meta/state/sector_bars_backfill.json`; `--retry-failed` / `--force`.
 - **Optional `sde derive sector_routing`** — EM×TDX name map (`meta/sector_ohlc_routing.parquet`); offline analysis only.
+- **`sde derive sector_code_map`** — lake-only BK* ↔ BOARD_CODE identity map (`meta/sector_code_map.parquet`) for Workbench membership joins.
 
 ### Changed
 - **sector_bars: pure EastMoney ingestion** — daily clist + push2his backfill (removed hybrid TDX OHLC path). TDX sector adapter + routing derive remain optional.

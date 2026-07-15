@@ -249,6 +249,11 @@ def derive(name: str, config_path: str):
 
         summary = derive_sector_routing(cfg)
         click.echo(json.dumps(summary, indent=2, default=str))
+    elif name == "sector_code_map":
+        from stock_data_engine.derive.sector_code_map import derive_sector_code_map
+
+        summary = derive_sector_code_map(cfg)
+        click.echo(json.dumps(summary, indent=2, default=str))
     else:
         raise click.ClickException(f"Unknown derive target: {name}")
 
