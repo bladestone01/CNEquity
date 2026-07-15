@@ -1,4 +1,8 @@
-"""TDX sector/board index bars (88xxxx) for hybrid sector_bars OHLC."""
+"""TDX sector/board index bars (88xxxx) — optional offline helper.
+
+Not used by ``sector_bars`` ingestion (pure EastMoney). Kept for ad-hoc probes
+and experimental routing via ``sde derive sector_routing``.
+"""
 
 from __future__ import annotations
 

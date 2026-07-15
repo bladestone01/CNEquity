@@ -13,6 +13,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - **sector_bars: pure EastMoney ingestion** — daily clist + push2his backfill (removed hybrid TDX OHLC path). TDX sector adapter + routing derive remain optional.
+- **`[sources.eastmoney] proxy`** — optional HTTP(S) proxy for `EastMoneyClient` (mainland egress for push2his); env `HTTPS_PROXY` still honored when unset.
 
 ### Added
 - **valuation_metrics historical backfill via baostock (G2 / roadmap A2)**

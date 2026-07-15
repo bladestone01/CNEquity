@@ -62,6 +62,7 @@ sde config validate --config configs/stockdata.toml
 |----|------|
 | `enabled` | 是否启用该源 |
 | `min_interval_seconds` | 跨进程文件锁限速（见 `domain/rate_limit.py`） |
+| `proxy`（eastmoney） | 可选 HTTP(S) 代理 URL；用于海外访问 push2his。未设时仍可用环境变量 `HTTPS_PROXY` |
 
 ---
 

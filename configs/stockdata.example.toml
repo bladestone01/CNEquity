@@ -39,6 +39,9 @@ standard = [
 [sources.eastmoney]
 enabled = true
 min_interval_seconds = 1.0
+# Optional: mainland HTTP(S) proxy for push2his kline (sector_bars backfill).
+# When unset, httpx still honors HTTPS_PROXY / HTTP_PROXY env vars.
+# proxy = "http://127.0.0.1:7890"
 
 [sources.cninfo]
 enabled = true

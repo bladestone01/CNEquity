@@ -1,4 +1,8 @@
-"""Sector OHLC source routing: EastMoney BK universe × TDX 88xxxx index map."""
+"""Sector OHLC source routing: EastMoney BK universe × TDX 88xxxx index map.
+
+Optional offline artifact (``sde derive sector_routing``). Does **not** drive
+``sector_bars`` ingestion — daily/backfill use EastMoney only.
+"""
 
 from __future__ import annotations
 

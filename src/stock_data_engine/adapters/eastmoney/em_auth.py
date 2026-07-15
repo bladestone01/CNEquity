@@ -94,7 +94,14 @@ class EastMoneyClient:
         self.min_interval = min_interval
         self.config = config
         self._last_request = 0.0
-        self._client = httpx.Client(timeout=30.0, follow_redirects=True)
+        proxy = None
+        if config is not None and getattr(config, "eastmoney_proxy", None):
+            proxy = config.eastmoney_proxy
+        self._client = httpx.Client(
+            timeout=30.0,
+            follow_redirects=True,
+            proxy=proxy,
+        )
 
     def _throttle(self) -> None:
         if self.config is not None:

@@ -53,6 +53,9 @@ class Config:
     tdx_allow_mock: bool = False
     sources: dict[str, bool] = field(default_factory=dict)
     source_intervals: dict[str, float] = field(default_factory=dict)
+    # Optional HTTP(S) proxy for EastMoneyClient (e.g. mainland egress for push2his).
+    # Env HTTPS_PROXY / HTTP_PROXY still work when this is unset.
+    eastmoney_proxy: str | None = None
     universe_default: str = "all_a"
     daily_waves: list[WaveConfig] = field(default_factory=list)
     schedule_groups: dict[str, ScheduleGroup] = field(default_factory=dict)
@@ -148,11 +151,14 @@ def load_config(path: str | Path) -> Config:
 
     sources: dict[str, bool] = {}
     source_intervals: dict[str, float] = {}
+    eastmoney_proxy: str | None = None
     for name, val in sources_raw.items():
         if isinstance(val, dict):
             sources[name] = bool(val.get("enabled", True))
             if "min_interval_seconds" in val:
                 source_intervals[name] = float(val["min_interval_seconds"])
+            if name == "eastmoney" and val.get("proxy"):
+                eastmoney_proxy = str(val["proxy"]).strip() or None
         else:
             sources[name] = bool(val)
 
@@ -216,6 +222,7 @@ def load_config(path: str | Path) -> Config:
         tdx_allow_mock=bool(tdx.get("allow_mock", False)),
         sources=sources,
         source_intervals=source_intervals,
+        eastmoney_proxy=eastmoney_proxy,
         universe_default=str(raw.get("universe", {}).get("default", "all_a")),
         daily_waves=daily_waves,
         schedule_groups=schedule_groups,
