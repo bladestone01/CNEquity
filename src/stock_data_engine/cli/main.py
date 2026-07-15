@@ -180,6 +180,17 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
 )
 def backfill(dataset: str, config_path: str, retry_failed: bool, force: bool):
     """Backfill a dataset."""
+    # Multi-hour sweeps (baostock ST, EM sector kline) need visible progress on
+    # stdout; adapters log at INFO. Keep WARNING+ for third-party noise.
+    import logging
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     if fetch_semantics(dataset) == "snapshot" and not get_dataset(dataset).backfill_source:
         raise click.ClickException(
             f"{dataset}: backfill not supported — fetch semantics are snapshot "

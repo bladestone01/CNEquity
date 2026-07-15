@@ -90,7 +90,9 @@
 | sector_fund_flow | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 板块主力净流入 |
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 7×24 快讯 |
 
-`sector_bars` 日更只有当日 OHLC；历史由 `sde backfill sector_bars` 一次性写入（国内网络）。Workbench 板块动量/RRG 依赖此历史。
+`sector_bars` 日更只有当日 OHLC；历史由 `sde backfill sector_bars` 一次性写入（国内网络或代理）。
+海外一键脚本见引擎 `scripts/china_egress_backfill.sh`（含 `trading_status` ST 回填）。Workbench
+板块动量/RRG 依赖此历史；探索因子 `sector_mom_20d` 见 Workbench [factor-library.md](../../StockWorkbench/docs/factor-library.md)。
 
 ---
 

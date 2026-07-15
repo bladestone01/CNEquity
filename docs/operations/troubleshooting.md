@@ -31,6 +31,29 @@
   `sde backfill sector_bars --retry-failed`；全量换源后 `--force`。
   Checkpoint：`meta/state/sector_bars_backfill.json`。
 
+### 海外机器 + 国内阿里云 VPS（推荐跑在 VPS 上）
+
+东财 HTTPS 可用本机 `proxy` / `HTTPS_PROXY`；**baostock ST 回填是自有 TCP，普通 HTTP 代理无效**。
+最稳做法：把引擎（或至少 `data.root`）同步到阿里云，在 VPS 上跑一键脚本：
+
+```bash
+# 本机 → VPS（示例）
+rsync -avz --progress ~/code/StockDataEngine/ user@VPS:~/StockDataEngine/
+
+# VPS 上
+cd ~/StockDataEngine && uv sync
+./scripts/china_egress_backfill.sh          # sector_bars --force + trading_status ST
+# ./scripts/china_egress_backfill.sh --sector-only
+# ./scripts/china_egress_backfill.sh --st-only   # ST 可断点续跑
+
+# 跑完把湖同步回本机
+rsync -avz --progress user@VPS:~/StockDataEngine/data/stock-data-engine/ \
+  ~/code/StockDataEngine/data/stock-data-engine/
+```
+
+安全组只开 **你自己的 IP → 22**；不要把代理端口对公网开放。
+本机隧道备选：`ssh -D 7890`（仅东财）或 `sshuttle` / `proxychains`（才可能带上 baostock）。
+
 ---
 
 ## 症状：audit --full UNHEALTHY

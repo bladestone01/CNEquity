@@ -122,10 +122,22 @@ def fetch_per_symbol(
     _login(bs)
     rows: list[dict] = []
     failed: list[str] = []
+    n_symbols = len(symbols)
     try:
         for i, symbol in enumerate(symbols):
             if i and _RELOGIN_EVERY and i % _RELOGIN_EVERY == 0:
                 _relogin(bs)
+            # Heartbeat every 50 symbols so a multi-hour sweep is observable on
+            # stdout even when logging is only WARNING-configured by default.
+            if i == 0 or (i + 1) % 50 == 0 or i + 1 == n_symbols:
+                logger.info(
+                    "%s progress %d/%d ok_rows=%d failed=%d",
+                    label,
+                    i + 1,
+                    n_symbols,
+                    len(rows),
+                    len(failed),
+                )
             got: list[dict] | None = None
             for attempt in range(_MAX_RETRIES):
                 watchdog = threading.Timer(deadline, on_deadline)
