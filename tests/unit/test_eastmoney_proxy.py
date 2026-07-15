@@ -13,7 +13,7 @@ def test_eastmoney_client_passes_config_proxy(tmp_path):
         client = EastMoneyClient(config=cfg)
         client.close()
     kwargs = mock_client.call_args.kwargs
-    assert kwargs["proxy"] == "http://127.0.0.1:7890"
+    assert kwargs["proxies"] == "http://127.0.0.1:7890"
 
 
 def test_eastmoney_client_no_proxy_by_default(tmp_path):
@@ -22,4 +22,4 @@ def test_eastmoney_client_no_proxy_by_default(tmp_path):
         mock_client.return_value = mock_client
         client = EastMoneyClient(config=cfg)
         client.close()
-    assert mock_client.call_args.kwargs.get("proxy") is None
+    assert mock_client.call_args.kwargs.get("proxies") is None
