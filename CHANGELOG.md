@@ -7,6 +7,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **margin_trading historical backfill** — date-walking sweep over the EM datacenter report
+  (`sde backfill margin_trading --start … --end … --workers N`); resumable (curated dates
+  skipped), staged in ~quarterly parts, per-worker 1 req/s throttle. Generic `--start/--end/
+  --workers` options land on `sde backfill` for future date-walking datasets.
+- **northbound_holdings: no history at source (negative finding)** — the EM report serves only
+  the most recent quarter(s); historical `TRADE_DATE` filters return 0 rows (verified 2026-07).
+  Quarterly snapshots accrue forward only; step docstring + catalog note updated.
 - **L7 rotation datasets** — `hot_rank`, `sector_bars`, `sector_fund_flow`, `news_headlines` (Workbench 热点轮动).
 - **sector_bars historical backfill** — EastMoney push2his board kline (`backfill_source=eastmoney_kline`); checkpoint `meta/state/sector_bars_backfill.json`; `--retry-failed` / `--force`.
 - **Optional `sde derive sector_routing`** — EM×TDX name map (`meta/sector_ohlc_routing.parquet`); offline analysis only.

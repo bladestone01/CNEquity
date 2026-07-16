@@ -108,7 +108,8 @@ def fetch_hot_rank(trade_date: date, *, top_n: int = 500) -> pl.DataFrame:
 
 
 def _fetch_board_rows(client: EastMoneyClient, fs: str, board_type: str) -> list[dict]:
-    raw = fetch_clist_pages(client, fields=_BOARD_FIELDS, fs=fs, page_size=5000)
+    # Smaller pages: pz=5000 often trips push2 502 mid-universe; 100 is stable.
+    raw = fetch_clist_pages(client, fields=_BOARD_FIELDS, fs=fs, page_size=100)
     rows: list[dict] = []
     for item in raw:
         code = str(item.get("f12") or "").strip()
@@ -229,6 +230,38 @@ def _fetch_board_kline_rows(
     ) from last_exc
 
 
+def _boards_from_lake(config: Config) -> list[dict]:
+    """Board catalog from curated sector_bars when live clist is unavailable."""
+    root = config.data_root / "curated" / "sector_bars"
+    if not root.exists():
+        return []
+    try:
+        df = (
+            pl.scan_parquet(str(root / "**" / "*.parquet"))
+            .select("sector_code", "sector_name", "board_type")
+            .unique()
+            .collect()
+        )
+    except Exception:
+        return []
+    if df.is_empty():
+        return []
+    out: list[dict] = []
+    for row in df.iter_rows(named=True):
+        code = str(row.get("sector_code") or "").strip()
+        if not code:
+            continue
+        out.append(
+            {
+                "sector_code": code,
+                "sector_name": str(row.get("sector_name") or ""),
+                "board_type": str(row.get("board_type") or "concept"),
+                "item": {},
+            }
+        )
+    return out
+
+
 def fetch_sector_bars_history(
     start: date,
     end: date,
@@ -243,6 +276,10 @@ def fetch_sector_bars_history(
     replays history through this path instead. Returns
     ``(frame, failed_sector_codes, succeeded_sector_codes)`` — partial sweeps
     must be visible to the caller (audit finding), never silently dropped.
+
+    Board catalog prefers live clist; on clist failure (overseas / 502), falls
+    back to distinct boards already in curated ``sector_bars`` so a kline-only
+    path still works under mainland egress.
     """
     rows: list[dict] = []
     failed: list[str] = []
@@ -250,10 +287,19 @@ def fetch_sector_bars_history(
     skip = skip_sectors or set()
     client_kwargs: dict = {"config": config} if config is not None else {"min_interval": 0.3}
     with EastMoneyClient(**client_kwargs) as client:
-        boards = _dedupe_boards(
-            _fetch_board_rows(client, _CONCEPT_FS, "concept")
-            + _fetch_board_rows(client, _INDUSTRY_FS, "industry")
-        )
+        boards: list[dict] = []
+        try:
+            boards = _dedupe_boards(
+                _fetch_board_rows(client, _CONCEPT_FS, "concept")
+                + _fetch_board_rows(client, _INDUSTRY_FS, "industry")
+            )
+        except Exception as exc:
+            logger.warning("sector_bars history: live clist failed (%s); trying lake catalog", exc)
+            if config is not None:
+                boards = _dedupe_boards(_boards_from_lake(config))
+            if not boards:
+                raise
+            logger.info("sector_bars history: using %d boards from lake catalog", len(boards))
         todo = [b for b in boards if b["sector_code"] not in skip]
         if only_sectors is not None:
             todo = [b for b in todo if b["sector_code"] in only_sectors]

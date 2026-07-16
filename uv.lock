@@ -1205,6 +1205,11 @@ macro = [
 nlp = [
     { name = "snownlp" },
 ]
+structure = [
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "xlrd" },
+]
 tdx = [
     { name = "mootdx" },
 ]
@@ -1220,6 +1225,8 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.25" },
     { name = "mootdx", marker = "extra == 'tdx'", specifier = ">=0.11" },
+    { name = "openpyxl", marker = "extra == 'structure'", specifier = ">=3.0" },
+    { name = "pandas", marker = "extra == 'structure'", specifier = ">=2.0" },
     { name = "polars", specifier = ">=1.0" },
     { name = "pyarrow", specifier = ">=15.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -1227,8 +1234,9 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "snownlp", marker = "extra == 'nlp'", specifier = ">=0.12" },
+    { name = "xlrd", marker = "extra == 'structure'", specifier = ">=2.0" },
 ]
-provides-extras = ["tdx", "macro", "nlp", "valuation", "dev"]
+provides-extras = ["tdx", "macro", "nlp", "valuation", "structure", "dev"]
 
 [[package]]
 name = "tabulate"

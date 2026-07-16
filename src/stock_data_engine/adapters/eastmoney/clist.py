@@ -107,11 +107,43 @@ def fetch_clist_pages(
                     page_size=page_size,
                 )
             except Exception as exc:
-                # Mid-pagination failure = truncated snapshot; fail loud.
-                raise RuntimeError(
-                    f"EastMoney clist page {page} failed on {active_host} "
-                    f"({len(rows)} rows fetched before failure)"
-                ) from exc
+                # Mid-pagination: try remaining hosts before fail-loud (push2
+                # often 502s while push2delay still serves the same page).
+                logger.warning(
+                    "EastMoney clist page %s failed on %s: %s; trying failover hosts",
+                    page,
+                    active_host,
+                    exc,
+                )
+                page_rows = []
+                recovered = False
+                for host in PUSH2_CLIST_HOSTS:
+                    if host == active_host:
+                        continue
+                    try:
+                        page_rows, total = _fetch_clist_page(
+                            client,
+                            host=host,
+                            fields=fields,
+                            fs=fs,
+                            page=page,
+                            page_size=page_size,
+                        )
+                        active_host = host
+                        recovered = True
+                        break
+                    except Exception as host_exc:
+                        logger.warning(
+                            "EastMoney clist page %s failed on %s: %s",
+                            page,
+                            host,
+                            host_exc,
+                        )
+                if not recovered:
+                    raise RuntimeError(
+                        f"EastMoney clist page {page} failed on all hosts "
+                        f"({len(rows)} rows fetched before failure)"
+                    ) from exc
 
         if not page_rows:
             break

@@ -178,7 +178,34 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
     is_flag=True,
     help="Clear sector_bars backfill checkpoint and re-fetch all boards.",
 )
-def backfill(dataset: str, config_path: str, retry_failed: bool, force: bool):
+@click.option(
+    "--start",
+    "start_str",
+    default=None,
+    help="Range start (YYYY-MM-DD) for date-walking backfills (margin_trading).",
+)
+@click.option(
+    "--end",
+    "end_str",
+    default=None,
+    help="Range end (YYYY-MM-DD) for date-walking backfills (margin_trading).",
+)
+@click.option(
+    "--workers",
+    default=1,
+    show_default=True,
+    help="Concurrent fetch workers for date-walking backfills; each worker is "
+    "throttled to 1 req/s (aggregate up to N req/s, bypassing the source limiter).",
+)
+def backfill(
+    dataset: str,
+    config_path: str,
+    retry_failed: bool,
+    force: bool,
+    start_str: str | None,
+    end_str: str | None,
+    workers: int,
+):
     """Backfill a dataset."""
     # Multi-hour sweeps (baostock ST, EM sector kline) need visible progress on
     # stdout; adapters log at INFO. Keep WARNING+ for third-party noise.
@@ -202,6 +229,11 @@ def backfill(dataset: str, config_path: str, retry_failed: bool, force: bool):
         if retry_failed and force:
             raise click.ClickException("Use either --retry-failed or --force, not both.")
         cfg._sector_bars_force = force
+    if start_str:
+        cfg._backfill_start = date.fromisoformat(start_str)
+    if end_str:
+        cfg._backfill_end = date.fromisoformat(end_str)
+    cfg._backfill_workers = workers
     engine = JobEngine(cfg)
     result = engine.run_job("backfill", steps=[dataset], backfill=True)
     if result["status"] == "success":
