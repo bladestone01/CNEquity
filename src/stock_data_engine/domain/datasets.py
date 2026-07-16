@@ -43,6 +43,10 @@ class DatasetSpec:
         though daily ``fetch_semantics`` is ``snapshot`` (e.g. valuation_metrics:
         EastMoney live snapshot daily, baostock for history). ``sde backfill``
         is allowed for snapshot datasets only when this is set.
+    required:
+        When False, an empty curated root is a warning (not an error) and does
+        not alone make ``lake_health`` UNHEALTHY. Use for registered datasets
+        whose source is not yet wired or is temporarily unavailable.
     """
 
     name: str
@@ -58,6 +62,7 @@ class DatasetSpec:
     # sources with a slower cadence (margin T+1, quarterly northbound holdings)
     # so their inherent lag is not mistaken for a stuck pipeline.
     max_staleness_days: int = 1
+    required: bool = True
 
     @property
     def query_date_col(self) -> str | None:
@@ -118,7 +123,14 @@ _SPECS = [
     DatasetSpec("sector_fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
     DatasetSpec("news_headlines", partition_col="publish_date", fetch_semantics="snapshot"),
     DatasetSpec("flash_news_wire", partition_col="publish_date", fetch_semantics="snapshot"),
-    DatasetSpec("economic_calendar", partition_col="event_date", fetch_semantics="snapshot"),
+    # EM datacenter report RPT_ECONOMICCALENDAR was retired (code 9501); keep the
+    # schema/registry for a replacement source, but do not fail lake health.
+    DatasetSpec(
+        "economic_calendar",
+        partition_col="event_date",
+        fetch_semantics="snapshot",
+        required=False,
+    ),
     # L8 risk
     DatasetSpec("share_unlock_schedule", partition_col="unlock_date"),
     DatasetSpec("regulatory_events", partition_col="event_date"),

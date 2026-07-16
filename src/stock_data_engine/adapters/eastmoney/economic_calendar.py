@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import date, timedelta
 
 import polars as pl
 
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
-
-logger = logging.getLogger(__name__)
 
 _REPORT = "RPT_ECONOMICCALENDAR"
 _COLUMNS = "PUBLISH_DATE,TIME,COUNTRY,INDICATOR,STAR,FORECAST,PREVIOUS,ACTUAL,UNIT"
@@ -28,18 +25,14 @@ def _parse_float(value: object) -> float | None:
 def fetch_economic_calendar_window(start: date, end: date) -> pl.DataFrame:
     """Fetch calendar events in [start, end]; empty if source unavailable."""
     rows: list[dict] = []
-    try:
-        with EastMoneyClient() as client:
-            data = fetch_datacenter(
-                client,
-                _REPORT,
-                columns=_COLUMNS,
-                page_size=500,
-                sort_columns="PUBLISH_DATE,TIME",
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.info("economic_calendar fetch unavailable: %s", exc)
-        return pl.DataFrame()
+    with EastMoneyClient() as client:
+        data = fetch_datacenter(
+            client,
+            _REPORT,
+            columns=_COLUMNS,
+            page_size=500,
+            sort_columns="PUBLISH_DATE,TIME",
+        )
 
     for item in data or []:
         pub = str(item.get("PUBLISH_DATE") or item.get("publish_date") or "")[:10]

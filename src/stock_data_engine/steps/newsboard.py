@@ -8,13 +8,15 @@ from stock_data_engine.adapters.eastmoney.economic_calendar import fetch_economi
 from stock_data_engine.adapters.eastmoney.news_wire import fetch_flash_news_wire
 from stock_data_engine.config import Config
 from stock_data_engine.orchestrator.registry import register_step
-from stock_data_engine.steps.http_common import run_incremental_fetched, write_fetched
+from stock_data_engine.steps.http_common import empty_ok, run_incremental_fetched, write_fetched
 
 
 @register_step("flash_news_wire", group="research")
 def step_flash_news_wire(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("flash_news_wire: eastmoney source disabled in config")
+    # Fail-loud on empty: an empty success left the dataset unregistered in curated
+    # and permanently failed lake_health (exists error) while the step looked green.
     return run_incremental_fetched(
         config,
         trade_date,
@@ -22,7 +24,7 @@ def step_flash_news_wire(config: Config, trade_date: date, run_id: str, context:
         "flash_news_wire",
         fetch_flash_news_wire,
         source="eastmoney",
-        allow_empty=True,
+        allow_empty=False,
     )
 
 
@@ -31,6 +33,5 @@ def step_economic_calendar(config: Config, trade_date: date, run_id: str, contex
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("economic_calendar: eastmoney source disabled in config")
     df = fetch_economic_calendar(trade_date)
-    if df.is_empty():
-        return {"rows_read": 0, "rows_written": 0}
+    empty_ok(df, "economic_calendar", trade_date)
     return write_fetched(config, run_id, "economic_calendar", df, source="eastmoney")

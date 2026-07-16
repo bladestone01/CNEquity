@@ -125,12 +125,16 @@ def audit_curated_dataset(
     trade_date: date,
 ) -> list[dict]:
     findings: list[dict] = []
+    from stock_data_engine.domain.datasets import DATASETS
+
+    required = DATASETS[dataset].required if dataset in DATASETS else True
+    empty_severity = "error" if required else "warning"
 
     if not root.exists():
         findings.append(
             {
                 "dataset": dataset,
-                "severity": "error",
+                "severity": empty_severity,
                 "check": "exists",
                 "message": f"No curated data for {dataset}",
             }
@@ -141,7 +145,7 @@ def audit_curated_dataset(
         findings.append(
             {
                 "dataset": dataset,
-                "severity": "error",
+                "severity": empty_severity,
                 "check": "non_empty",
                 "message": f"Empty curated {dataset}",
             }

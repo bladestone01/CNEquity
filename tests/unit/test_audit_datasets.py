@@ -55,7 +55,17 @@ def test_audit_checks_all_partition_col_datasets(tmp_path):
         if f.get("check") == "exists"
     }
     assert exists_checks == set(PARTITION_COLS.keys())
-
+    # Optional datasets (source not yet wired) must not fail lake health alone.
+    optional_exists = [
+        f for f in payload["findings"]
+        if f.get("check") == "exists" and f.get("dataset") == "economic_calendar"
+    ]
+    assert optional_exists and optional_exists[0]["severity"] == "warning"
+    required_exists = [
+        f for f in payload["findings"]
+        if f.get("check") == "exists" and f.get("dataset") == "daily_bars"
+    ]
+    assert required_exists and required_exists[0]["severity"] == "error"
 
 def test_row_count_mutation_warns_on_partial_market_drop():
     finding = check_partition_row_mutation(

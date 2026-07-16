@@ -104,7 +104,10 @@ def test_reports_failed_symbols_fail_loud():
 def test_fails_loud_on_login_error():
     bs = _FakeBaostock({}, login_ok=False)
     with pytest.raises(RuntimeError, match="login failed"):
-        fetch_st_history(["000017.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs)
+        fetch_st_history(
+            ["000017.SZ"], date(2020, 1, 1), date(2020, 12, 31),
+            bs=bs, sleep=lambda _s: None,
+        )
 
 
 class _StallingBaostock(_FakeBaostock):

@@ -126,7 +126,10 @@ def test_fetch_valuation_history_reports_failed_symbols_fail_loud():
 def test_fetch_valuation_history_fails_loud_on_login_error():
     bs = _FakeBaostock({}, login_ok=False)
     with pytest.raises(RuntimeError, match="login failed"):
-        fetch_valuation_history(["600519.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs)
+        fetch_valuation_history(
+            ["600519.SH"], date(2016, 1, 1), date(2016, 1, 5),
+            bs=bs, sleep=lambda _s: None,
+        )
 
 
 def test_valuation_metrics_declares_backfill_source():

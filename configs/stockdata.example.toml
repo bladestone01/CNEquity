@@ -128,7 +128,7 @@ steps = ["financial_statement_items", "index_constituents", "industry_members", 
 
 [job.daily.groups.macro_risk]
 at = "18:00"
-steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events", "economic_calendar", "compact"]
+steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events", "compact"]
 
 [job.daily.groups.research]
 at = "18:30"

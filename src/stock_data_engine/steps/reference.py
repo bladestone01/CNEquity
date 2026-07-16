@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 # been swept for. Needed because ~85% of names are never ST and so contribute no
 # rows — data-presence alone (as valuation uses) cannot tell "done" from "todo".
 _ST_BACKFILL_STATE = "trading_status_st_backfill"
+# Flush + checkpoint every chunk so a mid-sweep baostock login death does not
+# discard hours of already-fetched ST rows (observed ~2950/5204 lost on one run).
+_ST_BACKFILL_CHUNK = 200
 
 
 @register_step("instruments", group="core", requires_workers=False)
@@ -150,8 +153,9 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
     Fills the ``trading_status`` ST gap so ``universe="all_a"`` excludes names that
     were ST in earlier backtest windows (removes survivorship / look-ahead bias).
     Resumable via a swept-symbol marker: a re-run only retries names a throttled
-    session dropped. Symbols still failing are surfaced as an audit finding
-    (fail-loud) so a partial backfill never looks like a clean success.
+    session dropped. Progress is checkpointed every ``_ST_BACKFILL_CHUNK`` symbols
+    (write staging + mark swept) so a mid-sweep login failure still keeps prior
+    chunks. Symbols still failing are surfaced as an audit finding (fail-loud).
     """
     from stock_data_engine.adapters.baostock.st_history import fetch_st_history
 
@@ -168,25 +172,31 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
     if not todo:
         return {"rows_read": 0, "rows_written": 0, "note": "all symbols already ST-backfilled"}
 
-    df, failed = fetch_st_history(todo, BACKFILL_START, trade_date)
+    rows_read = 0
+    rows_written = 0
+    all_failed: list[str] = []
+    for offset in range(0, len(todo), _ST_BACKFILL_CHUNK):
+        batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
+        df, failed = fetch_st_history(batch, BACKFILL_START, trade_date)
+        if not df.is_empty():
+            chunk = write_fetched(config, run_id, "trading_status", df, source="baostock")
+            rows_read += int(chunk.get("rows_read", 0))
+            rows_written += int(chunk.get("rows_written", 0))
+        failed_set = set(failed)
+        swept = [s for s in batch if s not in failed_set]
+        if swept:
+            _mark_st_backfilled(config, swept)
+        all_failed.extend(failed)
 
-    result: dict = {"rows_read": 0, "rows_written": 0}
-    if not df.is_empty():
-        result = write_fetched(config, run_id, "trading_status", df, source="baostock")
-
-    failed_set = set(failed)
-    swept = [s for s in todo if s not in failed_set]
-    if swept:
-        _mark_st_backfilled(config, swept)
-
-    if failed:
-        result["failed_symbols"] = len(failed)
+    result: dict = {"rows_read": rows_read, "rows_written": rows_written}
+    if all_failed:
+        result["failed_symbols"] = len(all_failed)
         finding = {
             "dataset": "trading_status",
             "severity": "warning",
             "code": "baostock_st_backfill_incomplete",
             "message": (
-                f"{len(failed)}/{len(todo)} symbols failed baostock ST backfill "
+                f"{len(all_failed)}/{len(todo)} symbols failed baostock ST backfill "
                 "(throttled/dropped); re-run `sde backfill trading_status` to resume."
             ),
         }

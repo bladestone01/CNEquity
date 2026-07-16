@@ -40,7 +40,38 @@ def test_completes_normally_without_tripping_the_watchdog():
     assert bs.logged_out is True
 
 
-def test_watchdog_interrupts_a_stalled_symbol_and_retries():
+def test_mid_sweep_login_failure_returns_partial(monkeypatch):
+    """A dead baostock session mid-sweep must not discard already-fetched rows."""
+    from stock_data_engine.adapters.baostock import _session as sess
+
+    monkeypatch.setattr(sess, "_RELOGIN_EVERY", 2)
+    monkeypatch.setattr(sess, "_LOGIN_RETRIES", 2)
+    monkeypatch.setattr(sess, "_LOGIN_BACKOFF_SECONDS", (0.0, 0.0))
+
+    class _FlakyLogin(_NoQueryBaostock):
+        def login(self):
+            self.logins += 1
+            # First login ok; periodic relogin at i=2 fails forever.
+            if self.logins == 1:
+                return type("R", (), {"error_code": "0", "error_msg": ""})()
+            return type("R", (), {"error_code": "1", "error_msg": "网络接收错误。"})()
+
+    bs = _FlakyLogin()
+
+    def fetch(_bs, symbol, _s, _e):
+        return [{"symbol": symbol}]
+
+    rows, failed = fetch_per_symbol(
+        ["A.SH", "B.SH", "C.SH", "D.SH"],
+        date(2020, 1, 1),
+        date(2020, 12, 31),
+        fetch,
+        bs=bs,
+        sleep=lambda _s: None,
+    )
+    assert {r["symbol"] for r in rows} == {"A.SH", "B.SH"}
+    assert failed == ["C.SH", "D.SH"]
+
     # fetch_one blocks as if on a slowloris recv; the watchdog "closes the socket"
     # (on_deadline), which unblocks it into a raise — retried, then reported failed.
     bs = _NoQueryBaostock()

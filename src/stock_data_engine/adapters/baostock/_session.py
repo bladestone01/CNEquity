@@ -25,6 +25,10 @@ _MAX_RETRIES = 3
 _BACKOFF_SECONDS = (1.0, 3.0, 8.0)
 # Refresh the session periodically; a single long-held session dies mid-sweep.
 _RELOGIN_EVERY = 300
+# Login itself is flaky on long sweeps (observed: "网络接收错误" after ~3h).
+# Retry before failing so a transient blip does not abort thousands of symbols.
+_LOGIN_RETRIES = 5
+_LOGIN_BACKOFF_SECONDS = (2.0, 5.0, 10.0, 20.0, 30.0)
 # Hard per-symbol wall-clock deadline. The socket timeout below catches a fully
 # blocked read, but baostock can *slowloris* a query — trickle keepalive bytes so
 # every recv returns just before the timeout yet the terminator never arrives, so
@@ -51,18 +55,24 @@ def import_baostock():
     return bs
 
 
-def _login(bs) -> None:
-    login = bs.login()
-    if getattr(login, "error_code", "0") != "0":
-        raise RuntimeError(f"baostock login failed: {getattr(login, 'error_msg', 'unknown')}")
+def _login(bs, *, sleep=time.sleep) -> None:
+    last_msg = "unknown"
+    for attempt in range(_LOGIN_RETRIES):
+        login = bs.login()
+        if getattr(login, "error_code", "0") == "0":
+            return
+        last_msg = getattr(login, "error_msg", "unknown")
+        if attempt + 1 < _LOGIN_RETRIES:
+            sleep(_LOGIN_BACKOFF_SECONDS[min(attempt, len(_LOGIN_BACKOFF_SECONDS) - 1)])
+    raise RuntimeError(f"baostock login failed: {last_msg}")
 
 
-def _relogin(bs) -> None:
+def _relogin(bs, *, sleep=time.sleep) -> None:
     try:
         bs.logout()
     except Exception:  # noqa: BLE001 - logout on a dead socket may raise; ignore
         pass
-    _login(bs)
+    _login(bs, sleep=sleep)
 
 
 def to_baostock_symbol(symbol: str) -> str:
@@ -119,14 +129,27 @@ def fetch_per_symbol(
 
     prev_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(_SOCKET_TIMEOUT_SECONDS)
-    _login(bs)
+    _login(bs, sleep=sleep)
     rows: list[dict] = []
     failed: list[str] = []
     n_symbols = len(symbols)
     try:
         for i, symbol in enumerate(symbols):
             if i and _RELOGIN_EVERY and i % _RELOGIN_EVERY == 0:
-                _relogin(bs)
+                try:
+                    _relogin(bs, sleep=sleep)
+                except RuntimeError as exc:
+                    # Keep rows already collected so the caller can checkpoint;
+                    # remaining symbols stay on the resume set.
+                    logger.error(
+                        "%s mid-sweep login failed at %d/%d: %s; returning partial",
+                        label,
+                        i + 1,
+                        n_symbols,
+                        exc,
+                    )
+                    failed.extend(symbols[i:])
+                    break
             # Heartbeat every 50 symbols so a multi-hour sweep is observable on
             # stdout even when logging is only WARNING-configured by default.
             if i == 0 or (i + 1) % 50 == 0 or i + 1 == n_symbols:
@@ -139,6 +162,7 @@ def fetch_per_symbol(
                     len(failed),
                 )
             got: list[dict] | None = None
+            abort_remaining = False
             for attempt in range(_MAX_RETRIES):
                 watchdog = threading.Timer(deadline, on_deadline)
                 watchdog.start()
@@ -155,10 +179,24 @@ def fetch_per_symbol(
                 if got is not None:
                     break
                 sleep(_BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)])
-                _relogin(bs)
+                try:
+                    _relogin(bs, sleep=sleep)
+                except RuntimeError as exc:
+                    logger.error(
+                        "%s login failed while retrying %s: %s; returning partial",
+                        label,
+                        symbol,
+                        exc,
+                    )
+                    got = None
+                    abort_remaining = True
+                    break
             if got is None:
                 logger.warning("%s failed for %s after retries", label, symbol)
                 failed.append(symbol)
+                if abort_remaining:
+                    failed.extend(symbols[i + 1 :])
+                    break
             else:
                 rows.extend(got)
     finally:

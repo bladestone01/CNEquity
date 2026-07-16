@@ -468,7 +468,11 @@ def fetch_index_bars(
                             # Rotate server and retry the whole set — some TDX hosts
                             # return corrupt bytes for deep index history.
                             raise TdxSourceError(f"index bars failed for {sym}: {exc}") from exc
+                        # Daily mode: treat hard failures as missing so a partial
+                        # set cannot advance the watermark (lake previously kept
+                        # only 000852.SH on some days while other indices failed).
                         logger.warning("TDX index bars failed for %s: %s", sym, exc)
+                        missing.append(sym)
                         continue
                     if not sym_rows:
                         missing.append(sym)
@@ -484,9 +488,12 @@ def fetch_index_bars(
         for attempt in range(_TDX_FETCH_ATTEMPTS):
             try:
                 rows, missing = _fetch_once()
-                if backfill and missing:
+                # Fail-loud on any incomplete symbol set — both backfill and daily.
+                # Accepting a non-empty subset used to leave curated partitions with
+                # only one index while audit reported calendar coverage gaps.
+                if missing:
                     raise TdxSourceError(
-                        "index bars backfill returned no rows for: " + ", ".join(missing)
+                        "index bars returned no rows for: " + ", ".join(missing)
                     )
                 if rows:
                     return pl.DataFrame(rows).with_columns(pl.lit("1d").alias("frequency"))
