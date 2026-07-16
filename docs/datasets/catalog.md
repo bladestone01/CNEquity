@@ -69,6 +69,9 @@
 
 快照类仅积累「每日一份成员关系」，历史分位数需多日分区累积。
 
+历史回填（C2）：`sde backfill industry_members` = 申万 SwClass2021 月度（`classification_system=sw`，2020 起）；
+`sde backfill index_constituents` = 国证调样史（399001/399006，约 2021-12 起）。中证 000300/000905 仍仅日更 EM 快照。
+
 ---
 
 ## L6 宏观

@@ -106,8 +106,21 @@ _SPECS = [
     DatasetSpec("institutional_holdings", partition_col="report_period", watermark=False),
     # L5 structure
     DatasetSpec("sector_members", partition_col="as_of_date", fetch_semantics="snapshot"),
-    DatasetSpec("index_constituents", partition_col="as_of_date", fetch_semantics="snapshot"),
-    DatasetSpec("industry_members", partition_col="as_of_date", fetch_semantics="snapshot"),
+    DatasetSpec(
+        "index_constituents",
+        partition_col="as_of_date",
+        fetch_semantics="snapshot",
+        # CNI adjustment history reconstructs 399001/399006 from ~2021-12;
+        # CSI indices still accumulate via daily EM snapshots only.
+        backfill_source="cni",
+    ),
+    DatasetSpec(
+        "industry_members",
+        partition_col="as_of_date",
+        fetch_semantics="snapshot",
+        # Shenwan StockClassifyUse intervals → monthly as_of from 2020.
+        backfill_source="sw",
+    ),
     # L6 macro
     DatasetSpec("macro_indicators", partition_col="obs_date"),
     DatasetSpec("market_breadth", partition_col="trade_date"),
