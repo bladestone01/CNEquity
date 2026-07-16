@@ -24,11 +24,12 @@ def test_to_baostock_symbol():
 class _FakeResultSet:
     """Mimics baostock's cursor-style result set."""
 
-    def __init__(self, rows: list[list[str]], error_code: str = "0"):
+    def __init__(self, rows: list[list[str]], error_code: str = "0", fields: list[str] | None = None):
         self.error_code = error_code
         self.error_msg = "" if error_code == "0" else "boom"
         self._rows = rows
         self._i = -1
+        self.fields = fields or []
 
     def next(self) -> bool:
         self._i += 1
@@ -44,11 +45,12 @@ class _FakeBaostock:
         per_symbol: dict[str, list[list[str]]],
         login_ok: bool = True,
         error_codes: dict[str, str] | None = None,
+        profit_q4: dict[tuple[str, int], list[list[str]]] | None = None,
     ):
         self._per_symbol = per_symbol
         self._login_ok = login_ok
-        # code -> error_code to return, mutable so a test can heal on retry
         self._error_codes = error_codes or {}
+        self._profit_q4 = profit_q4 or {}
         self.logged_out = False
         self.logins = 0
 
@@ -60,21 +62,48 @@ class _FakeBaostock:
         err = self._error_codes.get(code, "0")
         return _FakeResultSet(self._per_symbol.get(code, []), error_code=err)
 
+    def query_profit_data(self, code, year, quarter):
+        rows = self._profit_q4.get((code, year), []) if quarter == 4 else []
+        fields = [
+            "code",
+            "pubDate",
+            "statDate",
+            "roeAvg",
+            "npMargin",
+            "gpMargin",
+            "netProfit",
+            "epsTTM",
+            "MBRevenue",
+            "totalShare",
+            "liqaShare",
+        ]
+        return _FakeResultSet(rows, fields=fields)
+
     def logout(self):
         self.logged_out = True
 
 
-def test_fetch_valuation_history_maps_and_nulls_market_cap():
+def test_fetch_valuation_history_maps_market_cap():
+    # fields: date,code,close,amount,turn,peTTM,pbMRQ,psTTM
+    # float_mv = amount / (turn/100); total_mv = close * totalShare (Q4 asof)
     bs = _FakeBaostock(
         {
             "sh.600519": [
-                ["2016-01-04", "sh.600519", "12.5", "3.1", "8.0"],
-                ["2016-01-05", "sh.600519", "12.6", "", "8.1"],  # empty pb -> null
+                ["2016-01-04", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"],
+                ["2016-01-05", "sh.600519", "210.0", "", "", "12.6", "", "8.1"],  # suspend → null mv
             ],
             "sz.000001": [
-                ["2016-01-04", "sz.000001", "7.0", "0.9", "1.5"],
+                ["2016-01-04", "sz.000001", "10.0", "500000.0", "2.0", "7.0", "0.9", "1.5"],
             ],
-        }
+        },
+        profit_q4={
+            ("sh.600519", 2015): [
+                ["sh.600519", "2016-03-01", "2015-12-31", "", "", "", "", "", "", "1000000000", "800000000"]
+            ],
+            ("sz.000001", 2015): [
+                ["sz.000001", "2016-03-01", "2015-12-31", "", "", "", "", "", "", "500000000", "500000000"]
+            ],
+        },
     )
     df, failed = fetch_valuation_history(
         ["600519.SH", "000001.SZ"], date(2016, 1, 1), date(2016, 1, 5), bs=bs
@@ -83,24 +112,36 @@ def test_fetch_valuation_history_maps_and_nulls_market_cap():
     assert bs.logged_out is True
     assert failed == []
     assert df.height == 3
-    # schema matches the curated contract (market cap columns present but null)
     assert set(df.columns) == set(VALUATION_METRICS_SCHEMA) - {
         "source",
         "data_version",
         "fetched_at",
     }
-    assert df["total_mv"].null_count() == 3
-    assert df["float_mv"].null_count() == 3
-    row = df.filter(
+
+    moutai = df.filter(
+        (pl.col("symbol") == "600519.SH") & (pl.col("trade_date") == date(2016, 1, 4))
+    )
+    assert moutai["float_mv"].item() == pytest.approx(100_000_000.0)  # 1e6 / 0.01
+    assert moutai["total_mv"].item() == pytest.approx(200.0 * 1_000_000_000)
+    assert moutai["pe_ttm"].item() == 12.5
+
+    suspended = df.filter(
         (pl.col("symbol") == "600519.SH") & (pl.col("trade_date") == date(2016, 1, 5))
     )
-    assert row["pe_ttm"].item() == 12.6
-    assert row["pb"].item() is None  # empty string parsed to null
+    assert suspended["float_mv"].item() is None
+    assert suspended["pb"].item() is None
+    # total_mv still from close × shares (close present)
+    assert suspended["total_mv"].item() == pytest.approx(210.0 * 1_000_000_000)
 
 
 def test_fetch_valuation_history_skips_uncovered_symbol():
-    bs = _FakeBaostock({"sh.600519": [["2016-01-04", "sh.600519", "12.5", "3.1", "8.0"]]})
-    # 999999.SH has no coverage -> error_code 0 with no rows -> legit empty, NOT a failure
+    bs = _FakeBaostock(
+        {
+            "sh.600519": [
+                ["2016-01-04", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"]
+            ]
+        }
+    )
     df, failed = fetch_valuation_history(
         ["600519.SH", "999999.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs
     )
@@ -110,9 +151,12 @@ def test_fetch_valuation_history_skips_uncovered_symbol():
 
 
 def test_fetch_valuation_history_reports_failed_symbols_fail_loud():
-    # sz.000001 errors on every attempt -> reported as failed, not silently dropped
     bs = _FakeBaostock(
-        {"sh.600519": [["2016-01-04", "sh.600519", "12.5", "3.1", "8.0"]]},
+        {
+            "sh.600519": [
+                ["2016-01-04", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"]
+            ]
+        },
         error_codes={"sz.000001": "10002"},
     )
     df, failed = fetch_valuation_history(
@@ -120,7 +164,7 @@ def test_fetch_valuation_history_reports_failed_symbols_fail_loud():
     )
     assert df.height == 1
     assert failed == ["000001.SZ"]
-    assert bs.logins > 1  # re-login attempted on failure
+    assert bs.logins > 1
 
 
 def test_fetch_valuation_history_fails_loud_on_login_error():
@@ -133,7 +177,35 @@ def test_fetch_valuation_history_fails_loud_on_login_error():
 
 
 def test_valuation_metrics_declares_backfill_source():
-    # daily semantics stay snapshot, but a historical source unlocks `sde backfill`
     spec = get_dataset("valuation_metrics")
     assert spec.fetch_semantics == "snapshot"
     assert spec.backfill_source == "baostock"
+
+
+def test_symbols_needing_backfill_includes_null_mv(tmp_path):
+    from stock_data_engine.config import Config
+    from stock_data_engine.steps.fundamentals import _symbols_needing_backfill
+
+    root = tmp_path / "data"
+    part = root / "curated" / "valuation_metrics" / "trade_date=2016-01-04"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "trade_date": [date(2016, 1, 4), date(2016, 1, 4)],
+            "pe_ttm": [12.0, 7.0],
+            "pb": [3.0, 1.0],
+            "ps_ttm": [8.0, 1.5],
+            "total_mv": [None, 1.0e10],
+            "float_mv": [None, 1.0e10],
+            "source": ["baostock", "baostock"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": ["2016-01-04T00:00:00+00:00"] * 2,
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+    cfg = Config(data_root=root)
+    todo = _symbols_needing_backfill(cfg, ["600519.SH", "000001.SZ", "000002.SZ"])
+    assert "600519.SH" in todo  # null float_mv → refill
+    assert "000001.SZ" not in todo  # already has float_mv
+    assert "000002.SZ" in todo  # never backfilled

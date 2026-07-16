@@ -39,12 +39,12 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
 
 
 def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -> dict:
-    """Historical PE/PB/PS from baostock over the all_a universe (2016 → today).
+    """Historical PE/PB/PS + market cap from baostock over all_a (2016 → today).
 
-    Resumable: symbols already carrying baostock rows in the lake are skipped, so
-    a re-run only retries the ones a throttled session dropped. Symbols that still
-    fail are surfaced as an audit finding (fail-loud) — a partial backfill must
-    never look like a clean success.
+    Resumable: symbols that already have baostock rows *with* ``float_mv`` filled
+    are skipped. Symbols that only have null-MV PE/PB history (pre-market-cap
+    backfill) stay on the todo set so a re-run rewrites them via compact
+    ``keep=last``. Failures are surfaced as audit findings (fail-loud).
     """
     from stock_data_engine.adapters.baostock.valuation import fetch_valuation_history
 
@@ -81,24 +81,30 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
 
 
 def _symbols_needing_backfill(config: Config, universe: list[str]) -> list[str]:
-    """Universe symbols that have no baostock history in the lake yet (resume set)."""
+    """Symbols missing baostock history, or with baostock rows but null float_mv."""
     import polars as pl
 
     part = config.curated_root / "valuation_metrics"
     files = list(part.glob("**/*.parquet")) if part.exists() else []
     if not files:
         return universe
-    done = (
+    stats = (
         pl.scan_parquet(files)
         .filter(pl.col("source") == "baostock")
-        .select("symbol")
-        .unique()
+        .group_by("symbol")
+        .agg(
+            pl.len().alias("n"),
+            pl.col("float_mv").null_count().alias("float_nulls"),
+        )
         .collect()
+    )
+    # Done only when at least one non-null float_mv exists (MV fill landed).
+    done = set(
+        stats.filter(pl.col("float_nulls") < pl.col("n"))
         .get_column("symbol")
         .to_list()
     )
-    done_set = set(done)
-    return [s for s in universe if s not in done_set]
+    return [s for s in universe if s not in done]
 
 
 def _is_all_a(symbol: str) -> bool:

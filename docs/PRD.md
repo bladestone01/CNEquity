@@ -201,7 +201,7 @@ Meta：`ingestion_runs`, `ingestion_batches`（🟢，daily_bars 批级）、`qu
 | northbound_flows | 北向净流入 | L4 | eastmoney | — | 外资流向、市场宽度 | (trade_date, channel) | 🟡 已实现，受 R-15 |
 | margin_trading | 融资融券 | L4 | eastmoney | akshare | 杠杆情绪、融资买入 | (symbol, trade_date) | 🟡 已实现，受 R-15 |
 | sector_members | 板块成分 | L5 | eastmoney | tdx_protocol | 板块归属、主题选股 | (symbol, sector_code, as_of_date) | 🟡 已实现，受 R-15 |
-| valuation_metrics | 估值指标 | L3 | eastmoney（日更快照）+ baostock（历史回填） | tencent | PE/PB/PS、价值因子 | (symbol, trade_date) | 🟢 日更 + `sde backfill` 历史回填（PE/PB/PS 至 2016；市值历史待补） |
+| valuation_metrics | 估值指标 | L3 | eastmoney（日更快照）+ baostock（历史回填） | tencent | PE/PB/PS、价值因子 | (symbol, trade_date) | 🟢 日更 + `sde backfill` 历史回填（PE/PB/PS + 市值至 2016） |
 | announcement_index | 公告索引 | L2 | cninfo | — | 事件触发、公告类型过滤 | (announcement_id) | 🟡 已实现，受 R-15 |
 
 **schedule_groups 同批 step（signals 组）：**
@@ -1150,7 +1150,7 @@ Per-dataset source, update frequency, and known limitations (ashare-data-warehou
 | Daily source | eastmoney（clist 实时快照，盖当日 trade_date） |
 | History source | baostock（`sde backfill valuation_metrics`；per-symbol 每日 PE/PB/PS 回填至 2016） |
 | PK | (symbol, trade_date) |
-| Known limits | baostock 历史仅含 pe_ttm/pb/ps_ttm；total_mv/float_mv 历史置 null（不在 baostock k-data），由日更 EM 快照向前补 |
+| Known limits | baostock 历史含 pe_ttm/pb/ps_ttm；`float_mv`←amount/turn，`total_mv`←Q4 totalShare×close；日更 EM 快照覆盖最新交易日 |
 
 #### announcement_index
 
