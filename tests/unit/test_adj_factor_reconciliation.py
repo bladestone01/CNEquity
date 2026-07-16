@@ -172,6 +172,7 @@ def test_discontinuity_fail_loud_without_calendar(tmp_path):
 def test_missing_corp_action_is_warning(tmp_path):
     # 10-for-10 bonus: raw halves, factor doubles, adjustment stays flat. With no
     # corporate action on record it is a completeness warning, not a break.
+    # No calendar → adjacency cannot be judged; still warn (fail-loud completeness).
     cfg = Config(data_root=tmp_path / "data")
     _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 10.0),
                                 ("A", _D[2], 5.0), ("A", _D[3], 5.0)])
@@ -188,6 +189,30 @@ def test_missing_corp_action_is_warning(tmp_path):
     assert f["trade_date"] == "2024-06-05"
     assert f["adj_ret"] == 0.0
     assert f["raw_ret"] == -0.5
+
+
+def test_missing_corp_action_on_adjacent_days_with_calendar(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 10.0),
+                                ("A", _D[2], 5.0), ("A", _D[3], 5.0)])
+    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
+                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_calendar(cfg.data_root, _D)
+    _write_corp_actions(cfg.data_root, _DECOY)
+    findings = adj_factor_reconciliation_findings(cfg, _D[-1])
+    assert _checks(findings) == {"missing_corporate_action"}
+
+
+def test_suspension_resume_without_ca_not_missing_warning(tmp_path):
+    # Bars only on 06-03 and 06-06 (halt mid-week): raw halves with flat adj.
+    # That shape looks like a missing ex-event, but the calendar shows a gap —
+    # suspension resume, not an unrecorded dividend.
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[3], 5.0)])
+    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[3], 2.0)])
+    _write_calendar(cfg.data_root, _D)
+    _write_corp_actions(cfg.data_root, _DECOY)
+    assert adj_factor_reconciliation_findings(cfg, _D[-1]) == []
 
 
 def test_ex_event_with_matching_corp_action_is_explained(tmp_path):

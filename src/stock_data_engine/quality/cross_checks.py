@@ -22,9 +22,10 @@ own sentinels can see:
     factor/backtest → **error** (ports the Workbench guard into the engine and
     refines it: adjacency spares legitimate suspension-resume repricing);
   - a continuous adjusted move whose raw price nonetheless dropped past any board
-    limit with no corporate action on record is a real ex-event missing from
-    ``corporate_actions`` → **warning** (hfq research is fine; ledger accounting
-    is not).
+    limit with no corporate action on record, **on consecutive trading days**, is a
+    real ex-event missing from ``corporate_actions`` → **warning** (hfq research is
+    fine; ledger accounting is not). Non-adjacent bar pairs (suspension resumes)
+    are spared the same way as the discontinuity error.
 """
 
 from __future__ import annotations
@@ -57,8 +58,10 @@ ADJ_DISCONTINUITY_RET = 0.35
 # series is *continuous* (|adj_ret| below the first bound) yet raw and adjusted
 # diverge past the second bound — wider than any board price limit, so a real
 # ex-event (bonus / large dividend) was adjusted correctly but is absent from
-# corporate_actions. hfq research is unaffected (adj is continuous); only ledger
-# / dividend accounting is, so this is a warning, not an error.
+# corporate_actions. Restricted to *consecutive* trading days when the calendar
+# is present: a gap in bars across a halt is suspension-resume repricing, not a
+# missing ex-date (TDX/EM often have no xdxr there either). hfq research is
+# unaffected; only ledger / dividend accounting is, so this is a warning.
 MISSING_EVENT_MAX_ADJ_RET = 0.15
 MISSING_EVENT_MIN_DIVERGENCE = 0.11
 
@@ -443,7 +446,8 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
         )
 
     # Warning: a continuous adjustment absorbing a real ex-event that is missing
-    # from corporate_actions. Skip symbols already flagged as breaks.
+    # from corporate_actions. Skip symbols already flagged as breaks. Same
+    # consecutive-day gate as the discontinuity error when a calendar is present.
     ca_root = config.curated_root / "corporate_actions"
     if not dataset_has_parquet(ca_root):
         return findings
@@ -453,6 +457,10 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
         & (pl.col("divergence") > MISSING_EVENT_MIN_DIVERGENCE)
         & ~pl.col("symbol").is_in(list(break_syms))
     ).sort(["symbol", "trade_date"])
+    if successors is not None and not candidates.is_empty():
+        candidates = candidates.join(successors, on="prev_trade_date", how="left").filter(
+            pl.col("next_td") == pl.col("trade_date")
+        )
     if candidates.is_empty():
         return findings
 
