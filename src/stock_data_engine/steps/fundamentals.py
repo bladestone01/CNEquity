@@ -47,6 +47,10 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
     ``keep=last``. Failures are surfaced as audit findings (fail-loud).
     """
     from stock_data_engine.adapters.baostock.valuation import fetch_valuation_history
+    from stock_data_engine.storage.valuation_orphans import purge_valuation_orphan_symbols
+
+    # Drop leftover PE/PB for names that never have bars (pre-filter backfills).
+    purge_summary = purge_valuation_orphan_symbols(config)
 
     universe = [s for s in load_symbols(config) if _is_all_a(s)]
     # Only backfill symbols that actually have price bars: a delisted name still
@@ -58,13 +62,19 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
         universe = [s for s in universe if s in bar_universe]
     todo = _symbols_needing_backfill(config, universe)
     if not todo:
-        return {"rows_read": 0, "rows_written": 0, "note": "all symbols already backfilled"}
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "note": "all symbols already backfilled",
+            "orphan_purge": purge_summary,
+        }
 
     df, failed = fetch_valuation_history(todo, _VALUATION_BACKFILL_START, trade_date)
 
-    result: dict = {"rows_read": 0, "rows_written": 0}
+    result: dict = {"rows_read": 0, "rows_written": 0, "orphan_purge": purge_summary}
     if not df.is_empty():
         result = write_fetched(config, run_id, "valuation_metrics", df, source="baostock")
+        result["orphan_purge"] = purge_summary
     if failed:
         result["failed_symbols"] = len(failed)
         finding = {

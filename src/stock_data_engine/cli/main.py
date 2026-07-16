@@ -265,6 +265,11 @@ def derive(name: str, config_path: str):
 
         summary = derive_sector_code_map(cfg)
         click.echo(json.dumps(summary, indent=2, default=str))
+    elif name == "valuation_orphans":
+        from stock_data_engine.storage.valuation_orphans import purge_valuation_orphan_symbols
+
+        summary = purge_valuation_orphan_symbols(cfg)
+        click.echo(json.dumps(summary, indent=2, default=str))
     else:
         raise click.ClickException(f"Unknown derive target: {name}")
 
