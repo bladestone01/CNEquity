@@ -31,6 +31,16 @@ the project adheres to [Semantic Versioning](https://semver.org/).
     + `pip install -e '.[valuation]'`).
 
 ### Fixed
+- **fetch_datacenter silent truncation at page boundaries** — a transient
+  `success=false` "返回数据为空" on page N>1 was taken as end-of-data, so a day
+  could land with exactly 500×k rows and no error (margin_trading 2026-07-02/03:
+  500 rows vs ~3790 normal; healed manually 2026-07-16). `fetch_datacenter` now
+  records page 1's `result.pages`/`result.count`: a mid-pagination empty
+  response is retried with backoff and raises `EastMoneyDatacenterError` if it
+  persists; a short non-final page or a final row count below the declared
+  `count` also raises. Side benefit: pagination stops at the declared page count
+  instead of probing one extra empty page. Payloads without a `pages` field keep
+  the old short-page heuristic.
 - **corporate_actions unit inconsistency (per-share vs per-10-share)** — the
   curated dataset mixed dimensions: `cash_dividend` was per-share while
   `bonus_ratio`/`transfer_ratio`/`allotment_ratio` were the raw per-10-share
