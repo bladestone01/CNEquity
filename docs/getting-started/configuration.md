@@ -79,8 +79,8 @@ sde config validate --config configs/stockdata.toml
 
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `use_snownlp` | true | 启用 SnowNLP 打分（需 `[nlp]`） |
-| `news_symbol_limit` | 300 | 日更新闻抓取 symbol 上限 |
+| `use_snownlp` | false | on-demand `stock_news` 可选 SnowNLP（需 `[nlp]`）；日更 batch 用关键词 |
+| `news_symbol_limit` | 50 | HTTP `stock_news` 回退抓取 symbol 上限（主通道为 curated `news_headlines`） |
 
 ---
 

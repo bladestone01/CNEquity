@@ -38,7 +38,11 @@ def step_analyst_consensus(config: Config, trade_date: date, run_id: str, contex
     return write_fetched(config, run_id, "analyst_consensus", df, source="eastmoney")
 
 
-@register_step("sentiment_scores", group="research", depends_on=["announcement_index"])
+@register_step(
+    "sentiment_scores",
+    group="research",
+    depends_on=["announcement_index", "news_headlines", "hot_rank"],
+)
 def step_sentiment_scores(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     return run_incremental_fetched(
         config,

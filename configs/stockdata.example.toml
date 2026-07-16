@@ -58,8 +58,10 @@ source = "sina"
 adjust_types = ["hfq"]
 
 [sentiment]
-use_snownlp = true
-news_symbol_limit = 300
+# Batch path uses keyword lexicon only; SnowNLP is for on-demand stock_news.
+use_snownlp = false
+# HTTP stock_news fallback cap (primary news channel is curated news_headlines).
+news_symbol_limit = 50
 
 [failover]
 enabled = true
@@ -132,8 +134,10 @@ steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulat
 
 [job.daily.groups.research]
 at = "18:30"
-steps = ["institutional_holdings", "analyst_consensus", "sentiment_scores",
-  "hot_rank", "sector_bars", "sector_fund_flow", "news_headlines", "flash_news_wire", "compact"]
+# Rotation / headlines before sentiment so batch can score lake news without HTTP.
+steps = ["institutional_holdings", "analyst_consensus",
+  "hot_rank", "sector_bars", "sector_fund_flow", "news_headlines", "flash_news_wire",
+  "sentiment_scores", "compact"]
 
 [job.init.phases]
 names = [

@@ -72,8 +72,9 @@
 
 多通道情绪分：
 
-- `announcement` — 公告关键词
-- `stock_news` — 新闻 NLP（可选 SnowNLP）
+- `announcement_keywords` — 公告标题关键词
+- `news_headlines` — curated 快讯（无 HTTP，日更主通道）
+- `stock_news_nlp` — 个股新闻 HTTP 回退（有上限 + 连续失败熔断）
 
 由 `steps/research.py` 调用；配置见 `[sentiment]`。
 

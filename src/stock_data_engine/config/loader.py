@@ -67,8 +67,8 @@ class Config:
     duckdb_threads: int = 4
     adj_factors_source: str = "sina"
     adj_factors_types: list[str] = field(default_factory=lambda: ["hfq"])
-    sentiment_use_snownlp: bool = True
-    sentiment_news_symbol_limit: int = 300
+    sentiment_use_snownlp: bool = False
+    sentiment_news_symbol_limit: int = 50
     failover_enabled: bool = True
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
@@ -234,8 +234,8 @@ def load_config(path: str | Path) -> Config:
         duckdb_threads=int(duckdb_raw.get("threads", 4)),
         adj_factors_source=str(adj_raw.get("source", "sina")),
         adj_factors_types=list(adj_raw.get("adjust_types", ["hfq"])),
-        sentiment_use_snownlp=bool(sentiment_raw.get("use_snownlp", True)),
-        sentiment_news_symbol_limit=int(sentiment_raw.get("news_symbol_limit", 300)),
+        sentiment_use_snownlp=bool(sentiment_raw.get("use_snownlp", False)),
+        sentiment_news_symbol_limit=int(sentiment_raw.get("news_symbol_limit", 50)),
         failover_enabled=bool(failover_raw.get("enabled", True)),
         failover_datasets=failover_datasets,
         config_path=config_path,
