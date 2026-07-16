@@ -7,6 +7,9 @@ from datetime import date
 
 import polars as pl
 
+from stock_data_engine.adapters.eastmoney.common import (
+    report_period_from_date as _report_period,
+)
 from stock_data_engine.adapters.eastmoney.common import symbol_from_secucode
 from stock_data_engine.adapters.eastmoney.datacenter import fetch_datacenter
 from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
@@ -31,25 +34,6 @@ _COLUMNS = (
     "SECURITY_CODE,SECUCODE,REPORTDATE,NOTICE_DATE,"
     + ",".join(dict.fromkeys(_ITEM_FIELDS.values()))
 )
-
-
-def _report_period(raw: str | None) -> str | None:
-    if not raw:
-        return None
-    text = str(raw)[:10]
-    if len(text) < 7:
-        return text
-    year = text[:4]
-    month = int(text[5:7])
-    if month == 3:
-        q = "Q1"
-    elif month == 6:
-        q = "Q2"
-    elif month == 9:
-        q = "Q3"
-    else:
-        q = "Q4"
-    return f"{year}{q}"
 
 
 def _report_period_dates(trade_date: date) -> list[str]:

@@ -1,6 +1,6 @@
 # 数据集总览
 
-StockDataEngine 交付 **26 个注册数据集**（25 curated + 1 derived `adj_factors`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。
+StockDataEngine 交付 **27 个注册数据集**（26 curated + 1 derived `adj_factors`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。
 
 权威字段定义：[PRD 附录 A](../PRD.md)。逐源限制：[PRD 附录 B](../PRD.md)。
 
@@ -12,7 +12,7 @@ StockDataEngine 交付 **26 个注册数据集**（25 curated + 1 derived `adj_f
 |------|------|------------|
 | **L0** 基础参考 | Universe、日历、交易状态 | instruments, trading_calendar, trading_status |
 | **L1** 行情 | 未复权价量 + 复权因子 | daily_bars, index_bars, adj_factors |
-| **L2** 公司事件 | 除权除息、公告 | corporate_actions, announcement_index |
+| **L2** 公司事件 | 除权除息、公告、预约披露 | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | **L3** 基本面 | 财报、估值、一致预期 | financial_statement_items, valuation_metrics, analyst_consensus |
 | **L4** 资金面 | 北向、融资、主力 | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades, institutional_holdings |
 | **L5** 结构行业 | 板块、指数成分、行业 | sector_members, index_constituents, industry_members |

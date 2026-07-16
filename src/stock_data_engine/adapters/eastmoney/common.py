@@ -33,6 +33,26 @@ def symbol_from_secucode(secucode: str | None) -> str | None:
     return format_symbol(code, exchange)
 
 
+def report_period_from_date(raw: str | None) -> str | None:
+    """Datacenter quarter-end date (``2026-06-30 00:00:00``) → ``2026Q2``."""
+    if not raw:
+        return None
+    text = str(raw)[:10]
+    if len(text) < 7:
+        return text
+    year = text[:4]
+    month = int(text[5:7])
+    if month == 3:
+        q = "Q1"
+    elif month == 6:
+        q = "Q2"
+    elif month == 9:
+        q = "Q3"
+    else:
+        q = "Q4"
+    return f"{year}{q}"
+
+
 def _to_float(value: object, default: float = 0.0) -> float:
     if value is None or value == "" or value == "-":
         return default

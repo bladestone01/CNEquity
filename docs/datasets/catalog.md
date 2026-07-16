@@ -32,6 +32,7 @@
 |--------|--------|------|------|------|------|------|
 | corporate_actions | ex_date | symbol, ex_date, action_type | by_date | ✓ | eastmoney (daily) | backfill: tdx_protocol |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` 过滤 |
+| earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`sde backfill` 走 2016 起全报告期 |
 
 ---
 
@@ -123,7 +124,7 @@
 |-----------|--------|
 | reference.py | instruments, trading_calendar, trading_status |
 | bars.py | daily_bars, index_bars |
-| events.py | corporate_actions, announcement_index |
+| events.py | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | fundamentals.py | valuation_metrics, financial_statement_items |
 | capital.py | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades |
 | structure.py | sector_members, index_constituents, industry_members |

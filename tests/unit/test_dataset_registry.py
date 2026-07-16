@@ -48,7 +48,11 @@ def test_primary_key_columns_exist_in_schema():
 def test_legacy_tables_match_registry():
     # Guards against editing the derived dicts instead of the specs.
     assert set(PARTITION_COLS) == set(curated_dataset_names())
-    assert WATERMARK_SKIP == {"financial_statement_items", "institutional_holdings"}
+    assert WATERMARK_SKIP == {
+        "financial_statement_items",
+        "institutional_holdings",
+        "earnings_disclosure_schedule",
+    }
     assert set(FETCH_SEMANTICS) == {
         "fund_flow",
         "valuation_metrics",

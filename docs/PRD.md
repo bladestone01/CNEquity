@@ -237,6 +237,7 @@ akshare 月度指标仅在发布日恰为运行日时才入库（几乎取不到
 | market_breadth | 市场宽度指标 | L7 | 日更 | 自算 + eastmoney | 涨跌家数、涨停比、情绪极值 | (trade_date, metric_id) | P1 |
 | share_unlock_schedule | 限售解禁日历 | L8 | 日更 | eastmoney | 供给冲击、解禁压力因子 | (symbol, unlock_date) | P1 |
 | regulatory_events | 监管处罚/立案 | L8 | 事件驱动 | cninfo / 交易所 | 负面清单、合规风控 | (event_id) | P2 |
+| earnings_disclosure_schedule | 定期报告预约披露日期 | L2 | 日更（披露窗口内） | eastmoney | 财报窗口临近提醒、持仓事件风险 | (symbol, report_period) | P2 |
 | institutional_holdings | 机构持股（基金/QFII 等） | L4 | 季报 | eastmoney | 机构共识、持仓变化 | (symbol, holder_type, report_period) | P2 |
 | analyst_consensus | 一致预期盈利 | L3 | 日更/周更 | eastmoney | EPS 修正、预期差因子 | (symbol, forecast_date) | P2 |
 | sentiment_scores | 结构化情绪得分 | L7 | 日更 | NLP on stock_news + announcements | 情绪因子、舆情反转 | (symbol, trade_date, score_channel) | P2 |
@@ -861,6 +862,21 @@ PIT queries filter `announce_date <= as_of`.
 | announce_date | date | **PIT axis** |
 | category | string | |
 | url | string | |
+| source / data_version / fetched_at | | provenance |
+
+#### earnings_disclosure_schedule
+
+预约披露时间表（EM datacenter `RPT_PUBLIC_BS_APPOIN`，镜像沪深交易所披露日历）。
+现值语义、非 PIT：预约变更覆盖 `scheduled_date`，`first_scheduled_date` 保留首次预约，
+`actual_date` 实际披露后回填（此前为 null）。
+
+| Column | Type | Notes |
+|--------|------|-------|
+| symbol | string | |
+| report_period | string | e.g. ``2026Q2``（分区键） |
+| scheduled_date | date | 当前有效预约披露日 |
+| first_scheduled_date | date | 首次预约披露日 |
+| actual_date | date | 实际披露日，未披露为 null |
 | source / data_version / fetched_at | | provenance |
 
 #### dragon_tiger

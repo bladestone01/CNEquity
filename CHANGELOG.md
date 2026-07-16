@@ -7,6 +7,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **earnings_disclosure_schedule** — EM `RPT_PUBLIC_BS_APPOIN` 预约披露时间表（按报告期分区；
+  日更刷新披露窗口，`sde backfill` 可回填 2016+）；非 PIT 现值语义。
 - **margin_trading historical backfill** — date-walking sweep over the EM datacenter report
   (`sde backfill margin_trading --start … --end … --workers N`); resumable (curated dates
   skipped), staged in ~quarterly parts, per-worker 1 req/s throttle. Generic `--start/--end/

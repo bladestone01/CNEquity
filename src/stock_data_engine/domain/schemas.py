@@ -183,6 +183,20 @@ ANNOUNCEMENT_INDEX_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# Scheduled disclosure dates (预约披露) for periodic reports. Current-state:
+# a revision overwrites scheduled_date in place; first_scheduled_date keeps the
+# original appointment and actual_date stays null until the report is published.
+EARNINGS_DISCLOSURE_SCHEDULE_SCHEMA = {
+    "symbol": pl.Utf8,
+    "report_period": pl.Utf8,
+    "scheduled_date": pl.Date,
+    "first_scheduled_date": pl.Date,
+    "actual_date": pl.Date,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 DRAGON_TIGER_SCHEMA = {
     "symbol": pl.Utf8,
     "trade_date": pl.Date,
@@ -408,6 +422,7 @@ DATASET_SCHEMAS = {
     "valuation_metrics": VALUATION_METRICS_SCHEMA,
     "sector_members": SECTOR_MEMBERS_SCHEMA,
     "announcement_index": ANNOUNCEMENT_INDEX_SCHEMA,
+    "earnings_disclosure_schedule": EARNINGS_DISCLOSURE_SCHEDULE_SCHEMA,
     "dragon_tiger": DRAGON_TIGER_SCHEMA,
     "block_trades": BLOCK_TRADES_SCHEMA,
     "index_constituents": INDEX_CONSTITUENTS_SCHEMA,
@@ -443,6 +458,7 @@ PRIMARY_KEYS = {
     "valuation_metrics": ["symbol", "trade_date"],
     "sector_members": ["symbol", "sector_code", "as_of_date"],
     "announcement_index": ["announcement_id"],
+    "earnings_disclosure_schedule": ["symbol", "report_period"],
     "dragon_tiger": ["symbol", "trade_date", "reason"],
     "block_trades": ["symbol", "trade_date", "price", "volume"],
     "index_constituents": ["index_symbol", "symbol", "as_of_date"],

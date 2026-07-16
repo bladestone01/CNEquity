@@ -80,6 +80,12 @@ _SPECS = [
     # L2 corporate events
     DatasetSpec("corporate_actions", partition_col="ex_date"),
     DatasetSpec("announcement_index", partition_col="announce_date", pit=True),
+    # Current-state timetable (revisions overwrite scheduled_date; not PIT).
+    DatasetSpec(
+        "earnings_disclosure_schedule",
+        partition_col="report_period",
+        watermark=False,
+    ),
     # L3 fundamentals
     DatasetSpec(
         "financial_statement_items",
