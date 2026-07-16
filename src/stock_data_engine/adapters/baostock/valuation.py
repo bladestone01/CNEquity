@@ -127,29 +127,44 @@ def _asof_total_share(
     return chosen
 
 
+def _year_windows(start: date, end: date) -> list[tuple[date, date]]:
+    """Inclusive calendar-year slices — baostock multi-year k-data reads hang."""
+    out: list[tuple[date, date]] = []
+    for year in range(start.year, end.year + 1):
+        w_start = max(start, date(year, 1, 1))
+        w_end = min(end, date(year, 12, 31))
+        if w_start <= w_end:
+            out.append((w_start, w_end))
+    return out
+
+
 def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
     """Rows for one symbol, or ``None`` if the k-data query errored (retryable).
 
     An ``error_code == '0'`` result with zero rows is a legitimate empty
     (delisted before the window, no baostock coverage) — returns ``[]``, not
     ``None``, so the caller does not treat it as a failure to retry.
-    """
-    rs = bs.query_history_k_data_plus(
-        to_baostock_symbol(symbol),
-        _FIELDS,
-        start_date=start.isoformat(),
-        end_date=end.isoformat(),
-        frequency="d",
-        adjustflag="3",  # unadjusted; PE/PB/PS ratios are adjust-independent
-    )
-    if getattr(rs, "error_code", "0") != "0":
-        return None
 
-    # Materialize k-data before further baostock calls — a second query can
-    # invalidate the live result-set cursor on the shared socket.
+    K-data is fetched in calendar-year chunks: a single 2016→today query often
+    stalls mid-``rs.next()`` (baostock slowloris); yearly windows stay reliable.
+    """
+    code = to_baostock_symbol(symbol)
     raw_rows: list[list[str]] = []
-    while rs.next():
-        raw_rows.append(list(rs.get_row_data()))
+    for w_start, w_end in _year_windows(start, end):
+        rs = bs.query_history_k_data_plus(
+            code,
+            _FIELDS,
+            start_date=w_start.isoformat(),
+            end_date=w_end.isoformat(),
+            frequency="d",
+            adjustflag="3",  # unadjusted; PE/PB/PS ratios are adjust-independent
+        )
+        if getattr(rs, "error_code", "0") != "0":
+            return None
+        # Materialize before the next baostock call — a second query can
+        # invalidate the live result-set cursor on the shared socket.
+        while rs.next():
+            raw_rows.append(list(rs.get_row_data()))
 
     share_points = _year_end_total_shares(bs, symbol, start, end) if raw_rows else []
 
@@ -205,8 +220,8 @@ def fetch_valuation_history(
         bs=bs,
         sleep=sleep,
         label="baostock valuation",
-        # k-data + ~11 Q4 profit calls; keep headroom above the 45s default.
-        deadline=90.0,
+        # Year-chunked k-data + ~11 Q4 profit calls.
+        deadline=120.0,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     return df, failed
