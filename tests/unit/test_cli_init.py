@@ -134,6 +134,41 @@ steps = ["compact"]
     assert "market_breadth" in calls[1][2] and "compact" in calls[1][2]
 
 
+def test_run_catchup_skips_when_gate_already_fresh(tmp_path, monkeypatch):
+    cfg_path = _write_config(tmp_path)
+    Path(cfg_path).write_text(
+        Path(cfg_path).read_text()
+        + """
+[job.daily.groups.core]
+at = "16:00"
+steps = ["compact"]
+"""
+    )
+    calls: list[str] = []
+
+    def fake_run_job(self, job_name, trade_date=None, **kwargs):
+        calls.append(job_name)
+        return {"run_id": "x", "status": "success", "results": []}
+
+    monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
+    monkeypatch.setattr(
+        "stock_data_engine.steps.common.is_trading_day",
+        lambda cfg, d: True,
+    )
+    monkeypatch.setattr(
+        "stock_data_engine.cli.main._dataset_watermark",
+        lambda cfg, name: date(2026, 7, 17),
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "catchup", "--config", cfg_path, "--trade-date", "2026-07-17"],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == []
+    assert "skipped_already_fresh" in result.output
+
+
 def test_run_catchup_extra_group_failure_still_ok(tmp_path, monkeypatch):
     cfg_path = _write_config(tmp_path)
     Path(cfg_path).write_text(

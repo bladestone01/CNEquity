@@ -187,6 +187,40 @@ _CATCHUP_EXTRA_DEFAULT = (
 )
 
 
+def _dataset_watermark(cfg, dataset: str):
+    """Latest success date for a gate dataset (StateStore or hive max for adj)."""
+    from stock_data_engine.query.parquet_scan import list_hive_partition_dates
+    from stock_data_engine.storage.state import StateStore
+
+    state = StateStore(cfg.meta_root)
+    wm = state.get_date(dataset)
+    if wm is not None:
+        return wm
+    if dataset == "adj_factors":
+        parts = list_hive_partition_dates(cfg.derived_root / "adj_factors", "trade_date")
+        return parts[-1] if parts else None
+    return None
+
+
+def _gate_fresh_for_catchup(cfg, trade_date: date, *, core_only: bool) -> dict[str, bool]:
+    """Which gate pieces are already at/above ``trade_date``."""
+
+    def _ok(name: str) -> bool:
+        wm = _dataset_watermark(cfg, name)
+        return wm is not None and wm >= trade_date
+
+    bars_ok = _ok("daily_bars")
+    adj_ok = _ok("adj_factors")
+    breadth_ok = True if core_only else _ok("market_breadth")
+    return {
+        "daily_bars": bars_ok,
+        "adj_factors": adj_ok,
+        "market_breadth": breadth_ok,
+        "core": bars_ok and adj_ok,
+        "all": bars_ok and adj_ok and breadth_ok,
+    }
+
+
 @run.command("catchup")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(
@@ -230,7 +264,6 @@ def run_catchup(
     EastMoney failures so a mainland box can refresh capital/research in one shot.
     """
     from stock_data_engine.steps.common import is_trading_day, list_trading_dates
-    from stock_data_engine.storage.state import StateStore
 
     cfg = _cfg(config_path)
     if trade_date_str:
@@ -259,15 +292,20 @@ def run_catchup(
         seen.add(name)
         extras_ordered.append(name)
 
-    state = StateStore(cfg.meta_root)
-    bars_wm = state.get_date("daily_bars")
+    bars_wm = _dataset_watermark(cfg, "daily_bars")
+    adj_wm = _dataset_watermark(cfg, "adj_factors")
+    breadth_wm = _dataset_watermark(cfg, "market_breadth")
+    fresh = _gate_fresh_for_catchup(cfg, td, core_only=core_only)
     click.echo(
         json.dumps(
             {
                 "trade_date": td.isoformat(),
                 "daily_bars_watermark": bars_wm.isoformat() if bars_wm else None,
+                "adj_factors_watermark": adj_wm.isoformat() if adj_wm else None,
+                "market_breadth_watermark": breadth_wm.isoformat() if breadth_wm else None,
                 "core_only": core_only,
                 "extra_groups": extras_ordered,
+                "already_fresh": fresh,
             },
             indent=2,
         )
@@ -278,40 +316,48 @@ def run_catchup(
     if not group:
         raise click.ClickException("schedule group 'core' missing from config")
 
+    results: dict[str, dict[str, str]] = {}
     try:
-        core = engine.run_job(
-            "daily:core",
-            trade_date=td,
-            waves=[WaveConfig(name="group:core", parallel=False, steps=group.steps)],
-            backfill=False,
-        )
-        results: dict[str, dict[str, str]] = {
-            "core": {"run_id": core["run_id"], "status": core["status"]}
-        }
-        if core["status"] not in ("success", "skipped_non_trading_day"):
-            click.echo(json.dumps(results, indent=2))
-            raise SystemExit(1)
-
-        if not core_only:
-            breadth = engine.run_job(
-                "daily:market_breadth",
+        if fresh["core"]:
+            results["core"] = {"run_id": "", "status": "skipped_already_fresh"}
+        else:
+            core = engine.run_job(
+                "daily:core",
                 trade_date=td,
-                waves=[
-                    WaveConfig(
-                        name="breadth",
-                        parallel=False,
-                        steps=["market_breadth", "compact"],
-                    )
-                ],
+                waves=[WaveConfig(name="group:core", parallel=False, steps=group.steps)],
                 backfill=False,
             )
-            results["market_breadth"] = {
-                "run_id": breadth["run_id"],
-                "status": breadth["status"],
-            }
-            if breadth["status"] not in ("success", "skipped_non_trading_day"):
+            results["core"] = {"run_id": core["run_id"], "status": core["status"]}
+            if core["status"] not in ("success", "skipped_non_trading_day"):
                 click.echo(json.dumps(results, indent=2))
                 raise SystemExit(1)
+
+        if not core_only:
+            if fresh["market_breadth"]:
+                results["market_breadth"] = {
+                    "run_id": "",
+                    "status": "skipped_already_fresh",
+                }
+            else:
+                breadth = engine.run_job(
+                    "daily:market_breadth",
+                    trade_date=td,
+                    waves=[
+                        WaveConfig(
+                            name="breadth",
+                            parallel=False,
+                            steps=["market_breadth", "compact"],
+                        )
+                    ],
+                    backfill=False,
+                )
+                results["market_breadth"] = {
+                    "run_id": breadth["run_id"],
+                    "status": breadth["status"],
+                }
+                if breadth["status"] not in ("success", "skipped_non_trading_day"):
+                    click.echo(json.dumps(results, indent=2))
+                    raise SystemExit(1)
 
         for name in extras_ordered:
             g = cfg.schedule_groups.get(name)
@@ -330,10 +376,18 @@ def run_catchup(
 
     click.echo(json.dumps(results, indent=2))
     # Gate path already validated; extra-group failures are advisory.
-    if results["core"]["status"] not in ("success", "skipped_non_trading_day"):
+    if results["core"]["status"] not in (
+        "success",
+        "skipped_non_trading_day",
+        "skipped_already_fresh",
+    ):
         raise SystemExit(1)
     mb = results.get("market_breadth")
-    if mb and mb["status"] not in ("success", "skipped_non_trading_day"):
+    if mb and mb["status"] not in (
+        "success",
+        "skipped_non_trading_day",
+        "skipped_already_fresh",
+    ):
         raise SystemExit(1)
 
 
