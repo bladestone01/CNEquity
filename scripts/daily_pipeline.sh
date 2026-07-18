@@ -15,6 +15,8 @@
 # Usage: scripts/daily_pipeline.sh [YYYY-MM-DD]
 # Env: SDE_CONFIG, SDE_LOG_DIR, SDE_GROUPS (space-separated override),
 #      SDE_GATE_GROUPS (space-separated; default "core" — failure ⇒ hard fail),
+#      SDE_SOFT_FAIL_OK=1 (default) — gate OK 时东财/soft 失败只告警、exit 0；
+#        设为 0 则 soft 失败仍 exit 1（国内全组日更可用），
 #      SDE_TRADE_DATE (same as optional CLI arg — catch up a prior session).
 set -uo pipefail
 
@@ -35,6 +37,8 @@ fi
 # NB: not named GROUPS — that is a reserved bash builtin (user group IDs).
 GROUP_LIST="${SDE_GROUPS:-core capital signals fundamentals macro_risk research}"
 GATE_GROUP_LIST="${SDE_GATE_GROUPS:-core}"
+# Overseas Mac: expected EM lag must not paint the whole day red.
+SOFT_FAIL_OK="${SDE_SOFT_FAIL_OK:-1}"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -101,6 +105,10 @@ if [[ ${#gate_failed[@]} -gt 0 ]]; then
   exit 1
 fi
 if [[ ${#soft_failed[@]} -gt 0 ]]; then
+  if [[ "$SOFT_FAIL_OK" == "1" ]]; then
+    log "==== daily pipeline DONE — gate OK, EM/soft FAILED (warn-only): ${soft_failed[*]} ===="
+    exit 0
+  fi
   log "==== daily pipeline DONE — gate OK, EM/soft FAILED: ${soft_failed[*]} ===="
   exit 1
 fi

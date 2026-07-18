@@ -61,8 +61,9 @@ core → capital → signals → fundamentals → macro_risk → research
 ```
 
 - 单组失败不中断后续组（尽量多采数据）
-- 结尾摘要区分 **gate**（默认 `SDE_GATE_GROUPS=core`）与 **soft**（东财等）；
-  日志写明「GATE FAILED」vs「gate OK, EM/soft FAILED」——二者都 exit 1，但排障路径不同
+- 结尾摘要区分 **gate**（默认 `SDE_GATE_GROUPS=core`）与 **soft**（东财等）
+- 默认 `SDE_SOFT_FAIL_OK=1`：gate OK 时 soft 失败 **warn-only、exit 0**（海外 Mac 预期东财滞后）；
+  国内全组日更可设 `SDE_SOFT_FAIL_OK=0` 让 soft 失败仍 exit 1
 - 东财超时/连接失败不重试（`[sources.eastmoney] timeout_sec`，默认 15s）
 - 生产 `daily_pipeline.sh` 常设 `workers=1`（mootdx 与多进程兼容性）
 
