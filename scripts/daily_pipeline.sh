@@ -14,6 +14,7 @@
 #
 # Usage: scripts/daily_pipeline.sh [YYYY-MM-DD]
 # Env: SDE_CONFIG, SDE_LOG_DIR, SDE_GROUPS (space-separated override),
+#      SDE_GATE_GROUPS (space-separated; default "core" — failure ⇒ hard fail),
 #      SDE_TRADE_DATE (same as optional CLI arg — catch up a prior session).
 set -uo pipefail
 
@@ -33,19 +34,42 @@ fi
 # (core 16:00 → research 18:30). Sequential, not by wall-clock time.
 # NB: not named GROUPS — that is a reserved bash builtin (user group IDs).
 GROUP_LIST="${SDE_GROUPS:-core capital signals fundamentals macro_risk research}"
+GATE_GROUP_LIST="${SDE_GATE_GROUPS:-core}"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 
+_is_gate_group() {
+  local g="$1" x
+  for x in $GATE_GROUP_LIST; do
+    [[ "$x" == "$g" ]] && return 0
+  done
+  return 1
+}
+
 log "==== daily pipeline start $(date '+%Y-%m-%d %H:%M:%S') trade_date=${TRADE_DATE:-today} ===="
 failed_groups=()
+gate_failed=()
+soft_failed=()
+# parallel arrays: group name → OK|FAILED|…  (bash 3.2 compatible, no assoc arrays)
+summary_names=()
+summary_status=()
 
 for g in $GROUP_LIST; do
   log "--- group: $g ---"
   if "$SDE" run daily --group "$g" --config "$CONFIG" "${DATE_ARGS[@]}" >>"$LOG" 2>&1; then
     log "group $g OK"
+    summary_names+=("$g")
+    summary_status+=("OK")
   else
     log "group $g FAILED (see $LOG)"
     failed_groups+=("$g")
+    summary_names+=("$g")
+    summary_status+=("FAILED")
+    if _is_gate_group "$g"; then
+      gate_failed+=("$g")
+    else
+      soft_failed+=("$g")
+    fi
   fi
 done
 
@@ -61,8 +85,23 @@ if ! "$REPO_ROOT/scripts/backup_meta.sh" >>"$LOG" 2>&1; then
   log "backup FAILED"
 fi
 
-if [[ ${#failed_groups[@]} -gt 0 ]]; then
-  log "==== daily pipeline DONE with failures: ${failed_groups[*]} ===="
+log "---- group summary (gate=${GATE_GROUP_LIST}) ----"
+i=0
+while [[ $i -lt ${#summary_names[@]} ]]; do
+  g="${summary_names[$i]}"
+  st="${summary_status[$i]}"
+  kind="soft"
+  _is_gate_group "$g" && kind="gate"
+  log "  ${g}: ${st}  [${kind}]"
+  i=$((i + 1))
+done
+
+if [[ ${#gate_failed[@]} -gt 0 ]]; then
+  log "==== daily pipeline DONE — GATE FAILED: ${gate_failed[*]} (soft also: ${soft_failed[*]:-none}) ===="
+  exit 1
+fi
+if [[ ${#soft_failed[@]} -gt 0 ]]; then
+  log "==== daily pipeline DONE — gate OK, EM/soft FAILED: ${soft_failed[*]} ===="
   exit 1
 fi
 log "==== daily pipeline DONE ok ===="
