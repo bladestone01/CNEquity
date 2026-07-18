@@ -178,6 +178,15 @@ def run_daily(
         raise SystemExit(1)
 
 
+_CATCHUP_EXTRA_DEFAULT = (
+    "capital",
+    "signals",
+    "fundamentals",
+    "macro_risk",
+    "research",
+)
+
+
 @run.command("catchup")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(
@@ -191,13 +200,34 @@ def run_daily(
     is_flag=True,
     help="Skip market_breadth (gate bars/adj only).",
 )
-def run_catchup(config_path: str, trade_date_str: str | None, core_only: bool):
+@click.option(
+    "--extra-group",
+    "extra_groups",
+    multiple=True,
+    help=(
+        "Also run this schedule group after the gate catchup (repeatable). "
+        "Best-effort: failures are reported but do not fail the command. "
+        "EM-heavy groups usually need a mainland egress."
+    ),
+)
+@click.option(
+    "--all-groups",
+    is_flag=True,
+    help=f"After gate catchup, best-effort run: {' '.join(_CATCHUP_EXTRA_DEFAULT)}.",
+)
+def run_catchup(
+    config_path: str,
+    trade_date_str: str | None,
+    core_only: bool,
+    extra_groups: tuple[str, ...],
+    all_groups: bool,
+):
     """Catch up Workbench gate datasets after a missed/weekend skip.
 
     Runs ``daily:core`` for the target date, then ``market_breadth`` + ``compact``
     (unless ``--core-only``). Does **not** pass ``--backfill`` (full CA scan is
-    fragile overseas). Already-fresh watermarks still re-run core steps; they are
-    incremental and cheap when up to date.
+    fragile overseas). Optional ``--extra-group`` / ``--all-groups`` continue past
+    EastMoney failures so a mainland box can refresh capital/research in one shot.
     """
     from stock_data_engine.steps.common import is_trading_day, list_trading_dates
     from stock_data_engine.storage.state import StateStore
@@ -216,6 +246,19 @@ def run_catchup(config_path: str, trade_date_str: str | None, core_only: bool):
             raise click.ClickException("no trading day found in the last 21 calendar days")
         td = days[-1]
 
+    extras: list[str] = []
+    if all_groups:
+        extras.extend(_CATCHUP_EXTRA_DEFAULT)
+    extras.extend(extra_groups)
+    # Preserve order, drop dupes / core (already handled).
+    seen: set[str] = set()
+    extras_ordered: list[str] = []
+    for name in extras:
+        if name == "core" or name in seen:
+            continue
+        seen.add(name)
+        extras_ordered.append(name)
+
     state = StateStore(cfg.meta_root)
     bars_wm = state.get_date("daily_bars")
     click.echo(
@@ -224,6 +267,7 @@ def run_catchup(config_path: str, trade_date_str: str | None, core_only: bool):
                 "trade_date": td.isoformat(),
                 "daily_bars_watermark": bars_wm.isoformat() if bars_wm else None,
                 "core_only": core_only,
+                "extra_groups": extras_ordered,
             },
             indent=2,
         )
@@ -241,7 +285,9 @@ def run_catchup(config_path: str, trade_date_str: str | None, core_only: bool):
             waves=[WaveConfig(name="group:core", parallel=False, steps=group.steps)],
             backfill=False,
         )
-        results = {"core": {"run_id": core["run_id"], "status": core["status"]}}
+        results: dict[str, dict[str, str]] = {
+            "core": {"run_id": core["run_id"], "status": core["status"]}
+        }
         if core["status"] not in ("success", "skipped_non_trading_day"):
             click.echo(json.dumps(results, indent=2))
             raise SystemExit(1)
@@ -266,10 +312,29 @@ def run_catchup(config_path: str, trade_date_str: str | None, core_only: bool):
             if breadth["status"] not in ("success", "skipped_non_trading_day"):
                 click.echo(json.dumps(results, indent=2))
                 raise SystemExit(1)
+
+        for name in extras_ordered:
+            g = cfg.schedule_groups.get(name)
+            if not g:
+                results[name] = {"run_id": "", "status": "unknown_group"}
+                continue
+            out = engine.run_job(
+                f"daily:{name}",
+                trade_date=td,
+                waves=[WaveConfig(name=f"group:{name}", parallel=False, steps=g.steps)],
+                backfill=False,
+            )
+            results[name] = {"run_id": out["run_id"], "status": out["status"]}
     except RunLockError as exc:
         raise click.ClickException(str(exc)) from exc
 
     click.echo(json.dumps(results, indent=2))
+    # Gate path already validated; extra-group failures are advisory.
+    if results["core"]["status"] not in ("success", "skipped_non_trading_day"):
+        raise SystemExit(1)
+    mb = results.get("market_breadth")
+    if mb and mb["status"] not in ("success", "skipped_non_trading_day"):
+        raise SystemExit(1)
 
 
 @cli.command()

@@ -134,6 +134,51 @@ steps = ["compact"]
     assert "market_breadth" in calls[1][2] and "compact" in calls[1][2]
 
 
+def test_run_catchup_extra_group_failure_still_ok(tmp_path, monkeypatch):
+    cfg_path = _write_config(tmp_path)
+    Path(cfg_path).write_text(
+        Path(cfg_path).read_text()
+        + """
+[job.daily.groups.core]
+at = "16:00"
+steps = ["compact"]
+
+[job.daily.groups.capital]
+at = "16:30"
+steps = ["compact"]
+"""
+    )
+    calls: list[str] = []
+
+    def fake_run_job(self, job_name, trade_date=None, **kwargs):
+        calls.append(job_name)
+        status = "failed" if job_name == "daily:capital" else "success"
+        return {"run_id": f"r-{len(calls)}", "status": status, "results": []}
+
+    monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
+    monkeypatch.setattr(
+        "stock_data_engine.steps.common.is_trading_day",
+        lambda cfg, d: True,
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run",
+            "catchup",
+            "--config",
+            cfg_path,
+            "--trade-date",
+            "2026-07-17",
+            "--extra-group",
+            "capital",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "daily:capital" in calls
+    assert '"status": "failed"' in result.output
+
+
 def test_init_exits_nonzero_when_phase_fails(tmp_path, monkeypatch):
     cfg_path = _write_config(tmp_path)
 
