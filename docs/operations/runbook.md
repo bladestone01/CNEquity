@@ -30,8 +30,12 @@ scripts/install_scheduler.sh
 - 生成 `~/Library/LaunchAgents/com.stockdataengine.daily.plist`
 - **每天本地 16:05** 触发（收盘后）
 - 非交易日自动跳过（退出 0）
-- **漏跑 / 周末补数**：`uv run sde run catchup`（门禁 core + breadth），或
-  `scripts/daily_pipeline.sh YYYY-MM-DD` / `SDE_TRADE_DATE=...`（全组定点）
+- **漏跑 / 周末补数**：`uv run sde run catchup`（门禁 core + breadth；水位已齐则
+  `skipped_already_fresh`），或 `scripts/daily_pipeline.sh YYYY-MM-DD` /
+  `SDE_TRADE_DATE=...`（全组定点）
+- **海外 Mac**：保 `core`（+ 本地 derive breadth）即可喂 Workbench 门禁；东财组留给
+  国内机器 `catchup --all-groups` / 全组 pipeline。SOCKS 出口不够，见
+  [troubleshooting](troubleshooting.md#云主机--socks-能开-ipinfo-但东财-empty-reply)。
 
 ```bash
 launchctl list | grep stockdataengine
@@ -39,7 +43,7 @@ launchctl start com.stockdataengine.daily   # 手动触发
 scripts/uninstall_scheduler.sh
 ```
 
-**Linux cron**：
+**Linux cron**（建议跑在大陆出口）：
 
 ```cron
 5 16 * * * /path/to/StockDataEngine/scripts/daily_pipeline.sh
@@ -53,10 +57,13 @@ scripts/uninstall_scheduler.sh
 core → capital → signals → fundamentals → macro_risk → research
   → health_notify.sh
   → backup_meta.sh
+  → group summary（gate vs soft）
 ```
 
 - 单组失败不中断后续组（尽量多采数据）
-- Pipeline 最终退出码反映整体成败
+- 结尾摘要区分 **gate**（默认 `SDE_GATE_GROUPS=core`）与 **soft**（东财等）；
+  日志写明「GATE FAILED」vs「gate OK, EM/soft FAILED」——二者都 exit 1，但排障路径不同
+- 东财超时/连接失败不重试（`[sources.eastmoney] timeout_sec`，默认 15s）
 - 生产 `daily_pipeline.sh` 常设 `workers=1`（mootdx 与多进程兼容性）
 
 组与 step 映射见 [配置 — 调度组](../getting-started/configuration.md#调度组)。

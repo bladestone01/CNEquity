@@ -22,7 +22,10 @@ health_notify.sh
 backup_meta.sh
 ```
 
-**环境变量**：`SDE_CONFIG`, `SDE_LOG_DIR`, `SDE_GROUPS`
+**环境变量**：`SDE_CONFIG`, `SDE_LOG_DIR`, `SDE_GROUPS`,
+`SDE_GATE_GROUPS`（默认 `core`，失败标为 gate；其余组标 soft）、`SDE_TRADE_DATE`。
+
+结束时打印分组摘要（`group: OK|FAILED [gate|soft]`），便于区分「门禁挂了」与「东财挂了」。
 
 ---
 
