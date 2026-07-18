@@ -82,6 +82,14 @@ def build_eastmoney_headers(url: str) -> dict[str, str]:
     return headers
 
 
+def is_transport_fail_fast(exc: BaseException) -> bool:
+    """True for connect/timeout/protocol drops that retries will not fix overseas."""
+    return isinstance(
+        exc,
+        (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError),
+    )
+
+
 class EastMoneyClient:
     """HTTP client with automatic EastMoney auth headers."""
 
@@ -95,11 +103,14 @@ class EastMoneyClient:
         self.config = config
         self._last_request = 0.0
         proxies = None
-        if config is not None and getattr(config, "eastmoney_proxy", None):
-            # httpx <0.28 uses ``proxies``; single URL applies to http+https.
-            proxies = config.eastmoney_proxy
+        timeout = 15.0
+        if config is not None:
+            if getattr(config, "eastmoney_proxy", None):
+                # httpx <0.28 uses ``proxies``; single URL applies to http+https.
+                proxies = config.eastmoney_proxy
+            timeout = float(getattr(config, "eastmoney_timeout_sec", 15.0) or 15.0)
         self._client = httpx.Client(
-            timeout=30.0,
+            timeout=timeout,
             follow_redirects=True,
             proxies=proxies,
         )

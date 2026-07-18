@@ -78,6 +78,12 @@ def fetch_datacenter(
                 break
             except Exception as exc:
                 last_exc = exc
+                from stock_data_engine.adapters.eastmoney.em_auth import (
+                    is_transport_fail_fast,
+                )
+
+                if is_transport_fail_fast(exc):
+                    break
                 if attempt + 1 < max_retries:
                     time.sleep(retry_backoff_seconds * (attempt + 1))
         if last_exc is not None:

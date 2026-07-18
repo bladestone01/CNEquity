@@ -53,6 +53,10 @@ def _fetch_clist_page(
             return diff, total
         except Exception as exc:
             last_exc = exc
+            from stock_data_engine.adapters.eastmoney.em_auth import is_transport_fail_fast
+
+            if is_transport_fail_fast(exc):
+                break
             if attempt + 1 < max_retries:
                 time.sleep(retry_backoff_seconds * (attempt + 1))
     raise RuntimeError(f"EastMoney clist page {page} failed on {host}") from last_exc

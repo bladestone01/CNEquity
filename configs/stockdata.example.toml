@@ -39,6 +39,8 @@ standard = [
 [sources.eastmoney]
 enabled = true
 min_interval_seconds = 1.0
+# Per-request timeout (seconds). Connect/timeout/protocol errors do not retry.
+timeout_sec = 15
 # Optional: mainland HTTP(S) proxy for push2his kline (sector_bars backfill).
 # When unset, httpx still honors HTTPS_PROXY / HTTP_PROXY env vars.
 # proxy = "http://127.0.0.1:7890"

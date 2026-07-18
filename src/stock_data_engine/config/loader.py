@@ -56,6 +56,9 @@ class Config:
     # Optional HTTP(S) proxy for EastMoneyClient (e.g. mainland egress for push2his).
     # Env HTTPS_PROXY / HTTP_PROXY still work when this is unset.
     eastmoney_proxy: str | None = None
+    # Per-request timeout for EastMoneyClient (connect+read). Keep modest so
+    # overseas daily groups fail fast instead of 30s × max_retries hangs.
+    eastmoney_timeout_sec: float = 15.0
     universe_default: str = "all_a"
     daily_waves: list[WaveConfig] = field(default_factory=list)
     schedule_groups: dict[str, ScheduleGroup] = field(default_factory=dict)
@@ -152,6 +155,7 @@ def load_config(path: str | Path) -> Config:
     sources: dict[str, bool] = {}
     source_intervals: dict[str, float] = {}
     eastmoney_proxy: str | None = None
+    eastmoney_timeout_sec = 15.0
     for name, val in sources_raw.items():
         if isinstance(val, dict):
             sources[name] = bool(val.get("enabled", True))
@@ -159,6 +163,8 @@ def load_config(path: str | Path) -> Config:
                 source_intervals[name] = float(val["min_interval_seconds"])
             if name == "eastmoney" and val.get("proxy"):
                 eastmoney_proxy = str(val["proxy"]).strip() or None
+            if name == "eastmoney" and val.get("timeout_sec") is not None:
+                eastmoney_timeout_sec = float(val["timeout_sec"])
         else:
             sources[name] = bool(val)
 
@@ -223,6 +229,7 @@ def load_config(path: str | Path) -> Config:
         sources=sources,
         source_intervals=source_intervals,
         eastmoney_proxy=eastmoney_proxy,
+        eastmoney_timeout_sec=eastmoney_timeout_sec,
         universe_default=str(raw.get("universe", {}).get("default", "all_a")),
         daily_waves=daily_waves,
         schedule_groups=schedule_groups,
