@@ -139,11 +139,23 @@ def run():
 @run.command("daily")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option("--group", "group_name", default=None, help="Schedule group: core, capital, signals")
+@click.option(
+    "--trade-date",
+    "trade_date_str",
+    default=None,
+    help="As-of trade date YYYY-MM-DD (default: today). Use to catch up on weekends/holidays.",
+)
 @click.option("--backfill", is_flag=True)
-def run_daily(config_path: str, group_name: str | None, backfill: bool):
+def run_daily(
+    config_path: str,
+    group_name: str | None,
+    trade_date_str: str | None,
+    backfill: bool,
+):
     """Run daily ingestion job (Wave DAG or schedule group)."""
     cfg = _cfg(config_path)
     engine = JobEngine(cfg)
+    td = date.fromisoformat(trade_date_str) if trade_date_str else None
     try:
         if group_name:
             group = cfg.schedule_groups.get(group_name)
@@ -151,11 +163,12 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
                 raise click.ClickException(f"Unknown group: {group_name}")
             result = engine.run_job(
                 f"daily:{group_name}",
+                trade_date=td,
                 waves=[WaveConfig(name=f"group:{group_name}", parallel=False, steps=group.steps)],
                 backfill=backfill,
             )
         else:
-            result = engine.run_job("daily", backfill=backfill)
+            result = engine.run_job("daily", trade_date=td, backfill=backfill)
     except RunLockError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps({"run_id": result["run_id"], "status": result["status"]}, indent=2))
@@ -163,6 +176,100 @@ def run_daily(config_path: str, group_name: str | None, backfill: bool):
     # pipeline can detect it; a non-trading-day skip is a success (exit 0).
     if result["status"] not in ("success", "skipped_non_trading_day"):
         raise SystemExit(1)
+
+
+@run.command("catchup")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--trade-date",
+    "trade_date_str",
+    default=None,
+    help="Target trading day YYYY-MM-DD (default: latest trading day on/before today).",
+)
+@click.option(
+    "--core-only",
+    is_flag=True,
+    help="Skip market_breadth (gate bars/adj only).",
+)
+def run_catchup(config_path: str, trade_date_str: str | None, core_only: bool):
+    """Catch up Workbench gate datasets after a missed/weekend skip.
+
+    Runs ``daily:core`` for the target date, then ``market_breadth`` + ``compact``
+    (unless ``--core-only``). Does **not** pass ``--backfill`` (full CA scan is
+    fragile overseas). Already-fresh watermarks still re-run core steps; they are
+    incremental and cheap when up to date.
+    """
+    from stock_data_engine.steps.common import is_trading_day, list_trading_dates
+    from stock_data_engine.storage.state import StateStore
+
+    cfg = _cfg(config_path)
+    if trade_date_str:
+        td = date.fromisoformat(trade_date_str)
+        if not is_trading_day(cfg, td):
+            raise click.ClickException(f"{td.isoformat()} is not a trading day")
+    else:
+        # Walk back up to ~3 weeks for long holidays.
+        end = date.today()
+        start = date.fromordinal(end.toordinal() - 21)
+        days = list_trading_dates(cfg, start, end)
+        if not days:
+            raise click.ClickException("no trading day found in the last 21 calendar days")
+        td = days[-1]
+
+    state = StateStore(cfg.meta_root)
+    bars_wm = state.get_date("daily_bars")
+    click.echo(
+        json.dumps(
+            {
+                "trade_date": td.isoformat(),
+                "daily_bars_watermark": bars_wm.isoformat() if bars_wm else None,
+                "core_only": core_only,
+            },
+            indent=2,
+        )
+    )
+
+    engine = JobEngine(cfg)
+    group = cfg.schedule_groups.get("core")
+    if not group:
+        raise click.ClickException("schedule group 'core' missing from config")
+
+    try:
+        core = engine.run_job(
+            "daily:core",
+            trade_date=td,
+            waves=[WaveConfig(name="group:core", parallel=False, steps=group.steps)],
+            backfill=False,
+        )
+        results = {"core": {"run_id": core["run_id"], "status": core["status"]}}
+        if core["status"] not in ("success", "skipped_non_trading_day"):
+            click.echo(json.dumps(results, indent=2))
+            raise SystemExit(1)
+
+        if not core_only:
+            breadth = engine.run_job(
+                "daily:market_breadth",
+                trade_date=td,
+                waves=[
+                    WaveConfig(
+                        name="breadth",
+                        parallel=False,
+                        steps=["market_breadth", "compact"],
+                    )
+                ],
+                backfill=False,
+            )
+            results["market_breadth"] = {
+                "run_id": breadth["run_id"],
+                "status": breadth["status"],
+            }
+            if breadth["status"] not in ("success", "skipped_non_trading_day"):
+                click.echo(json.dumps(results, indent=2))
+                raise SystemExit(1)
+    except RunLockError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(json.dumps(results, indent=2))
 
 
 @cli.command()

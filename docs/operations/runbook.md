@@ -30,6 +30,8 @@ scripts/install_scheduler.sh
 - 生成 `~/Library/LaunchAgents/com.stockdataengine.daily.plist`
 - **每天本地 16:05** 触发（收盘后）
 - 非交易日自动跳过（退出 0）
+- **漏跑 / 周末补数**：`uv run sde run catchup`（门禁 core + breadth），或
+  `scripts/daily_pipeline.sh YYYY-MM-DD` / `SDE_TRADE_DATE=...`（全组定点）
 
 ```bash
 launchctl list | grep stockdataengine

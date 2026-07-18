@@ -12,8 +12,9 @@
 # as possible — but any failure makes the pipeline exit non-zero after the
 # health check reports it.
 #
-# Usage: scripts/daily_pipeline.sh
-# Env: SDE_CONFIG, SDE_LOG_DIR, SDE_GROUPS (space-separated override).
+# Usage: scripts/daily_pipeline.sh [YYYY-MM-DD]
+# Env: SDE_CONFIG, SDE_LOG_DIR, SDE_GROUPS (space-separated override),
+#      SDE_TRADE_DATE (same as optional CLI arg — catch up a prior session).
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +23,11 @@ CONFIG="${SDE_CONFIG:-$REPO_ROOT/configs/stockdata.toml}"
 LOG_DIR="${SDE_LOG_DIR:-$REPO_ROOT/data/stock-data-engine/logs}"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/daily-$(date +%Y%m%d).log"
+TRADE_DATE="${1:-${SDE_TRADE_DATE:-}}"
+DATE_ARGS=()
+if [[ -n "$TRADE_DATE" ]]; then
+  DATE_ARGS=(--trade-date "$TRADE_DATE")
+fi
 
 # Order mirrors configs/stockdata.toml [job.daily.groups] cadence
 # (core 16:00 → research 18:30). Sequential, not by wall-clock time.
@@ -30,12 +36,12 @@ GROUP_LIST="${SDE_GROUPS:-core capital signals fundamentals macro_risk research}
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 
-log "==== daily pipeline start $(date '+%Y-%m-%d %H:%M:%S') ===="
+log "==== daily pipeline start $(date '+%Y-%m-%d %H:%M:%S') trade_date=${TRADE_DATE:-today} ===="
 failed_groups=()
 
 for g in $GROUP_LIST; do
   log "--- group: $g ---"
-  if "$SDE" run daily --group "$g" --config "$CONFIG" >>"$LOG" 2>&1; then
+  if "$SDE" run daily --group "$g" --config "$CONFIG" "${DATE_ARGS[@]}" >>"$LOG" 2>&1; then
     log "group $g OK"
   else
     log "group $g FAILED (see $LOG)"

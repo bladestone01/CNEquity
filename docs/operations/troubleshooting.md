@@ -23,6 +23,30 @@
 4. 若 TDX 问题：`sde servers test`；换 `[tdx_protocol.hosts].standard`
 5. 若单数据集持续失败：`sde backfill <dataset>`（需支持 backfill）
 
+### 周末 / 漏跑后门禁落后（Workbench `gate: BLOCKED`）
+
+- **现象**：今天非交易日时 `sde run daily` → `skipped_non_trading_day`；`daily_bars`
+  水位停在上上个交易日；`wb data status` 门禁不过。
+- **处理**（补 Workbench 门禁所需：core + `market_breadth`）：
+
+  ```bash
+  uv run sde run catchup                      # 默认：最近一个交易日
+  uv run sde run catchup --trade-date 2026-07-17
+  # 或分步：
+  uv run sde run daily --group core --trade-date 2026-07-17
+  ```
+
+  全组补跑：`scripts/daily_pipeline.sh 2026-07-17`（或 `SDE_TRADE_DATE=...`）。
+  **不要**对漏跑日随便加 `--backfill`：东财 CA 全量扫描在海外常直接失败。
+
+### 云主机 / SOCKS 能开 ipinfo 但东财 Empty reply
+
+- **现象**：出口 IP 显示 CN，`curl`/`ssh -D` 访问 `push2his` 仍 `Empty reply` /
+  `Failure when receiving data from the peer`；同机 RDP 里直接 `curl` 有时也曾成功后被掐。
+- **原因**：经 SOCKS 时 TLS 仍在境外客户端握手；云 IP 也易被东财短时风控。
+- **处理**：在**本机进程**发起请求的大陆机器上跑回填（不要指望 Mac→云 SOCKS）；
+  探针失败就停，换宽带出口或等解封后再 `sector_bars --force`。
+
 ### sector_bars backfill 大量失败
 
 - **现象**：日志 `sector kline failed for BKxxxx on all push2his hosts`；`failed_sectors` 接近 991。
