@@ -34,9 +34,7 @@ def test_fetch_hot_rank_normalizes(monkeypatch):
         def __exit__(self, *a):
             pass
 
-    monkeypatch.setattr(
-        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
-    )
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM())
     df = fetch_hot_rank(date(2026, 7, 14), top_n=10)
     assert df.height == 1
     assert df["symbol"][0] == "002185.SZ"
@@ -71,9 +69,7 @@ def test_fetch_sector_bars_from_clist(monkeypatch):
         def __exit__(self, *a):
             pass
 
-    monkeypatch.setattr(
-        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
-    )
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM())
     df = fetch_sector_bars(date(2026, 7, 14))
     assert df.height >= 1
     row = df.filter(pl.col("sector_code") == "BK1630")
@@ -250,9 +246,7 @@ def test_fetch_news_headlines_filters_date(monkeypatch):
         def __exit__(self, *a):
             pass
 
-    monkeypatch.setattr(
-        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
-    )
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM())
     df = fetch_news_headlines(date(2026, 7, 14))
     assert df.height == 1
     assert df["news_id"][0] == "n1"

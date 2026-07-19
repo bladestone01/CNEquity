@@ -48,9 +48,7 @@ def _generate_seed_rows(start: date, end: date) -> list[tuple[str, bool]]:
 
 
 def _default_seed_path() -> Path:
-    return Path(
-        resources.files("ashare_lake.adapters.calendar") / "seeds" / "trading_calendar.csv"
-    )
+    return Path(resources.files("ashare_lake.adapters.calendar") / "seeds" / "trading_calendar.csv")
 
 
 def ensure_seed_csv(path: Path | None = None) -> Path:

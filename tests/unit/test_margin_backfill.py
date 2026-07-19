@@ -39,9 +39,7 @@ def _setup(monkeypatch, cfg: Config, *, empty_days: set[date] = frozenset()):
         return pl.DataFrame([_fake_row(d)])
 
     monkeypatch.setattr("ashare_lake.steps.capital.fetch_margin_trading", fake_fetch)
-    monkeypatch.setattr(
-        "ashare_lake.adapters.eastmoney.em_auth.EastMoneyClient", _DummyClient
-    )
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.em_auth.EastMoneyClient", _DummyClient)
     monkeypatch.setattr(cfg, "rate_limit", lambda source: None)
     return fetched
 

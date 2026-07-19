@@ -41,9 +41,7 @@ def _patch(monkeypatch, *, returns):
         written.append(df)
         return {"rows_read": df.height, "rows_written": df.height}
 
-    monkeypatch.setattr(
-        "ashare_lake.adapters.baostock.st_history.fetch_st_history", fake_fetch
-    )
+    monkeypatch.setattr("ashare_lake.adapters.baostock.st_history.fetch_st_history", fake_fetch)
     monkeypatch.setattr(reference, "write_fetched", fake_write)
     return written
 
@@ -75,9 +73,7 @@ def test_resume_skips_already_swept_symbols(tmp_path, monkeypatch):
         captured["symbols"] = symbols
         return pl.DataFrame(schema={"symbol": pl.Utf8}), []
 
-    monkeypatch.setattr(
-        "ashare_lake.adapters.baostock.st_history.fetch_st_history", fake_fetch
-    )
+    monkeypatch.setattr("ashare_lake.adapters.baostock.st_history.fetch_st_history", fake_fetch)
     result = _backfill_trading_status_st(cfg, date(2026, 7, 1), "run2")
     assert "already ST-backfilled" in result["note"]
     assert "symbols" not in captured  # fetch not even called

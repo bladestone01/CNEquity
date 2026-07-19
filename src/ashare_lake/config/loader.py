@@ -148,9 +148,7 @@ def load_config(path: str | Path) -> Config:
     with open(config_path, "rb") as f:
         raw = tomllib.load(f)
 
-    data_root = (
-        Path(raw.get("data", {}).get("root", "./data/ashare-lake")).expanduser().resolve()
-    )
+    data_root = Path(raw.get("data", {}).get("root", "./data/ashare-lake")).expanduser().resolve()
     orch = raw.get("orchestrator", {})
     tdx = raw.get("tdx_protocol", {})
     sources_raw = raw.get("sources", {})
