@@ -26,7 +26,9 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev]"
+        # structure/macro cover pandas+akshare used by unit tests; skip [tdx]
+        # (mootdx pins httpx<0.26 and conflicts with the default resolver).
+        run: pip install -e ".[dev,structure,macro,nlp,valuation]"
 
       - name: Lint
         run: |

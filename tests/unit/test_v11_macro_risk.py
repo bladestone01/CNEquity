@@ -86,7 +86,7 @@ def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
     # full monthly history over the network.
     from stock_data_engine.adapters.macro import indicators as macro_indicators
 
-    monkeypatch.setattr(macro_indicators, "_akshare_rows", lambda _td: [])
+    monkeypatch.setattr(macro_indicators, "_akshare_rows", lambda _td, config=None: [])
     client = FakeDatacenterClient(
         {
             "RPTA_WEB_TREASURYYIELD": [{"SOLAR_DATE": "2024-06-28", "EMM00166466": 2.25}],

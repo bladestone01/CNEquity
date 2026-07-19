@@ -1,7 +1,36 @@
+import sys
+import types
+
 import pytest
 
 from stock_data_engine.adapters.tdx_protocol import client as tdx
 from stock_data_engine.config import Config
+
+
+def _install_fake_mootdx(monkeypatch, *, factory=None, hosts=None):
+    """Provide a minimal mootdx stub so CI can run without the [tdx] extra."""
+    hosts = hosts or [("demo", "9.9.9.9", 7709), ("demo2", "8.8.8.8", 7709)]
+    if factory is None:
+
+        def factory(market, **kwargs):
+            return object()
+
+    consts = types.ModuleType("mootdx.consts")
+    consts.HQ_HOSTS = hosts
+    quotes = types.ModuleType("mootdx.quotes")
+
+    class Quotes:
+        @staticmethod
+        def factory(market, **kwargs):
+            return factory(market, **kwargs)
+
+    quotes.Quotes = Quotes
+    mootdx = types.ModuleType("mootdx")
+    mootdx.consts = consts
+    mootdx.quotes = quotes
+    monkeypatch.setitem(sys.modules, "mootdx", mootdx)
+    monkeypatch.setitem(sys.modules, "mootdx.consts", consts)
+    monkeypatch.setitem(sys.modules, "mootdx.quotes", quotes)
 
 
 def test_quotes_client_auto_binds_probed_server(monkeypatch):
@@ -14,7 +43,7 @@ def test_quotes_client_auto_binds_probed_server(monkeypatch):
 
     # auto mode probes a reachable+functional server instead of the slow,
     # flaky bestip scan; stub the probe so the test stays offline.
-    monkeypatch.setattr("mootdx.quotes.Quotes.factory", fake_factory)
+    _install_fake_mootdx(monkeypatch, factory=fake_factory)
     monkeypatch.setattr(
         tdx, "_pick_reachable_server", lambda config=None, timeout=10: ("1.2.3.4", 7709)
     )
@@ -39,7 +68,7 @@ def test_quotes_client_explicit_server(monkeypatch):
         seen.update(kwargs)
         return object()
 
-    monkeypatch.setattr("mootdx.quotes.Quotes.factory", fake_factory)
+    _install_fake_mootdx(monkeypatch, factory=fake_factory)
     cfg = Config(data_root="/tmp/data")
     cfg.tdx_servers = "119.147.212.81:7709"
     cfg.tdx_connect_timeout_sec = 15
@@ -51,7 +80,8 @@ def test_quotes_client_explicit_server(monkeypatch):
     assert "bestip" not in seen
 
 
-def test_quotes_client_rejects_invalid_servers():
+def test_quotes_client_rejects_invalid_servers(monkeypatch):
+    _install_fake_mootdx(monkeypatch)
     cfg = Config(data_root="/tmp/data")
     cfg.tdx_servers = "not-a-server"
     with pytest.raises(tdx.TdxSourceError, match="invalid"):
@@ -59,6 +89,7 @@ def test_quotes_client_rejects_invalid_servers():
 
 
 def test_candidate_servers_prefers_config_pool(monkeypatch):
+    _install_fake_mootdx(monkeypatch)
     cfg = Config(data_root="/tmp/data")
     cfg.tdx_host_pool = ["1.1.1.1:7709", "2.2.2.2:7709"]
     candidates = tdx._candidate_servers(cfg)
@@ -70,6 +101,7 @@ def test_candidate_servers_prefers_config_pool(monkeypatch):
 
 
 def test_pick_reachable_server_returns_first_functional(monkeypatch):
+    _install_fake_mootdx(monkeypatch)
     cfg = Config(data_root="/tmp/data")
     cfg.tdx_host_pool = ["9.9.9.9:7709", "8.8.8.8:7709"]
 
@@ -85,6 +117,7 @@ def test_pick_reachable_server_returns_first_functional(monkeypatch):
 
 
 def test_pick_reachable_server_raises_when_none_live(monkeypatch):
+    _install_fake_mootdx(monkeypatch)
     monkeypatch.setattr(tdx, "_probe", lambda h, p, t: False)
     monkeypatch.setattr(tdx, "_candidate_servers", lambda config: [("9.9.9.9", 7709)])
     with pytest.raises(tdx.TdxSourceError, match="no TDX server responded"):

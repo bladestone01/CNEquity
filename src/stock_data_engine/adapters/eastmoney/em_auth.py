@@ -109,18 +109,23 @@ class EastMoneyClient:
         else:
             self.min_interval = float(min_interval)
         self._last_request = 0.0
-        proxies = None
+        proxy = None
         timeout = 15.0
         if config is not None:
             if getattr(config, "eastmoney_proxy", None):
-                # httpx <0.28 uses ``proxies``; single URL applies to http+https.
-                proxies = config.eastmoney_proxy
+                proxy = config.eastmoney_proxy
             timeout = float(getattr(config, "eastmoney_timeout_sec", 15.0) or 15.0)
-        self._client = httpx.Client(
-            timeout=timeout,
-            follow_redirects=True,
-            proxies=proxies,
-        )
+        # httpx>=0.28 removed ``proxies``; mootdx-pinned httpx<0.28 still needs it.
+        client_kwargs: dict = {"timeout": timeout, "follow_redirects": True}
+        if proxy is not None:
+            client_kwargs["proxy"] = proxy
+        try:
+            self._client = httpx.Client(**client_kwargs)
+        except TypeError:
+            if proxy is not None:
+                client_kwargs.pop("proxy", None)
+                client_kwargs["proxies"] = proxy
+            self._client = httpx.Client(**client_kwargs)
 
     def _throttle(self) -> None:
         if self.config is not None:

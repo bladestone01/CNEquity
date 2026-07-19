@@ -37,7 +37,7 @@ def _patch(monkeypatch, *, returns):
         df, failed = returns
         return df, failed
 
-    def fake_write(config, run_id, dataset, df, *, source):
+    def fake_write(config, run_id, dataset, df, *, source, batch_id="batch-0"):
         written.append(df)
         return {"rows_read": df.height, "rows_written": df.height}
 

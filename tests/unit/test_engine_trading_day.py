@@ -47,10 +47,16 @@ def test_run_job_backfill_does_not_skip_weekend(tmp_path, monkeypatch):
 
     cfg = Config(data_root=tmp_path / "data")
     init_data_layout(cfg)
+    # Weekend job date must still run; margin backfill walks trading days only.
     _seed_calendar(
         cfg,
-        [{"trade_date": date(2024, 6, 29), "is_trading": False}],
+        [
+            {"trade_date": date(2024, 6, 28), "is_trading": True},
+            {"trade_date": date(2024, 6, 29), "is_trading": False},
+        ],
     )
+    cfg._backfill_start = date(2024, 6, 28)
+    cfg._backfill_end = date(2024, 6, 29)
     calls: list[date] = []
 
     def fake_fetch(trade_date, **kwargs):
@@ -75,7 +81,7 @@ def test_run_job_backfill_does_not_skip_weekend(tmp_path, monkeypatch):
         backfill=True,
     )
     assert result["status"] == "success"
-    assert calls == [date(2024, 6, 29)]
+    assert calls == [date(2024, 6, 28)]
 
 
 def test_run_init_not_skipped_on_weekend(tmp_path):
