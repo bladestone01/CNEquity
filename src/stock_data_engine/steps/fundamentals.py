@@ -75,11 +75,19 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
     rows_read = 0
     rows_written = 0
     all_failed: list[str] = []
+    aborted_reason: str | None = None
     for offset in range(0, len(todo), _VALUATION_BACKFILL_CHUNK):
         batch = todo[offset : offset + _VALUATION_BACKFILL_CHUNK]
-        df, failed = fetch_valuation_history(
-            batch, _VALUATION_BACKFILL_START, trade_date, config=config
-        )
+        try:
+            df, failed = fetch_valuation_history(
+                batch, _VALUATION_BACKFILL_START, trade_date, config=config
+            )
+        except RuntimeError as exc:
+            # Ban / login death mid-sweep: keep prior chunks, surface remainder.
+            aborted_reason = str(exc)
+            all_failed.extend(batch)
+            all_failed.extend(todo[offset + len(batch) :])
+            break
         all_failed.extend(failed)
         if not df.is_empty():
             # Unique part name per chunk — write_simple's default batch-0 would
@@ -101,15 +109,18 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
         "orphan_purge": purge_summary,
         "symbols_todo": len(todo),
     }
-    if all_failed:
-        result["failed_symbols"] = len(all_failed)
+    if aborted_reason:
+        result["aborted"] = aborted_reason
+    if all_failed or aborted_reason:
+        result["failed_symbols"] = len(set(all_failed))
         finding = {
             "dataset": "valuation_metrics",
             "severity": "warning",
             "code": "baostock_backfill_incomplete",
             "message": (
-                f"{len(all_failed)}/{len(todo)} symbols failed baostock backfill "
-                f"(throttled/dropped); re-run `sde backfill valuation_metrics` to resume."
+                f"baostock backfill incomplete"
+                f"{f' ({aborted_reason})' if aborted_reason else ''}; "
+                f"wrote {rows_written} rows. Re-run `sde backfill valuation_metrics` to resume."
             ),
         }
         result.setdefault("context_updates", {})["audit_findings"] = [finding]
