@@ -19,6 +19,10 @@ from stock_data_engine.query.on_demand import OnDemandService
 from stock_data_engine.query.views import ensure_duckdb_views
 from stock_data_engine.steps.finalize import step_compact
 from stock_data_engine.storage.layout import init_data_layout
+from stock_data_engine.storage.source_snapshots import (
+    DEFAULT_SNAPSHOT_RETENTION_DAYS,
+    clean_source_snapshots,
+)
 from stock_data_engine.storage.staging_cleanup import clean_staging
 
 USER_CONFIG = "configs/stockdata.toml"
@@ -496,11 +500,17 @@ def compact(config_path: str, run_id: str | None):
 @cli.command()
 @click.argument("name", default="adj_factors")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-def derive(name: str, config_path: str):
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Rewrite all adj_factors partitions (default: append-only since watermark).",
+)
+def derive(name: str, config_path: str, full: bool):
     """Derive computed datasets."""
     cfg = _cfg(config_path)
     if name == "adj_factors":
-        result = compute_adj_factors(cfg)
+        result = compute_adj_factors(cfg, full=full)
         click.echo(f"Derived {name}: {result.rows} rows")
         if result.failed:
             click.echo(
@@ -676,6 +686,13 @@ def retry(config_path: str, run_id: str):
     help="Delete manifest-less orphan staging older than this many days.",
 )
 @click.option(
+    "--snapshot-retention-days",
+    default=DEFAULT_SNAPSHOT_RETENTION_DAYS,
+    show_default=True,
+    help="Delete meta/source_snapshots run_id dirs older than this many days "
+    "(always keeps the newest per dataset/source).",
+)
+@click.option(
     "--force",
     is_flag=True,
     help=(
@@ -699,6 +716,7 @@ def clean(
     config_path: str,
     dry_run: bool,
     orphan_retention_days: int,
+    snapshot_retention_days: int,
     force: bool,
     reconcile_runs: bool,
     reconcile_after_seconds: int,
@@ -706,7 +724,7 @@ def clean(
     """Remove staging for successful compacted runs and aged orphans.
 
     Failed/incomplete runs keep their staging (it is resumable state) unless
-    --force is given.
+    --force is given. Also prunes aged ``meta/source_snapshots`` run_id dirs.
     """
     cfg = _cfg(config_path)
     reconciled: dict[str, int] | None = None
@@ -721,6 +739,11 @@ def clean(
         orphan_retention_days=orphan_retention_days,
         force=force,
     )
+    snaps = clean_source_snapshots(
+        cfg.meta_root,
+        retention_days=snapshot_retention_days,
+        dry_run=dry_run,
+    )
     click.echo(
         json.dumps(
             {
@@ -730,7 +753,12 @@ def clean(
                 "orphan_run_ids": result.orphan_run_ids,
                 "force_removed_run_ids": result.force_removed_run_ids,
                 "skipped_run_ids": result.skipped_run_ids,
-                "bytes_freed": result.bytes_freed,
+                "bytes_freed": result.bytes_freed + snaps.bytes_freed,
+                "source_snapshots": {
+                    "removed_run_dirs": snaps.removed_run_dirs,
+                    "kept_run_dirs": snaps.kept_run_dirs,
+                    "bytes_freed": snaps.bytes_freed,
+                },
             },
             indent=2,
         )

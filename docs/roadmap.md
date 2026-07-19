@@ -38,7 +38,7 @@
 | 步骤 | 内容 | 状态 |
 |------|------|------|
 | 诊断 | 对断裂股分类归因：Sina 源序列断裂 vs 引擎对齐/缓存缺陷 vs 老股除权事件缺失 | 🟢 完成：真断裂 0；残留 36 为 corporate_actions 缺事件（下沉为 corp_actions 补全，见下） |
-| 修复 | 落地 [ADR-0004](adr/0004-store-hfq-derive-qfq-at-query.md) 的 append-only 增量 merge；对源断裂股备源/事件法重算 | ⏳ adj_factors 侧无断裂需修；append-only 增量 merge 仍为独立优化项（性能/可重算，非纠错） |
+| 修复 | 落地 [ADR-0004](adr/0004-store-hfq-derive-qfq-at-query.md) 的 append-only 增量 merge；对源断裂股备源/事件法重算 | 🟢 append-only 已落地（2026-07-19）：水位后新分区只追加；除权日/新股/显式 refresh 按 symbol merge；`sde derive adj_factors --full` 全量重写 |
 | 防线 🟢 已落地（2026-07-12） | `quality/cross_checks.py::adj_factor_reconciliation_findings` 接入 audit：按 `adj_close=close×factor`（实测逐字节相等）重建复权收益，与 corporate_actions 对账。**error** `adj_close_discontinuity`（\|adj_ret\|>0.35 且与 raw 背离、**且相邻交易日**——移植 Workbench guard 并改进：相邻门控豁免停牌复牌重定价，引擎自此为权威且比下游更准）；**warning** `missing_corporate_action`（复权连续但 raw 越限价跳动却无除权事件）。13 单测。实跑全湖：**0 error + 36 warning**（`sde audit --full` 就断裂而言 HEALTHY） | 🟢 |
 
 **验收达成**：全市场 bar-to-bar |adj_ret| 极值扫描无「无事件解释的假收益」（0 真断裂）；Workbench quality guard 剔除数实测已 →1（且该 1 为假阳，引擎侧已正确豁免，Workbench guard 可后续放宽/退役）。✅ **遗留**：36 条缺登记除权 → 转 corporate_actions 源补全（并入 A1 诊断的「老股除权事件缺失」，root cause 在 corp_actions 源，非 adj_factors）。
@@ -96,8 +96,8 @@ Workbench M3（`wb daily`）上线后，引擎从「研究工具」变成「生�
 
 | 任务 | 出处 |
 |------|------|
-| 消费层 lazy scan + 分区裁剪下推 | R-25 |
-| source_snapshots 保留期清理；`read_latest` 增量化 | PRD §6.4 遗留 |
+| 消费层 lazy scan + 分区裁剪下推 | R-25（部分：adj_factors bar 加载、trading_calendar 日期裁剪；audit 全量 lazy 仍待） |
+| source_snapshots 保留期清理；`read_latest` 增量化 | 🟢 已落地（2026-07-19）：`read_latest` 只读最新 run_id；`sde clean --snapshot-retention-days` 默认 14 天（保留每源最新一份） |
 | `data_version` 真实语义（源接口/契约版本，而非恒 "v1"） | PRD §6.3 |
 | trading_calendar 种子年度扩展流程化（当前 2027 到期） | audit calendar 前视警告 |
 | 宏观（macro_indicators 月度指标补齐 R-22 备注）、舆情深化 | PRD §4.4 P2 |

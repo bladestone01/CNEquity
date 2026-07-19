@@ -43,16 +43,40 @@ def incremental_window(config: Config, dataset: str, trade_date: date) -> date:
     return trade_date - timedelta(days=INCREMENTAL_LOOKBACK_DAYS)
 
 
-def _load_trading_calendar_df(config: Config) -> pl.DataFrame | None:
+def _load_trading_calendar_df(
+    config: Config,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> pl.DataFrame | None:
+    """Load trading_calendar, preferring a lazy hive scan with optional date prune."""
     curated = config.curated_root / "trading_calendar"
-    if curated.exists():
+    if curated.exists() and any(curated.rglob("*.parquet")):
+        try:
+            from stock_data_engine.query.parquet_scan import collect_parquet_root
+
+            return collect_parquet_root(
+                curated, partition_col="trade_date", start=start, end=end
+            )
+        except FileNotFoundError:
+            pass
         files = list(curated.glob("**/*.parquet"))
         if files:
-            return pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+            lf = pl.scan_parquet([str(f) for f in files])
+            if start is not None:
+                lf = lf.filter(pl.col("trade_date") >= start)
+            if end is not None:
+                lf = lf.filter(pl.col("trade_date") <= end)
+            return lf.collect()
     staging = list(config.staging_root.glob("trading_calendar/**/*.parquet"))
     if staging:
         latest = max(staging, key=lambda p: p.stat().st_mtime)
-        return pl.read_parquet(latest)
+        df = pl.read_parquet(latest)
+        if start is not None:
+            df = df.filter(pl.col("trade_date") >= start)
+        if end is not None:
+            df = df.filter(pl.col("trade_date") <= end)
+        return df
     return None
 
 
@@ -60,14 +84,10 @@ def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
     """Trading days in [start, end] from curated/staging calendar, else Mon–Fri."""
     if start > end:
         return []
-    cal = _load_trading_calendar_df(config)
+    cal = _load_trading_calendar_df(config, start=start, end=end)
     if cal is not None and not cal.is_empty() and "trade_date" in cal.columns:
         out = (
-            cal.filter(
-                pl.col("is_trading")
-                & (pl.col("trade_date") >= start)
-                & (pl.col("trade_date") <= end)
-            )["trade_date"]
+            cal.filter(pl.col("is_trading"))["trade_date"]
             .sort()
             .to_list()
         )
@@ -90,7 +110,7 @@ def incremental_trade_dates(config: Config, dataset: str, trade_date: date) -> l
 
 def is_trading_day(config: Config, trade_date: date) -> bool:
     """Return whether *trade_date* is a trading day per curated calendar or seed."""
-    cal = _load_trading_calendar_df(config)
+    cal = _load_trading_calendar_df(config, start=trade_date, end=trade_date)
     if cal is not None and not cal.is_empty():
         row = cal.filter(pl.col("trade_date") == trade_date)
         if not row.is_empty():

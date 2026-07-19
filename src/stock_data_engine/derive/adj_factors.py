@@ -32,6 +32,9 @@ FAIL_RATIO_THRESHOLD = 0.05
 # return divergence.
 MAX_FACTOR_STEP_RATIO = 20.0
 
+_EMPTY_BAR_DATES = pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
+_ADJ_PK = ["symbol", "trade_date", "adjust_type"]
+
 
 class AdjFactorsFetchError(RuntimeError):
     """Raised when adj factor fetch fails and no cache is available."""
@@ -75,17 +78,70 @@ def _is_cdr(symbol: str) -> bool:
     return is_cdr_symbol(info.code, info.exchange)
 
 
-def _load_daily_bar_dates(config: Config) -> pl.DataFrame:
+def _adj_factors_watermark(config: Config) -> date | None:
+    """Latest trade_date partition already present under derived/adj_factors."""
+    # Lazy import: query.reader imports STORED_ADJUST_TYPE from this module.
+    from stock_data_engine.query.parquet_scan import list_hive_partition_dates
+
+    dates = list_hive_partition_dates(config.derived_root / "adj_factors", "trade_date")
+    return dates[-1] if dates else None
+
+
+def _load_daily_bar_dates(
+    config: Config,
+    *,
+    start: date | None = None,
+    symbols: list[str] | None = None,
+) -> pl.DataFrame:
+    """Load symbol×trade_date pairs from daily_bars (lazy hive scan when possible)."""
+    # Lazy import: query.reader imports STORED_ADJUST_TYPE from this module.
+    from stock_data_engine.query.parquet_scan import collect_parquet_root
+
     bars_path = config.curated_root / "daily_bars"
-    if not bars_path.exists():
-        return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
-
-    bar_files = list(bars_path.glob("**/*.parquet"))
-    if not bar_files:
-        return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
-
-    bars = pl.concat([pl.read_parquet(f) for f in bar_files], how="diagonal_relaxed")
+    try:
+        bars = collect_parquet_root(
+            bars_path,
+            partition_col="trade_date",
+            start=start,
+            symbols=symbols,
+        )
+    except FileNotFoundError:
+        return _EMPTY_BAR_DATES.clone()
+    if bars.is_empty() or not {"symbol", "trade_date"}.issubset(bars.columns):
+        return _EMPTY_BAR_DATES.clone()
     return bars.select(["symbol", "trade_date"]).unique().sort(["symbol", "trade_date"])
+
+
+def _bars_for_derive(
+    config: Config,
+    *,
+    watermark: date | None,
+    refresh_set: set[str],
+    full: bool,
+) -> pl.DataFrame:
+    """Select bar dates needed for this derive run (append-only when possible)."""
+    if full or watermark is None:
+        return _load_daily_bar_dates(config)
+
+    frames: list[pl.DataFrame] = []
+    # New trading days since the last derived partition.
+    incremental = _load_daily_bar_dates(config, start=watermark).filter(
+        pl.col("trade_date") > watermark
+    )
+    if not incremental.is_empty():
+        frames.append(incremental)
+    # Ex-date / new-listing / explicit rebackfill: realign full history for those symbols.
+    if refresh_set:
+        refreshed = _load_daily_bar_dates(config, symbols=sorted(refresh_set))
+        if not refreshed.is_empty():
+            frames.append(refreshed)
+    if not frames:
+        return _EMPTY_BAR_DATES.clone()
+    return (
+        pl.concat(frames, how="diagonal_relaxed")
+        .unique(subset=["symbol", "trade_date"], keep="last")
+        .sort(["symbol", "trade_date"])
+    )
 
 
 def _align_factors_to_bars(
@@ -314,16 +370,45 @@ def _process_symbol_adj(
             client.close()
 
 
+def _write_adj_partitions(
+    config: Config,
+    out: pl.DataFrame,
+    *,
+    replace: bool,
+) -> int:
+    """Persist aligned factors. Append-only merges into existing partitions unless *replace*."""
+    total = 0
+    for key, group in out.partition_by("trade_date", as_dict=True).items():
+        td = key[0] if isinstance(key, tuple) else key
+        td_str = td.isoformat() if isinstance(td, date) else str(td)
+        out_dir = config.derived_root / "adj_factors" / f"trade_date={td_str}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "part-0.parquet"
+        if replace or not path.exists():
+            write_parquet_atomic(path, group, compression="zstd")
+        else:
+            existing = pl.read_parquet(path)
+            merged = pl.concat([existing, group], how="diagonal_relaxed").unique(
+                subset=_ADJ_PK, keep="last"
+            )
+            write_parquet_atomic(path, merged, compression="zstd")
+        total += group.height
+    return total
+
+
 def compute_adj_factors(
     config: Config,
     adjust_type: str | None = None,
     *,
     refresh_symbols: list[str] | None = None,
+    full: bool = False,
 ) -> AdjFactorsResult:
-    bars = _load_daily_bar_dates(config)
-    if bars.is_empty():
-        return AdjFactorsResult(0, 0, [], [])
+    """Derive hfq adj_factors (ADR-0004).
 
+    Default path is append-only: only new trade_date partitions since the derived
+    watermark are written, plus full-history merge for ex-date / new-listing /
+    explicit refresh symbols. Pass ``full=True`` to rewrite every partition.
+    """
     adjust_types = [adjust_type] if adjust_type else list(config.adj_factors_types)
     skipped = [t for t in adjust_types if t != STORED_ADJUST_TYPE]
     if skipped:
@@ -334,10 +419,47 @@ def compute_adj_factors(
             STORED_ADJUST_TYPE,
         )
     adjust_types = [STORED_ADJUST_TYPE]
-    latest_trade_date = bars["trade_date"].max()
+
+    watermark = None if full else _adj_factors_watermark(config)
+    # Event refresh uses the latest bar date in the lake (not just this run's slice).
+    from stock_data_engine.query.parquet_scan import list_hive_partition_dates
+
+    latest_bar_date = None
+    try:
+        all_dates = list_hive_partition_dates(
+            config.curated_root / "daily_bars", "trade_date"
+        )
+        latest_bar_date = all_dates[-1] if all_dates else None
+    except OSError:
+        latest_bar_date = None
+
     refresh_set = set(refresh_symbols or [])
-    if isinstance(latest_trade_date, date):
-        refresh_set |= _event_refresh_symbols(config, latest_trade_date)
+    if isinstance(latest_bar_date, date):
+        refresh_set |= _event_refresh_symbols(config, latest_bar_date)
+
+    bars = _bars_for_derive(
+        config, watermark=watermark, refresh_set=refresh_set, full=full
+    )
+    if bars.is_empty():
+        logger.info(
+            "adj_factors: nothing to derive (watermark=%s, refresh=%d, full=%s)",
+            watermark,
+            len(refresh_set),
+            full,
+        )
+        return AdjFactorsResult(0, 0, [], [])
+
+    replace = full or watermark is None
+    mode = "full-replace" if replace else "append-only"
+    logger.info(
+        "adj_factors: %s watermark=%s symbols=%d dates=%d refresh=%d",
+        mode,
+        watermark,
+        bars["symbol"].n_unique(),
+        bars["trade_date"].n_unique(),
+        len(refresh_set),
+    )
+
     workers = max(1, min(config.workers, 16))
 
     tasks: list[tuple[str, str, pl.DataFrame, bool]] = []
@@ -401,18 +523,10 @@ def compute_adj_factors(
         return AdjFactorsResult(0, len(tasks), failed, findings)
 
     out = pl.concat(frames, how="diagonal_relaxed").unique(
-        subset=["symbol", "trade_date", "adjust_type"], keep="last"
+        subset=_ADJ_PK, keep="last"
     )
     findings.extend(_factor_continuity_findings(out))
     out = with_provenance(out, source=config.adj_factors_source, data_version="v1")
 
-    total = 0
-    for key, group in out.partition_by("trade_date", as_dict=True).items():
-        td = key[0] if isinstance(key, tuple) else key
-        td_str = td.isoformat() if isinstance(td, date) else str(td)
-        out_dir = config.derived_root / "adj_factors" / f"trade_date={td_str}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / "part-0.parquet"
-        write_parquet_atomic(path, group, compression="zstd")
-        total += group.height
+    total = _write_adj_partitions(config, out, replace=replace)
     return AdjFactorsResult(total, len(tasks), failed, findings)

@@ -293,6 +293,87 @@ def test_compute_adj_factors_refreshes_corporate_action_symbol(adj_config, monke
     assert calls == ["600519.SH"]
 
 
+def test_compute_adj_factors_append_only_skips_existing_partitions(adj_config, monkeypatch):
+    """With a derived watermark, only new trade_dates are written (R-20 / ADR-0004)."""
+    _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28), factor=0.5)
+    # Seed derived watermark at 2024-06-28.
+    seed = compute_adj_factors(adj_config)
+    assert seed.rows == 1
+    old_path = (
+        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
+    )
+    old_bytes = old_path.read_bytes()
+
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 29)], "factor": [0.8]})
+
+    monkeypatch.setattr(
+        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+    assert calls == []  # cache reused; no event
+    assert result.rows == 1  # only the new date
+    assert old_path.read_bytes() == old_bytes  # prior partition untouched
+    new_path = (
+        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-29" / "part-0.parquet"
+    )
+    assert pl.read_parquet(new_path)["factor"][0] == 0.5
+
+
+def test_compute_adj_factors_event_refresh_merges_into_existing(adj_config, monkeypatch):
+    """Ex-date refresh rewrites the affected symbol via partition merge, not full replace."""
+    _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28), factor=0.5)
+    _write_bar(adj_config, "000001.SZ", date(2024, 6, 28))
+    _write_factor_cache(adj_config, "000001.SZ", date(2024, 6, 28), factor=1.0)
+    compute_adj_factors(adj_config)
+
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
+    _write_bar(adj_config, "000001.SZ", date(2024, 6, 29))
+    ca_dir = adj_config.curated_root / "corporate_actions" / "ex_date=2024-06-29"
+    ca_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "ex_date": [date(2024, 6, 29)],
+            "action_type": ["dividend"],
+        }
+    ).write_parquet(ca_dir / "part-0.parquet")
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        assert symbol == "600519.SH"
+        return pl.DataFrame(
+            {
+                "trade_date": [date(2024, 6, 28), date(2024, 6, 29)],
+                "factor": [0.5, 0.8],
+            }
+        )
+
+    monkeypatch.setattr(
+        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+    # New date for both symbols + refreshed history for 600519 on 06-28.
+    assert result.rows >= 2
+    d28 = pl.read_parquet(
+        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
+    )
+    # Untouched peer symbol retained via merge.
+    assert set(d28["symbol"].to_list()) == {"600519.SH", "000001.SZ"}
+    d29 = pl.read_parquet(
+        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-29" / "part-0.parquet"
+    )
+    mouti = d29.filter(pl.col("symbol") == "600519.SH")["factor"][0]
+    assert mouti == 0.8
+
+
 def test_compute_adj_factors_refreshes_new_listing(adj_config, monkeypatch):
     _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28))
     _write_factor_cache(adj_config, "000001.SZ", date(2024, 6, 28))
