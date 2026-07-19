@@ -12,7 +12,7 @@
 |------|------|
 | `schemas.py` | Polars schema、`PRIMARY_KEYS`、`validate_dataframe()`、`with_provenance()` |
 | `datasets.py` | `DatasetSpec` 注册表 `DATASETS` |
-| `symbols.py` | `parse_symbol()`, `is_all_a_symbol()`, CDR 排除 |
+| `symbols.py` | `parse_symbol()`, `is_all_a_symbol()`, CDR/ETF 分类 |
 | `rate_limit.py` | 文件锁 + JSON 时间戳的跨进程 `RateLimiter` |
 | `sentiment.py` | 公告关键词 + 可选 SnowNLP 打分 |
 
@@ -84,10 +84,12 @@ is_stale(dataset, mark, anchor) -> bool
 ## symbols.py
 
 - 格式：`600519.SH`、`000001.SZ`、`920001.BJ`
-- `is_all_a_symbol()`：沪深 A 股，排除 CDR（689 段）
-- `parse_symbol()` → `(code, exchange)`
+- `is_all_a_symbol()`：沪深 A 股前缀白名单（`60/68/00/30/92`）；不含 ETF 前缀
+- `is_cdr_symbol()`：SH `689` 段存托凭证
+- `is_etf_symbol()`：场内 ETF/LOF（SH `51/52/56/58`，SZ `15/16`）
+- instruments 抓取含股票 + CDR + ETF；`parse_symbol()` → `(code, exchange)`
 
-Universe 过滤在 `query/universe.py` 使用本模块规则。
+Universe 过滤在 `query/universe.py` 使用本模块规则：`all_a` 排除 CDR 与 ETF。
 
 ---
 

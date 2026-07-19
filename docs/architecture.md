@@ -140,6 +140,7 @@ load(dataset, *, start, end,
 - financial_statement_items 已有 2016Q1–2026Q1 共 41 个报告期历史，且带 `announce_date` PIT 轴。
 - R-15/R-23（分组运行不 compact、audit 先于 compact）已修复；分组模式可正常落 curated。
 - CDR（689 段）已移出 `all_a`，不再污染 universe。
+- 场内 ETF/LOF 可进 instruments + daily_bars（`asset_type=etf`），同样排除出 `all_a`。
 
 ---
 

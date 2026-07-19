@@ -9,6 +9,7 @@ import polars as pl
 from stock_data_engine.config import Config
 from stock_data_engine.domain.symbols import (
     CDR_PREFIXES,
+    ETF_PREFIXES,
     EXCLUDED_PREFIXES,
     PREFIX_WHITELIST,
 )
@@ -31,6 +32,11 @@ def _all_a_symbol_expr(symbol_col: str = "symbol") -> pl.Expr:
     # the lake but are not part of the all_a selection universe.
     for prefix in CDR_PREFIXES:
         excluded = excluded | ((exchange == "SH") & code.str.starts_with(prefix))
+    # ETFs/LOFs stay in instruments + daily_bars for UI/quotes, but never enter
+    # the all_a research universe (PREFIX_WHITELIST also omits them).
+    for exch, prefixes in ETF_PREFIXES.items():
+        for prefix in prefixes:
+            excluded = excluded | ((exchange == exch) & code.str.starts_with(prefix))
     allowed = pl.lit(False)
     for exch, prefixes in PREFIX_WHITELIST.items():
         for prefix in prefixes:

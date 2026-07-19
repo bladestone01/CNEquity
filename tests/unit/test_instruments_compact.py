@@ -202,6 +202,24 @@ def test_tradable_universe_excludes_cdr(tmp_path):
     assert set(out["symbol"].to_list()) == {"600519.SH"}
 
 
+def test_tradable_universe_excludes_etf(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    curated_path = cfg.curated_root / "instruments" / "part-merged.parquet"
+    curated_path.parent.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            _instrument("600519.SH", list_date=date(2001, 8, 27)),
+            _instrument("510300.SH", list_date=date(2012, 5, 28)),
+            _instrument("159915.SZ", list_date=date(2011, 12, 9)),
+        ]
+    ).write_parquet(curated_path)
+
+    out = tradable_symbols_on_date(cfg, date(2024, 6, 28))
+    assert out is not None
+    assert set(out["symbol"].to_list()) == {"600519.SH"}
+
+
 def test_tdx_instrument_frame_marks_cdr_asset_type():
     from stock_data_engine.adapters.tdx_protocol.client import _filter_instrument_frame
 
@@ -209,6 +227,27 @@ def test_tdx_instrument_frame_marks_cdr_asset_type():
     out = _filter_instrument_frame(pdf, "SH")
     types = dict(zip(out["symbol"].to_list(), out["asset_type"].to_list(), strict=True))
     assert types == {"600519.SH": "stock", "689009.SH": "cdr"}
+
+
+def test_tdx_instrument_frame_marks_etf_asset_type():
+    from stock_data_engine.adapters.tdx_protocol.client import _filter_instrument_frame
+
+    sh_out = _filter_instrument_frame(
+        pl.DataFrame({"code": ["600519", "510300", "588000"], "name": ["Moutai", "HS300", "STAR50"]}),
+        "SH",
+    )
+    sz_out = _filter_instrument_frame(
+        pl.DataFrame({"code": ["000001", "159915"], "name": ["PingAn", "ChiNext"]}),
+        "SZ",
+    )
+    sh_types = dict(zip(sh_out["symbol"].to_list(), sh_out["asset_type"].to_list(), strict=True))
+    sz_types = dict(zip(sz_out["symbol"].to_list(), sz_out["asset_type"].to_list(), strict=True))
+    assert sh_types == {
+        "600519.SH": "stock",
+        "510300.SH": "etf",
+        "588000.SH": "etf",
+    }
+    assert sz_types == {"000001.SZ": "stock", "159915.SZ": "etf"}
 
 
 def test_enrich_instrument_list_dates_fills_nulls(tmp_path, monkeypatch):

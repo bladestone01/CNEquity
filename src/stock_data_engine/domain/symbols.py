@@ -16,6 +16,13 @@ EXCLUDED_PREFIXES = tuple(f"{p}" for p in range(81, 90))
 # them (see query/universe.py).
 CDR_PREFIXES = ("689",)
 
+# Exchange-traded funds / LOFs. Kept in instruments + daily_bars for UI/quotes,
+# but NOT in PREFIX_WHITELIST — all_a research universe excludes them.
+ETF_PREFIXES = {
+    "SH": ("51", "52", "56", "58"),
+    "SZ": ("15", "16"),
+}
+
 
 @dataclass(frozen=True)
 class SymbolInfo:
@@ -48,6 +55,12 @@ def is_all_a_symbol(code: str, exchange: str) -> bool:
 def is_cdr_symbol(code: str, exchange: str) -> bool:
     """Whether *code* is a CDR (Chinese Depositary Receipt, SH 689xxx segment)."""
     return exchange.upper() == "SH" and any(code.startswith(p) for p in CDR_PREFIXES)
+
+
+def is_etf_symbol(code: str, exchange: str) -> bool:
+    """Whether *code* is an exchange-traded fund / LOF on SH/SZ."""
+    prefixes = ETF_PREFIXES.get(exchange.upper(), ())
+    return any(code.startswith(p) for p in prefixes)
 
 
 def normalize_market_code(code: str, market: str) -> tuple[str, str]:

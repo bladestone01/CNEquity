@@ -21,9 +21,11 @@ from stock_data_engine.config import Config
 from stock_data_engine.domain.rate_limit import RateLimitSpec, wait_spec
 from stock_data_engine.domain.schemas import MOCK_SOURCE, with_provenance
 from stock_data_engine.domain.symbols import (
+    ETF_PREFIXES,
     PREFIX_WHITELIST,
     format_symbol,
     is_cdr_symbol,
+    is_etf_symbol,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,11 +210,19 @@ def quotes_client_factory(config: Config | None = None):
 _TDX_STOCK_MARKETS = ((1, "SH"), (0, "SZ"))
 
 
+def _asset_type_for(code: str, exch: str) -> str:
+    if is_cdr_symbol(code, exch):
+        return "cdr"
+    if is_etf_symbol(code, exch):
+        return "etf"
+    return "stock"
+
+
 def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
     code_col = "code" if "code" in pdf.columns else pdf.columns[0]
     name_col = "name" if "name" in pdf.columns else pdf.columns[1]
     codes = pdf[code_col].cast(pl.Utf8).str.zfill(6)
-    prefixes = PREFIX_WHITELIST.get(exch.upper(), ())
+    prefixes = PREFIX_WHITELIST.get(exch.upper(), ()) + ETF_PREFIXES.get(exch.upper(), ())
     mask = pl.lit(False)
     for prefix in prefixes:
         mask = mask | codes.str.starts_with(prefix)
@@ -239,7 +249,7 @@ def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
                 "symbol": format_symbol(code, exch),
                 "name": str(row[name_col]),
                 "exchange": exch,
-                "asset_type": "cdr" if is_cdr_symbol(code, exch) else "stock",
+                "asset_type": _asset_type_for(code, exch),
                 "list_date": None,
                 "delist_date": None,
                 "prev_symbol": None,

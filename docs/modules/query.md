@@ -67,8 +67,10 @@ DataFrame 列：`dataset`, `has_data`, `files`, `rows`, `watermark`, `coverage_s
 `all_a` 过滤步骤：
 
 1. join instruments（上市/退市）
-2. 排除 CDR
+2. 排除 CDR（689）与场内 ETF/LOF（SH `51/52/56/58`，SZ `15/16`）
 3. left join trading_status；有行时剔除 ST/suspended
+
+ETF 仍可留在 instruments / daily_bars（UI/报价），但不进研究宇宙。
 
 ---
 
