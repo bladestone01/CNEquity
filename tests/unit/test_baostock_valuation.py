@@ -24,7 +24,9 @@ def test_to_baostock_symbol():
 class _FakeResultSet:
     """Mimics baostock's cursor-style result set."""
 
-    def __init__(self, rows: list[list[str]], error_code: str = "0", fields: list[str] | None = None):
+    def __init__(
+        self, rows: list[list[str]], error_code: str = "0", fields: list[str] | None = None
+    ):
         self.error_code = error_code
         self.error_msg = "" if error_code == "0" else "boom"
         self._rows = rows
@@ -90,7 +92,16 @@ def test_fetch_valuation_history_maps_market_cap():
         {
             "sh.600519": [
                 ["2016-01-04", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"],
-                ["2016-01-05", "sh.600519", "210.0", "", "", "12.6", "", "8.1"],  # suspend → null mv
+                [
+                    "2016-01-05",
+                    "sh.600519",
+                    "210.0",
+                    "",
+                    "",
+                    "12.6",
+                    "",
+                    "8.1",
+                ],  # suspend → null mv
             ],
             "sz.000001": [
                 ["2016-01-04", "sz.000001", "10.0", "500000.0", "2.0", "7.0", "0.9", "1.5"],
@@ -98,10 +109,34 @@ def test_fetch_valuation_history_maps_market_cap():
         },
         profit_q4={
             ("sh.600519", 2015): [
-                ["sh.600519", "2016-03-01", "2015-12-31", "", "", "", "", "", "", "1000000000", "800000000"]
+                [
+                    "sh.600519",
+                    "2016-03-01",
+                    "2015-12-31",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "1000000000",
+                    "800000000",
+                ]
             ],
             ("sz.000001", 2015): [
-                ["sz.000001", "2016-03-01", "2015-12-31", "", "", "", "", "", "", "500000000", "500000000"]
+                [
+                    "sz.000001",
+                    "2016-03-01",
+                    "2015-12-31",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "500000000",
+                    "500000000",
+                ]
             ],
         },
     )
@@ -171,8 +206,11 @@ def test_fetch_valuation_history_fails_loud_on_login_error():
     bs = _FakeBaostock({}, login_ok=False)
     with pytest.raises(RuntimeError, match="login failed"):
         fetch_valuation_history(
-            ["600519.SH"], date(2016, 1, 1), date(2016, 1, 5),
-            bs=bs, sleep=lambda _s: None,
+            ["600519.SH"],
+            date(2016, 1, 1),
+            date(2016, 1, 5),
+            bs=bs,
+            sleep=lambda _s: None,
         )
 
 

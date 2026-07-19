@@ -86,7 +86,9 @@ def _backfill_index_constituents(config: Config, trade_date: date, run_id: str) 
     end = getattr(config, "_backfill_end", None) or trade_date
     have = _existing_as_of_dates(config, "index_constituents")
     # Prefer rebalance-month ends so as_of aligns with CNI spell boundaries.
-    todo = [d for d in _month_end_trading_days(config, start, min(end, trade_date)) if d not in have]
+    todo = [
+        d for d in _month_end_trading_days(config, start, min(end, trade_date)) if d not in have
+    ]
     if not todo:
         return {"rows_read": 0, "rows_written": 0, "note": "all CNI as_of months already present"}
 
@@ -152,9 +154,7 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
     # only skip dates that already contain sw rows.
     sw_have = _existing_sw_as_of_dates(config)
     todo = [
-        d
-        for d in _month_end_trading_days(config, start, min(end, trade_date))
-        if d not in sw_have
+        d for d in _month_end_trading_days(config, start, min(end, trade_date)) if d not in sw_have
     ]
     if not todo:
         return {

@@ -18,16 +18,38 @@ def test_derive_suspension_from_bar_gaps(tmp_path):
     # calendar: 3 trading days
     days = [date(2024, 6, 26), date(2024, 6, 27), date(2024, 6, 28)]
     for d in days:
-        _write(root, "trading_calendar", "trade_date", d.isoformat(), pl.DataFrame({
-            "trade_date": [d], "is_trading": [True],
-            "source": ["seed"], "data_version": ["v1"],
-            "fetched_at": ["2024-06-28T00:00:00+00:00"],
-        }))
+        _write(
+            root,
+            "trading_calendar",
+            "trade_date",
+            d.isoformat(),
+            pl.DataFrame(
+                {
+                    "trade_date": [d],
+                    "is_trading": [True],
+                    "source": ["seed"],
+                    "data_version": ["v1"],
+                    "fetched_at": ["2024-06-28T00:00:00+00:00"],
+                }
+            ),
+        )
+
     # bars: 600519 trades all 3 days; 000001 missing the middle day (suspended)
     def bar(sym, d):
-        return {"symbol": sym, "trade_date": d, "open": 1.0, "high": 1.0, "low": 1.0,
-                "close": 1.0, "volume": 1, "amount": 1.0, "source": "tdx_protocol",
-                "data_version": "v1", "fetched_at": "2024-06-28T00:00:00+00:00"}
+        return {
+            "symbol": sym,
+            "trade_date": d,
+            "open": 1.0,
+            "high": 1.0,
+            "low": 1.0,
+            "close": 1.0,
+            "volume": 1,
+            "amount": 1.0,
+            "source": "tdx_protocol",
+            "data_version": "v1",
+            "fetched_at": "2024-06-28T00:00:00+00:00",
+        }
+
     for d in days:
         rows = [bar("600519.SH", d)]
         if d != date(2024, 6, 27):
@@ -35,19 +57,27 @@ def test_derive_suspension_from_bar_gaps(tmp_path):
         _write(root, "daily_bars", "trade_date", d.isoformat(), pl.DataFrame(rows))
     # instruments: both listed before window, not delisted
     (root / "curated" / "instruments").mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({
-        "symbol": ["600519.SH", "000001.SZ"], "name": ["A", "B"],
-        "exchange": ["SH", "SZ"], "asset_type": ["stock", "stock"],
-        "list_date": [date(2010, 1, 1), date(2010, 1, 1)],
-        "delist_date": [None, None], "prev_symbol": [None, None],
-        "source": ["tdx", "tdx"], "data_version": ["v1", "v1"],
-        "fetched_at": ["2024-06-28T00:00:00+00:00"] * 2,
-    }).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "name": ["A", "B"],
+            "exchange": ["SH", "SZ"],
+            "asset_type": ["stock", "stock"],
+            "list_date": [date(2010, 1, 1), date(2010, 1, 1)],
+            "delist_date": [None, None],
+            "prev_symbol": [None, None],
+            "source": ["tdx", "tdx"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": ["2024-06-28T00:00:00+00:00"] * 2,
+        }
+    ).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
 
     n = derive_suspension_history(cfg)
     assert n == 1  # only 000001 on 2024-06-27
 
-    ts = pl.read_parquet(root / "curated" / "trading_status" / "trade_date=2024-06-27" / "part-merged.parquet")
+    ts = pl.read_parquet(
+        root / "curated" / "trading_status" / "trade_date=2024-06-27" / "part-merged.parquet"
+    )
     susp = ts.filter(pl.col("status") == "suspended")
     assert susp.height == 1
     assert susp["symbol"][0] == "000001.SZ"

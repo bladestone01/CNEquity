@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
-import pytest
 
 from stock_data_engine.adapters.eastmoney.common import report_period_from_date
 from stock_data_engine.adapters.eastmoney.earnings_disclosure import (

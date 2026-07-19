@@ -126,7 +126,9 @@ def spot_check_symbol(
 def load_universe_smoke(cfg, start: str, end: str) -> tuple[int, int, list[str]]:
     raw = load("daily_bars", start=start, end=end, config=cfg)
     filtered = load("daily_bars", start=start, end=end, universe="all_a", config=cfg)
-    removed = sorted(set(raw.get_column("symbol").to_list()) - set(filtered.get_column("symbol").to_list()))
+    removed = sorted(
+        set(raw.get_column("symbol").to_list()) - set(filtered.get_column("symbol").to_list())
+    )
     return raw.height, filtered.height, removed
 
 
@@ -188,7 +190,9 @@ def cmd_check(cfg, compare_path: Path | None, start: str, end: str, symbol: str)
         if raw_n == 0:
             errors.append("load smoke: no rows in window")
         elif raw_n == filt_n and counts.get("trading_status", 0) > 0:
-            print("  WARN: universe filter removed nothing — verify trading_status has ST/suspended rows")
+            print(
+                "  WARN: universe filter removed nothing — verify trading_status has ST/suspended rows"
+            )
     except Exception as exc:
         errors.append(f"load smoke failed: {exc}")
         print(f"  FAIL: {exc}")
@@ -214,8 +218,14 @@ def cmd_check(cfg, compare_path: Path | None, start: str, end: str, symbol: str)
             and "close" in hfq.columns
             and (hfq["adj_close"] == hfq["close"]).all()
         ):
-            print("  WARN: adj_close == close (adj_factors likely missing; run sde derive adj_factors)")
-            print(hfq.select([c for c in ("symbol", "trade_date", "close", "adj_close") if c in hfq.columns]).head(5))
+            print(
+                "  WARN: adj_close == close (adj_factors likely missing; run sde derive adj_factors)"
+            )
+            print(
+                hfq.select(
+                    [c for c in ("symbol", "trade_date", "close", "adj_close") if c in hfq.columns]
+                ).head(5)
+            )
         else:
             cols = [c for c in ("symbol", "trade_date", "close", "adj_close") if c in hfq.columns]
             print(hfq.select(cols).head(5))

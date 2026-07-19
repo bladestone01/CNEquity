@@ -69,8 +69,7 @@ def build_sector_routing(
             "tdx_name": str(r["name"]).strip().replace("\x00", ""),
         }
         for r in tdx_indices
-        if str(r.get("tdx_code", "")).strip()
-        and not _TDX_META.search(str(r.get("name", "")))
+        if str(r.get("tdx_code", "")).strip() and not _TDX_META.search(str(r.get("name", "")))
     ]
 
     exact_map: dict[str, list[str]] = {}
@@ -240,7 +239,9 @@ def derive_sector_routing(config: Config, *, as_of: date | None = None) -> dict:
         notes.append(f"em_live_failed:{exc}")
         em_boards = _latest_em_boards_from_lake(config)
         if not em_boards:
-            raise RuntimeError("sector_routing: EastMoney clist failed and no lake snapshot") from exc
+            raise RuntimeError(
+                "sector_routing: EastMoney clist failed and no lake snapshot"
+            ) from exc
 
     try:
         tdx_indices = _fetch_tdx_indices_live()

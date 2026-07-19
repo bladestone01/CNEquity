@@ -51,12 +51,40 @@ def test_paginated_fetch_stops_when_page_older_than_start():
 
 
 def test_paginated_fetch_merges_pages_when_window_spans_pages():
-    page1 = [{"datetime": date(2024, 6, 27), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1}] + [
-        {"datetime": date(2024, 6, 26), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1}
+    page1 = [
+        {
+            "datetime": date(2024, 6, 27),
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "amount": 1,
+        }
+    ] + [
+        {
+            "datetime": date(2024, 6, 26),
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "amount": 1,
+        }
     ] * 799
     pages = [
         page1,
-        [{"datetime": date(2024, 6, 25), "open": 2, "high": 2, "low": 2, "close": 2, "volume": 2, "amount": 2}],
+        [
+            {
+                "datetime": date(2024, 6, 25),
+                "open": 2,
+                "high": 2,
+                "low": 2,
+                "close": 2,
+                "volume": 2,
+                "amount": 2,
+            }
+        ],
         [],
     ]
     client = FakeClient(pages)
@@ -81,10 +109,26 @@ class FailOnSecondPageClient:
 
 def test_backfill_mid_page_failure_raises():
     page1 = [
-        {"datetime": date(2024, 6, 27), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1}
+        {
+            "datetime": date(2024, 6, 27),
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "amount": 1,
+        }
     ] * 800
     page2 = [
-        {"datetime": date(2016, 1, 4), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1}
+        {
+            "datetime": date(2016, 1, 4),
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "amount": 1,
+        }
     ]
     client = FailOnSecondPageClient([page1, page2])
     with pytest.raises(TdxBarsPaginationError, match="start=800"):
@@ -95,11 +139,35 @@ def test_backfill_mid_page_failure_raises():
 
 def test_incremental_mid_page_failure_returns_partial():
     page1 = [
-        {"datetime": date(2024, 6, 27), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1},
-        {"datetime": date(2024, 6, 26), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1},
+        {
+            "datetime": date(2024, 6, 27),
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "amount": 1,
+        },
+        {
+            "datetime": date(2024, 6, 26),
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "amount": 1,
+        },
     ] * 400
     page2 = [
-        {"datetime": date(2024, 6, 25), "open": 2, "high": 2, "low": 2, "close": 2, "volume": 2, "amount": 2}
+        {
+            "datetime": date(2024, 6, 25),
+            "open": 2,
+            "high": 2,
+            "low": 2,
+            "close": 2,
+            "volume": 2,
+            "amount": 2,
+        }
     ]
     client = FailOnSecondPageClient([page1, page2])
     rows = fetch_bars_paginated(

@@ -43,9 +43,7 @@ def purge_valuation_orphan_symbols(config: Config) -> dict:
     if not files:
         return {"orphan_symbols": [], "partitions_rewritten": 0, "rows_removed": 0}
 
-    val_syms = set(
-        pl.scan_parquet(files).select("symbol").unique().collect()["symbol"].to_list()
-    )
+    val_syms = set(pl.scan_parquet(files).select("symbol").unique().collect()["symbol"].to_list())
     orphans = sorted(val_syms - bar_universe)
     if not orphans:
         return {"orphan_symbols": [], "partitions_rewritten": 0, "rows_removed": 0}

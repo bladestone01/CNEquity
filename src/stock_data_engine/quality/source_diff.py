@@ -145,7 +145,9 @@ def diff_dataset(
     if primary.height > sample_limit:
         primary = (
             primary.with_columns(
-                pl.concat_str([pl.col(k).cast(pl.Utf8) for k in join_keys]).hash(seed=0).alias("_sample_key")
+                pl.concat_str([pl.col(k).cast(pl.Utf8) for k in join_keys])
+                .hash(seed=0)
+                .alias("_sample_key")
             )
             .sort("_sample_key")
             .head(sample_limit)

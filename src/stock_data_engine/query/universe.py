@@ -87,9 +87,12 @@ def coverage_start_date(
     if not root.exists():
         return None
     try:
-        return scan_parquet_root(root, partition_col=date_col).select(
-            pl.col(date_col).min()
-        ).collect().item()
+        return (
+            scan_parquet_root(root, partition_col=date_col)
+            .select(pl.col(date_col).min())
+            .collect()
+            .item()
+        )
     except FileNotFoundError:
         return None
 
@@ -141,12 +144,8 @@ def tradable_symbols_on_date(
 
     out = (
         instruments.filter(_all_a_symbol_expr())
-        .filter(
-            pl.col("list_date").is_null() | (pl.col("list_date") <= trade_date)
-        )
-        .filter(
-            pl.col("delist_date").is_null() | (pl.col("delist_date") >= trade_date)
-        )
+        .filter(pl.col("list_date").is_null() | (pl.col("list_date") <= trade_date))
+        .filter(pl.col("delist_date").is_null() | (pl.col("delist_date") >= trade_date))
         .select("symbol")
     )
     if out.is_empty():
@@ -156,9 +155,9 @@ def tradable_symbols_on_date(
     if status.is_empty():
         return out
 
-    bad = status.filter(
-        (~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES))
-    )["symbol"]
+    bad = status.filter((~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES)))[
+        "symbol"
+    ]
     if not bad.is_empty():
         out = out.filter(~pl.col("symbol").is_in(bad))
     return out
@@ -189,9 +188,7 @@ def apply_universe_filter(
     df = df.join(inst, on="symbol", how="left")
     df = df.filter(
         pl.col("list_date").is_null() | (pl.col("list_date") <= pl.col(date_col))
-    ).filter(
-        pl.col("delist_date").is_null() | (pl.col("delist_date") >= pl.col(date_col))
-    )
+    ).filter(pl.col("delist_date").is_null() | (pl.col("delist_date") >= pl.col(date_col)))
     if not valid_symbols.is_empty():
         df = df.filter(pl.col("symbol").is_in(valid_symbols.to_list()))
 
@@ -207,9 +204,7 @@ def apply_universe_filter(
         return df.drop(["list_date", "delist_date"], strict=False)
 
     bad = (
-        status.filter(
-            (~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES))
-        )
+        status.filter((~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES)))
         .select(["symbol", pl.col("trade_date").alias(date_col)])
         .collect()
     )

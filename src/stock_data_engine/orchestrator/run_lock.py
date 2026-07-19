@@ -29,8 +29,7 @@ def run_lock(meta_root: Path, run_id: str, *, blocking: bool = False) -> Iterato
             fcntl.flock(lock_f, flags)
         except BlockingIOError as exc:
             raise RunLockError(
-                f"Run {run_id} is locked by another process; wait for it to finish "
-                "before retrying."
+                f"Run {run_id} is locked by another process; wait for it to finish before retrying."
             ) from exc
         try:
             yield

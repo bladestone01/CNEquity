@@ -31,8 +31,14 @@ def test_completes_normally_without_tripping_the_watchdog():
 
     fired = []
     rows, failed = fetch_per_symbol(
-        ["600000.SH", "600001.SH"], date(2020, 1, 1), date(2020, 12, 31), fetch,
-        bs=bs, sleep=lambda _s: None, deadline=5.0, on_deadline=lambda: fired.append(1),
+        ["600000.SH", "600001.SH"],
+        date(2020, 1, 1),
+        date(2020, 12, 31),
+        fetch,
+        bs=bs,
+        sleep=lambda _s: None,
+        deadline=5.0,
+        on_deadline=lambda: fired.append(1),
     )
     assert failed == []
     assert {r["symbol"] for r in rows} == {"600000.SH", "600001.SH"}
@@ -90,8 +96,14 @@ def test_mid_sweep_login_failure_returns_partial(monkeypatch):
         unblock.set()
 
     rows, failed = fetch_per_symbol(
-        ["600000.SH"], date(2020, 1, 1), date(2020, 12, 31), stalled_fetch,
-        bs=bs, sleep=lambda _s: None, deadline=0.05, on_deadline=on_deadline,
+        ["600000.SH"],
+        date(2020, 1, 1),
+        date(2020, 12, 31),
+        stalled_fetch,
+        bs=bs,
+        sleep=lambda _s: None,
+        deadline=0.05,
+        on_deadline=on_deadline,
     )
     assert calls["deadline"] >= 1  # watchdog fired on the stall
     assert calls["fetch"] == 3  # retried the full _MAX_RETRIES

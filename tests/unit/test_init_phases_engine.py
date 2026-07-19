@@ -90,7 +90,13 @@ def test_retry_runs_missing_init_steps(cfg):
     manifest.finish_run(run_id, "success")
 
     batches = manifest.get_batches_for_run(run_id)
-    assert missing_steps(phases, batches) == ["index_bars", "trading_status", "compact", "derive_adj_factors", "audit"]
+    assert missing_steps(phases, batches) == [
+        "index_bars",
+        "trading_status",
+        "compact",
+        "derive_adj_factors",
+        "audit",
+    ]
     assert phases_never_started(phases, batches) == ["phase3_index_and_status", "phase4_finalize"]
 
 
@@ -114,7 +120,9 @@ def test_init_blocks_new_run_when_incomplete_exists(cfg, monkeypatch):
     from stock_data_engine.cli.main import cli
 
     cfg_path = cfg.data_root.parent / "stockdata.toml"
-    cfg_path.write_text(f'[data]\nroot = "{cfg.data_root}"\n[job.init.phases]\nnames = {json_phases()}')
+    cfg_path.write_text(
+        f'[data]\nroot = "{cfg.data_root}"\n[job.init.phases]\nnames = {json_phases()}'
+    )
 
     runner = CliRunner()
     result = runner.invoke(cli, ["init", "--config", str(cfg_path)])

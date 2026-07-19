@@ -109,7 +109,9 @@ def fetch_fund_flow(trade_date: date, *, client: EastMoneyClient | None = None) 
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
-def fetch_margin_trading(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
+def fetch_margin_trading(
+    trade_date: date, *, client: EastMoneyClient | None = None
+) -> pl.DataFrame:
     owns = client is None
     if client is None:
         client = EastMoneyClient()
@@ -207,7 +209,9 @@ def fetch_northbound_holdings(
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
-def fetch_northbound_flows(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
+def fetch_northbound_flows(
+    trade_date: date, *, client: EastMoneyClient | None = None
+) -> pl.DataFrame:
     owns = client is None
     if client is None:
         client = EastMoneyClient()

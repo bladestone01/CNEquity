@@ -115,9 +115,7 @@ def _headlines_sentiment(config: Config, trade_date: date) -> pl.DataFrame:
             pl.lit(trade_date).alias("trade_date"),
             pl.lit(_HEADLINES_CHANNEL).alias("score_channel"),
         )
-        .select(
-            ["symbol", "trade_date", "score_channel", "sentiment_score", "headline_count"]
-        )
+        .select(["symbol", "trade_date", "score_channel", "sentiment_score", "headline_count"])
     )
 
 
@@ -199,14 +197,11 @@ def _stock_news_sentiment(config: Config, trade_date: date) -> pl.DataFrame:
     try:
         from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 
-        client = EastMoneyClient(
-            min_interval=config.source_intervals.get("eastmoney", 1.0)
-        )
+        client = EastMoneyClient(min_interval=config.source_intervals.get("eastmoney", 1.0))
         for sym in symbols:
             if consecutive_failures >= _HTTP_FAIL_BREAKER:
                 logger.warning(
-                    "stock_news_nlp: aborting after %d consecutive failures "
-                    "(%d/%d symbols done)",
+                    "stock_news_nlp: aborting after %d consecutive failures (%d/%d symbols done)",
                     consecutive_failures,
                     len(rows),
                     len(symbols),

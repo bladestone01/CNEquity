@@ -65,7 +65,9 @@ def test_emits_only_traded_st_days():
             )
         }
     )
-    df, failed = fetch_st_history(["000017.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None)
+    df, failed = fetch_st_history(
+        ["000017.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
 
     assert bs.logged_out is True
     assert failed == []
@@ -82,7 +84,9 @@ def test_emits_only_traded_st_days():
 
 def test_never_st_symbol_is_legit_empty_not_failure():
     bs = _FakeBaostock({"sz.000001": _rows("sz.000001", [("2020-01-02", "1", "0")])})
-    df, failed = fetch_st_history(["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None)
+    df, failed = fetch_st_history(
+        ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
     assert failed == []
     assert df.is_empty()
 
@@ -93,8 +97,11 @@ def test_reports_failed_symbols_fail_loud():
         error_codes={"sh.600145": "10002"},
     )
     df, failed = fetch_st_history(
-        ["000017.SZ", "600145.SH"], date(2020, 1, 1), date(2020, 12, 31),
-        bs=bs, sleep=lambda _s: None,
+        ["000017.SZ", "600145.SH"],
+        date(2020, 1, 1),
+        date(2020, 12, 31),
+        bs=bs,
+        sleep=lambda _s: None,
     )
     assert df.height == 1
     assert failed == ["600145.SH"]
@@ -105,8 +112,11 @@ def test_fails_loud_on_login_error():
     bs = _FakeBaostock({}, login_ok=False)
     with pytest.raises(RuntimeError, match="login failed"):
         fetch_st_history(
-            ["000017.SZ"], date(2020, 1, 1), date(2020, 12, 31),
-            bs=bs, sleep=lambda _s: None,
+            ["000017.SZ"],
+            date(2020, 1, 1),
+            date(2020, 12, 31),
+            bs=bs,
+            sleep=lambda _s: None,
         )
 
 
@@ -131,8 +141,11 @@ def test_stalled_socket_is_retried_then_reported_failed():
         stall_codes={"sh.600145"},
     )
     df, failed = fetch_st_history(
-        ["000017.SZ", "600145.SH"], date(2020, 1, 1), date(2020, 12, 31),
-        bs=bs, sleep=lambda _s: None,
+        ["000017.SZ", "600145.SH"],
+        date(2020, 1, 1),
+        date(2020, 12, 31),
+        bs=bs,
+        sleep=lambda _s: None,
     )
     assert df.height == 1
     assert failed == ["600145.SH"]

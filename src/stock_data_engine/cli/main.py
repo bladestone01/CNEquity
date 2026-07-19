@@ -632,9 +632,7 @@ def status(config_path: str, show_datasets: bool):
             return "STALE" if is_stale(row["dataset"], mark, anchor) else "fresh"
 
         df = df.with_columns(
-            pl_mod.Series(
-                "freshness", [_freshness(r) for r in df.iter_rows(named=True)]
-            )
+            pl_mod.Series("freshness", [_freshness(r) for r in df.iter_rows(named=True)])
         )
         click.echo(f"last trading day: {anchor.isoformat()}")
         with pl_mod.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
@@ -779,12 +777,7 @@ def catalog(config_path: str):
                 # lazy count(*) resolves from parquet metadata without
                 # decoding data pages — cheap even on a 10-year lake.
                 rows = (
-                    int(
-                        pl.scan_parquet([str(f) for f in files])
-                        .select(pl.len())
-                        .collect()
-                        .item()
-                    )
+                    int(pl.scan_parquet([str(f) for f in files]).select(pl.len()).collect().item())
                     if files
                     else 0
                 )

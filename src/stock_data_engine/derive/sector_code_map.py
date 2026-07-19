@@ -63,7 +63,9 @@ def _latest_bars(config: Config) -> pl.DataFrame:
     )
 
 
-def _latest_member_boards(config: Config, dataset: str, code_col: str, name_col: str) -> pl.DataFrame:
+def _latest_member_boards(
+    config: Config, dataset: str, code_col: str, name_col: str
+) -> pl.DataFrame:
     root = config.curated_root / dataset
     if not dataset_has_parquet(root):
         return pl.DataFrame()
@@ -162,12 +164,10 @@ def build_sector_code_map(
     }
     if not df.is_empty():
         summary["match_type_counts"] = {
-            r["match_type"]: r["len"]
-            for r in df.group_by("match_type").len().iter_rows(named=True)
+            r["match_type"]: r["len"] for r in df.group_by("match_type").len().iter_rows(named=True)
         }
         summary["board_type_counts"] = {
-            r["board_type"]: r["len"]
-            for r in df.group_by("board_type").len().iter_rows(named=True)
+            r["board_type"]: r["len"] for r in df.group_by("board_type").len().iter_rows(named=True)
         }
     return df, summary
 
@@ -176,14 +176,10 @@ def derive_sector_code_map(config: Config, *, as_of: date | None = None) -> dict
     """Build and persist ``meta/sector_code_map.parquet`` from curated lake only."""
     bars = _latest_bars(config)
     if bars.is_empty():
-        raise RuntimeError(
-            "sector_code_map: curated/sector_bars empty — run research daily first"
-        )
+        raise RuntimeError("sector_code_map: curated/sector_bars empty — run research daily first")
     as_of = as_of or bars["trade_date"].max()
     concept = _latest_member_boards(config, "sector_members", "sector_code", "sector_name")
-    industry = _latest_member_boards(
-        config, "industry_members", "industry_code", "industry_name"
-    )
+    industry = _latest_member_boards(config, "industry_members", "industry_code", "industry_name")
     df, summary = build_sector_code_map(bars, concept, industry, as_of=as_of)
     if df.is_empty():
         raise RuntimeError("sector_code_map: empty map")

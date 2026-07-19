@@ -38,9 +38,7 @@ def _setup(monkeypatch, cfg: Config, *, empty_days: set[date] = frozenset()):
             return pl.DataFrame()
         return pl.DataFrame([_fake_row(d)])
 
-    monkeypatch.setattr(
-        "stock_data_engine.steps.capital.fetch_margin_trading", fake_fetch
-    )
+    monkeypatch.setattr("stock_data_engine.steps.capital.fetch_margin_trading", fake_fetch)
     monkeypatch.setattr(
         "stock_data_engine.adapters.eastmoney.em_auth.EastMoneyClient", _DummyClient
     )

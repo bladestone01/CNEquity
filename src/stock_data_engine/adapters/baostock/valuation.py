@@ -96,7 +96,7 @@ def _year_end_total_shares(bs, symbol: str, start: date, end: date) -> list[tupl
         fields = list(getattr(rs, "fields", []) or [])
         while rs.next():
             row = rs.get_row_data()
-            data = dict(zip(fields, row)) if fields else {}
+            data = dict(zip(fields, row, strict=False)) if fields else {}
             if not data and len(row) >= 11:
                 # Offline fakes may omit .fields; positional fallback per baostock order.
                 data = {
@@ -116,9 +116,7 @@ def _year_end_total_shares(bs, symbol: str, start: date, end: date) -> list[tupl
     return out
 
 
-def _asof_total_share(
-    trade: date, share_points: list[tuple[date, float]]
-) -> float | None:
+def _asof_total_share(trade: date, share_points: list[tuple[date, float]]) -> float | None:
     """Latest totalShare with ``stat_date <= trade`` (forward-filled from Q4)."""
     chosen: float | None = None
     for stat, shares in share_points:

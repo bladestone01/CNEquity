@@ -43,9 +43,7 @@ def test_coverage_flags_missing_trading_day(tmp_path):
     days = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5)]
     _write_calendar(cfg.data_root, [(d, True) for d in days])
     # Bar missing on the interior day 2024-06-04.
-    _write_index_bars(
-        cfg.data_root, [("000300.SH", days[0]), ("000300.SH", days[2])]
-    )
+    _write_index_bars(cfg.data_root, [("000300.SH", days[0]), ("000300.SH", days[2])])
 
     findings = _index_bars_coverage_findings(cfg, date(2024, 6, 5))
     assert len(findings) == 1
@@ -66,8 +64,11 @@ def test_coverage_flags_orphan_bar_on_non_trading_day(tmp_path):
     # Bar exists on 2024-06-04 which the calendar marks non-trading.
     _write_index_bars(
         cfg.data_root,
-        [("000300.SH", date(2024, 6, 3)), ("000300.SH", date(2024, 6, 4)),
-         ("000300.SH", date(2024, 6, 5))],
+        [
+            ("000300.SH", date(2024, 6, 3)),
+            ("000300.SH", date(2024, 6, 4)),
+            ("000300.SH", date(2024, 6, 5)),
+        ],
     )
 
     findings = _index_bars_coverage_findings(cfg, date(2024, 6, 5))

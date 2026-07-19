@@ -92,9 +92,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     return result
 
 
-@register_step(
-    "earnings_disclosure_schedule", group="fundamentals", depends_on=["instruments"]
-)
+@register_step("earnings_disclosure_schedule", group="fundamentals", depends_on=["instruments"])
 def step_earnings_disclosure_schedule(
     config: Config, trade_date: date, run_id: str, context: dict
 ) -> dict:

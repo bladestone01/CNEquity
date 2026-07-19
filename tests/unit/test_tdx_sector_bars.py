@@ -7,9 +7,9 @@ import polars as pl
 import pytest
 
 from stock_data_engine.adapters.tdx_protocol.sector_bars import (
+    _rows_with_change_pct,
     fetch_sector_index_bars,
     fetch_sector_index_bars_batch,
-    _rows_with_change_pct,
 )
 from stock_data_engine.config import Config
 
@@ -88,14 +88,18 @@ def test_fetch_sector_index_bars_pagination(tmp_path):
         }
     ]
 
-    with patch(
-        "stock_data_engine.adapters.tdx_protocol.sector_bars.fetch_bars_paginated",
-        return_value=fake,
-    ), patch(
-        "stock_data_engine.adapters.tdx_protocol.sector_bars._quotes_client",
-        return_value=MagicMock(),
-    ), patch(
-        "stock_data_engine.adapters.tdx_protocol.sector_bars.close_quotes_client",
+    with (
+        patch(
+            "stock_data_engine.adapters.tdx_protocol.sector_bars.fetch_bars_paginated",
+            return_value=fake,
+        ),
+        patch(
+            "stock_data_engine.adapters.tdx_protocol.sector_bars._quotes_client",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "stock_data_engine.adapters.tdx_protocol.sector_bars.close_quotes_client",
+        ),
     ):
         rows = fetch_sector_index_bars(
             sector_code="BK1343",

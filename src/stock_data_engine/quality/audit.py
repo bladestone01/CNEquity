@@ -152,9 +152,7 @@ def _collect_lake_findings(
         st_start = st_coverage_start(config)
         # Suspension is reconstructed from bar gaps across the whole history, so
         # the only residual universe-filter gap is ST *labels* before st_start.
-        st_gap = (
-            st_start is not None and bars_start is not None and st_start > bars_start
-        )
+        st_gap = st_start is not None and bars_start is not None and st_start > bars_start
         if st_start is None:
             message = (
                 "trading_status has suspension history (from bar gaps) but no ST "
@@ -168,9 +166,7 @@ def _collect_lake_findings(
                 "— ST names not excluded in earlier backtest windows"
             )
         else:
-            message = (
-                f"trading_status: suspension + ST labels cover from {ts_start.isoformat()}"
-            )
+            message = f"trading_status: suspension + ST labels cover from {ts_start.isoformat()}"
         findings.append(
             {
                 "dataset": "trading_status",

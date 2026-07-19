@@ -71,9 +71,7 @@ def step_northbound_holdings(config: Config, trade_date: date, run_id: str, cont
 
 @register_step("northbound_flows", group="capital")
 def step_northbound_flows(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    return _run_capital_step(
-        config, trade_date, run_id, "northbound_flows", fetch_northbound_flows
-    )
+    return _run_capital_step(config, trade_date, run_id, "northbound_flows", fetch_northbound_flows)
 
 
 def _existing_margin_dates(config: Config) -> set[date]:

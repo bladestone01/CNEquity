@@ -317,12 +317,8 @@ def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
             pl.col("trade_date").shift(1).over("symbol").alias("prev_trade_date"),
         )
         .filter(pl.col("prev_trade_date").is_not_null())
-        .with_columns(
-            (pl.col("adj_ret") - pl.col("raw_ret")).abs().alias("divergence")
-        )
-        .select(
-            "symbol", "prev_trade_date", "trade_date", "raw_ret", "adj_ret", "divergence"
-        )
+        .with_columns((pl.col("adj_ret") - pl.col("raw_ret")).abs().alias("divergence"))
+        .select("symbol", "prev_trade_date", "trade_date", "raw_ret", "adj_ret", "divergence")
     )
 
 
@@ -350,11 +346,7 @@ def _capped_findings(
 
 
 def _worst_per_symbol(df: pl.DataFrame, by: str) -> pl.DataFrame:
-    return (
-        df.sort(by, descending=True)
-        .group_by("symbol", maintain_order=True)
-        .first()
-    )
+    return df.sort(by, descending=True).group_by("symbol", maintain_order=True).first()
 
 
 def _trading_day_successors(config: Config, trade_date: date) -> pl.DataFrame | None:

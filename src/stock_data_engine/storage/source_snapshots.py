@@ -142,11 +142,7 @@ def clean_source_snapshots(
                 if not ver_dir.name.startswith("data_version="):
                     continue
                 run_dirs = sorted(
-                    (
-                        p
-                        for p in ver_dir.iterdir()
-                        if p.is_dir() and p.name.startswith("run_id=")
-                    ),
+                    (p for p in ver_dir.iterdir() if p.is_dir() and p.name.startswith("run_id=")),
                     key=lambda p: (p.stat().st_mtime, p.name),
                 )
                 if not run_dirs:

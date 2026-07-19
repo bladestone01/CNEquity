@@ -63,9 +63,7 @@ def test_fetch_datacenter_retries_transient_empty_mid_pagination():
     """A transient 返回数据为空 on page 2 of 2 must be retried, not treated as end-of-data."""
     page1 = {"success": True, "result": {"pages": 2, "count": 750, "data": [{"x": 1}] * 500}}
     page2 = {"success": True, "result": {"pages": 2, "count": 750, "data": [{"x": 2}] * 250}}
-    client = FakeClient(
-        [page1, {"success": False, "message": "返回数据为空", "code": 0}, page2]
-    )
+    client = FakeClient([page1, {"success": False, "message": "返回数据为空", "code": 0}, page2])
     rows = fetch_datacenter(client, "RPT_TEST", "COL", max_retries=2, retry_backoff_seconds=0)
     assert len(rows) == 750
     assert client.calls == 3

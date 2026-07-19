@@ -55,9 +55,7 @@ def _load_trading_calendar_df(
         try:
             from stock_data_engine.query.parquet_scan import collect_parquet_root
 
-            return collect_parquet_root(
-                curated, partition_col="trade_date", start=start, end=end
-            )
+            return collect_parquet_root(curated, partition_col="trade_date", start=start, end=end)
         except FileNotFoundError:
             pass
         files = list(curated.glob("**/*.parquet"))
@@ -86,11 +84,7 @@ def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
         return []
     cal = _load_trading_calendar_df(config, start=start, end=end)
     if cal is not None and not cal.is_empty() and "trade_date" in cal.columns:
-        out = (
-            cal.filter(pl.col("is_trading"))["trade_date"]
-            .sort()
-            .to_list()
-        )
+        out = cal.filter(pl.col("is_trading"))["trade_date"].sort().to_list()
         if out:
             return out
     dates: list[date] = []
@@ -234,6 +228,4 @@ def load_bar_universe(config: Config) -> set[str]:
     files = list(bars_root.glob("**/*.parquet")) if bars_root.exists() else []
     if not files:
         return set()
-    return set(
-        pl.scan_parquet(files).select("symbol").unique().collect()["symbol"].to_list()
-    )
+    return set(pl.scan_parquet(files).select("symbol").unique().collect()["symbol"].to_list())

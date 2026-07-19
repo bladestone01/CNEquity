@@ -76,11 +76,7 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
 
     manifest = Manifest(config.manifest_path)
     writer = StagingWriter(config.staging_root)
-    staged = [
-        ds
-        for ds in PARTITION_COLS
-        if writer.list_run_files(ds, run_id)
-    ]
+    staged = [ds for ds in PARTITION_COLS if writer.list_run_files(ds, run_id)]
     total = 0
     compacted: set[str] = set()
     skipped: list[dict] = []

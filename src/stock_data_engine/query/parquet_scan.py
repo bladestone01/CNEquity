@@ -40,9 +40,7 @@ def uses_hive_partitions(root: Path, partition_col: str | None) -> bool:
     prefix = f"{partition_col}="
     if not root.exists():
         return False
-    return any(
-        entry.is_dir() and entry.name.startswith(prefix) for entry in root.iterdir()
-    )
+    return any(entry.is_dir() and entry.name.startswith(prefix) for entry in root.iterdir())
 
 
 def scan_parquet_root(
@@ -110,9 +108,7 @@ def lazy_mock_row_count(lf: pl.LazyFrame, *, mock_source: str) -> int:
     schema = lf.collect_schema().names()
     if "source" not in schema:
         return 0
-    return int(
-        lf.filter(pl.col("source") == mock_source).select(pl.len()).collect().item()
-    )
+    return int(lf.filter(pl.col("source") == mock_source).select(pl.len()).collect().item())
 
 
 def lazy_n_unique_symbol(lf: pl.LazyFrame) -> int | None:

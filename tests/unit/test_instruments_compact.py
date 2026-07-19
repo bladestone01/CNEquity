@@ -19,7 +19,9 @@ def _prov(source: str = "tdx_protocol") -> dict:
     }
 
 
-def _instrument(symbol: str, *, list_date: date | None = None, delist_date: date | None = None) -> dict:
+def _instrument(
+    symbol: str, *, list_date: date | None = None, delist_date: date | None = None
+) -> dict:
     exchange = symbol.split(".")[1]
     return {
         "symbol": symbol,
@@ -158,7 +160,9 @@ def test_audit_emits_instruments_delist_suppressed_error(tmp_path):
     payload = json.loads(
         (cfg.meta_root / "quality" / "findings" / f"{run_id}.json").read_text(encoding="utf-8")
     )
-    suppressed = [f for f in payload["findings"] if f.get("check") == "instruments_delist_suppressed"]
+    suppressed = [
+        f for f in payload["findings"] if f.get("check") == "instruments_delist_suppressed"
+    ]
     assert len(suppressed) == 1
     assert suppressed[0]["severity"] == "error"
 
@@ -233,7 +237,9 @@ def test_tdx_instrument_frame_marks_etf_asset_type():
     from stock_data_engine.adapters.tdx_protocol.client import _filter_instrument_frame
 
     sh_out = _filter_instrument_frame(
-        pl.DataFrame({"code": ["600519", "510300", "588000"], "name": ["Moutai", "HS300", "STAR50"]}),
+        pl.DataFrame(
+            {"code": ["600519", "510300", "588000"], "name": ["Moutai", "HS300", "STAR50"]}
+        ),
         "SH",
     )
     sz_out = _filter_instrument_frame(

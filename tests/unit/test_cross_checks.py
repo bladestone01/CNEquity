@@ -35,6 +35,7 @@ def _write_daily(root, dataset, rows):
 
 # --- daily_bars × calendar --------------------------------------------------
 
+
 def test_daily_bars_clean_when_every_trading_day_has_bars(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     days = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5)]
@@ -97,6 +98,7 @@ def test_daily_bars_empty_lake_no_findings(tmp_path):
 
 # --- valuation × bars -------------------------------------------------------
 
+
 def test_valuation_clean_when_covered(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     day = date(2024, 6, 5)
@@ -111,9 +113,7 @@ def test_valuation_flags_symbol_with_no_bars_anywhere(tmp_path):
     day = date(2024, 6, 5)
     _write_daily(cfg.data_root, "daily_bars", [("A", day), ("B", day)])
     # DELISTED has valuation but never a bar.
-    _write_daily(
-        cfg.data_root, "valuation_metrics", [("A", day), ("B", day), ("DELISTED", day)]
-    )
+    _write_daily(cfg.data_root, "valuation_metrics", [("A", day), ("B", day), ("DELISTED", day)])
 
     findings = valuation_bars_coverage_findings(cfg, day)
     checks = {f["check"] for f in findings}

@@ -36,9 +36,7 @@ def test_state_store_update_max_concurrent_processes(tmp_path):
     meta_root = tmp_path / "meta"
     StateStore(meta_root).set_date("daily_bars", date(2024, 6, 1))
     with ProcessPoolExecutor(max_workers=4) as pool:
-        futures = [
-            pool.submit(_update_max_worker, str(meta_root), day) for day in range(2, 29)
-        ]
+        futures = [pool.submit(_update_max_worker, str(meta_root), day) for day in range(2, 29)]
         for fut in futures:
             fut.result()
     store = StateStore(meta_root)

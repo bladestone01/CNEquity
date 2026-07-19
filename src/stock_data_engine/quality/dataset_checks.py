@@ -98,9 +98,7 @@ def check_partition_row_mutation(
         )
     ]
     if symbol_ratio is not None:
-        parts.append(
-            f"symbols {cur_symbols} vs {prev_symbols} ({symbol_ratio:.0%} of prior)"
-        )
+        parts.append(f"symbols {cur_symbols} vs {prev_symbols} ({symbol_ratio:.0%} of prior)")
     return {
         "dataset": dataset,
         "severity": "warning",
@@ -245,11 +243,7 @@ def audit_curated_dataset(
                 }
             )
 
-    if (
-        partition_col is not None
-        and partition_value is not None
-        and previous_value is not None
-    ):
+    if partition_col is not None and partition_value is not None and previous_value is not None:
         current_stats = partition_row_stats(
             partition_parquet_files(root, partition_col, partition_value)
         )

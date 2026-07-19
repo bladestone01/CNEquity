@@ -247,9 +247,14 @@ def test_lake_health_snapshot(tmp_path):
         {
             "symbol": ["600519.SH"],
             "trade_date": [date(2024, 6, 28)],
-            "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
-            "volume": [1], "amount": [1.0],
-            "source": ["tdx_protocol"], "data_version": ["v1"],
+            "open": [1.0],
+            "high": [1.0],
+            "low": [1.0],
+            "close": [1.0],
+            "volume": [1],
+            "amount": [1.0],
+            "source": ["tdx_protocol"],
+            "data_version": ["v1"],
             "fetched_at": ["2024-06-28T00:00:00+00:00"],
         }
     ).write_parquet(part / "part-0.parquet")

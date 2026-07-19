@@ -35,9 +35,7 @@ UniverseType = Literal["all_a"]
 CURATED_DATASETS = curated_dataset_names()
 DERIVED_DATASETS = derived_dataset_names()
 DATE_COLUMNS: dict[str, str] = {
-    name: spec.query_date_col
-    for name, spec in DATASETS.items()
-    if spec.query_date_col is not None
+    name: spec.query_date_col for name, spec in DATASETS.items() if spec.query_date_col is not None
 }
 PIT_DATASETS = pit_dataset_names()
 PRICE_COLS = ("open", "high", "low", "close")
@@ -91,8 +89,7 @@ def _read_dataset(
     root = _dataset_root(config, dataset)
     if not dataset_has_parquet(root):
         raise ReaderError(
-            f"no parquet data for dataset {dataset!r} under {root} "
-            f"(data_root={config.data_root})"
+            f"no parquet data for dataset {dataset!r} under {root} (data_root={config.data_root})"
         )
 
     partition_col = DATE_COLUMNS.get(dataset) or partition_col_for_dataset(dataset)
@@ -106,8 +103,7 @@ def _read_dataset(
         )
     except FileNotFoundError as exc:
         raise ReaderError(
-            f"no parquet data for dataset {dataset!r} under {root} "
-            f"(data_root={config.data_root})"
+            f"no parquet data for dataset {dataset!r} under {root} (data_root={config.data_root})"
         ) from exc
     if dataset in DATASET_SCHEMAS:
         return validate_dataframe(df, dataset)
@@ -149,7 +145,9 @@ def _hfq_anchor_factors(
         anchor_bars = bars
         anchor_factors = factors
 
-    bar_anchors = anchor_bars.group_by("symbol").agg(pl.col("trade_date").max().alias("anchor_date"))
+    bar_anchors = anchor_bars.group_by("symbol").agg(
+        pl.col("trade_date").max().alias("anchor_date")
+    )
     return (
         anchor_factors.join(bar_anchors, on="symbol")
         .filter(pl.col("trade_date") == pl.col("anchor_date"))
@@ -172,11 +170,7 @@ def _apply_adjustment(
     factors = _read_dataset(config, "adj_factors", start=start, end=end)
     if factors.is_empty():
         out = bars.with_columns(
-            *[
-                pl.col(c).alias(f"adj_{c}")
-                for c in PRICE_COLS
-                if c in bars.columns
-            ],
+            *[pl.col(c).alias(f"adj_{c}") for c in PRICE_COLS if c in bars.columns],
             pl.lit(False).alias("adj_is_exact"),
         )
         if strict_adj:
@@ -300,7 +294,9 @@ def load(
         df = _read_dataset(cfg, dataset, symbols=symbols)
         df = _apply_pit_filters(df, as_of=as_of_d, items=items)
         df = _apply_symbol_filter(df, symbols)
-        sort_cols = [c for c in ("announce_date", "symbol", "report_period", "item_code") if c in df.columns]
+        sort_cols = [
+            c for c in ("announce_date", "symbol", "report_period", "item_code") if c in df.columns
+        ]
         return df.sort(sort_cols) if sort_cols else df
 
     df = _read_dataset(cfg, dataset, start=start_d, end=end_d, symbols=symbols)
@@ -339,8 +335,7 @@ def scan(
     root = _dataset_root(cfg, dataset)
     if not dataset_has_parquet(root):
         raise ReaderError(
-            f"no parquet data for dataset {dataset!r} under {root} "
-            f"(data_root={cfg.data_root})"
+            f"no parquet data for dataset {dataset!r} under {root} (data_root={cfg.data_root})"
         )
     return scan_parquet_root(
         root,

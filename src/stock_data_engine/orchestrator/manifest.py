@@ -98,13 +98,9 @@ class Manifest:
                     ON ingestion_batches(dataset, status);
                 """
             )
-            cols = {
-                row[1] for row in conn.execute("PRAGMA table_info(ingestion_batches)")
-            }
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(ingestion_batches)")}
             if "heartbeat_at" not in cols:
-                conn.execute(
-                    "ALTER TABLE ingestion_batches ADD COLUMN heartbeat_at TEXT"
-                )
+                conn.execute("ALTER TABLE ingestion_batches ADD COLUMN heartbeat_at TEXT")
 
     @staticmethod
     def _batch_activity_at(row: sqlite3.Row) -> datetime | None:
@@ -276,9 +272,7 @@ class Manifest:
                 (error_message, run_id, batch_id),
             )
 
-    def promote_running_to_stale(
-        self, run_id: str, *, stale_after_seconds: float
-    ) -> int:
+    def promote_running_to_stale(self, run_id: str, *, stale_after_seconds: float) -> int:
         """Mark running batches with expired heartbeats as stale."""
         cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
         stale_ids: list[str] = []
@@ -337,9 +331,7 @@ class Manifest:
                 )
         return len(stale_ids)
 
-    def advance_batch_timeouts(
-        self, run_id: str, *, stale_after_seconds: float
-    ) -> dict[str, int]:
+    def advance_batch_timeouts(self, run_id: str, *, stale_after_seconds: float) -> dict[str, int]:
         """Apply running→stale→failed lifecycle for timed-out batches."""
         running_to_stale = self.promote_running_to_stale(
             run_id, stale_after_seconds=stale_after_seconds
@@ -400,13 +392,9 @@ class Manifest:
                     batches_closed += 1
         return {"runs_closed": runs_closed, "batches_closed": batches_closed}
 
-    def mark_stale_running_batches_failed(
-        self, run_id: str, *, stale_after_seconds: float
-    ) -> int:
+    def mark_stale_running_batches_failed(self, run_id: str, *, stale_after_seconds: float) -> int:
         """Backward-compatible alias: full running→stale→failed promotion."""
-        result = self.advance_batch_timeouts(
-            run_id, stale_after_seconds=stale_after_seconds
-        )
+        result = self.advance_batch_timeouts(run_id, stale_after_seconds=stale_after_seconds)
         return result["running_to_stale"] + result["stale_to_failed"]
 
     def demote_success_batches(self, run_id: str, *, reason: str) -> int:

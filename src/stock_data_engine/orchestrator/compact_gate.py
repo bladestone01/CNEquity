@@ -12,9 +12,7 @@ def refresh_batch_liveness(
     stale_after_seconds: float,
 ) -> int:
     """Promote heartbeat-expired running batches to stale before compact gating."""
-    return manifest.promote_running_to_stale(
-        run_id, stale_after_seconds=stale_after_seconds
-    )
+    return manifest.promote_running_to_stale(run_id, stale_after_seconds=stale_after_seconds)
 
 
 def datasets_with_incomplete_batches(manifest: Manifest, run_id: str) -> frozenset[str]:
@@ -32,8 +30,6 @@ def compact_allowed(
 ) -> tuple[bool, int]:
     """Return (allowed, incomplete_batch_count) for compacting *dataset* in *run_id*."""
     if stale_after_seconds is not None:
-        refresh_batch_liveness(
-            manifest, run_id, stale_after_seconds=stale_after_seconds
-        )
+        refresh_batch_liveness(manifest, run_id, stale_after_seconds=stale_after_seconds)
     incomplete = manifest.incomplete_batch_counts_by_dataset(run_id).get(dataset, 0)
     return incomplete == 0, incomplete

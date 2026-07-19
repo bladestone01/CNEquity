@@ -152,9 +152,7 @@ def main() -> int:
     if final.get("batch_counts", {}).get("failed", 0):
         retry_errors.append("batches still failed after retry")
     if state.get_date("daily_bars") != TRADE_DATE:
-        retry_errors.append(
-            f"watermark={state.get_date('daily_bars')!r}, expected {TRADE_DATE!r}"
-        )
+        retry_errors.append(f"watermark={state.get_date('daily_bars')!r}, expected {TRADE_DATE!r}")
     if retry_errors:
         _print("RETRY CHECK FAILED", retry_errors)
         return 1

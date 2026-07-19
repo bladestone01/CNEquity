@@ -356,7 +356,9 @@ class JobEngine:
         if not failed and not missing_init:
             incomplete = self.manifest.incomplete_batch_count(run_id)
             if incomplete > 0:
-                return self._pending_retry_payload(run_id, stale_marked=stale_marked, timeout=timeout)
+                return self._pending_retry_payload(
+                    run_id, stale_marked=stale_marked, timeout=timeout
+                )
 
             batches = self.manifest.get_batches_for_run(run_id)
             phases = self._init_phases_list(run_id)

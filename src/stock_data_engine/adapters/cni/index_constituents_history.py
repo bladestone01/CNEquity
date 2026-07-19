@@ -15,8 +15,8 @@ from datetime import date
 import httpx
 import polars as pl
 
-from stock_data_engine.domain.symbols import format_symbol, is_all_a_symbol
 from stock_data_engine.adapters.sw.industry_history import exchange_from_code
+from stock_data_engine.domain.symbols import format_symbol, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -167,9 +167,7 @@ def expand_cni_constituents_as_of(
     frames: list[pl.DataFrame] = []
     for as_of in as_of_dates:
         snap = (
-            adjustments.filter(
-                (pl.col("start_date") <= as_of) & (pl.col("end_date") > as_of)
-            )
+            adjustments.filter((pl.col("start_date") <= as_of) & (pl.col("end_date") > as_of))
             .select(
                 pl.col("index_symbol"),
                 pl.col("symbol"),

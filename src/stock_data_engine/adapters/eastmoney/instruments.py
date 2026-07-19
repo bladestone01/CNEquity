@@ -33,7 +33,9 @@ def _parse_list_date(value: object) -> date | None:
     return None
 
 
-def fetch_list_date_map(*, client: EastMoneyClient | None = None, config: Config | None = None) -> dict[str, date]:
+def fetch_list_date_map(
+    *, client: EastMoneyClient | None = None, config: Config | None = None
+) -> dict[str, date]:
     """Return symbol -> list_date for all A-shares from EastMoney clist."""
     client = client or EastMoneyClient(config=config)
     rows = fetch_clist_pages(client, fields="f12,f13,f26")

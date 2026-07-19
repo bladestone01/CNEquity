@@ -208,9 +208,7 @@ PARTITION_COLS: dict[str, str | None] = {
 }
 
 FETCH_SEMANTICS: dict[str, FetchSemantics] = {
-    s.name: s.fetch_semantics
-    for s in DATASETS.values()
-    if s.fetch_semantics != "by_date"
+    s.name: s.fetch_semantics for s in DATASETS.values() if s.fetch_semantics != "by_date"
 }
 
 # Datasets partitioned by non-date keys — skip date-based watermarks.

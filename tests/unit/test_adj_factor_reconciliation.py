@@ -96,8 +96,10 @@ def _checks(findings):
 
 def test_clean_when_adjustment_tracks_raw(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
-    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 10.5),
-                                ("A", _D[2], 10.2), ("A", _D[3], 10.4)])
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.5), ("A", _D[2], 10.2), ("A", _D[3], 10.4)],
+    )
     _write_factors(cfg.data_root, [("A", d, 1.0) for d in _D])
     _write_corp_actions(cfg.data_root, _DECOY)
     assert adj_factor_reconciliation_findings(cfg, _D[-1]) == []
@@ -106,8 +108,9 @@ def test_clean_when_adjustment_tracks_raw(tmp_path):
 def test_normal_down_day_not_flagged(tmp_path):
     # An ~8% down day with a flat factor: adj_ret == raw_ret, no divergence.
     cfg = Config(data_root=tmp_path / "data")
-    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 9.2),
-                                ("A", _D[2], 9.0), ("A", _D[3], 9.1)])
+    _write_bars(
+        cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 9.2), ("A", _D[2], 9.0), ("A", _D[3], 9.1)]
+    )
     _write_factors(cfg.data_root, [("A", d, 1.0) for d in _D])
     _write_corp_actions(cfg.data_root, _DECOY)
     assert adj_factor_reconciliation_findings(cfg, _D[-1]) == []
@@ -118,8 +121,9 @@ def test_factor_break_is_error(tmp_path):
     # flat: the adjusted series jumps 2x — impossible under the board limit.
     cfg = Config(data_root=tmp_path / "data")
     _write_bars(cfg.data_root, [("A", d, 10.0) for d in _D])
-    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
-                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
     _write_calendar(cfg.data_root, _D)
     # No corporate_actions dataset at all: an adjustment break is still an error.
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
@@ -136,8 +140,9 @@ def test_break_is_error_even_with_a_corp_action(tmp_path):
     # A corporate action cannot excuse a consecutive-day discontinuous adjustment.
     cfg = Config(data_root=tmp_path / "data")
     _write_bars(cfg.data_root, [("A", d, 10.0) for d in _D])
-    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
-                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
     _write_calendar(cfg.data_root, _D)
     _write_corp_actions(cfg.data_root, [("A", _D[2])])
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
@@ -163,8 +168,9 @@ def test_discontinuity_fail_loud_without_calendar(tmp_path):
     # reported (fail-loud) rather than silently dropped.
     cfg = Config(data_root=tmp_path / "data")
     _write_bars(cfg.data_root, [("A", d, 10.0) for d in _D])
-    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
-                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
     assert _checks(findings) == {"adj_close_discontinuity"}
 
@@ -174,10 +180,13 @@ def test_missing_corp_action_is_warning(tmp_path):
     # corporate action on record it is a completeness warning, not a break.
     # No calendar → adjacency cannot be judged; still warn (fail-loud completeness).
     cfg = Config(data_root=tmp_path / "data")
-    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 10.0),
-                                ("A", _D[2], 5.0), ("A", _D[3], 5.0)])
-    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
-                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 5.0), ("A", _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
     _write_corp_actions(cfg.data_root, _DECOY)
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
     assert len(findings) == 1
@@ -193,10 +202,13 @@ def test_missing_corp_action_is_warning(tmp_path):
 
 def test_missing_corp_action_on_adjacent_days_with_calendar(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
-    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 10.0),
-                                ("A", _D[2], 5.0), ("A", _D[3], 5.0)])
-    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
-                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 5.0), ("A", _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
     _write_calendar(cfg.data_root, _D)
     _write_corp_actions(cfg.data_root, _DECOY)
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
@@ -217,10 +229,13 @@ def test_suspension_resume_without_ca_not_missing_warning(tmp_path):
 
 def test_ex_event_with_matching_corp_action_is_explained(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
-    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 10.0),
-                                ("A", _D[2], 5.0), ("A", _D[3], 5.0)])
-    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
-                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 5.0), ("A", _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
     _write_corp_actions(cfg.data_root, [("A", _D[2])])
     assert adj_factor_reconciliation_findings(cfg, _D[-1]) == []
 
@@ -239,10 +254,13 @@ def test_break_symbol_not_double_counted_as_warning(tmp_path):
     # A on 06-04 is a break; on 06-06 it also has a flat-adjustment raw drop that
     # would otherwise warn. The symbol is reported once, as an error.
     cfg = Config(data_root=tmp_path / "data")
-    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 10.0),
-                                ("A", _D[2], 10.0), ("A", _D[3], 5.0)])
-    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 2.0),
-                                   ("A", _D[2], 2.0), ("A", _D[3], 4.0)])
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 10.0), ("A", _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 2.0), ("A", _D[2], 2.0), ("A", _D[3], 4.0)]
+    )
     _write_calendar(cfg.data_root, _D)
     _write_corp_actions(cfg.data_root, _DECOY)
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
@@ -254,10 +272,13 @@ def test_missing_corp_action_needs_the_dataset_present(tmp_path):
     # Same missing-event shape as above but with no corporate_actions dataset:
     # we cannot assert an event is missing, so no warning (errors would still fire).
     cfg = Config(data_root=tmp_path / "data")
-    _write_bars(cfg.data_root, [("A", _D[0], 10.0), ("A", _D[1], 10.0),
-                                ("A", _D[2], 5.0), ("A", _D[3], 5.0)])
-    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0),
-                                   ("A", _D[2], 2.0), ("A", _D[3], 2.0)])
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 5.0), ("A", _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
     assert adj_factor_reconciliation_findings(cfg, _D[-1]) == []
 
 

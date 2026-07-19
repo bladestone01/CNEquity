@@ -299,9 +299,7 @@ def _factor_continuity_findings(out: pl.DataFrame) -> list[dict]:
         return []
 
     ratios = ratios.with_columns(
-        pl.max_horizontal(
-            pl.col("_step_ratio"), (1.0 / pl.col("_step_ratio"))
-        ).alias("_severity")
+        pl.max_horizontal(pl.col("_step_ratio"), (1.0 / pl.col("_step_ratio"))).alias("_severity")
     )
     worst = (
         ratios.sort("_severity", descending=True)
@@ -426,9 +424,7 @@ def compute_adj_factors(
 
     latest_bar_date = None
     try:
-        all_dates = list_hive_partition_dates(
-            config.curated_root / "daily_bars", "trade_date"
-        )
+        all_dates = list_hive_partition_dates(config.curated_root / "daily_bars", "trade_date")
         latest_bar_date = all_dates[-1] if all_dates else None
     except OSError:
         latest_bar_date = None
@@ -437,9 +433,7 @@ def compute_adj_factors(
     if isinstance(latest_bar_date, date):
         refresh_set |= _event_refresh_symbols(config, latest_bar_date)
 
-    bars = _bars_for_derive(
-        config, watermark=watermark, refresh_set=refresh_set, full=full
-    )
+    bars = _bars_for_derive(config, watermark=watermark, refresh_set=refresh_set, full=full)
     if bars.is_empty():
         logger.info(
             "adj_factors: nothing to derive (watermark=%s, refresh=%d, full=%s)",
@@ -522,9 +516,7 @@ def compute_adj_factors(
     if not frames:
         return AdjFactorsResult(0, len(tasks), failed, findings)
 
-    out = pl.concat(frames, how="diagonal_relaxed").unique(
-        subset=_ADJ_PK, keep="last"
-    )
+    out = pl.concat(frames, how="diagonal_relaxed").unique(subset=_ADJ_PK, keep="last")
     findings.extend(_factor_continuity_findings(out))
     out = with_provenance(out, source=config.adj_factors_source, data_version="v1")
 

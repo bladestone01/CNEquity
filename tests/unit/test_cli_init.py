@@ -114,7 +114,9 @@ steps = ["compact"]
     calls: list[tuple] = []
 
     def fake_run_job(self, job_name, trade_date=None, **kwargs):
-        calls.append((job_name, trade_date, [s for w in kwargs.get("waves") or [] for s in w.steps]))
+        calls.append(
+            (job_name, trade_date, [s for w in kwargs.get("waves") or [] for s in w.steps])
+        )
         return {"run_id": f"r-{len(calls)}", "status": "success", "results": []}
 
     monkeypatch.setattr(JobEngine, "run_job", fake_run_job)

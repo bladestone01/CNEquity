@@ -78,7 +78,9 @@ def test_pick_reachable_server_returns_first_functional(monkeypatch):
         return host == "8.8.8.8"
 
     monkeypatch.setattr(tdx, "_probe", fake_probe)
-    monkeypatch.setattr(tdx, "_candidate_servers", lambda config: [("9.9.9.9", 7709), ("8.8.8.8", 7709)])
+    monkeypatch.setattr(
+        tdx, "_candidate_servers", lambda config: [("9.9.9.9", 7709), ("8.8.8.8", 7709)]
+    )
     assert tdx._pick_reachable_server(cfg) == ("8.8.8.8", 7709)
 
 

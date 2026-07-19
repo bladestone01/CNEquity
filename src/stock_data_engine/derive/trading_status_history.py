@@ -31,7 +31,9 @@ def _suspended_pairs(config: Config) -> pl.DataFrame:
     bars_root = config.curated_root / "daily_bars"
     cal_root = config.curated_root / "trading_calendar"
     inst_path = config.curated_root / "instruments" / "part-merged.parquet"
-    if not (dataset_has_parquet(bars_root) and dataset_has_parquet(cal_root) and inst_path.exists()):
+    if not (
+        dataset_has_parquet(bars_root) and dataset_has_parquet(cal_root) and inst_path.exists()
+    ):
         return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 
     bars = (
@@ -56,20 +58,19 @@ def _suspended_pairs(config: Config) -> pl.DataFrame:
         pl.col("trade_date").max().alias("bmax"),
     )
     active = inst.join(sym_range, on="symbol", how="inner").with_columns(
-        pl.max_horizontal(
-            pl.col("list_date").fill_null(pl.col("bmin")), pl.col("bmin")
-        ).alias("astart"),
-        pl.min_horizontal(
-            pl.col("delist_date").fill_null(pl.col("bmax")), pl.col("bmax")
-        ).alias("aend"),
+        pl.max_horizontal(pl.col("list_date").fill_null(pl.col("bmin")), pl.col("bmin")).alias(
+            "astart"
+        ),
+        pl.min_horizontal(pl.col("delist_date").fill_null(pl.col("bmax")), pl.col("bmax")).alias(
+            "aend"
+        ),
     )
 
     expected = (
         active.select(["symbol", "astart", "aend"])
         .join(cal, how="cross")
         .filter(
-            (pl.col("trade_date") >= pl.col("astart"))
-            & (pl.col("trade_date") <= pl.col("aend"))
+            (pl.col("trade_date") >= pl.col("astart")) & (pl.col("trade_date") <= pl.col("aend"))
         )
         .select(["symbol", "trade_date"])
     )

@@ -122,7 +122,9 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
     assert retry["retried"] >= 1
     assert retry["status"] == "success"
     assert calls[-1] == ["600519.SH"]
-    curated = worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
+    curated = (
+        worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
+    )
     assert curated.exists()
     steps_run = {r.get("step") for r in retry["results"]}
     assert steps_run >= {"compact", "derive_adj_factors", "audit"}
@@ -178,5 +180,7 @@ def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
     assert retry["retried"] == 1
     assert retry["status"] == "success"
     assert calls == [["600519.SH"]]
-    curated = worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
+    curated = (
+        worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
+    )
     assert curated.exists()

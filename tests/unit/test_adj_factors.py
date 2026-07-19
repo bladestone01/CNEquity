@@ -82,9 +82,7 @@ def test_align_factors_to_bars_asof_carries_pre_history_level():
     # Sina emits a sparse step function; the last event predates the first bar and does not
     # land on a bar date. The factor on the first bar must carry that level forward, not
     # reset to 1.0 (which previously turned the next in-window event into a huge fake jump).
-    bars = pl.DataFrame(
-        {"trade_date": [date(2016, 1, 4), date(2016, 7, 25), date(2016, 7, 26)]}
-    )
+    bars = pl.DataFrame({"trade_date": [date(2016, 1, 4), date(2016, 7, 25), date(2016, 7, 26)]})
     factors = pl.DataFrame(
         {
             "trade_date": [date(1990, 12, 19), date(2015, 8, 18), date(2016, 7, 25)],
@@ -299,9 +297,7 @@ def test_compute_adj_factors_append_only_skips_existing_partitions(adj_config, m
     # Seed derived watermark at 2024-06-28.
     seed = compute_adj_factors(adj_config)
     assert seed.rows == 1
-    old_path = (
-        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
-    )
+    old_path = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
     old_bytes = old_path.read_bytes()
 
     _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
@@ -320,9 +316,7 @@ def test_compute_adj_factors_append_only_skips_existing_partitions(adj_config, m
     assert calls == []  # cache reused; no event
     assert result.rows == 1  # only the new date
     assert old_path.read_bytes() == old_bytes  # prior partition untouched
-    new_path = (
-        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-29" / "part-0.parquet"
-    )
+    new_path = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-29" / "part-0.parquet"
     assert pl.read_parquet(new_path)["factor"][0] == 0.5
 
 

@@ -30,9 +30,8 @@ _ITEM_FIELDS: dict[tuple[str, str], str] = {
     ("indicator", "roe"): "WEIGHTAVG_ROE",
 }
 
-_COLUMNS = (
-    "SECURITY_CODE,SECUCODE,REPORTDATE,NOTICE_DATE,"
-    + ",".join(dict.fromkeys(_ITEM_FIELDS.values()))
+_COLUMNS = "SECURITY_CODE,SECUCODE,REPORTDATE,NOTICE_DATE," + ",".join(
+    dict.fromkeys(_ITEM_FIELDS.values())
 )
 
 

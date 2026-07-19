@@ -16,7 +16,9 @@ _BOARD_COLUMNS = "SECURITY_CODE,BOARD_CODE,BOARD_NAME,BOARD_TYPE_NEW"
 _CONCEPT_BOARD_TYPES = {"3", "4"}
 
 
-def fetch_sector_members(as_of_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
+def fetch_sector_members(
+    as_of_date: date, *, client: EastMoneyClient | None = None
+) -> pl.DataFrame:
     owns = client is None
     if client is None:
         client = EastMoneyClient()

@@ -127,9 +127,7 @@ def fetch_corporate_actions_tdx(
         with TDX_SESSION_LOCK:
             client = client_factory()
             for sym in symbols:
-                df = fetch_xdxr_for_symbol(
-                    client, sym, rate_limit=rate_limit, on_date=on_date
-                )
+                df = fetch_xdxr_for_symbol(client, sym, rate_limit=rate_limit, on_date=on_date)
                 if df.height:
                     frames.append(df)
     finally:

@@ -5,8 +5,8 @@ from datetime import date
 import polars as pl
 
 from stock_data_engine.derive.sector_code_map import (
-    board_code_to_bk,
     bk_to_board_code,
+    board_code_to_bk,
     build_sector_code_map,
 )
 
@@ -22,9 +22,24 @@ def test_bk_board_code_roundtrip():
 def test_build_identity_map():
     bars = pl.DataFrame(
         [
-            {"sector_code": "BK0437", "sector_name": "煤炭", "board_type": "industry", "trade_date": date(2026, 7, 14)},
-            {"sector_code": "BK0896", "sector_name": "白酒", "board_type": "concept", "trade_date": date(2026, 7, 14)},
-            {"sector_code": "BK0636", "sector_name": "B股", "board_type": "concept", "trade_date": date(2026, 7, 14)},
+            {
+                "sector_code": "BK0437",
+                "sector_name": "煤炭",
+                "board_type": "industry",
+                "trade_date": date(2026, 7, 14),
+            },
+            {
+                "sector_code": "BK0896",
+                "sector_name": "白酒",
+                "board_type": "concept",
+                "trade_date": date(2026, 7, 14),
+            },
+            {
+                "sector_code": "BK0636",
+                "sector_name": "B股",
+                "board_type": "concept",
+                "trade_date": date(2026, 7, 14),
+            },
         ]
     )
     concept = pl.DataFrame([{"board_code": "896", "board_name": "白酒"}])

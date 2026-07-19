@@ -108,7 +108,9 @@ def test_compact_advances_watermark_when_all_batches_succeed(tmp_path):
 
     step_compact(cfg, trade_date, run_id, {})
     assert state.get_date("daily_bars") == trade_date
-    assert (cfg.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet").exists()
+    assert (
+        cfg.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
+    ).exists()
 
 
 def test_compact_snapshot_watermark_uses_run_date_not_max_partition(tmp_path):

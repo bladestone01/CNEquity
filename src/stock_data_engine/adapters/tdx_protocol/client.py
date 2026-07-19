@@ -143,9 +143,7 @@ def _probe(host: str, port: int, timeout: int) -> bool:
     return _reachable(host, port) and _serves_data(host, port, timeout)
 
 
-def _pick_reachable_server(
-    config: Config | None = None, timeout: int = 10
-) -> tuple[str, int]:
+def _pick_reachable_server(config: Config | None = None, timeout: int = 10) -> tuple[str, int]:
     """Probe candidates in parallel; return the first that serves real data.
 
     Parallel probing means the first future to resolve true is effectively the
@@ -408,7 +406,9 @@ def fetch_daily_bars(
     on_heartbeat: Callable[[], None] | None = None,
 ) -> pl.DataFrame:
     if allow_mock:
-        return _fail_or_mock("daily_bars", _MOCK_SHORT_CIRCUIT, True, _mock_bars(symbols, start, end))
+        return _fail_or_mock(
+            "daily_bars", _MOCK_SHORT_CIRCUIT, True, _mock_bars(symbols, start, end)
+        )
     client = None
     try:
         with TDX_SESSION_LOCK:
@@ -470,7 +470,12 @@ def fetch_index_bars(
                 for sym in symbols:
                     try:
                         sym_rows = fetch_bars_paginated(
-                            client, sym, start, end, rate_limit=rate_limit, backfill=backfill,
+                            client,
+                            sym,
+                            start,
+                            end,
+                            rate_limit=rate_limit,
+                            backfill=backfill,
                             is_index=True,
                         )
                     except Exception as exc:
@@ -502,9 +507,7 @@ def fetch_index_bars(
                 # Accepting a non-empty subset used to leave curated partitions with
                 # only one index while audit reported calendar coverage gaps.
                 if missing:
-                    raise TdxSourceError(
-                        "index bars returned no rows for: " + ", ".join(missing)
-                    )
+                    raise TdxSourceError("index bars returned no rows for: " + ", ".join(missing))
                 if rows:
                     return pl.DataFrame(rows).with_columns(pl.lit("1d").alias("frequency"))
                 break
@@ -631,9 +634,7 @@ def fetch_trading_status(
 
     wait_spec(rate_limit)
     try:
-        df = fetch_trading_status_eastmoney(
-            symbols, trade_date, extra_st_symbols=extra_st_symbols
-        )
+        df = fetch_trading_status_eastmoney(symbols, trade_date, extra_st_symbols=extra_st_symbols)
         if df.height:
             return df
         reason = "EastMoney returned no trading status rows"
