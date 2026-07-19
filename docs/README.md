@@ -37,11 +37,11 @@
 
 | 文档 | 内容 |
 |------|------|
-| [架构总览](architecture/overview.md) | 六层设计、模块边界、与 Workbench 契约 |
+| [架构总览](architecture/overview.md) | 六层设计、模块边界 |
 | [数据流](architecture/data-flow.md) | init / daily / compact / audit / retry |
 | [数据湖布局](architecture/lake-layout.md) | staging / curated / derived / meta 目录契约 |
-| [设计原则](architecture/design-principles.md) | 可信原则、ADR 摘要、演进约束 |
-| [架构设计（完整版）](architecture.md) | 差距分析 G1–G7、实盘可信度镜头 |
+| [设计原则](architecture/design-principles.md) | 可信原则、ADR 摘要 |
+| [架构设计（完整版）](architecture.md) | 差距分析与演进说明 |
 | [ADR 目录](adr/) | 架构决策记录 |
 
 ### 模块（按源码包）
@@ -67,14 +67,14 @@
 | [数据集总览](datasets/README.md) | L0–L8 分层、模式（batch/on-demand/derived） |
 | [数据集目录](datasets/catalog.md) | 全量表：PK、分区、主源、语义 |
 | [查询指南](datasets/query-guide.md) | 复权、Universe、PIT、strict_adj |
-| [Schema 契约（权威）](PRD.md#附录-a-schema-契约) | PRD 附录 A 字段级定义 |
-| [数据源限制（权威）](PRD.md#附录-b-数据集目录与数据源) | PRD 附录 B 逐源说明 |
+| [Schema 契约](datasets/schema.md) | 字段级定义 |
+| [逐源限制](datasets/sources.md) | 主源/备源与已知限制 |
 
 ### 运维
 
 | 文档 | 内容 |
 |------|------|
-| [运维 Runbook](operations/runbook.md) | 调度、SLO、备份恢复 |
+| [运维 Runbook](operations/runbook.md) | 调度、SLO、备份恢复、回填验收 |
 | [脚本说明](operations/scripts.md) | `scripts/` 各脚本用途 |
 | [故障排查](operations/troubleshooting.md) | 常见问题与处置流程 |
 
@@ -93,8 +93,6 @@
 |------|------|
 | [CLI 参考](reference/cli.md) | 全部 `sde` 子命令与选项 |
 | [Python API 参考](reference/python-api.md) | `load` / `scan` / `list_datasets` |
-| [产品需求（PRD）](PRD.md) | 需求、风险登记、运维附录 C |
-| [路线图](roadmap.md) | Phase A–D 排期 |
 | [CHANGELOG](../CHANGELOG.md) | 版本变更 |
 
 ---
@@ -111,14 +109,4 @@
 
 **贡献者（加数据集/改引擎）**
 
-1. [架构总览](architecture/overview.md) → [模块索引](modules/README.md) → [新增数据集](development/adding-dataset.md) → [PRD 风险登记](PRD.md#10-风险登记册)
-
----
-
-## 状态图例
-
-文档中与 PRD 一致的状态标注：
-
-- ✅ / 🟢 — 已实现可用
-- 🟡 — 部分实现或已知限制
-- 🔜 / 🔴 — 规划中或未实现
+1. [架构总览](architecture/overview.md) → [模块索引](modules/README.md) → [新增数据集](development/adding-dataset.md) → [Schema 契约](datasets/schema.md)

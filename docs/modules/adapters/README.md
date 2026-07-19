@@ -66,4 +66,4 @@ TDX 独立段 `[tdx_protocol]`，非 `sources.*`。
 ## 相关文档
 
 - [steps 模块](../steps.md)
-- [PRD 附录 B 数据源限制](../../PRD.md)
+- [逐源限制](../../datasets/sources.md)

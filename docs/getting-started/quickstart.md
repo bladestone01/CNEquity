@@ -48,7 +48,7 @@ init 耗时较长（全市场日线分页回填），建议在稳定网络下运
 .venv/bin/python scripts/accept_backfill.py check --compare /tmp/curated-counts.json
 ```
 
-验收项：幂等性、覆盖起点、消费层可读。详见 [PRD 附录 C — Post-backfill acceptance](../PRD.md)。
+验收项：幂等性、覆盖起点、消费层可读。详见 [回填完成验收](../operations/runbook.md#回填完成验收)。
 
 ## 4. 每日增量
 

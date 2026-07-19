@@ -97,7 +97,7 @@ price_tolerance_bps = 10
 [universe]
 default = "all_a"
 
-# Wave DAG for daily job (see docs/PRD.md)
+# Wave DAG for daily job (see docs/datasets/catalog.md)
 [[job.daily.waves]]
 name = "reference"
 parallel = true

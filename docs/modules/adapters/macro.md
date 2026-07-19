@@ -22,7 +22,7 @@
 | 国债收益率、SHIBOR 等 | 利率曲线 | 日/周 |
 | PMI、M2、社融 等 | 景气/货币 | 月（akshare 补充） |
 
-具体 ID 列表见 `indicators.py` 内注册与 PRD 附录 A。
+具体 ID 列表见 `indicators.py` 内注册与 [schema.md](../../datasets/schema.md)。
 
 ---
 

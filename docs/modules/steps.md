@@ -4,7 +4,7 @@
 
 内置采集步骤定义。每个 step 是一个 `@register_step` 函数，负责调用 adapter、校验 schema、写 staging。
 
-**组织原则**：按 PRD 数据层（L0–L8）一文件一层，`finalize.py` 收尾。
+**组织原则**：按数据层（L0–L8）一文件一层，`finalize.py` 收尾。
 
 ---
 

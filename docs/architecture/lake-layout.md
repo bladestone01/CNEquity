@@ -112,7 +112,7 @@ Batch 状态机：`pending` → `running` → `success` | `failed` | `stale`
 compact 成功后更新。用于：
 
 - 增量抓取窗口（`incremental_window`）
-- 下游缓存失效键（Workbench 契约）
+- 下游缓存失效键
 - `sde status --datasets` 新鲜度判断
 
 ---

@@ -10,7 +10,7 @@ stock_data_engine/
 ├── domain/              Schema、数据集注册、符号、限速
 ├── adapters/            外部数据源 I/O
 ├── orchestrator/        引擎、manifest、worker pool
-├── steps/               注册采集步骤（按 PRD 数据层分文件）
+├── steps/               注册采集步骤（按数据层分文件）
 ├── storage/             Parquet 湖读写、布局、水位
 ├── derive/              派生计算
 ├── quality/             审计与 failover

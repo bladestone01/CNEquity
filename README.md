@@ -1,10 +1,8 @@
 # StockDataEngine
 
-本地部署的 A 股选股数据层：多源采集、编排、标准化，交付**带溯源、列契约稳定的 Parquet 数据湖**，DuckDB / Polars 直接查询，无需自建数据库、无需通达信客户端。
+本地部署的 A 股数据层：多源采集、编排、标准化，落成带溯源、列契约稳定的 Parquet 数据湖。DuckDB / Polars 直接查，不用自建数据库，也不用通达信客户端。
 
-- **CLI**：`sde`　**Python 包**：`stock_data_engine`
-- **交付物**：curated Parquet 分区数据湖 + DuckDB 视图 + Python 读取 API
-- **定位**：下游选股/因子项目的本地数据层；本引擎只管数据，不做回测与信号
+CLI 是 `sde`，Python 包名 `stock_data_engine`。本仓库只做数据，不做回测和信号——那是下游的事。
 
 <details>
 <summary>English summary</summary>
@@ -19,55 +17,26 @@ How we differ from AkShare / Tushare / Baostock:
 
 </details>
 
-> 状态标注：✅ 已可用　🚧 开发中　🔜 规划中（详见[路线图](#路线图可实施步骤)）。
-> 使用方式按**终态**描述，未标注的示例即当前已可用。
-
----
-
 ## 和同类项目差在哪
 
-| 你已有的 | 通常缺什么 | StockDataEngine |
-|----------|------------|-----------------|
-| AkShare / efinance 等 | 落盘契约、日更续跑、溯源列 | 编排 + curated 湖 + audit |
-| Tushare Pro | 本地可控、无积分墙的历史湖 | 自建 Parquet，数据在你磁盘上 |
-| Baostock / mootdx | 多源统一 schema 与查询口径 | 多适配器 → 同一套 PK/分区/`load()` |
-| Qlib / vn.py | 「只要数据层、不要平台」 | 只做数据；策略留给下游 |
+AkShare / efinance 之类能拉数，但通常不负责落盘契约、日更续跑和溯源列。Tushare Pro 有积分墙；Baostock / mootdx 单源 schema 各搞各的。Qlib / vn.py 往往带着整套研究平台。
 
-坚持：**永不伪造、可溯源、多源不自动切主源、财报 PIT**。完整对照与「何时不该用」见
-[docs/comparison.md](docs/comparison.md)。
+这边做的是：多适配器进同一套主键/分区/`load()`，数据在你磁盘上的 curated Parquet。不伪造数据、可溯源、备源不自动顶替主源、财报按公告日做 PIT。更细的对照见 [docs/comparison.md](docs/comparison.md)。
 
----
+## 有什么数据
 
-## 数据全景（按选股用途分层）
+按用途大致分层（字段与主键见 [schema](docs/datasets/schema.md)，速查表见 [catalog](docs/datasets/catalog.md)）：
 
-| 层次 | 内容 | 选股用途 | 代表数据集 | 状态 |
-|------|------|----------|------------|------|
-| L0 基础参考 | Universe、交易日历、停复牌/ST | 可交易过滤、回测窗口 | instruments, trading_calendar, trading_status | ✅ M2 |
-| L1 行情 | 未复权日线 + 复权因子 | 动量、波动、量价因子 | daily_bars, index_bars, adj_factors | ✅ M2 |
-| L2 公司事件 | 除权除息、公告索引 | 事件驱动、除权回补 | corporate_actions, announcement_index | ✅ M2/M3 |
-| L3 基本面 | 财报科目、估值、一致预期 | 价值/质量/成长因子 | financial_statement_items, valuation_metrics, analyst_consensus | ✅ v1.1 |
-| L4 资金面 | 北向、融资、主力、龙虎榜 | 聪明钱、杠杆情绪 | fund_flow, northbound_*, margin_trading, dragon_tiger, institutional_holdings | ✅ v1.1 |
-| L5 结构行业 | 板块、指数成分、行业分类 | 行业中性、板块轮动 | sector_members, index_constituents, industry_members | ✅ M3+ |
-| L6 宏观 | 利率、货币、景气指标 | 宏观择时、风格切换 | macro_indicators | ✅ v1.1 |
-| L7 舆情文本 | 新闻、研报、情绪得分 | NLP 特征、事件挖掘 | stock_news, research_reports, sentiment_scores | ✅ v1.1 |
-| L8 风险合规 | 解禁、监管处罚 | 负面清单、风控过滤 | share_unlock_schedule, regulatory_events | ✅ v1.1 |
+- **基础**：instruments、交易日历、停复牌/ST
+- **行情**：未复权日线、指数、复权因子
+- **事件**：除权除息、公告索引、预约披露
+- **基本面 / 估值**：财报科目、PE/PB 等、一致预期
+- **资金**：北向、融资融券、主力流向、龙虎榜、机构持仓
+- **结构**：板块/指数成分、行业分类
+- **宏观与舆情**：利率货币指标、新闻与情绪分
+- **风控类**：解禁、监管事件
 
-完整字段契约、主键、分区键与逐源限制见 [docs/PRD.md](docs/PRD.md)（附录 A/B）。
-
-> ⚠️ 上表 ✅ 指 **step/schema/adapter 已实现**。分组运行（`--group`）各组末尾含
-> `compact`，抓取完成后写入 curated（R-15/R-23 已修复）。其余已知缺陷见
-> [docs/PRD.md §10 风险登记册 / §11.1 v1.2 修复计划](docs/PRD.md)。
-
-## 数据可信原则
-
-1. **永不伪造**：数据源失败即判 batch failed，绝不静默返回假数据（mock 仅限测试开关 `allow_mock`，且强制标记 `source="mock"`，审计自动拦截）。✅
-2. **可溯源**：每行 curated 数据带 `source / data_version / fetched_at` 三列。✅
-3. **口径可重算**：日线存**未复权**价 + 独立复权因子，qfq/hfq 在查询期组合，不污染原始数据。✅
-4. **多源不打架**：curated 每主键一行 canonical；备源进 snapshot，审计出 diff，永不自动切源。✅ M4
-5. **无前视偏差**：财报等低频数据带公告日 `announce_date` 双时间轴，按「截至当日已公告」对齐（`load(..., as_of=)`）。✅ M3+
-6. **`universe="all_a"` ST/停牌过滤仅限 `trading_status` 有覆盖的日期**：日更只抓当天状态，2016→上线日之间的历史回填区间无 ST/停牌行；该日期之前 `load(..., universe="all_a")` 仅做上市/退市过滤，**不会**剔除历史 ST（审计项 `trading_status_coverage_start` 会报覆盖起点）。中期计划补历史 ST 源。
-
----
+已知限制（用之前看一眼）：`universe="all_a"` 的 ST/停牌过滤，只在 `trading_status` 有覆盖的日期生效——日更只抓当天，历史回填窗口之前不会按历史 ST 剔除。部分 HTTP 源在海外网络不稳定，大陆出口更稳。
 
 ## 安装
 
@@ -78,7 +47,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[tdx]"        # tdx = mootdx 行情源；开发另加 [dev]
 ```
 
-完整 extras（`valuation` / `macro` / `nlp` / `structure`）见
+可选 extras（`valuation` / `macro` / `nlp` / `structure`）见
 [docs/getting-started/installation.md](docs/getting-started/installation.md)。
 
 ## 快速开始
@@ -86,12 +55,12 @@ pip install -e ".[tdx]"        # tdx = mootdx 行情源；开发另加 [dev]
 ```bash
 cp configs/stockdata.example.toml configs/stockdata.toml   # 本地配置（已 gitignore）
 sde init   --config configs/stockdata.toml                 # 建目录/manifest/视图 + 首次回填
-sde run daily --config configs/stockdata.toml              # 每日增量（可挂 cron，见 PRD 附录 C）
-sde status --config configs/stockdata.toml                 # 运行状态与失败批次
-sde retry  --run-id <id> --config configs/stockdata.toml   # 只重跑失败部分
+sde run daily --config configs/stockdata.toml              # 每日增量
+sde status --config configs/stockdata.toml
+sde retry  --run-id <id> --config configs/stockdata.toml
 ```
 
-**首次全量 init** 完成后，按 [docs/PRD.md 附录 C — Post-backfill acceptance](docs/PRD.md#post-backfill-acceptance回填完成验收) 做幂等/口径/覆盖/消费层验收；可执行：
+首次全量 init 之后，建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 过一遍幂等/口径/覆盖再挂 cron。
 
 ```bash
 .venv/bin/python scripts/accept_backfill.py snapshot --out /tmp/curated-counts.json
@@ -99,28 +68,24 @@ sde retry  --run-id <id> --config configs/stockdata.toml   # 只重跑失败部�
 .venv/bin/python scripts/accept_backfill.py check --compare /tmp/curated-counts.json
 ```
 
-## 使用数据（三种方式，任选）
+## 读数据
 
-### 1. Python API（推荐，✅ Phase 2）
-
-选股/因子项目 `import` 即用，复权、Universe 过滤、PIT 对齐等口径逻辑内置：
+### Python API
 
 ```python
 from stock_data_engine.query import load
 
-# 全市场后复权日线；上市/退市过滤 + 有 trading_status 覆盖日的 ST/停牌过滤
 bars = load(
     "daily_bars",
     start="2020-01-01", end="2025-12-31",
-    adjust="hfq",              # None | "qfq" | "hfq"，查询期组合复权因子
-    universe="all_a",          # instruments + trading_status（见上文第 6 条限制）
+    adjust="hfq",              # None | "qfq" | "hfq"
+    universe="all_a",          # 见上文「已知限制」
 )
 
-# 财报科目，按「2024-04-30 当日已公告」的口径取数（无前视偏差）
 roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 ```
 
-### 2. DuckDB SQL（✅ 已可用）
+### DuckDB
 
 ```bash
 sde query --sql "
@@ -130,11 +95,9 @@ sde query --sql "
 " --config configs/stockdata.toml
 ```
 
-或任何支持 DuckDB 的工具直连 `{data_root}/duckdb/stockdata.duckdb`（内置 `daily_bars`、`daily_bars_adj`、`instruments`、`adj_factors` 等视图）。
+也可直连 `{data_root}/duckdb/stockdata.duckdb`。
 
-### 3. 直读 Parquet（✅ 已可用，零依赖本项目）
-
-数据湖就是普通 Parquet 文件，Polars / pandas / Spark 均可直接扫描：
+### 直读 Parquet
 
 ```python
 import polars as pl
@@ -142,117 +105,42 @@ bars = pl.scan_parquet("data/stock-data-engine/curated/daily_bars/**/*.parquet")
 df = bars.filter(pl.col("symbol") == "600519.SH").collect()
 ```
 
-### 数据湖目录
+数据湖大致长这样：
 
 ```
 {data_root}/
-  curated/   {dataset}/{partition}=v/part-*.parquet   # 每主键一行 canonical（下游只读这里）
-  derived/   adj_factors/...                          # 派生数据
+  curated/   {dataset}/{partition}=v/part-*.parquet
+  derived/   adj_factors/...
   staging/   本次 run 原始落地（compact 后可清理）
-  meta/      manifest.db、质量 findings、增量水位、on-demand 缓存
-  duckdb/    stockdata.duckdb（视图层）
+  meta/      manifest、quality findings、水位、on-demand 缓存
+  duckdb/    stockdata.duckdb
 ```
 
----
+## 可信原则（简要）
 
-## 路线图（可实施步骤）
-
-> 原则：**先纵深后广度**——先让 L0/L1 可信、可回填、日更稳定（所有因子的地基），再逐层铺开。
-
-### Phase 0 数据可信基线 ✅ 已完成
-
-mock 静默兜底改为显式失败（新增 `allow_mock` 门控 + 审计拦截）、`fetched_at` 统一 UTC timestamp、manifest 开 WAL、包结构按数据层重组。
-
-### Phase 1 P0 真实化 + 稳定日更（对应里程碑 M2，✅ 已完成）
-
-| # | 任务 | 关键文件 | 验收 |
-|---|------|----------|------|
-| 1 | trading_calendar 真实化（交易所日历种子 CSV + 指数 bars 推导兜底） | `adapters/`, `steps/reference.py` | 节假日不出现在交易日中 |
-| 2 | corporate_actions 真实化（mootdx `xdxr`，备源 eastmoney） | `adapters/tdx_protocol/` | 除权日触发 `symbols_to_rebackfill` |
-| 3 | daily_bars 分页回填（突破 mootdx 800 条限制） | `orchestrator/worker_pool.py` | 能回填至 2016 年 |
-| 4 | 增量水位 `meta/state/`（按数据集记录 last-success 日期） | `storage/`, `steps/` | 日更只抓水位之后 |
-| 5 | 批级 manifest + 续跑（symbol-batch 粒度入库） | `orchestrator/manifest.py`, `worker_pool.py` | `sde retry` 只重跑失败 batch |
-| 6 | adj_factors 并行 + 缓存（仅除权日/新股重抓） | `derive/adj_factors.py` | 全市场 < 10 分钟 |
-| 7 | trading_status 真实化（eastmoney ST/停牌） | `adapters/eastmoney/` | 日更 ST/停牌可过滤；**历史 ST 回填待补**（见数据可信原则 §6） |
-
-**出口标准**：P0 七数据集全部真实源、连续两周日更成功率 ≥99%、同窗口重复 run 结果幂等、PK 唯一率 100%。
-
-### Phase 2 消费层（Python API + PIT 契约）✅ 已完成
-
-1. `query/reader.py`：`load(dataset, start, end, adjust, universe, as_of)`（Polars 实现，DuckDB 视图仍可用于 SQL）。
-2. 复权组合、universe 过滤（instruments 全窗口 + trading_status 仅有数据日起）内置。
-3. **PIT 契约**：`financial_statement_items` schema 含 `announce_date`，PRD 附录 A 已锁定；`load(..., as_of=)` 按公告日过滤。
-
-### Phase 3 数据面铺开（M3 → v1.1，✅ M3 + M3+ 已完成）
-
-**M3 batch**：fund_flow、northbound_*、margin_trading、valuation_metrics、sector_members、announcement_index、dragon_tiger、block_trades
-
-**M3+ batch**：financial_statement_items（PIT/`announce_date`）、index_constituents、industry_members
-
-**v1.1 宏观/风控 batch**：macro_indicators、market_breadth（自算）、share_unlock_schedule、regulatory_events
-
-**v1.1 P2 research batch**：institutional_holdings、analyst_consensus、sentiment_scores（公告关键词 + 个股新闻 NLP）
-
-```bash
-pip install -e ".[macro]"   # 可选：akshare 补充 PMI/M2/社融 等月度宏观指标
-pip install -e ".[nlp]"     # 可选：SnowNLP 增强 stock_news / sentiment 打分
-
-sde query --dataset stock_news --symbol 600519.SH --config configs/stockdata.toml
-sde run daily --group fundamentals --config configs/stockdata.toml   # 17:30
-sde run daily --group macro_risk --config configs/stockdata.toml     # 18:00（同上）
-sde run daily --group research --config configs/stockdata.toml       # 18:30（同上）
-```
-
-**待办**：先完成 Phase 5 正确性修复，再做连续两周生产日更稳定性观察
-
-### Phase 4 多源健壮性（M4）✅ 已实现
-
-- 备源 snapshot → `meta/source_snapshots/`（主源 batch 失败时 EastMoney 日线；`corporate_actions` daily 对除权 symbol 快照 TDX，backfill 快照 EM）
-- `audit` 产出 `meta/quality/source_diffs/{run_id}.json`（价格 ±10bps 抽样比对）
-- ADR-0003：**永不自动切源**，canonical 仅写主源
-
-### Phase 5 正确性修复批次（v1.2）🚧 当前最高优先级
-
-2026-07-06 全库架构评审结论：架构方向（四层湖 / schema 契约 / 自研编排）不变，但存在会
-污染下游选股结论的正确性缺陷，须先于任何新数据集修复。完整清单与验收标准见
-[docs/PRD.md §11.1](docs/PRD.md)，摘要：
-
-| 优先级 | 内容 | 风险号 |
-|--------|------|--------|
-| P0 | 分组 run 自动追加 compact→audit（修「数据滞留 staging」与「audit 先于 compact 执行」） | R-15/R-23 ✅ |
-| P0 | corporate_actions daily 主源修复（daily=EM canonical，backfill=TDX xdxr） | R-17 ✅ |
-| P0 | 部分批失败时不推水位 + retry 后自动 compact（消除永久数据空洞） | R-18 ✅ |
-| P0 | instruments 合并式 compact，保留退市股（消除幸存者偏差）+ 补 list/delist_date | R-16 ✅ |
-| P0 | TDX 日线分页早停（当前每日增量翻全历史，请求放大 ~8 倍） | R-19 ✅ |
-| P1 | 分页失败 fail-loud + EM backfill 全分页；EM 跨进程限速；curated 原子写 | R-22/R-21/R-24 🟡 |
-| P1 | 消费层 lazy scan + 分区裁剪；adj_factors 改 append-only | R-25/R-20（无缓存 fail-loud + `adj_is_exact` 标记） |
-| P1 | CLI 默认 config、`job.init.phases.names`、`sde compact`/`backfill` | R-26 ✅ |
-
-### Phase 5 之后
-
-后续排期以「下游 Workbench 实盘闭环」为北极星，按 Phase A（数据可信止血）→ B（调度/告警等运行保障）→ C（策略广度）→ D（长期健壮）推进，详见 [docs/roadmap.md](docs/roadmap.md)；设计分层与差距分析见 [docs/architecture.md](docs/architecture.md)。
-
----
+1. 源失败就让 batch 失败，不静默塞假数（测试里 `allow_mock` 必须标 `source="mock"`）
+2. 每行带 `source` / `data_version` / `fetched_at`
+3. 日线存未复权价，复权因子单独存；qfq/hfq 在查询时组合
+4. curated 每主键一行；备源进 snapshot，审计出 diff，不自动切主源
+5. 财报等低频数据带 `announce_date`，用 `load(..., as_of=)` 做 PIT
 
 ## 文档
 
-**入口**：[docs/README.md](docs/README.md) — 按模块组织的完整文档中心
+入口：[docs/README.md](docs/README.md)
 
 | 分类 | 文档 |
 |------|------|
 | 定位 | [与同类项目差异](docs/comparison.md) · [许可与数据合规](docs/legal-and-data-sources.md) |
 | 入门 | [安装](docs/getting-started/installation.md) · [快速开始](docs/getting-started/quickstart.md) · [配置](docs/getting-started/configuration.md) |
-| 架构 | [总览](docs/architecture/overview.md) · [数据流](docs/architecture/data-flow.md) · [数据湖](docs/architecture/lake-layout.md) · [差距分析](docs/architecture.md) |
-| 模块 | [模块索引](docs/modules/README.md)（config / orchestrator / steps / adapters / query …） |
-| 数据集 | [目录](docs/datasets/catalog.md) · [查询指南](docs/datasets/query-guide.md) · [Schema 契约](docs/PRD.md) |
+| 架构 | [总览](docs/architecture/overview.md) · [数据流](docs/architecture/data-flow.md) · [数据湖](docs/architecture/lake-layout.md) |
+| 数据集 | [目录](docs/datasets/catalog.md) · [Schema](docs/datasets/schema.md) · [逐源限制](docs/datasets/sources.md) · [查询指南](docs/datasets/query-guide.md) |
 | 运维 | [Runbook](docs/operations/runbook.md) · [故障排查](docs/operations/troubleshooting.md) |
-| 开发 | [新增数据集](docs/development/adding-dataset.md) · [测试](docs/development/testing.md) · [CONTRIBUTING](CONTRIBUTING.md) |
-| 参考 | [CLI](docs/reference/cli.md) · [Python API](docs/reference/python-api.md) |
-| 其他 | [PRD](docs/PRD.md) · [路线图](docs/roadmap.md) · [ADR](docs/adr/) · [CHANGELOG](CHANGELOG.md) · [SECURITY](SECURITY.md) |
+| 开发 | [新增数据集](docs/development/adding-dataset.md) · [CONTRIBUTING](CONTRIBUTING.md) |
+| 参考 | [CLI](docs/reference/cli.md) · [Python API](docs/reference/python-api.md) · [ADR](docs/adr/) · [CHANGELOG](CHANGELOG.md) |
 
 ## 许可与合规
 
 - **代码**：[MIT](LICENSE)
-- **数据**：运行后落盘的行情/公告等仍受各上游条款约束；本仓库不附带数据湖，也不授予数据再分发权。详见 [docs/legal-and-data-sources.md](docs/legal-and-data-sources.md)。
-- **安全漏洞**：[SECURITY.md](SECURITY.md)（请勿公开 issue 贴密钥）
+- **数据**：落盘行情/公告仍受各上游条款约束；本仓库不附带数据湖，也不授予数据再分发权。见 [docs/legal-and-data-sources.md](docs/legal-and-data-sources.md)。
+- **安全漏洞**：[SECURITY.md](SECURITY.md)
 - **行为准则**：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)

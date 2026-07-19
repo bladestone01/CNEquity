@@ -1,6 +1,6 @@
 # 数据集目录
 
-完整字段见 [PRD 附录 A](../PRD.md)。下表为编排与查询元数据速查。
+完整字段见 [schema.md](schema.md)。下表为编排与查询元数据速查。
 
 **图例**：语义 `by_date` / `snapshot`；水位 ✓ = 维护 `meta/state` 水位。
 
@@ -95,8 +95,7 @@
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 7×24 快讯 |
 
 `sector_bars` 日更只有当日 OHLC；历史由 `sde backfill sector_bars` 一次性写入（国内网络或代理）。
-海外一键脚本见引擎 `scripts/china_egress_backfill.sh`（含 `trading_status` ST 回填）。Workbench
-板块动量/RRG 依赖此历史；探索因子 `sector_mom_20d` 见 Workbench [factor-library.md](../../StockWorkbench/docs/factor-library.md)。
+海外一键脚本见引擎 `scripts/china_egress_backfill.sh`（含 `trading_status` ST 回填）。
 
 ---
 
@@ -138,5 +137,4 @@
 ## 相关文档
 
 - [查询指南](query-guide.md)
-- [PRD 附录 B 数据源限制](../PRD.md)
-- [Workbench 攻/守架构](../../StockWorkbench/docs/architecture.md)
+- [逐源限制](sources.md)

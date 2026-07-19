@@ -31,7 +31,7 @@ A 股**交易日历** — 节假日排除、回测窗口对齐的地基。
 
 - 分区：`trade_date`
 - 主键：`trade_date`
-- 列含 `is_trading_day`、交易所标识等（见 PRD 附录 A）
+- 列含 `is_trading_day`、交易所标识等（见 [schema.md](../../datasets/schema.md)）
 
 ---
 

@@ -10,7 +10,7 @@ StockDataEngine 的一切设计取舍，服务于下游三件事：**回测可�
 - 测试唯一例外：`[tdx_protocol].allow_mock=true`，且行必须标 `source="mock"`；audit 会拦截
 - 分页截断、限速失败、schema 不匹配 → 显式失败，不截断后当成功
 
-**教训**：R-14/R-22 — 静默兜底会直接污染选股结论。
+**教训**：静默兜底会直接污染选股结论。
 
 ---
 
@@ -41,19 +41,19 @@ StockDataEngine 的一切设计取舍，服务于下游三件事：**回测可�
 
 ## 4. 正确性优先于覆盖面
 
-一个新数据集若口径未验证，不如不交付。已知正确性缺陷（PRD §11.1 v1.2）须先于新功能修复。
+一个新数据集若口径未验证，不如不交付。已知正确性缺陷须先于新功能修复。
 
 优先级示例：
 
-1. compact 门禁与水位一致性（R-18）
-2. instruments 合并保留退市股（R-16）
-3. adj_factors 断裂与 append-only 语义（R-20）
+1. compact 门禁与水位一致性
+2. instruments 合并保留退市股
+3. adj_factors 断裂与 append-only 语义
 
 ---
 
 ## 5. 防线放在引擎侧
 
-能在 `sde audit --full` 发现的问题，不应只依赖下游 Workbench guard。例如：
+能在 `sde audit --full` 发现的问题，不应只依赖下游项目自检。例如：
 
 - 复权收益极值扫描（`adj_close_discontinuity`）
 - adj_factors × corporate_actions 对账
@@ -107,5 +107,5 @@ StockDataEngine 的一切设计取舍，服务于下游三件事：**回测可�
 
 ## 相关文档
 
-- [PRD §10 风险登记册](../PRD.md)
-- [路线图](../roadmap.md)
+- [架构总览](overview.md)
+- [Schema 契约](../datasets/schema.md)

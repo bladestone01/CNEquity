@@ -34,7 +34,7 @@
 - **无前视**：财报等支持 `announce_date` + `load(..., as_of=)`。
 - **多源不打架**：备源可审计比对，不静默覆盖主源（ADR-0003）。
 
-覆盖面可以后补；污染下游选股结论的口径问题优先修（见 PRD 风险登记与 Phase 5）。
+覆盖面可以后补；会污染下游选股结论的口径问题优先修。
 
 ### 3. 编排与运维是一等公民
 
@@ -44,7 +44,7 @@
 
 | 不做 | 原因 |
 |------|------|
-| 回测、信号、下单 | 下游 Workbench / 策略项目的职责 |
+| 回测、信号、下单 | 下游选股/策略项目的职责 |
 | 托管云行情或出售数据文件 | 合规与定位都不匹配 |
 | 自动把备源写成 canonical | 避免静默口径漂移 |
 | 保证上游 ToS 下的商用再分发 | 见 [legal-and-data-sources.md](legal-and-data-sources.md) |
@@ -68,7 +68,7 @@
 
 | 你想了解 | 去读 |
 |----------|------|
-| 分层数据集与字段 | [datasets/catalog.md](datasets/catalog.md)、[PRD 附录 A](PRD.md) |
+| 分层数据集与字段 | [datasets/catalog.md](datasets/catalog.md)、[schema.md](datasets/schema.md) |
 | 安装与日更 | [getting-started/](getting-started/installation.md) |
 | 架构与 ADR | [architecture/overview.md](architecture/overview.md)、[adr/](adr/) |
 | 合规 | [legal-and-data-sources.md](legal-and-data-sources.md) |

@@ -33,7 +33,7 @@ pytest tests/integration
   engine/manifest/worker pool, `steps` one module per data layer, `storage`
   lake writes + layout, `derive`, `quality`, `query` views/on-demand/read API,
   `config`, `cli`).
-- **Steps by data layer:** step modules under `steps/` follow the PRD §4.0
+- **Steps by data layer:** step modules under `steps/` follow L0–L8
   layering (`reference.py` = L0, `bars.py` = L1, `events.py` = L2, …,
   `finalize.py`); a new dataset's step goes into its layer module (create it
   if missing) and must be imported in `steps/__init__.py` to register.
@@ -53,4 +53,4 @@ pytest tests/integration
 2. `@register_step` with correct `depends_on` / `group` / `requires_workers`.
 3. Write-time schema validation passes.
 4. Unit test covering normalization + at least one edge case.
-5. Entry added to the dataset catalog ([`docs/datasets/catalog.md`](docs/datasets/catalog.md) and `docs/PRD.md` appendix B).
+5. Entry added to [`docs/datasets/catalog.md`](docs/datasets/catalog.md) and [`docs/datasets/sources.md`](docs/datasets/sources.md).

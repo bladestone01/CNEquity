@@ -35,14 +35,14 @@
 4. 若 TDX 问题：`sde servers test`；换 `[tdx_protocol.hosts].standard`
 5. 若单数据集持续失败：`sde backfill <dataset>`（需支持 backfill）
 
-### 周末 / 漏跑后门禁落后（Workbench `gate: BLOCKED`）
+### 周末 / 漏跑后水位落后
 
 - **现象**：今天非交易日时 `sde run daily` → `skipped_non_trading_day`；`daily_bars`
-  水位停在上上个交易日；`wb data status` 门禁不过。
-- **处理**（补 Workbench 门禁所需：core + `market_breadth`）：
+  水位停在上上个交易日；下游 freshness 门禁不过。
+- **处理**（补 core + `market_breadth`）：
 
   ```bash
-  uv run sde run catchup                      # 默认：最近一个交易日（门禁）
+  uv run sde run catchup                      # 默认：最近一个交易日
   uv run sde run catchup --trade-date 2026-07-17
   # 国内出口再补 capital/research（东财失败不挡门禁 exit 0）：
   uv run sde run catchup --trade-date 2026-07-17 --all-groups
@@ -50,10 +50,9 @@
   uv run sde run daily --group core --trade-date 2026-07-17
   ```
 
-  Workbench 侧：`wb data catchup` / `wb data catchup --all-groups`。
   全组补跑：`scripts/daily_pipeline.sh 2026-07-17`（或 `SDE_TRADE_DATE=...`）。
   **不要**对漏跑日随便加 `--backfill`：东财 CA 全量扫描在海外常直接失败。
-  **海外机器**：门禁 catchup（TDX core + 本地 derive breadth）通常够用；
+  **海外机器**：catchup（TDX core + 本地 derive breadth）通常够用；
   `fund_flow` / `hot_rank` / `sector_bars` 日更落后属预期，等国内出口再 `--all-groups`。
 
 ### 云主机 / SOCKS 能开 ipinfo 但东财 Empty reply
@@ -187,4 +186,4 @@ sde clean --dry-run
 
 - [运维 Runbook](runbook.md)
 - [数据流](../architecture/data-flow.md)
-- [PRD 风险登记](../PRD.md)
+- [运维 Runbook](runbook.md)

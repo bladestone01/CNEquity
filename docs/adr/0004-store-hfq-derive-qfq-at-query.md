@@ -82,6 +82,6 @@ That requirement is met at **query time**, not in `derived/adj_factors`.
 
 ## References
 
-- R-20 (`docs/PRD.md`) — adj_factors cache / silent staleness
+- adj_factors cache / silent-staleness concerns (addressed by append-only + audit)
 - `src/stock_data_engine/adapters/sina/adj_factors.py` — Sina hfq/qfq fetch
 - `src/stock_data_engine/query/reader.py` — `_apply_adjustment`

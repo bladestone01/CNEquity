@@ -2,7 +2,7 @@
 
 StockDataEngine 交付 **27 个注册数据集**（26 curated + 1 derived `adj_factors`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。
 
-权威字段定义：[PRD 附录 A](../PRD.md)。逐源限制：[PRD 附录 B](../PRD.md)。
+权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
 ---
 

@@ -260,7 +260,7 @@ def run_catchup(
     extra_groups: tuple[str, ...],
     all_groups: bool,
 ):
-    """Catch up Workbench gate datasets after a missed/weekend skip.
+    """Catch up core gate datasets after a missed/weekend skip.
 
     Runs ``daily:core`` for the target date, then ``market_breadth`` + ``compact``
     (unless ``--core-only``). Does **not** pass ``--backfill`` (full CA scan is
