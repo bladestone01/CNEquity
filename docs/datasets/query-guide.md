@@ -1,6 +1,6 @@
 # 查询指南
 
-下游读数的推荐路径是 `stock_data_engine.query.load()`。本文说明复权、Universe、PIT 与常见陷阱。
+下游读数的推荐路径是 `ashare_lake.query.load()`。本文说明复权、Universe、PIT 与常见陷阱。
 
 API 签名见 [Python API 参考](../reference/python-api.md)。
 
@@ -9,7 +9,7 @@ API 签名见 [Python API 参考](../reference/python-api.md)。
 ## 基本用法
 
 ```python
-from stock_data_engine.query import load, scan, list_datasets
+from ashare_lake.query import load, scan, list_datasets
 
 # 物化 DataFrame
 df = load("daily_bars", start="2024-01-01", end="2024-12-31")
@@ -21,7 +21,7 @@ lf = scan("daily_bars", start="2020-01-01", end="2024-12-31")
 meta = list_datasets()  # 或 list_datasets(config=cfg)
 ```
 
-配置解析顺序：`config=` → `data_root=` → `configs/stockdata.toml`
+配置解析顺序：`config=` → `data_root=` → `configs/ashare-lake.toml`
 
 ---
 
@@ -79,7 +79,7 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a")
 
 日更只抓当天 `trading_status`。2016 → 覆盖起点之间**无** ST 行，该区间 `all_a` **不会**剔除历史 ST。
 
-审计项 `trading_status_coverage_start` 会报告覆盖起点。长期回测需知此偏差或运行 ST 历史回填（baostock + `sde derive trading_status`）。
+审计项 `trading_status_coverage_start` 会报告覆盖起点。长期回测需知此偏差或运行 ST 历史回填（baostock + `asl derive trading_status`）。
 
 ---
 
@@ -115,7 +115,7 @@ Symbol 格式：`{code}.{SH|SZ|BJ}`，与 `domain/symbols.py` 一致。
 ## DuckDB SQL
 
 ```bash
-sde query --sql "SELECT * FROM instruments LIMIT 5"
+asl query --sql "SELECT * FROM instruments LIMIT 5"
 ```
 
 常用视图：
@@ -128,7 +128,7 @@ sde query --sql "SELECT * FROM instruments LIMIT 5"
 | `daily_bars_adj` | 含 adj_* 与 adj_is_exact |
 | `{dataset}` | 各 curated/derived 数据集 |
 
-数据库：`{data.root}/duckdb/stockdata.duckdb`（只读连接）。
+数据库：`{data.root}/duckdb/ashare-lake.duckdb`（只读连接）。
 
 ---
 
@@ -138,7 +138,7 @@ sde query --sql "SELECT * FROM instruments LIMIT 5"
 
 ```python
 import polars as pl
-pl.scan_parquet("data/stock-data-engine/curated/daily_bars/**/*.parquet")
+pl.scan_parquet("data/ashare-lake/curated/daily_bars/**/*.parquet")
 ```
 
 需自行实现复权与 universe 逻辑；生产推荐 `load()`。

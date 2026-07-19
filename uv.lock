@@ -63,6 +63,64 @@ wheels = [
 ]
 
 [[package]]
+name = "ashare-lake"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "click" },
+    { name = "duckdb" },
+    { name = "httpx" },
+    { name = "polars" },
+    { name = "pyarrow" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-timeout" },
+    { name = "ruff" },
+]
+macro = [
+    { name = "akshare" },
+]
+nlp = [
+    { name = "snownlp" },
+]
+structure = [
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "xlrd" },
+]
+tdx = [
+    { name = "mootdx" },
+]
+valuation = [
+    { name = "baostock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "akshare", marker = "extra == 'macro'", specifier = ">=1.14" },
+    { name = "baostock", marker = "extra == 'valuation'", specifier = ">=0.8" },
+    { name = "click", specifier = ">=8.1" },
+    { name = "duckdb", specifier = ">=1.0" },
+    { name = "httpx", specifier = ">=0.25" },
+    { name = "mootdx", marker = "extra == 'tdx'", specifier = ">=0.11" },
+    { name = "openpyxl", marker = "extra == 'structure'", specifier = ">=3.0" },
+    { name = "pandas", marker = "extra == 'structure'", specifier = ">=2.0" },
+    { name = "polars", specifier = ">=1.0" },
+    { name = "pyarrow", specifier = ">=15.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "snownlp", marker = "extra == 'nlp'", specifier = ">=0.12" },
+    { name = "xlrd", marker = "extra == 'structure'", specifier = ">=2.0" },
+]
+provides-extras = ["tdx", "macro", "nlp", "valuation", "structure", "dev"]
+
+[[package]]
 name = "baostock"
 version = "0.9.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1179,64 +1237,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/47/2c/0a5f6f8ee0d5589e4
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/f5/0c41cb68dcae6b7de4fac4188a3a9589e21fb31df21ea3a2e888db95e6c9/soupsieve-2.8.4-py3-none-any.whl", hash = "sha256:e7e6b0769c8f51ed59acab6e994b00621096cfb1c640a7509295987388fbaf65", size = 37304, upload-time = "2026-05-24T13:55:55.406Z" },
 ]
-
-[[package]]
-name = "stock-data-engine"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "click" },
-    { name = "duckdb" },
-    { name = "httpx" },
-    { name = "polars" },
-    { name = "pyarrow" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-timeout" },
-    { name = "ruff" },
-]
-macro = [
-    { name = "akshare" },
-]
-nlp = [
-    { name = "snownlp" },
-]
-structure = [
-    { name = "openpyxl" },
-    { name = "pandas" },
-    { name = "xlrd" },
-]
-tdx = [
-    { name = "mootdx" },
-]
-valuation = [
-    { name = "baostock" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "akshare", marker = "extra == 'macro'", specifier = ">=1.14" },
-    { name = "baostock", marker = "extra == 'valuation'", specifier = ">=0.8" },
-    { name = "click", specifier = ">=8.1" },
-    { name = "duckdb", specifier = ">=1.0" },
-    { name = "httpx", specifier = ">=0.25" },
-    { name = "mootdx", marker = "extra == 'tdx'", specifier = ">=0.11" },
-    { name = "openpyxl", marker = "extra == 'structure'", specifier = ">=3.0" },
-    { name = "pandas", marker = "extra == 'structure'", specifier = ">=2.0" },
-    { name = "polars", specifier = ">=1.0" },
-    { name = "pyarrow", specifier = ">=15.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
-    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "snownlp", marker = "extra == 'nlp'", specifier = ">=0.12" },
-    { name = "xlrd", marker = "extra == 'structure'", specifier = ">=2.0" },
-]
-provides-extras = ["tdx", "macro", "nlp", "valuation", "structure", "dev"]
 
 [[package]]
 name = "tabulate"

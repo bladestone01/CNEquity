@@ -1,7 +1,7 @@
 from pathlib import Path
 
-import stock_data_engine.steps  # noqa: F401 — register steps
-from stock_data_engine.config import Config, ScheduleGroup, WaveConfig, load_config, validate_config
+import ashare_lake.steps  # noqa: F401 — register steps
+from ashare_lake.config import Config, ScheduleGroup, WaveConfig, load_config, validate_config
 
 
 def test_validate_config_rejects_unknown_group_step(tmp_path):
@@ -53,7 +53,7 @@ def test_validate_config_accepts_registered_waves(tmp_path):
 
 def test_example_config_validates():
     root = Path(__file__).resolve().parents[2]
-    cfg = load_config(root / "configs" / "stockdata.example.toml")
+    cfg = load_config(root / "configs" / "ashare-lake.example.toml")
     assert validate_config(cfg) == []
     # Free-source anti-blacklist defaults (time may be slow; bans are worse).
     assert cfg.source_intervals["baostock"] == 1.0

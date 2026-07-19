@@ -63,7 +63,7 @@ That requirement is met at **query time**, not in `derived/adj_factors`.
   symbol (`adj_is_exact` / `strict_adj` apply as today).
 - DuckDB `daily_bars_adj` view uses hfq + window anchor (not a stored qfq join).
 - Lakes with only legacy `adjust_type='qfq'` partitions need
-  `sde derive adj_factors` after config change.
+  `asl derive adj_factors` after config change.
 - External consumers reading `derived/adj_factors` parquet directly must apply
   the same ratio if they need qfq.
 
@@ -79,5 +79,5 @@ That requirement is met at **query time**, not in `derived/adj_factors`.
 ## References
 
 - adj_factors cache / silent-staleness concerns (addressed by append-only + audit)
-- `src/stock_data_engine/adapters/sina/adj_factors.py` — Sina hfq/qfq fetch
-- `src/stock_data_engine/query/reader.py` — `_apply_adjustment`
+- `src/ashare_lake/adapters/sina/adj_factors.py` — Sina hfq/qfq fetch
+- `src/ashare_lake/query/reader.py` — `_apply_adjustment`

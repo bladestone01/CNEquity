@@ -1,12 +1,12 @@
 # CLI 参考
 
-命令：`sde`（`stock_data_engine.cli.main:cli`）
+命令：`asl`（`ashare_lake.cli.main:cli`）
 
-全局默认：`--config configs/stockdata.toml`
+全局默认：`--config configs/ashare-lake.toml`
 
 ---
 
-## sde init
+## asl init
 
 初始化数据湖并执行 init phases。
 
@@ -23,13 +23,13 @@
 
 ---
 
-## sde config validate
+## asl config validate
 
 校验 TOML 与 step 引用。有错退出 1。
 
 ---
 
-## sde run daily
+## asl run daily
 
 | 选项 | 说明 |
 |------|------|
@@ -42,7 +42,7 @@
 
 ---
 
-## sde backfill \<dataset\>
+## asl backfill \<dataset\>
 
 单数据集 backfill。snapshot 且无 `backfill_source` 时拒绝。
 
@@ -61,15 +61,15 @@ Checkpoint：`meta/state/sector_bars_backfill.json`。失败超过 50% 时 step 
 
 ```bash
 # 首次或换源后全量（建议在国内机器）
-sde backfill sector_bars --config configs/stockdata.toml --force
+asl backfill sector_bars --config configs/ashare-lake.toml --force
 
 # 续跑失败板
-sde backfill sector_bars --config configs/stockdata.toml --retry-failed
+asl backfill sector_bars --config configs/ashare-lake.toml --retry-failed
 ```
 
 ---
 
-## sde compact
+## asl compact
 
 | 选项 | 说明 |
 |------|------|
@@ -79,7 +79,7 @@ sde backfill sector_bars --config configs/stockdata.toml --retry-failed
 
 ---
 
-## sde derive [name]
+## asl derive [name]
 
 | name | 说明 |
 |------|------|
@@ -90,7 +90,7 @@ sde backfill sector_bars --config configs/stockdata.toml --retry-failed
 
 ---
 
-## sde audit
+## asl audit
 
 | 选项 | 说明 |
 |------|------|
@@ -101,7 +101,7 @@ sde backfill sector_bars --config configs/stockdata.toml --retry-failed
 
 ---
 
-## sde status
+## asl status
 
 | 选项 | 说明 |
 |------|------|
@@ -111,7 +111,7 @@ sde backfill sector_bars --config configs/stockdata.toml --retry-failed
 
 ---
 
-## sde retry --run-id \<id\>
+## asl retry --run-id \<id\>
 
 重试失败 batch / 补 init 缺失 step。init run 走 `resume_init`。
 
@@ -119,7 +119,7 @@ sde backfill sector_bars --config configs/stockdata.toml --retry-failed
 
 ---
 
-## sde clean
+## asl clean
 
 | 选项 | 说明 |
 |------|------|
@@ -129,13 +129,13 @@ sde backfill sector_bars --config configs/stockdata.toml --retry-failed
 
 ---
 
-## sde catalog
+## asl catalog
 
 JSON 列出 curated 各数据集文件数与行数。
 
 ---
 
-## sde query
+## asl query
 
 **DuckDB 模式**（默认）：
 
@@ -152,13 +152,13 @@ JSON 列出 curated 各数据集文件数与行数。
 
 ---
 
-## sde servers test
+## asl servers test
 
 测试 TDX 连接。无 mootdx 时提示安装 `[tdx]`。
 
 ---
 
-## sde --version
+## asl --version
 
 包版本号。
 

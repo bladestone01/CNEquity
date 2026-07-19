@@ -1,11 +1,11 @@
 from datetime import date
 
-import stock_data_engine.steps  # noqa: F401
-from stock_data_engine.config import Config
-from stock_data_engine.orchestrator.engine import JobEngine
-from stock_data_engine.orchestrator.manifest import Manifest
-from stock_data_engine.orchestrator.run_lock import RunLockError, run_lock
-from stock_data_engine.storage.layout import init_data_layout
+import ashare_lake.steps  # noqa: F401
+from ashare_lake.config import Config
+from ashare_lake.orchestrator.engine import JobEngine
+from ashare_lake.orchestrator.manifest import Manifest
+from ashare_lake.orchestrator.run_lock import RunLockError, run_lock
+from ashare_lake.storage.layout import init_data_layout
 
 
 def test_retry_pending_when_batches_still_running(tmp_path):

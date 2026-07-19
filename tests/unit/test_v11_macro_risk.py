@@ -3,15 +3,15 @@ from datetime import date
 import polars as pl
 import pytest
 
-import stock_data_engine.steps  # noqa: F401
-from stock_data_engine.adapters.cninfo.regulatory import fetch_regulatory_events
-from stock_data_engine.adapters.eastmoney.share_unlock import fetch_share_unlock_schedule
-from stock_data_engine.adapters.macro.indicators import fetch_macro_indicators
-from stock_data_engine.config import Config, load_config, validate_config
-from stock_data_engine.derive.market_breadth import compute_market_breadth
-from stock_data_engine.domain.schemas import validate_dataframe
-from stock_data_engine.orchestrator.registry import get_step
-from stock_data_engine.query import load
+import ashare_lake.steps  # noqa: F401
+from ashare_lake.adapters.cninfo.regulatory import fetch_regulatory_events
+from ashare_lake.adapters.eastmoney.share_unlock import fetch_share_unlock_schedule
+from ashare_lake.adapters.macro.indicators import fetch_macro_indicators
+from ashare_lake.config import Config, load_config, validate_config
+from ashare_lake.derive.market_breadth import compute_market_breadth
+from ashare_lake.domain.schemas import validate_dataframe
+from ashare_lake.orchestrator.registry import get_step
+from ashare_lake.query import load
 
 
 class FakeDatacenterClient:
@@ -77,14 +77,14 @@ def test_v11_steps_registered():
 def test_example_config_validates_macro_risk_group():
     from pathlib import Path
 
-    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "stockdata.example.toml")
+    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "ashare-lake.example.toml")
     assert validate_config(cfg) == []
 
 
 def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
     # Keep the test hermetic: akshare (when installed) would fetch the real
     # full monthly history over the network.
-    from stock_data_engine.adapters.macro import indicators as macro_indicators
+    from ashare_lake.adapters.macro import indicators as macro_indicators
 
     monkeypatch.setattr(macro_indicators, "_akshare_rows", lambda _td, config=None: [])
     client = FakeDatacenterClient(
@@ -223,7 +223,7 @@ def test_load_macro_indicators_by_date_range(tmp_path):
 
 
 def test_parse_series_obs_date_handles_month_formats():
-    from stock_data_engine.adapters.macro.indicators import _parse_series_obs_date
+    from ashare_lake.adapters.macro.indicators import _parse_series_obs_date
 
     assert _parse_series_obs_date("2024-06-28") == date(2024, 6, 28)
     assert _parse_series_obs_date("2024-06") == date(2024, 6, 30)
@@ -236,8 +236,8 @@ def test_parse_series_obs_date_handles_month_formats():
 def test_lake_health_snapshot(tmp_path):
     import polars as pl
 
-    from stock_data_engine.config import Config
-    from stock_data_engine.quality.audit import lake_health
+    from ashare_lake.config import Config
+    from ashare_lake.quality.audit import lake_health
 
     cfg = Config(data_root=tmp_path / "data")
     # one populated dataset up to date, calendar seed present via bundled seed

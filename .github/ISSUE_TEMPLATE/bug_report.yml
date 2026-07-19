@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thanks for reporting. For **security** issues use
-        [SECURITY.md](https://github.com/rootSunc/stock-data-engine/security/advisories/new)
+        [SECURITY.md](https://github.com/rootSunc/ashare-lake/security/advisories/new)
         instead of a public issue.
   - type: textarea
     id: what
@@ -22,7 +22,7 @@ body:
       label: Reproduction
       description: Minimal commands/config (redact local paths and proxies).
       placeholder: |
-        sde run daily --group reference --config configs/stockdata.toml
+        asl run daily --group reference --config configs/ashare-lake.toml
     validations:
       required: true
   - type: input

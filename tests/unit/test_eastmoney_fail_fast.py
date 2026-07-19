@@ -5,12 +5,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from stock_data_engine.adapters.eastmoney.clist import _fetch_clist_page
-from stock_data_engine.adapters.eastmoney.datacenter import (
+from ashare_lake.adapters.eastmoney.clist import _fetch_clist_page
+from ashare_lake.adapters.eastmoney.datacenter import (
     EastMoneyDatacenterError,
     fetch_datacenter,
 )
-from stock_data_engine.adapters.eastmoney.em_auth import is_transport_fail_fast
+from ashare_lake.adapters.eastmoney.em_auth import is_transport_fail_fast
 
 
 def test_is_transport_fail_fast():

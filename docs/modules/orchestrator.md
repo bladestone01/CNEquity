@@ -1,6 +1,6 @@
 # orchestrator 模块
 
-路径：`src/stock_data_engine/orchestrator/`
+路径：`src/ashare_lake/orchestrator/`
 
 采集编排核心：Job 执行、Wave DAG、批级 manifest、多进程 worker、init 分阶段、compact 门禁与 run 锁。
 
@@ -84,7 +84,7 @@ SQLite WAL 模式。
 Batch 状态：`pending` → `running` → `success` | `failed` | `stale`
 
 - `advance_stale_batches()`：超时 running → stale → failed（retry 前调用）
-- `run_summary(run_id)`：供 `sde status` 输出
+- `run_summary(run_id)`：供 `asl status` 输出
 
 ---
 
@@ -95,7 +95,7 @@ Batch 状态：`pending` → `running` → `success` | `failed` | `stale`
 1. 从 instruments 取 symbol 列表，按 `batch_size` 切分
 2. 每 batch 在子进程执行 adapter 拉取 → staging
 3. 子进程独立 mootdx 连接（主进程不可 fork 共享连接）
-4. manifest 记录每 batch 状态，支持 `sde retry` 粒度
+4. manifest 记录每 batch 状态，支持 `asl retry` 粒度
 
 分页：突破 mootdx 800 条限制，增量模式早停于水位之后。
 

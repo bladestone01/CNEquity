@@ -6,8 +6,8 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.config import Config
-from stock_data_engine.steps.capital import _backfill_margin_trading
+from ashare_lake.config import Config
+from ashare_lake.steps.capital import _backfill_margin_trading
 
 
 class _DummyClient:
@@ -38,9 +38,9 @@ def _setup(monkeypatch, cfg: Config, *, empty_days: set[date] = frozenset()):
             return pl.DataFrame()
         return pl.DataFrame([_fake_row(d)])
 
-    monkeypatch.setattr("stock_data_engine.steps.capital.fetch_margin_trading", fake_fetch)
+    monkeypatch.setattr("ashare_lake.steps.capital.fetch_margin_trading", fake_fetch)
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.em_auth.EastMoneyClient", _DummyClient
+        "ashare_lake.adapters.eastmoney.em_auth.EastMoneyClient", _DummyClient
     )
     monkeypatch.setattr(cfg, "rate_limit", lambda source: None)
     return fetched

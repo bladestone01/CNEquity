@@ -4,13 +4,13 @@ from datetime import date
 import polars as pl
 import pytest
 
-from stock_data_engine.adapters.sina.adj_factors import (
+from ashare_lake.adapters.sina.adj_factors import (
     _parse_sina_factor_payload,
     fetch_adj_factor_series,
     to_sina_symbol,
 )
-from stock_data_engine.config import load_config
-from stock_data_engine.derive.adj_factors import (
+from ashare_lake.config import load_config
+from ashare_lake.derive.adj_factors import (
     _align_factors_to_bars,
     _cache_path,
     compute_adj_factors,
@@ -101,7 +101,7 @@ def test_align_factors_to_bars_leading_bar_before_any_event_defaults_one():
 
 
 def test_factor_continuity_findings_flags_break():
-    from stock_data_engine.derive.adj_factors import _factor_continuity_findings
+    from ashare_lake.derive.adj_factors import _factor_continuity_findings
 
     out = pl.DataFrame(
         {
@@ -120,7 +120,7 @@ def test_factor_continuity_findings_flags_break():
 
 
 def test_factor_continuity_findings_allows_normal_steps():
-    from stock_data_engine.derive.adj_factors import _factor_continuity_findings
+    from ashare_lake.derive.adj_factors import _factor_continuity_findings
 
     # A real 10-for-1 split (10x) and small dividend steps are within bounds.
     out = pl.DataFrame(
@@ -180,7 +180,7 @@ steps = ["derive_adj_factors"]
         return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.5]})
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         fake_fetch,
     )
     return cfg
@@ -229,7 +229,7 @@ def test_compute_adj_factors_skips_cdr(adj_config, monkeypatch):
         return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.5]})
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         fake_fetch,
     )
 
@@ -252,7 +252,7 @@ def test_compute_adj_factors_reuses_cache_on_non_event_day(adj_config, monkeypat
         return pl.DataFrame({"trade_date": [date(2024, 6, 29)], "factor": [0.8]})
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         fake_fetch,
     )
 
@@ -283,7 +283,7 @@ def test_compute_adj_factors_refreshes_corporate_action_symbol(adj_config, monke
         return pl.DataFrame({"trade_date": [date(2024, 6, 29)], "factor": [0.8]})
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         fake_fetch,
     )
 
@@ -308,7 +308,7 @@ def test_compute_adj_factors_append_only_skips_existing_partitions(adj_config, m
         return pl.DataFrame({"trade_date": [date(2024, 6, 29)], "factor": [0.8]})
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         fake_fetch,
     )
 
@@ -349,7 +349,7 @@ def test_compute_adj_factors_event_refresh_merges_into_existing(adj_config, monk
         )
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         fake_fetch,
     )
 
@@ -387,7 +387,7 @@ def test_compute_adj_factors_refreshes_new_listing(adj_config, monkeypatch):
         return pl.DataFrame({"trade_date": [date(2024, 6, 29)], "factor": [1.0]})
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         fake_fetch,
     )
 
@@ -396,13 +396,13 @@ def test_compute_adj_factors_refreshes_new_listing(adj_config, monkeypatch):
 
 
 def test_resolve_factors_raises_without_cache(adj_config, monkeypatch):
-    from stock_data_engine.derive.adj_factors import AdjFactorsFetchError, _resolve_factors
+    from ashare_lake.derive.adj_factors import AdjFactorsFetchError, _resolve_factors
 
     def boom(*_a, **_kw):
         raise RuntimeError("sina down")
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         boom,
     )
     sym_bars = pl.DataFrame({"trade_date": [date(2024, 6, 28)]})
@@ -418,14 +418,14 @@ def test_resolve_factors_raises_without_cache(adj_config, monkeypatch):
 
 
 def test_compute_adj_factors_fails_over_threshold(adj_config, monkeypatch):
-    from stock_data_engine.derive.adj_factors import FAIL_RATIO_THRESHOLD, AdjFactorsDeriveError
-    from stock_data_engine.steps.finalize import step_derive_adj_factors
+    from ashare_lake.derive.adj_factors import FAIL_RATIO_THRESHOLD, AdjFactorsDeriveError
+    from ashare_lake.steps.finalize import step_derive_adj_factors
 
     def boom(*_a, **_kw):
         raise RuntimeError("sina down")
 
     monkeypatch.setattr(
-        "stock_data_engine.derive.adj_factors.fetch_adj_factor_series",
+        "ashare_lake.derive.adj_factors.fetch_adj_factor_series",
         boom,
     )
     result = compute_adj_factors(adj_config)

@@ -3,8 +3,8 @@ import types
 
 import pytest
 
-from stock_data_engine.adapters.tdx_protocol import client as tdx
-from stock_data_engine.config import Config
+from ashare_lake.adapters.tdx_protocol import client as tdx
+from ashare_lake.config import Config
 
 
 def _install_fake_mootdx(monkeypatch, *, factory=None, hosts=None):

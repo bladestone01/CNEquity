@@ -5,7 +5,7 @@
 运维与一次性工具脚本。生产日更以 `daily_pipeline.sh` 为主路径。
 
 > 以下脚本面向 **自托管本机/VPS**（含 macOS launchd、大陆出口回填）。开源贡献者只需
-> CLI（`sde init` / `run`）即可；调度与告警按需选用，并非唯一部署方式。
+> CLI（`asl init` / `run`）即可；调度与告警按需选用，并非唯一部署方式。
 
 ---
 
@@ -19,16 +19,16 @@
 
 ```
 for group in core capital signals fundamentals macro_risk research; do
-  sde run daily --group $group
+  asl run daily --group $group
 done
 health_notify.sh
 backup_meta.sh
 ```
 
-**环境变量**：`SDE_CONFIG`, `SDE_LOG_DIR`, `SDE_GROUPS`,
-`SDE_GATE_GROUPS`（默认 `core`，失败标为 gate；其余组标 soft）、
-`SDE_SOFT_FAIL_OK`（默认 `1`：gate OK 时 soft 失败 exit 0；`0`=仍 exit 1）、
-`SDE_TRADE_DATE`。
+**环境变量**：`ASL_CONFIG`, `ASL_LOG_DIR`, `ASL_GROUPS`,
+`ASL_GATE_GROUPS`（默认 `core`，失败标为 gate；其余组标 soft）、
+`ASL_SOFT_FAIL_OK`（默认 `1`：gate OK 时 soft 失败 exit 0；`0`=仍 exit 1）、
+`ASL_TRADE_DATE`。
 
 结束时打印分组摘要（`group: OK|FAILED [gate|soft]`），便于区分「门禁挂了」与「东财挂了」。
 
@@ -36,15 +36,15 @@ backup_meta.sh
 
 ### install_scheduler.sh / uninstall_scheduler.sh
 
-从 `scripts/launchd/com.stockdataengine.daily.plist.template` 生成用户 launchd plist，加载 `daily_pipeline.sh`。
+从 `scripts/launchd/com.asharelake.daily.plist.template` 生成用户 launchd plist，加载 `daily_pipeline.sh`。
 
 ---
 
 ### health_notify.sh
 
 ```bash
-sde audit --full
-sde status --datasets
+asl audit --full
+asl status --datasets
 ```
 
 失败时 macOS `osascript` 通知，退出码非零。
@@ -92,7 +92,7 @@ python scripts/accept_backfill.py check --compare /tmp/counts.json
 
 ## launchd 模板
 
-`scripts/launchd/com.stockdataengine.daily.plist.template`
+`scripts/launchd/com.asharelake.daily.plist.template`
 
 - `ProgramArguments` 指向 `daily_pipeline.sh`
 - `StartCalendarInterval`：Hour=16, Minute=5

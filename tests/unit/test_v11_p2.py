@@ -3,15 +3,15 @@ from datetime import date
 import polars as pl
 import pytest
 
-import stock_data_engine.steps  # noqa: F401
-from stock_data_engine.adapters.eastmoney.consensus import fetch_analyst_consensus
-from stock_data_engine.adapters.eastmoney.institutional import fetch_institutional_holdings
-from stock_data_engine.adapters.macro.indicators import _akshare_rows
-from stock_data_engine.config import Config, load_config, validate_config
-from stock_data_engine.derive.sentiment_scores import compute_sentiment_scores
-from stock_data_engine.domain.schemas import validate_dataframe
-from stock_data_engine.orchestrator.registry import get_step
-from stock_data_engine.query import load
+import ashare_lake.steps  # noqa: F401
+from ashare_lake.adapters.eastmoney.consensus import fetch_analyst_consensus
+from ashare_lake.adapters.eastmoney.institutional import fetch_institutional_holdings
+from ashare_lake.adapters.macro.indicators import _akshare_rows
+from ashare_lake.config import Config, load_config, validate_config
+from ashare_lake.derive.sentiment_scores import compute_sentiment_scores
+from ashare_lake.domain.schemas import validate_dataframe
+from ashare_lake.orchestrator.registry import get_step
+from ashare_lake.query import load
 
 
 class FakeDatacenterClient:
@@ -46,7 +46,7 @@ def test_p2_steps_registered():
 def test_example_config_validates_research_group():
     from pathlib import Path
 
-    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "stockdata.example.toml")
+    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "ashare-lake.example.toml")
     assert validate_config(cfg) == []
 
 

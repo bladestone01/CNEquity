@@ -1,6 +1,6 @@
 # Schema 契约
 
-StockDataEngine curated datasets share provenance columns and explicit primary keys.
+ashare-lake curated datasets share provenance columns and explicit primary keys.
 
 ### Global conventions
 
@@ -395,7 +395,7 @@ Dual channels: ``announcement_keywords`` (公告标题) and ``stock_news_nlp`` (
 
 #### stock_news (on-demand cache)
 
-Cached JSON at ``meta/on_demand/stock_news/{symbol}.json``; fetched via ``sde query --dataset stock_news --symbol``.
+Cached JSON at ``meta/on_demand/stock_news/{symbol}.json``; fetched via ``asl query --dataset stock_news --symbol``.
 
 | Field | Type | Notes |
 |-------|------|-------|

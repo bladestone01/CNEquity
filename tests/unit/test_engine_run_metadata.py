@@ -1,9 +1,9 @@
 from datetime import date
 
-import stock_data_engine.steps  # noqa: F401
-from stock_data_engine.config import Config, WaveConfig
-from stock_data_engine.orchestrator.engine import JobEngine
-from stock_data_engine.storage.layout import init_data_layout
+import ashare_lake.steps  # noqa: F401
+from ashare_lake.config import Config, WaveConfig
+from ashare_lake.orchestrator.engine import JobEngine
+from ashare_lake.storage.layout import init_data_layout
 
 
 def test_reused_run_id_metadata_merge_new_values_win(tmp_path, monkeypatch):

@@ -6,15 +6,15 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.adapters.eastmoney.common import report_period_from_date
-from stock_data_engine.adapters.eastmoney.earnings_disclosure import (
+from ashare_lake.adapters.eastmoney.common import report_period_from_date
+from ashare_lake.adapters.eastmoney.earnings_disclosure import (
     _active_report_dates,
     _parse_rows,
     fetch_earnings_disclosure_schedule,
 )
-from stock_data_engine.domain.datasets import get_dataset
-from stock_data_engine.domain.schemas import validate_dataframe
-from stock_data_engine.orchestrator.registry import get_step
+from ashare_lake.domain.datasets import get_dataset
+from ashare_lake.domain.schemas import validate_dataframe
+from ashare_lake.orchestrator.registry import get_step
 
 
 def test_report_period_from_date():
@@ -82,11 +82,11 @@ def test_fetch_earnings_disclosure_schedule_parses(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.earnings_disclosure.fetch_datacenter",
+        "ashare_lake.adapters.eastmoney.earnings_disclosure.fetch_datacenter",
         fake_dc,
     )
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.earnings_disclosure.EastMoneyClient",
+        "ashare_lake.adapters.eastmoney.earnings_disclosure.EastMoneyClient",
         lambda **kwargs: _Client(),
     )
     df = fetch_earnings_disclosure_schedule(date(2026, 7, 16))

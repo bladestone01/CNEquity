@@ -3,10 +3,10 @@ from datetime import date
 import polars as pl
 import pytest
 
-import stock_data_engine.steps  # noqa: F401
-from stock_data_engine.config import Config, ScheduleGroup, WaveConfig, validate_config
-from stock_data_engine.domain.schemas import validate_dataframe
-from stock_data_engine.orchestrator.registry import get_step
+import ashare_lake.steps  # noqa: F401
+from ashare_lake.config import Config, ScheduleGroup, WaveConfig, validate_config
+from ashare_lake.domain.schemas import validate_dataframe
+from ashare_lake.orchestrator.registry import get_step
 
 
 def test_m3_steps_are_registered():
@@ -29,9 +29,9 @@ def test_example_config_validates_with_m3_groups():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    from stock_data_engine.config import load_config
+    from ashare_lake.config import load_config
 
-    cfg = load_config(root / "configs" / "stockdata.example.toml")
+    cfg = load_config(root / "configs" / "ashare-lake.example.toml")
     assert validate_config(cfg) == []
 
 
@@ -60,8 +60,8 @@ def cfg(tmp_path):
 
 
 def test_step_fund_flow_writes_staging(cfg, monkeypatch):
-    from stock_data_engine.steps import capital as cap
-    from stock_data_engine.storage.state import StateStore
+    from ashare_lake.steps import capital as cap
+    from ashare_lake.storage.state import StateStore
 
     StateStore(cfg.meta_root).set_date("fund_flow", date(2024, 6, 27))
 
@@ -90,8 +90,8 @@ def test_valuation_snapshot_filters_to_bar_universe(cfg, monkeypatch):
     """The EastMoney clist returns delisted names with no bar; the daily snapshot
     must drop them so valuation stays in lock-step with daily_bars (audit:
     valuation_bars_orphan_symbol)."""
-    from stock_data_engine.steps import fundamentals as fund
-    from stock_data_engine.storage.state import StateStore
+    from ashare_lake.steps import fundamentals as fund
+    from ashare_lake.storage.state import StateStore
 
     # Bar universe: only 600519.SH has ever traded.
     bars_part = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
@@ -138,7 +138,7 @@ def test_validate_config_accepts_capital_group(tmp_path):
 
 def test_fflow_kline_url_is_formattable_string():
     """Regression: _FFLOW_KLINE_URL must be a str (a stray comma made it a tuple)."""
-    from stock_data_engine.adapters.eastmoney import capital
+    from ashare_lake.adapters.eastmoney import capital
 
     assert isinstance(capital._FFLOW_KLINE_URL, str)
     assert "lmt=5" in capital._FFLOW_KLINE_URL.format(limit=5)

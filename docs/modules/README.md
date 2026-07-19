@@ -1,9 +1,9 @@
 # 模块索引
 
-源码根目录：`src/stock_data_engine/`。包按**数据层与职责**划分，遵循「adapter 薄、step 编排、domain 契约」原则。
+源码根目录：`src/ashare_lake/`。包按**数据层与职责**划分，遵循「adapter 薄、step 编排、domain 契约」原则。
 
 ```
-stock_data_engine/
+ashare_lake/
 ├── __init__.py
 ├── __main__.py          → cli()
 ├── config/              配置加载
@@ -59,13 +59,13 @@ cli → orchestrator → steps → adapters
 | 新数据源 | `adapters/<source>/` + `configs` sources 段 |
 | 新 CLI 命令 | `cli/main.py` |
 | 新质量检查 | `quality/dataset_checks.py` 或 `cross_checks.py` |
-| 调度变更 | `configs/stockdata.toml` waves/groups |
+| 调度变更 | `configs/ashare-lake.toml` waves/groups |
 
 ---
 
 ## 导入副作用
 
-`import stock_data_engine.steps`（CLI 与 engine 启动时）会执行各 step 模块的 `@register_step`，填充 `STEP_REGISTRY`。新增 step 必须在 `steps/__init__.py` 中 import。
+`import ashare_lake.steps`（CLI 与 engine 启动时）会执行各 step 模块的 `@register_step`，填充 `STEP_REGISTRY`。新增 step 必须在 `steps/__init__.py` 中 import。
 
 ---
 

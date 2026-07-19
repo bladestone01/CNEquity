@@ -6,9 +6,9 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.config import Config
-from stock_data_engine.steps import rotation as rot
-from stock_data_engine.steps.rotation import (
+from ashare_lake.config import Config
+from ashare_lake.steps import rotation as rot
+from ashare_lake.steps.rotation import (
     _backfill_sector_bars,
     _sector_bars_completed,
     clear_sector_bars_backfill_state,
@@ -34,7 +34,7 @@ def _patch_history(monkeypatch, *, returns):
         return {"rows_read": df.height, "rows_written": df.height}
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.fetch_sector_bars_history",
+        "ashare_lake.adapters.eastmoney.rotation.fetch_sector_bars_history",
         fake_history,
     )
     monkeypatch.setattr(rot, "write_fetched", fake_write)
@@ -72,7 +72,7 @@ def test_marks_succeeded_boards_and_resumes(tmp_path, monkeypatch):
         return pl.DataFrame(), [], []
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.fetch_sector_bars_history",
+        "ashare_lake.adapters.eastmoney.rotation.fetch_sector_bars_history",
         fake_history,
     )
     again = _backfill_sector_bars(cfg, date(2026, 7, 14), "run2")

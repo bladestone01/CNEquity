@@ -1,15 +1,15 @@
 # cli 模块
 
-路径：`src/stock_data_engine/cli/main.py`
+路径：`src/ashare_lake/cli/main.py`
 
-Click 命令组 `sde` 的唯一实现。入口：`pyproject.toml` `[project.scripts]` 与 `__main__.py`。
+Click 命令组 `asl` 的唯一实现。入口：`pyproject.toml` `[project.scripts]` 与 `__main__.py`。
 
 ---
 
 ## 全局行为
 
-- 默认配置：`configs/stockdata.toml`；不存在时提示复制 example
-- 启动时 `import stock_data_engine.steps` 注册全部 step
+- 默认配置：`configs/ashare-lake.toml`；不存在时提示复制 example
+- 启动时 `import ashare_lake.steps` 注册全部 step
 - 失败命令多数 `raise SystemExit(1)`，供 launchd/cron 检测
 
 ### 退出码约定
@@ -27,7 +27,7 @@ Click 命令组 `sde` 的唯一实现。入口：`pyproject.toml` `[project.scri
 ## 命令结构
 
 ```
-sde
+asl
 ├── init
 ├── config validate
 ├── run daily [--group] [--backfill]

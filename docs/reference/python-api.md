@@ -1,9 +1,9 @@
 # Python API 参考
 
-模块：`stock_data_engine.query`
+模块：`ashare_lake.query`
 
 ```python
-from stock_data_engine.query import load, scan, list_datasets, dataset_schema
+from ashare_lake.query import load, scan, list_datasets, dataset_schema
 ```
 
 ---
@@ -39,7 +39,7 @@ def load(
 | `items` | 财报科目 code 列表 |
 | `symbols` | symbol 白名单 |
 | `strict_adj` | True 时缺复权因子抛 `ReaderError` |
-| `config` / `data_root` | 湖位置；默认读 `configs/stockdata.toml` |
+| `config` / `data_root` | 湖位置；默认读 `configs/ashare-lake.toml` |
 
 ### 返回
 
@@ -90,7 +90,7 @@ def dataset_schema(dataset: str) -> dict[str, pl.DataType]
 ## 配置解析
 
 ```python
-from stock_data_engine.query.reader import resolve_config
+from ashare_lake.query.reader import resolve_config
 
 cfg = resolve_config(config=my_cfg)
 cfg = resolve_config(data_root="/path/to/lake")
@@ -134,14 +134,14 @@ idx = load("index_bars", start="2024-01-01", symbols=["000300.SH"])
 ### 显式 data_root（无需 toml）
 
 ```python
-bars = load("daily_bars", start="2024-06-01", data_root="/data/stock-data-engine")
+bars = load("daily_bars", start="2024-06-01", data_root="/data/ashare-lake")
 ```
 
 ---
 
 ## DuckDB 等价
 
-视图由 `query/views.py` 维护。SQL 用户可用 `sde query` 或直连 duckdb 文件，语义应与 `load()` 对齐（复权视图见 `daily_bars_adj`）。
+视图由 `query/views.py` 维护。SQL 用户可用 `asl query` 或直连 duckdb 文件，语义应与 `load()` 对齐（复权视图见 `daily_bars_adj`）。
 
 ---
 

@@ -11,7 +11,7 @@ Please **do not** open a public GitHub issue for security problems.
 
 Prefer one of:
 
-1. [GitHub Security Advisories](https://github.com/rootSunc/stock-data-engine/security/advisories/new)
+1. [GitHub Security Advisories](https://github.com/rootSunc/ashare-lake/security/advisories/new)
    (private report), or
 2. Open a private channel with the maintainers via the repository owner
    (`rootSunc` on GitHub).
@@ -32,6 +32,6 @@ a fix is available.
   that are solely upstream site availability, rate limits, or ToS disputes are
   **not** security vulnerabilities — see
   [docs/legal-and-data-sources.md](docs/legal-and-data-sources.md).
-- Local config (`configs/stockdata.toml`), lake data under `data/`, and runtime
+- Local config (`configs/ashare-lake.toml`), lake data under `data/`, and runtime
   logs must never be committed. If you discover secrets in git history, report
   privately so history can be scrubbed before wider disclosure.

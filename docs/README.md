@@ -1,8 +1,8 @@
-# StockDataEngine 文档
+# ashare-lake 文档
 
 本地部署的 A 股选股数据层：多源采集、编排、标准化，交付带溯源、列契约稳定的 Parquet 湖。
 
-CLI 是 `sde`，Python 包是 `stock_data_engine`。默认从 `configs/stockdata.example.toml` 复制出本地 `stockdata.toml`；数据湖根目录默认 `./data/stock-data-engine`。
+CLI 是 `asl`，Python 包是 `ashare_lake`。默认从 `configs/ashare-lake.example.toml` 复制出本地 `ashare-lake.toml`；数据湖根目录默认 `./data/ashare-lake`。
 
 开源读者建议顺序：[与同类项目差异](comparison.md) → [许可与数据合规](legal-and-data-sources.md) → [安装](getting-started/installation.md)。
 

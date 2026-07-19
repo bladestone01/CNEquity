@@ -6,12 +6,12 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from stock_data_engine.adapters.tdx_protocol.sector_bars import (
+from ashare_lake.adapters.tdx_protocol.sector_bars import (
     _rows_with_change_pct,
     fetch_sector_index_bars,
     fetch_sector_index_bars_batch,
 )
-from stock_data_engine.config import Config
+from ashare_lake.config import Config
 
 
 def test_rows_with_change_pct():
@@ -60,7 +60,7 @@ def test_fetch_sector_index_bars_batch(tmp_path):
     ]
 
     with patch(
-        "stock_data_engine.adapters.tdx_protocol.sector_bars.fetch_sector_index_bars",
+        "ashare_lake.adapters.tdx_protocol.sector_bars.fetch_sector_index_bars",
         return_value=fake_bars,
     ):
         df, failed, succeeded = fetch_sector_index_bars_batch(
@@ -90,15 +90,15 @@ def test_fetch_sector_index_bars_pagination(tmp_path):
 
     with (
         patch(
-            "stock_data_engine.adapters.tdx_protocol.sector_bars.fetch_bars_paginated",
+            "ashare_lake.adapters.tdx_protocol.sector_bars.fetch_bars_paginated",
             return_value=fake,
         ),
         patch(
-            "stock_data_engine.adapters.tdx_protocol.sector_bars._quotes_client",
+            "ashare_lake.adapters.tdx_protocol.sector_bars._quotes_client",
             return_value=MagicMock(),
         ),
         patch(
-            "stock_data_engine.adapters.tdx_protocol.sector_bars.close_quotes_client",
+            "ashare_lake.adapters.tdx_protocol.sector_bars.close_quotes_client",
         ),
     ):
         rows = fetch_sector_index_bars(

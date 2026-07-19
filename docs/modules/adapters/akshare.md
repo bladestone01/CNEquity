@@ -1,6 +1,6 @@
 # akshare 适配器
 
-路径：`src/stock_data_engine/adapters/akshare/`
+路径：`src/ashare_lake/adapters/akshare/`
 
 [AKShare](https://github.com/akfamily/akshare) 开源财经数据接口，作 **补充源**。
 

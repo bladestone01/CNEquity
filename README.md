@@ -1,8 +1,12 @@
-# StockDataEngine
+# ashare-lake
+
+[![CI](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg)](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 本地跑的 A 股数据层：多源拉数、编排日更，落成带溯源列的 Parquet 湖。DuckDB / Polars 直接查就行，不用自建库，也不用通达信客户端。
 
-CLI 叫 `sde`，包名 `stock_data_engine`。仓库只做数据，回测和信号留给下游。
+CLI 叫 `asl`，包名 `ashare_lake`。仓库只做数据，回测和信号留给下游。
 
 <details>
 <summary>English summary</summary>
@@ -41,8 +45,8 @@ AkShare / efinance 之类能拉数，但通常不管落盘契约、日更续跑�
 ## 安装
 
 ```bash
-git clone https://github.com/rootSunc/stock-data-engine.git
-cd stock-data-engine
+git clone https://github.com/rootSunc/ashare-lake.git
+cd ashare-lake
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[tdx]"        # tdx = mootdx 行情源；开发另加 [dev]
 ```
@@ -53,11 +57,11 @@ pip install -e ".[tdx]"        # tdx = mootdx 行情源；开发另加 [dev]
 ## 快速开始
 
 ```bash
-cp configs/stockdata.example.toml configs/stockdata.toml   # 本地配置（已 gitignore）
-sde init   --config configs/stockdata.toml                 # 建目录/manifest/视图 + 首次回填
-sde run daily --config configs/stockdata.toml              # 每日增量
-sde status --config configs/stockdata.toml
-sde retry  --run-id <id> --config configs/stockdata.toml
+cp configs/ashare-lake.example.toml configs/ashare-lake.toml   # 本地配置（已 gitignore）
+asl init   --config configs/ashare-lake.toml                 # 建目录/manifest/视图 + 首次回填
+asl run daily --config configs/ashare-lake.toml              # 每日增量
+asl status --config configs/ashare-lake.toml
+asl retry  --run-id <id> --config configs/ashare-lake.toml
 ```
 
 全量 init 之后，建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 过一遍幂等 / 口径 / 覆盖再挂 cron。
@@ -73,7 +77,7 @@ sde retry  --run-id <id> --config configs/stockdata.toml
 Python：
 
 ```python
-from stock_data_engine.query import load
+from ashare_lake.query import load
 
 bars = load(
     "daily_bars",
@@ -88,20 +92,20 @@ roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 DuckDB：
 
 ```bash
-sde query --sql "
+asl query --sql "
   SELECT symbol, trade_date, adj_close
   FROM daily_bars_adj
   WHERE trade_date >= '2025-01-01'
-" --config configs/stockdata.toml
+" --config configs/ashare-lake.toml
 ```
 
-也可直连 `{data_root}/duckdb/stockdata.duckdb`。
+也可直连 `{data_root}/duckdb/ashare-lake.duckdb`。
 
 或者 Polars 直读 Parquet：
 
 ```python
 import polars as pl
-bars = pl.scan_parquet("data/stock-data-engine/curated/daily_bars/**/*.parquet")
+bars = pl.scan_parquet("data/ashare-lake/curated/daily_bars/**/*.parquet")
 df = bars.filter(pl.col("symbol") == "600519.SH").collect()
 ```
 
@@ -113,7 +117,7 @@ df = bars.filter(pl.col("symbol") == "600519.SH").collect()
   derived/   adj_factors/...
   staging/   本次 run 原始落地（compact 后可清理）
   meta/      manifest、quality findings、水位、on-demand 缓存
-  duckdb/    stockdata.duckdb
+  duckdb/    ashare-lake.duckdb
 ```
 
 几点实现上的取舍（别当口号，就是代码现状）：

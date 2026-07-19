@@ -4,9 +4,9 @@ from pathlib import Path
 
 import polars as pl
 
-from stock_data_engine.config import Config, FailoverDatasetSpec
-from stock_data_engine.quality.source_diff import diff_dataset
-from stock_data_engine.storage.source_snapshots import (
+from ashare_lake.config import Config, FailoverDatasetSpec
+from ashare_lake.quality.source_diff import diff_dataset
+from ashare_lake.storage.source_snapshots import (
     SnapshotStore,
     clean_source_snapshots,
 )

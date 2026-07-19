@@ -5,13 +5,13 @@
 # runtime locks are deliberately excluded — they are large and reproducible.
 #
 # Usage: scripts/backup_meta.sh [DATA_ROOT] [BACKUP_DIR] [RETENTION_DAYS]
-# Defaults resolve to the repo's ./data/stock-data-engine lake.
+# Defaults resolve to the repo's ./data/ashare-lake lake.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATA_ROOT="${1:-${SDE_DATA_ROOT:-$REPO_ROOT/data/stock-data-engine}}"
-BACKUP_DIR="${2:-${SDE_BACKUP_DIR:-$DATA_ROOT/backups}}"
-RETENTION_DAYS="${3:-${SDE_BACKUP_RETENTION_DAYS:-14}}"
+DATA_ROOT="${1:-${ASL_DATA_ROOT:-$REPO_ROOT/data/ashare-lake}}"
+BACKUP_DIR="${2:-${ASL_BACKUP_DIR:-$DATA_ROOT/backups}}"
+RETENTION_DAYS="${3:-${ASL_BACKUP_RETENTION_DAYS:-14}}"
 
 META_DIR="$DATA_ROOT/meta"
 if [[ ! -d "$META_DIR" ]]; then

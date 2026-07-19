@@ -2,8 +2,8 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.config import Config
-from stock_data_engine.derive.trading_status_history import derive_suspension_history
+from ashare_lake.config import Config
+from ashare_lake.derive.trading_status_history import derive_suspension_history
 
 
 def _write(root, dataset, partition_col, val, df):

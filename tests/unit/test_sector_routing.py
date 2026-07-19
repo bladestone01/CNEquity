@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from stock_data_engine.derive.sector_routing import (
+from ashare_lake.derive.sector_routing import (
     OHLC_EM,
     OHLC_TDX,
     build_sector_routing,

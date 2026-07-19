@@ -22,7 +22,7 @@
 |--------|--------|------|------|------|------|------|
 | daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | EM failover snapshot |
 | index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
-| adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`sde derive adj_factors` |
+| adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`asl derive adj_factors` |
 
 ---
 
@@ -32,7 +32,7 @@
 |--------|--------|------|------|------|------|------|
 | corporate_actions | ex_date | symbol, ex_date, action_type | by_date | ✓ | eastmoney (daily) | backfill: tdx_protocol |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` 过滤 |
-| earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`sde backfill` 走 2016 起全报告期 |
+| earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`asl backfill` 走 2016 起全报告期 |
 
 ---
 
@@ -70,8 +70,8 @@
 
 快照类仅积累「每日一份成员关系」，历史分位数需多日分区累积。
 
-历史回填（C2）：`sde backfill industry_members` = 申万 SwClass2021 月度（`classification_system=sw`，2020 起）；
-`sde backfill index_constituents` = 国证调样史（399001/399006，约 2021-12 起）。中证 000300/000905 仍仅日更 EM 快照。
+历史回填（C2）：`asl backfill industry_members` = 申万 SwClass2021 月度（`classification_system=sw`，2020 起）；
+`asl backfill index_constituents` = 国证调样史（399001/399006，约 2021-12 起）。中证 000300/000905 仍仅日更 EM 快照。
 
 ---
 
@@ -94,7 +94,7 @@
 | sector_fund_flow | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 板块主力净流入 |
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 7×24 快讯 |
 
-`sector_bars` 日更只有当日 OHLC；历史由 `sde backfill sector_bars` 一次性写入（国内网络或代理）。
+`sector_bars` 日更只有当日 OHLC；历史由 `asl backfill sector_bars` 一次性写入（国内网络或代理）。
 海外一键脚本见引擎 `scripts/china_egress_backfill.sh`（含 `trading_status` ST 回填）。
 
 ---

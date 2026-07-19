@@ -1,7 +1,7 @@
 import sys
 import types
 
-from stock_data_engine.adapters.akshare.trading_status import fetch_st_symbols_akshare
+from ashare_lake.adapters.akshare.trading_status import fetch_st_symbols_akshare
 
 
 def test_akshare_st_parses_and_filters(monkeypatch):

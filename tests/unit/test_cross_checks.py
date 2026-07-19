@@ -2,8 +2,8 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.config import Config
-from stock_data_engine.quality.cross_checks import (
+from ashare_lake.config import Config
+from ashare_lake.quality.cross_checks import (
     daily_bars_calendar_findings,
     valuation_bars_coverage_findings,
 )

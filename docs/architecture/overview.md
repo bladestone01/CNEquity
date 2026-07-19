@@ -1,6 +1,6 @@
 # 架构总览
 
-StockDataEngine 是 A 股数据的**采集编排层**：在多个外部数据源之上，通过自研 Wave 引擎并行拉取、校验、落湖，并以稳定 schema 交付给下游选股/因子项目。
+ashare-lake 是 A 股数据的**采集编排层**：在多个外部数据源之上，通过自研 Wave 引擎并行拉取、校验、落湖，并以稳定 schema 交付给下游选股/因子项目。
 
 完整差距分析与实盘可信度评价见 [architecture.md](../architecture.md)（v1.0）。
 
@@ -57,7 +57,7 @@ Job (daily / init / backfill / retry)
 
 ## 与下游的契约边界
 
-下游应通过 `stock_data_engine.query.load()` 读数。核心条款：
+下游应通过 `ashare_lake.query.load()` 读数。核心条款：
 
 | 条款 | 说明 |
 |------|------|

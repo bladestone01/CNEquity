@@ -1,6 +1,6 @@
 # quality 模块
 
-路径：`src/stock_data_engine/quality/`
+路径：`src/ashare_lake/quality/`
 
 数据质量保障：run 级审计、湖级健康、跨数据集对账、主备源 diff、failover 快照写入。
 
@@ -33,7 +33,7 @@
 
 ### lake_health(cfg, anchor_date) → dict
 
-`sde audit --full` 使用。检查：
+`asl audit --full` 使用。检查：
 
 | 项 | 说明 |
 |----|------|

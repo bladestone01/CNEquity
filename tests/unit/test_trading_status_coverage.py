@@ -2,10 +2,10 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.config import Config
-from stock_data_engine.quality.audit import run_audit
-from stock_data_engine.query.universe import coverage_start_date, trading_status_coverage_start
-from stock_data_engine.steps.finalize import step_audit
+from ashare_lake.config import Config
+from ashare_lake.quality.audit import run_audit
+from ashare_lake.query.universe import coverage_start_date, trading_status_coverage_start
+from ashare_lake.steps.finalize import step_audit
 
 
 def _write_status_partition(cfg: Config, trade_date: date, status: str = "normal") -> None:

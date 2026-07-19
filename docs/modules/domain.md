@@ -1,6 +1,6 @@
 # domain 模块
 
-路径：`src/stock_data_engine/domain/`
+路径：`src/ashare_lake/domain/`
 
 **数据契约层**：schema 类型、主键、数据集元数据、符号规则、跨进程限速、情绪打分工具。不含 I/O 与编排。
 

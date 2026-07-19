@@ -10,13 +10,13 @@
 #   scripts/china_egress_backfill.sh
 #   scripts/china_egress_backfill.sh --sector-only
 #   scripts/china_egress_backfill.sh --st-only
-# Env: SDE_CONFIG, SDE_LOG_DIR
+# Env: ASL_CONFIG, ASL_LOG_DIR
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SDE="${SDE:-$REPO_ROOT/.venv/bin/sde}"
-CONFIG="${SDE_CONFIG:-$REPO_ROOT/configs/stockdata.toml}"
-LOG_DIR="${SDE_LOG_DIR:-$REPO_ROOT/data/stock-data-engine/logs}"
+ASL="${ASL:-$REPO_ROOT/.venv/bin/asl}"
+CONFIG="${ASL_CONFIG:-$REPO_ROOT/configs/ashare-lake.toml}"
+LOG_DIR="${ASL_LOG_DIR:-$REPO_ROOT/data/ashare-lake/logs}"
 mkdir -p "$LOG_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="$LOG_DIR/china-egress-backfill-$STAMP.log"
@@ -38,8 +38,8 @@ for arg in "$@"; do
   esac
 done
 
-if [[ ! -x "$SDE" ]]; then
-  echo "missing sde binary at $SDE — run: cd $REPO_ROOT && uv sync" >&2
+if [[ ! -x "$ASL" ]]; then
+  echo "missing asl binary at $ASL — run: cd $REPO_ROOT && uv sync" >&2
   exit 1
 fi
 
@@ -54,7 +54,7 @@ export PYTHONUNBUFFERED=1
 
 if [[ "$DO_SECTOR" -eq 1 ]]; then
   log "--- sector_bars --force (pure EM kline) ---"
-  if "$SDE" backfill sector_bars --config "$CONFIG" --force 2>&1 | tee -a "$LOG"; then
+  if "$ASL" backfill sector_bars --config "$CONFIG" --force 2>&1 | tee -a "$LOG"; then
     log "sector_bars OK"
   else
     log "sector_bars FAILED (exit $?); see $LOG"
@@ -64,7 +64,7 @@ fi
 
 if [[ "$DO_ST" -eq 1 ]]; then
   log "--- trading_status ST backfill (baostock, resumable) ---"
-  if "$SDE" backfill trading_status --config "$CONFIG" 2>&1 | tee -a "$LOG"; then
+  if "$ASL" backfill trading_status --config "$CONFIG" 2>&1 | tee -a "$LOG"; then
     log "trading_status OK"
   else
     log "trading_status FAILED (exit $?); re-run with --st-only to resume"

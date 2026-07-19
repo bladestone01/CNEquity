@@ -1,6 +1,6 @@
 # tdx_protocol 适配器
 
-路径：`src/stock_data_engine/adapters/tdx_protocol/`
+路径：`src/ashare_lake/adapters/tdx_protocol/`
 
 通过 **mootdx** 连接通达信行情服务器（无需本地通达信客户端）。A 股日线、指数、证券列表、除权等的核心主源。
 
@@ -27,7 +27,7 @@
 - `servers = "host:port"`：固定单服
 - `allow_mock = false`（生产）：连接失败抛异常，不造假数据
 
-`sde servers test` 验证连通性。
+`asl servers test` 验证连通性。
 
 ---
 

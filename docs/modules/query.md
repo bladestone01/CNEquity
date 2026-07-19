@@ -1,6 +1,6 @@
 # query 模块
 
-路径：`src/stock_data_engine/query/`
+路径：`src/ashare_lake/query/`
 
 消费层：Python 读取 API、DuckDB 视图、Universe 过滤、Parquet 分区扫描、On-Demand 服务。
 

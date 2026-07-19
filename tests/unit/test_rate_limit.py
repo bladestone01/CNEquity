@@ -1,7 +1,7 @@
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-from stock_data_engine.domain.rate_limit import RateLimiter, wait_source
+from ashare_lake.domain.rate_limit import RateLimiter, wait_source
 
 
 def test_rate_limiter_enforces_minimum_interval(tmp_path):

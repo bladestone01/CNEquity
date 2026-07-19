@@ -3,14 +3,14 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from stock_data_engine.cli.main import cli
-from stock_data_engine.config import load_config
-from stock_data_engine.orchestrator.engine import JobEngine
-from stock_data_engine.storage.layout import init_data_layout
+from ashare_lake.cli.main import cli
+from ashare_lake.config import load_config
+from ashare_lake.orchestrator.engine import JobEngine
+from ashare_lake.storage.layout import init_data_layout
 
 
 def _write_config(tmp_path) -> str:
-    cfg_path = tmp_path / "stockdata.toml"
+    cfg_path = tmp_path / "ashare-lake.toml"
     cfg_path.write_text(
         f"""
 [data]
@@ -121,7 +121,7 @@ steps = ["compact"]
 
     monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
     monkeypatch.setattr(
-        "stock_data_engine.steps.common.is_trading_day",
+        "ashare_lake.steps.common.is_trading_day",
         lambda cfg, d: True,
     )
     runner = CliRunner()
@@ -154,11 +154,11 @@ steps = ["compact"]
 
     monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
     monkeypatch.setattr(
-        "stock_data_engine.steps.common.is_trading_day",
+        "ashare_lake.steps.common.is_trading_day",
         lambda cfg, d: True,
     )
     monkeypatch.setattr(
-        "stock_data_engine.cli.main._dataset_watermark",
+        "ashare_lake.cli.main._dataset_watermark",
         lambda cfg, name: date(2026, 7, 17),
     )
     runner = CliRunner()
@@ -194,7 +194,7 @@ steps = ["compact"]
 
     monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
     monkeypatch.setattr(
-        "stock_data_engine.steps.common.is_trading_day",
+        "ashare_lake.steps.common.is_trading_day",
         lambda cfg, d: True,
     )
     runner = CliRunner()

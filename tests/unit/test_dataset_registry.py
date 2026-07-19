@@ -1,6 +1,6 @@
 """Invariants tying the DatasetSpec registry to schemas, PKs, and steps."""
 
-from stock_data_engine.domain.datasets import (
+from ashare_lake.domain.datasets import (
     DATASETS,
     FETCH_SEMANTICS,
     PARTITION_COLS,
@@ -11,7 +11,7 @@ from stock_data_engine.domain.datasets import (
     get_dataset,
     pit_dataset_names,
 )
-from stock_data_engine.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
+from ashare_lake.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
 
 
 def test_every_dataset_has_schema_and_pk():
@@ -80,8 +80,8 @@ def test_layer_partitions():
 
 def test_registered_fetch_steps_cover_curated_datasets():
     """Every curated dataset is producible by a registered step."""
-    import stock_data_engine.steps  # noqa: F401 — register steps
-    from stock_data_engine.orchestrator.registry import STEP_REGISTRY
+    import ashare_lake.steps  # noqa: F401 — register steps
+    from ashare_lake.orchestrator.registry import STEP_REGISTRY
 
     # market_breadth/sentiment_scores are derive-style steps registered under
     # their dataset names; instruments etc. match step names directly.
@@ -92,7 +92,7 @@ def test_registered_fetch_steps_cover_curated_datasets():
 def test_is_stale_respects_per_dataset_tolerance():
     from datetime import date
 
-    from stock_data_engine.domain.datasets import is_stale
+    from ashare_lake.domain.datasets import is_stale
 
     anchor = date(2026, 7, 8)
     # daily default tolerance = 1 → 07-07 fresh, 07-06 stale

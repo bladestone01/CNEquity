@@ -3,11 +3,11 @@ from datetime import date
 import polars as pl
 import pytest
 
-from stock_data_engine.config import Config
-from stock_data_engine.domain.datasets import PARTITION_COLS
-from stock_data_engine.domain.schemas import MOCK_SOURCE
-from stock_data_engine.quality.audit import run_audit
-from stock_data_engine.quality.dataset_checks import (
+from ashare_lake.config import Config
+from ashare_lake.domain.datasets import PARTITION_COLS
+from ashare_lake.domain.schemas import MOCK_SOURCE
+from ashare_lake.quality.audit import run_audit
+from ashare_lake.quality.dataset_checks import (
     audit_curated_dataset,
     check_partition_row_mutation,
 )

@@ -6,8 +6,8 @@ from datetime import date
 
 import pytest
 
-from stock_data_engine.adapters.baostock.st_history import fetch_st_history
-from stock_data_engine.domain.schemas import PRIMARY_KEYS, TRADING_STATUS_SCHEMA
+from ashare_lake.adapters.baostock.st_history import fetch_st_history
+from ashare_lake.domain.schemas import PRIMARY_KEYS, TRADING_STATUS_SCHEMA
 
 
 class _FakeResultSet:

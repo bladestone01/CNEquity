@@ -1,6 +1,6 @@
 # adapters 模块
 
-路径：`src/stock_data_engine/adapters/`
+路径：`src/ashare_lake/adapters/`
 
 **薄 I/O 层**：封装外部协议，返回 Polars DataFrame（含溯源列），不含 compact/水位/编排逻辑。
 
@@ -51,7 +51,7 @@ adapters/
 
 ## 启用与配置
 
-`configs/stockdata.toml`：
+`configs/ashare-lake.toml`：
 
 ```toml
 [sources.eastmoney]

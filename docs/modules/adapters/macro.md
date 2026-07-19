@@ -1,6 +1,6 @@
 # macro 适配器
 
-路径：`src/stock_data_engine/adapters/macro/`
+路径：`src/ashare_lake/adapters/macro/`
 
 宏观经济指标采集，写入 `macro_indicators` 数据集。
 

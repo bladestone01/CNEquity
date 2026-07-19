@@ -22,7 +22,7 @@ env/
 # Secrets & local config
 .env
 configs/*.local.toml
-configs/stockdata.toml
+configs/ashare-lake.toml
 
 # Data lake artifacts (never commit generated data)
 data/

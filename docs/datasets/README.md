@@ -1,6 +1,6 @@
 # 数据集总览
 
-StockDataEngine 交付 **27 个注册数据集**（26 curated + 1 derived `adj_factors`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。
+ashare-lake 交付 **27 个注册数据集**（26 curated + 1 derived `adj_factors`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -27,7 +27,7 @@ StockDataEngine 交付 **27 个注册数据集**（26 curated + 1 derived `adj_f
 | 模式 | 含义 | 示例 |
 |------|------|------|
 | **batch** | 日更/周更，走 staging → compact → curated | daily_bars, fund_flow |
-| **derived** | 由 curated 计算，可 `sde derive` 重算 | adj_factors |
+| **derived** | 由 curated 计算，可 `asl derive` 重算 | adj_factors |
 | **on-demand** | 按 symbol 抓取，缓存于 meta | stock_news, announcement_body |
 
 ### fetch_semantics
@@ -37,7 +37,7 @@ StockDataEngine 交付 **27 个注册数据集**（26 curated + 1 derived `adj_f
 | `by_date` | 可按日期回补缺口 | daily_bars, margin_trading |
 | `snapshot` | 仅抓 run 当日快照，禁止伪造历史 | valuation_metrics, sector_members |
 
-`snapshot` 数据集若配置了 `backfill_source`（如 `valuation_metrics` → baostock、`sector_bars` → eastmoney_kline），允许 `sde backfill` 走专用历史源。
+`snapshot` 数据集若配置了 `backfill_source`（如 `valuation_metrics` → baostock、`sector_bars` → eastmoney_kline），允许 `asl backfill` 走专用历史源。
 
 ---
 
@@ -71,7 +71,7 @@ StockDataEngine 交付 **27 个注册数据集**（26 curated + 1 derived `adj_f
 | `research_reports` | 研报 |
 | `financial_reports` | 财报原文 |
 
-访问：`sde query --dataset <name> --symbol <code>.SH`
+访问：`asl query --dataset <name> --symbol <code>.SH`
 
 ---
 

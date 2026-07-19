@@ -73,7 +73,7 @@ pytest -m "not network"     # 排除网络测试
 ## 覆盖率
 
 ```bash
-pytest --cov=stock_data_engine --cov-report=term-missing
+pytest --cov=ashare_lake --cov-report=term-missing
 ```
 
 `pyproject.toml` 已配置 `coverage.run.source`。

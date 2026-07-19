@@ -1,8 +1,8 @@
 # config 模块
 
-路径：`src/stock_data_engine/config/`
+路径：`src/ashare_lake/config/`
 
-负责将 `stockdata.toml` 解析为类型化的 `Config` 对象，并在启动前校验引用完整性。
+负责将 `ashare-lake.toml` 解析为类型化的 `Config` 对象，并在启动前校验引用完整性。
 
 ---
 
@@ -65,16 +65,16 @@ cfg.manifest_path   # meta_root / "manifest.db"
 - 每个 wave/group/init phase 引用的 step 名 ∈ `STEP_REGISTRY`
 - failover 数据集名合法
 
-返回错误字符串列表；空列表表示通过。CLI：`sde config validate`。
+返回错误字符串列表；空列表表示通过。CLI：`asl config validate`。
 
 ---
 
 ## 使用示例
 
 ```python
-from stock_data_engine.config import load_config, validate_config
+from ashare_lake.config import load_config, validate_config
 
-cfg = load_config("configs/stockdata.toml")
+cfg = load_config("configs/ashare-lake.toml")
 errors = validate_config(cfg)
 ```
 

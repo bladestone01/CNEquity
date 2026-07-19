@@ -31,7 +31,7 @@ staging/{dataset}/run_id={run_id}/part-{batch_id}.parquet
 - 非 worker step 通常单 part
 - **不保证** PK 唯一；去重在 compact 阶段完成
 
-清理：`sde clean`（成功 compact 的 run；`--force` 可清失败 run，retry 将全量重抓）
+清理：`asl clean`（成功 compact 的 run；`--force` 可清失败 run，retry 将全量重抓）
 
 ---
 
@@ -113,17 +113,17 @@ compact 成功后更新。用于：
 
 - 增量抓取窗口（`incremental_window`）
 - 下游缓存失效键
-- `sde status --datasets` 新鲜度判断
+- `asl status --datasets` 新鲜度判断
 
 ---
 
 ## duckdb/
 
 ```
-duckdb/stockdata.duckdb
+duckdb/ashare-lake.duckdb
 ```
 
-- 启动时 / `sde query` 前由 `query/views.py` 确保视图存在
+- 启动时 / `asl query` 前由 `query/views.py` 确保视图存在
 - 每个 curated/derived 数据集对应视图
 - 额外视图：`daily_bars_hfq`、`daily_bars_qfq`、`daily_bars_adj`（带复权列）
 

@@ -12,8 +12,8 @@
 ## 基础安装
 
 ```bash
-git clone https://github.com/rootSunc/stock-data-engine.git
-cd stock-data-engine
+git clone https://github.com/rootSunc/ashare-lake.git
+cd ashare-lake
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[tdx]"
 ```
@@ -41,17 +41,17 @@ pip install -e ".[tdx,valuation,macro,nlp,structure,dev]"
 ## 配置初始化
 
 ```bash
-cp configs/stockdata.example.toml configs/stockdata.toml
+cp configs/ashare-lake.example.toml configs/ashare-lake.toml
 # 编辑 data.root — 生产环境建议使用绝对路径
 ```
 
-`configs/stockdata.toml`、`data/`、根目录 `logs/` 均已 gitignore，请勿强制加入版本库。
+`configs/ashare-lake.toml`、`data/`、根目录 `logs/` 均已 gitignore，请勿强制加入版本库。
 
 ## 验证安装
 
 ```bash
-sde config validate --config configs/stockdata.toml
-sde servers test --config configs/stockdata.toml   # 需 [tdx]
+asl config validate --config configs/ashare-lake.toml
+asl servers test --config configs/ashare-lake.toml   # 需 [tdx]
 pytest tests/unit -q                               # 需 [dev]，离线可跑
 ```
 

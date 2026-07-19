@@ -1,4 +1,4 @@
-# StockDataEngine 架构设计（分层 + 差距分析）
+# ashare-lake 架构设计（分层 + 差距分析）
 
 定位：系统怎么分层、边界在哪、还差什么。
 
@@ -62,13 +62,13 @@
   → 下游按水位刷新缓存 / 重算因子
 ```
 
-失败路径：batch failed → 水位不动 → `sde retry --run-id` 只重跑失败 batch → 成功后自动 compact→derive→audit。
+失败路径：batch failed → 水位不动 → `asl retry --run-id` 只重跑失败 batch → 成功后自动 compact→derive→audit。
 
 ---
 
 ## 3. 消费契约（引擎对外边界）
 
-下游唯一推荐入口是 `stock_data_engine.query.load()`：
+下游唯一推荐入口是 `ashare_lake.query.load()`：
 
 ```python
 load(dataset, *, start, end,

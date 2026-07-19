@@ -6,8 +6,8 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.config import Config
-from stock_data_engine.storage.valuation_orphans import purge_valuation_orphan_symbols
+from ashare_lake.config import Config
+from ashare_lake.storage.valuation_orphans import purge_valuation_orphan_symbols
 
 
 def test_purge_drops_symbols_absent_from_bars(tmp_path):

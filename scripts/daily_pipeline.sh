@@ -6,39 +6,39 @@
 # Groups run sequentially on purpose: the engine is pinned to workers=1 because
 # mootdx is not fork-safe, and running one source-heavy group at a time avoids
 # hammering the same upstream. A non-trading-day run is a cheap no-op (each
-# `sde run daily` exits 0 with skipped_non_trading_day).
+# `asl run daily` exits 0 with skipped_non_trading_day).
 #
 # One group failing does not abort the rest — we want as much of the day's data
 # as possible — but any failure makes the pipeline exit non-zero after the
 # health check reports it.
 #
 # Usage: scripts/daily_pipeline.sh [YYYY-MM-DD]
-# Env: SDE_CONFIG, SDE_LOG_DIR, SDE_GROUPS (space-separated override),
-#      SDE_GATE_GROUPS (space-separated; default "core" — failure ⇒ hard fail),
-#      SDE_SOFT_FAIL_OK=1 (default) — gate OK 时东财/soft 失败只告警、exit 0；
+# Env: ASL_CONFIG, ASL_LOG_DIR, ASL_GROUPS (space-separated override),
+#      ASL_GATE_GROUPS (space-separated; default "core" — failure ⇒ hard fail),
+#      ASL_SOFT_FAIL_OK=1 (default) — gate OK 时东财/soft 失败只告警、exit 0；
 #        设为 0 则 soft 失败仍 exit 1（国内全组日更可用），
-#      SDE_TRADE_DATE (same as optional CLI arg — catch up a prior session).
+#      ASL_TRADE_DATE (same as optional CLI arg — catch up a prior session).
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SDE="$REPO_ROOT/.venv/bin/sde"
-CONFIG="${SDE_CONFIG:-$REPO_ROOT/configs/stockdata.toml}"
-LOG_DIR="${SDE_LOG_DIR:-$REPO_ROOT/data/stock-data-engine/logs}"
+ASL="$REPO_ROOT/.venv/bin/asl"
+CONFIG="${ASL_CONFIG:-$REPO_ROOT/configs/ashare-lake.toml}"
+LOG_DIR="${ASL_LOG_DIR:-$REPO_ROOT/data/ashare-lake/logs}"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/daily-$(date +%Y%m%d).log"
-TRADE_DATE="${1:-${SDE_TRADE_DATE:-}}"
+TRADE_DATE="${1:-${ASL_TRADE_DATE:-}}"
 DATE_ARGS=()
 if [[ -n "$TRADE_DATE" ]]; then
   DATE_ARGS=(--trade-date "$TRADE_DATE")
 fi
 
-# Order mirrors configs/stockdata.toml [job.daily.groups] cadence
+# Order mirrors configs/ashare-lake.toml [job.daily.groups] cadence
 # (core 16:00 → research 18:30). Sequential, not by wall-clock time.
 # NB: not named GROUPS — that is a reserved bash builtin (user group IDs).
-GROUP_LIST="${SDE_GROUPS:-core capital signals fundamentals macro_risk research}"
-GATE_GROUP_LIST="${SDE_GATE_GROUPS:-core}"
+GROUP_LIST="${ASL_GROUPS:-core capital signals fundamentals macro_risk research}"
+GATE_GROUP_LIST="${ASL_GATE_GROUPS:-core}"
 # Overseas Mac: expected EM lag must not paint the whole day red.
-SOFT_FAIL_OK="${SDE_SOFT_FAIL_OK:-1}"
+SOFT_FAIL_OK="${ASL_SOFT_FAIL_OK:-1}"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -60,7 +60,7 @@ summary_status=()
 
 for g in $GROUP_LIST; do
   log "--- group: $g ---"
-  if "$SDE" run daily --group "$g" --config "$CONFIG" "${DATE_ARGS[@]}" >>"$LOG" 2>&1; then
+  if "$ASL" run daily --group "$g" --config "$CONFIG" "${DATE_ARGS[@]}" >>"$LOG" 2>&1; then
     log "group $g OK"
     summary_names+=("$g")
     summary_status+=("OK")

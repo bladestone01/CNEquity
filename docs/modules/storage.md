@@ -1,6 +1,6 @@
 # storage 模块
 
-路径：`src/stock_data_engine/storage/`
+路径：`src/ashare_lake/storage/`
 
 数据湖物理读写：目录初始化、staging/curated Parquet、compact 合并、instruments 特殊逻辑、水位、原子写、快照与清理。
 
@@ -16,7 +16,7 @@
 | `state.py` | `StateStore` — `meta/state/{dataset}.json` 水位 |
 | `atomic.py` | 写临时文件 → rename |
 | `source_snapshots.py` | `SnapshotStore` — failover 备源落地 |
-| `staging_cleanup.py` | `clean_staging()` — `sde clean` |
+| `staging_cleanup.py` | `clean_staging()` — `asl clean` |
 
 ---
 
@@ -91,7 +91,7 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, meta/locks/
 
 ## staging_cleanup.py
 
-`sde clean` 逻辑：
+`asl clean` 逻辑：
 
 | 条件 | 行为 |
 |------|------|

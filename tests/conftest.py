@@ -1,6 +1,6 @@
 import pytest
 
-from stock_data_engine.config import load_config
+from ashare_lake.config import load_config
 
 
 @pytest.fixture

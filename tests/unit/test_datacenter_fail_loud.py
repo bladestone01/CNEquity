@@ -1,6 +1,6 @@
 import pytest
 
-from stock_data_engine.adapters.eastmoney.datacenter import (
+from ashare_lake.adapters.eastmoney.datacenter import (
     EastMoneyDatacenterError,
     fetch_datacenter,
 )

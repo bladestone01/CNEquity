@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "stock-data-engine"
+name = "ashare-lake"
 version = "0.1.0"
-description = "A-share data ingestion orchestrator with Parquet lake delivery"
+description = "Self-hosted A-share Parquet data lake with multi-source ingest and daily orchestration"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "StockDataEngine Contributors" }]
+authors = [{ name = "ashare-lake Contributors" }]
 keywords = ["a-share", "stock", "data-engineering", "parquet", "duckdb"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -40,19 +40,19 @@ structure = ["pandas>=2.0", "openpyxl>=3.0", "xlrd>=2.0"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-timeout>=2.3", "ruff>=0.4"]
 
 [project.urls]
-Documentation = "https://github.com/rootSunc/stock-data-engine/tree/main/docs"
-Source = "https://github.com/rootSunc/stock-data-engine"
-Changelog = "https://github.com/rootSunc/stock-data-engine/blob/main/CHANGELOG.md"
-Issues = "https://github.com/rootSunc/stock-data-engine/issues"
+Documentation = "https://github.com/rootSunc/ashare-lake/tree/main/docs"
+Source = "https://github.com/rootSunc/ashare-lake"
+Changelog = "https://github.com/rootSunc/ashare-lake/blob/main/CHANGELOG.md"
+Issues = "https://github.com/rootSunc/ashare-lake/issues"
 
 [project.scripts]
-sde = "stock_data_engine.cli.main:cli"
+asl = "ashare_lake.cli.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-stock_data_engine = ["py.typed", "adapters/calendar/seeds/*.csv"]
+ashare_lake = ["py.typed", "adapters/calendar/seeds/*.csv"]
 
 [tool.ruff]
 line-length = 100
@@ -68,7 +68,7 @@ ignore = ["E501"]
 "scripts/*.py" = ["E402"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["stock_data_engine"]
+known-first-party = ["ashare_lake"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -84,7 +84,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["stock_data_engine"]
+source = ["ashare_lake"]
 branch = true
 
 [tool.coverage.report]

@@ -1,6 +1,6 @@
 # steps 模块
 
-路径：`src/stock_data_engine/steps/`
+路径：`src/ashare_lake/steps/`
 
 内置采集步骤定义。每个 step 是一个 `@register_step` 函数，负责调用 adapter、校验 schema、写 staging。
 
@@ -13,7 +13,7 @@
 `steps/__init__.py` import 所有子模块触发注册：
 
 ```python
-from stock_data_engine.steps import reference, bars, events, ...  # noqa
+from ashare_lake.steps import reference, bars, events, ...  # noqa
 ```
 
 当前 **28 个**注册 step（25 采集 + 3 finalize）。
@@ -98,7 +98,7 @@ from stock_data_engine.steps import reference, bars, events, ...  # noqa
 | sector_fund_flow | sector_fund_flow | eastmoney |
 | news_headlines | news_headlines | eastmoney |
 
-`sector_bars` 为 snapshot 语义；历史由 `sde backfill sector_bars` 写入（需国内网络，一次性）。
+`sector_bars` 为 snapshot 语义；历史由 `asl backfill sector_bars` 写入（需国内网络，一次性）。
 
 ### finalize.py
 
@@ -141,7 +141,7 @@ def step_xxx(cfg: Config, trade_date: date, run_id: str, ctx: dict) -> dict:
 
 ## Wave 配置示例
 
-见 `configs/stockdata.example.toml`：
+见 `configs/ashare-lake.example.toml`：
 
 - Wave 1：L0 并行
 - Wave 2：corporate_actions → daily_bars 串行（除权触发重抓）

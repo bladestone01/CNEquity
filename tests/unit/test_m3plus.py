@@ -3,14 +3,14 @@ from datetime import date
 import polars as pl
 import pytest
 
-import stock_data_engine.steps  # noqa: F401
-from stock_data_engine.adapters.eastmoney.fundamentals import fetch_financial_statement_items
-from stock_data_engine.adapters.eastmoney.index_constituents import fetch_index_constituents
-from stock_data_engine.adapters.eastmoney.industry import fetch_industry_members
-from stock_data_engine.config import Config, load_config, validate_config
-from stock_data_engine.domain.schemas import validate_dataframe
-from stock_data_engine.orchestrator.registry import get_step
-from stock_data_engine.query import load
+import ashare_lake.steps  # noqa: F401
+from ashare_lake.adapters.eastmoney.fundamentals import fetch_financial_statement_items
+from ashare_lake.adapters.eastmoney.index_constituents import fetch_index_constituents
+from ashare_lake.adapters.eastmoney.industry import fetch_industry_members
+from ashare_lake.config import Config, load_config, validate_config
+from ashare_lake.domain.schemas import validate_dataframe
+from ashare_lake.orchestrator.registry import get_step
+from ashare_lake.query import load
 
 
 class FakeDatacenterClient:
@@ -45,7 +45,7 @@ def test_m3plus_steps_registered():
 def test_example_config_validates_fundamentals_group():
     from pathlib import Path
 
-    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "stockdata.example.toml")
+    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "ashare-lake.example.toml")
     assert validate_config(cfg) == []
 
 
@@ -98,7 +98,7 @@ def test_financial_statement_items_drops_non_a_share():
 
 
 def test_financial_statement_items_backfill_walks_report_periods():
-    from stock_data_engine.adapters.eastmoney.fundamentals import _report_period_dates
+    from ashare_lake.adapters.eastmoney.fundamentals import _report_period_dates
 
     periods = _report_period_dates(date(2026, 7, 7))
     assert "2016-03-31" in periods

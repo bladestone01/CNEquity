@@ -4,7 +4,7 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.derive.sector_code_map import (
+from ashare_lake.derive.sector_code_map import (
     bk_to_board_code,
     board_code_to_bk,
     build_sector_code_map,

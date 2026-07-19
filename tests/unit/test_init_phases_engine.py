@@ -2,15 +2,15 @@ from datetime import date
 
 import pytest
 
-import stock_data_engine.steps  # noqa: F401
-from stock_data_engine.config import Config
-from stock_data_engine.orchestrator.engine import JobEngine
-from stock_data_engine.orchestrator.init_phases import (
+import ashare_lake.steps  # noqa: F401
+from ashare_lake.config import Config
+from ashare_lake.orchestrator.engine import JobEngine
+from ashare_lake.orchestrator.init_phases import (
     missing_steps,
     phases_never_started,
 )
-from stock_data_engine.orchestrator.manifest import Manifest
-from stock_data_engine.storage.layout import init_data_layout
+from ashare_lake.orchestrator.manifest import Manifest
+from ashare_lake.storage.layout import init_data_layout
 
 
 def _minimal_init_phases() -> list[str]:
@@ -34,8 +34,8 @@ def test_init_phase_failure_stops_without_keep_going(cfg, monkeypatch):
     init_data_layout(cfg)
     calls: list[str] = []
 
-    from stock_data_engine.orchestrator import engine as eng_mod
-    from stock_data_engine.orchestrator.registry import StepEntry
+    from ashare_lake.orchestrator import engine as eng_mod
+    from ashare_lake.orchestrator.registry import StepEntry
 
     def _get_step(name: str):
         def _fn(config, trade_date, run_id, context):
@@ -59,8 +59,8 @@ def test_init_phase_failure_stops_without_keep_going(cfg, monkeypatch):
 
 def test_init_manifest_final_status_reflects_failed_phase(cfg, monkeypatch):
     init_data_layout(cfg)
-    from stock_data_engine.orchestrator import engine as eng_mod
-    from stock_data_engine.orchestrator.registry import StepEntry
+    from ashare_lake.orchestrator import engine as eng_mod
+    from ashare_lake.orchestrator.registry import StepEntry
 
     def _get_step(name: str):
         def _fn(config, trade_date, run_id, context):
@@ -117,9 +117,9 @@ def test_init_blocks_new_run_when_incomplete_exists(cfg, monkeypatch):
 
     from click.testing import CliRunner
 
-    from stock_data_engine.cli.main import cli
+    from ashare_lake.cli.main import cli
 
-    cfg_path = cfg.data_root.parent / "stockdata.toml"
+    cfg_path = cfg.data_root.parent / "ashare-lake.toml"
     cfg_path.write_text(
         f'[data]\nroot = "{cfg.data_root}"\n[job.init.phases]\nnames = {json_phases()}'
     )
@@ -162,7 +162,7 @@ def test_resume_init_finds_latest_incomplete(cfg, monkeypatch):
 
 def test_reference_and_index_phases_backfill_history():
     """index_bars and trading_calendar must backfill 2016+ during init, like daily_bars."""
-    from stock_data_engine.orchestrator.init_phases import (
+    from ashare_lake.orchestrator.init_phases import (
         DEFAULT_INIT_PHASES,
         phase_backfill,
         step_backfill,

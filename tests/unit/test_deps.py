@@ -2,14 +2,14 @@ import uuid
 
 import pytest
 
-import stock_data_engine.steps  # noqa: F401 — register steps
-from stock_data_engine.orchestrator.deps import (
+import ashare_lake.steps  # noqa: F401 — register steps
+from ashare_lake.orchestrator.deps import (
     CyclicDependencyError,
     UnknownStepError,
     step_execution_levels,
     validate_steps_registered,
 )
-from stock_data_engine.orchestrator.registry import register_step
+from ashare_lake.orchestrator.registry import register_step
 
 
 def test_reference_wave_steps_are_single_parallel_level():

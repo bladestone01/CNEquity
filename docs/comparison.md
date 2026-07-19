@@ -1,10 +1,10 @@
 # 与同类项目的差异
 
-StockDataEngine 是本地部署的 A 股数据层：多源采集 + 编排 + 契约化 Parquet 湖 + 可审计查询。不是行情 SDK 合集，也不是回测 / 交易框架。
+ashare-lake 是本地部署的 A 股数据层：多源采集 + 编排 + 契约化 Parquet 湖 + 可审计查询。不是行情 SDK 合集，也不是回测 / 交易框架。
 
 ## 快速对照
 
-| | StockDataEngine | AkShare / efinance 等 | Tushare Pro | Baostock | Qlib / vn.py 等 |
+| | ashare-lake | AkShare / efinance 等 | Tushare Pro | Baostock | Qlib / vn.py 等 |
 |--|-----------------|------------------------|-------------|----------|-----------------|
 | 定位 | 自建选股数据湖 + 日更编排 | 拉数函数库 | 云端积分 API | 免费会话 API | 研究/交易平台（含数据子系统） |
 | 交付物 | curated Parquet + DuckDB 视图 + `load()` | 内存 DataFrame | 远端表/CSV | DataFrame | 平台内数据集或行情接入 |
@@ -23,7 +23,7 @@ StockDataEngine 是本地部署的 A 股数据层：多源采集 + 编排 + 契�
 
 口径上几条硬约束：源失败就让 batch 失败（mock 仅测试门控且强制标记）；curated 行带 provenance；财报支持 `announce_date` + `load(..., as_of=)`；备源可审计比对，不静默覆盖主源（见 [ADR-0003](adr/0003-canonical-curated-with-source-snapshots.md)）。覆盖面可以后补，会污染下游结论的口径问题优先修。
 
-编排也算一等公民：`sde init` / `run` / `retry` / `audit` / `status`、分组调度、限速、manifest WAL、验收脚本——纯 adapter 库里通常没有，本地湖要跑过两周却离不开。
+编排也算一等公民：`asl init` / `run` / `retry` / `audit` / `status`、分组调度、限速、manifest WAL、验收脚本——纯 adapter 库里通常没有，本地湖要跑过两周却离不开。
 
 明确不做：回测、信号、下单；托管云行情或出售数据文件；自动把备源写成 canonical；保证上游 ToS 下的商用再分发（见 [legal](legal-and-data-sources.md)）。
 

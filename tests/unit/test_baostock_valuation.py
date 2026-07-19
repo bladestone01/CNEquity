@@ -7,12 +7,12 @@ from datetime import date
 import polars as pl
 import pytest
 
-from stock_data_engine.adapters.baostock.valuation import (
+from ashare_lake.adapters.baostock.valuation import (
     fetch_valuation_history,
     to_baostock_symbol,
 )
-from stock_data_engine.domain.datasets import get_dataset
-from stock_data_engine.domain.schemas import VALUATION_METRICS_SCHEMA
+from ashare_lake.domain.datasets import get_dataset
+from ashare_lake.domain.schemas import VALUATION_METRICS_SCHEMA
 
 
 def test_to_baostock_symbol():
@@ -221,8 +221,8 @@ def test_valuation_metrics_declares_backfill_source():
 
 
 def test_symbols_needing_backfill_includes_null_mv(tmp_path):
-    from stock_data_engine.config import Config
-    from stock_data_engine.steps.fundamentals import _symbols_needing_backfill
+    from ashare_lake.config import Config
+    from ashare_lake.steps.fundamentals import _symbols_needing_backfill
 
     root = tmp_path / "data"
     part = root / "curated" / "valuation_metrics" / "trade_date=2016-01-04"
@@ -251,8 +251,8 @@ def test_symbols_needing_backfill_includes_null_mv(tmp_path):
 
 def test_symbols_needing_backfill_sparse_fill(tmp_path):
     """A single non-null day must not mark a sparse history as done (<80%)."""
-    from stock_data_engine.config import Config
-    from stock_data_engine.steps.fundamentals import _symbols_needing_backfill
+    from ashare_lake.config import Config
+    from ashare_lake.steps.fundamentals import _symbols_needing_backfill
 
     root = tmp_path / "data"
     part = root / "curated" / "valuation_metrics" / "trade_date=2016-01-04"

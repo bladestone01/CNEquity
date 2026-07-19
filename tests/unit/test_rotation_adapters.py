@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import polars as pl
 
-from stock_data_engine.adapters.eastmoney.rotation import (
+from ashare_lake.adapters.eastmoney.rotation import (
     _hot_symbol,
     fetch_hot_rank,
     fetch_news_headlines,
@@ -35,7 +35,7 @@ def test_fetch_hot_rank_normalizes(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
+        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
     )
     df = fetch_hot_rank(date(2026, 7, 14), top_n=10)
     assert df.height == 1
@@ -46,7 +46,7 @@ def test_fetch_hot_rank_normalizes(monkeypatch):
 def test_fetch_sector_bars_from_clist(monkeypatch):
     mock_client = MagicMock()
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.fetch_clist_pages",
+        "ashare_lake.adapters.eastmoney.rotation.fetch_clist_pages",
         lambda client, **kw: [
             {
                 "f12": "BK1630",
@@ -72,7 +72,7 @@ def test_fetch_sector_bars_from_clist(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
+        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
     )
     df = fetch_sector_bars(date(2026, 7, 14))
     assert df.height >= 1
@@ -94,7 +94,7 @@ def test_fetch_sector_bars_history_parses_klines(monkeypatch):
     }
     mock_client.get.return_value = mock_resp
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.fetch_clist_pages",
+        "ashare_lake.adapters.eastmoney.rotation.fetch_clist_pages",
         lambda client, **kw: [{"f12": "BK1630", "f14": "测试板块"}],
     )
 
@@ -106,7 +106,7 @@ def test_fetch_sector_bars_history_parses_klines(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
+        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
     )
     df, failed, succeeded = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
     assert failed == []
@@ -125,7 +125,7 @@ def test_fetch_sector_bars_history_reports_failures(monkeypatch):
     mock_client = MagicMock()
     mock_client.get.side_effect = RuntimeError("timeout")
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.fetch_clist_pages",
+        "ashare_lake.adapters.eastmoney.rotation.fetch_clist_pages",
         lambda client, **kw: [{"f12": "BK9999", "f14": "坏板块"}],
     )
 
@@ -137,7 +137,7 @@ def test_fetch_sector_bars_history_reports_failures(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
+        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
     )
     df, failed, succeeded = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
     assert df.is_empty()
@@ -168,7 +168,7 @@ def test_fetch_sector_bars_history_failover_host(monkeypatch):
 
     mock_client.get.side_effect = get_side_effect
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.fetch_clist_pages",
+        "ashare_lake.adapters.eastmoney.rotation.fetch_clist_pages",
         lambda client, **kw: [{"f12": "BK1630", "f14": "测试板块"}],
     )
 
@@ -180,7 +180,7 @@ def test_fetch_sector_bars_history_failover_host(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
+        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
     )
     df, failed, succeeded = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
     assert failed == []
@@ -195,7 +195,7 @@ def test_fetch_sector_bars_history_skips_completed(monkeypatch):
     mock_resp.json.return_value = {"data": {"klines": []}}
     mock_client.get.return_value = mock_resp
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.fetch_clist_pages",
+        "ashare_lake.adapters.eastmoney.rotation.fetch_clist_pages",
         lambda client, **kw: [
             {"f12": "BK1630", "f14": "已完成"},
             {"f12": "BK1631", "f14": "待拉"},
@@ -210,7 +210,7 @@ def test_fetch_sector_bars_history_skips_completed(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
+        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
     )
     df, failed, succeeded = fetch_sector_bars_history(
         date(2026, 6, 1), date(2026, 7, 14), skip_sectors={"BK1630"}
@@ -251,7 +251,7 @@ def test_fetch_news_headlines_filters_date(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
+        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM()
     )
     df = fetch_news_headlines(date(2026, 7, 14))
     assert df.height == 1

@@ -1,9 +1,9 @@
 # 配置参考
 
-配置文件格式：TOML。模板：`configs/stockdata.example.toml`。加载与校验：`stock_data_engine.config.loader`。
+配置文件格式：TOML。模板：`configs/ashare-lake.example.toml`。加载与校验：`ashare_lake.config.loader`。
 
 ```bash
-sde config validate --config configs/stockdata.toml
+asl config validate --config configs/ashare-lake.toml
 ```
 
 ---
@@ -12,7 +12,7 @@ sde config validate --config configs/stockdata.toml
 
 | 键 | 类型 | 默认 | 说明 |
 |----|------|------|------|
-| `root` | string | `./data/stock-data-engine` | 数据湖根目录；**生产建议绝对路径** |
+| `root` | string | `./data/ashare-lake` | 数据湖根目录；**生产建议绝对路径** |
 
 派生路径（代码内自动计算，无需配置）：
 
@@ -20,7 +20,7 @@ sde config validate --config configs/stockdata.toml
 - `{root}/curated` — canonical 数据集
 - `{root}/derived` — 派生数据集（如 adj_factors）
 - `{root}/meta` — manifest、水位、质量 findings
-- `{root}/duckdb/stockdata.duckdb` — DuckDB 视图库
+- `{root}/duckdb/ashare-lake.duckdb` — DuckDB 视图库
 
 ---
 
@@ -153,7 +153,7 @@ Wave DAG：每个 wave 含 `name`、`parallel`（wave 内 step 是否并行）�
 | `macro_risk` | 18:00 | 宏观、市场宽度、解禁、监管 |
 | `research` | 18:30 | 机构持仓、一致预期、情绪 |
 
-`sde run daily --group <name>` 只跑该组 steps。
+`asl run daily --group <name>` 只跑该组 steps。
 
 ---
 
@@ -186,7 +186,7 @@ names = [
 | `enabled` | OnDemandService 开关 |
 | `datasets` | 按需抓取的数据集名列表 |
 
-缓存路径：`meta/on_demand/{dataset}/{symbol}.json`。通过 `sde query --dataset X --symbol Y` 访问。
+缓存路径：`meta/on_demand/{dataset}/{symbol}.json`。通过 `asl query --dataset X --symbol Y` 访问。
 
 ---
 
@@ -194,7 +194,7 @@ names = [
 
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `path` | `{data.root}/duckdb/stockdata.duckdb` | 支持 `{data.root}` 占位符 |
+| `path` | `{data.root}/duckdb/ashare-lake.duckdb` | 支持 `{data.root}` 占位符 |
 | `memory_limit` | `2GB` | DuckDB 内存上限 |
 | `threads` | 4 | 查询线程数 |
 
@@ -206,19 +206,19 @@ names = [
 
 | 变量 | 默认 | 作用 |
 |------|------|------|
-| `SDE_CONFIG` | `configs/stockdata.toml` | 配置路径 |
-| `SDE_LOG_DIR` | `{data.root}/logs` | 日志目录 |
-| `SDE_GROUPS` | 全部 6 组 | 覆盖 pipeline 要跑的组 |
-| `SDE_NOTIFY` | `1` | `0` 关闭 macOS 通知 |
-| `SDE_BACKUP_DIR` | 湖内 backups | 元数据备份目录 |
-| `SDE_BACKUP_RETENTION_DAYS` | 14 | 备份保留天数 |
+| `ASL_CONFIG` | `configs/ashare-lake.toml` | 配置路径 |
+| `ASL_LOG_DIR` | `{data.root}/logs` | 日志目录 |
+| `ASL_GROUPS` | 全部 6 组 | 覆盖 pipeline 要跑的组 |
+| `ASL_NOTIFY` | `1` | `0` 关闭 macOS 通知 |
+| `ASL_BACKUP_DIR` | 湖内 backups | 元数据备份目录 |
+| `ASL_BACKUP_RETENTION_DAYS` | 14 | 备份保留天数 |
 
 ---
 
 ## 配置与代码关系
 
 ```
-stockdata.toml
+ashare-lake.toml
     → load_config() → Config dataclass
     → validate_config() → 引用 step/group 合法性
     → JobEngine(cfg) / load(..., config=cfg)

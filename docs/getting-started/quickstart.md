@@ -8,14 +8,14 @@
 
 ```bash
 source .venv/bin/activate
-cp configs/stockdata.example.toml configs/stockdata.toml
-sde config validate
+cp configs/ashare-lake.example.toml configs/ashare-lake.toml
+asl config validate
 ```
 
 ## 2. 初始化数据湖
 
 ```bash
-sde init --config configs/stockdata.toml
+asl init --config configs/ashare-lake.toml
 ```
 
 `init` 会：
@@ -27,15 +27,15 @@ sde init --config configs/stockdata.toml
 **仅建目录、不跑回填：**
 
 ```bash
-sde init --layout-only --config configs/stockdata.toml
+asl init --layout-only --config configs/ashare-lake.toml
 ```
 
 **中断后续跑：**
 
 ```bash
-sde init --resume --config configs/stockdata.toml
+asl init --resume --config configs/ashare-lake.toml
 # 或指定 run_id
-sde retry --run-id <run_id> --config configs/stockdata.toml
+asl retry --run-id <run_id> --config configs/ashare-lake.toml
 ```
 
 init 耗时较长（全市场日线分页回填），建议在稳定网络下运行。阶段定义见 [数据流 — Init](../architecture/data-flow.md#init-全量回填)。
@@ -53,7 +53,7 @@ init 耗时较长（全市场日线分页回填），建议在稳定网络下运
 ## 4. 每日增量
 
 ```bash
-sde run daily --config configs/stockdata.toml
+asl run daily --config configs/ashare-lake.toml
 ```
 
 非交易日自动跳过（`skipped_non_trading_day`，退出码 0）。
@@ -61,8 +61,8 @@ sde run daily --config configs/stockdata.toml
 **按调度组分批跑（与生产 pipeline 一致）：**
 
 ```bash
-sde run daily --group core --config configs/stockdata.toml
-sde run daily --group capital --config configs/stockdata.toml
+asl run daily --group core --config configs/ashare-lake.toml
+asl run daily --group capital --config configs/ashare-lake.toml
 # signals / fundamentals / macro_risk / research
 ```
 
@@ -71,9 +71,9 @@ sde run daily --group capital --config configs/stockdata.toml
 ## 5. 查看状态
 
 ```bash
-sde status --config configs/stockdata.toml              # 最近一次 run 摘要
-sde status --datasets --config configs/stockdata.toml   # 各数据集新鲜度
-sde catalog --config configs/stockdata.toml             # 行数统计
+asl status --config configs/ashare-lake.toml              # 最近一次 run 摘要
+asl status --datasets --config configs/ashare-lake.toml   # 各数据集新鲜度
+asl catalog --config configs/ashare-lake.toml             # 行数统计
 ```
 
 ## 6. 读取数据
@@ -81,7 +81,7 @@ sde catalog --config configs/stockdata.toml             # 行数统计
 ### Python API（推荐）
 
 ```python
-from stock_data_engine.query import load
+from ashare_lake.query import load
 
 bars = load(
     "daily_bars",
@@ -103,28 +103,28 @@ roe = load(
 ### DuckDB SQL
 
 ```bash
-sde query --sql "
+asl query --sql "
   SELECT symbol, trade_date, adj_close
   FROM daily_bars_adj
   WHERE trade_date >= '2025-01-01'
-" --config configs/stockdata.toml
+" --config configs/ashare-lake.toml
 ```
 
-数据库文件：`{data.root}/duckdb/stockdata.duckdb`。
+数据库文件：`{data.root}/duckdb/ashare-lake.duckdb`。
 
 ### 直读 Parquet
 
 ```python
 import polars as pl
-df = pl.scan_parquet("data/stock-data-engine/curated/daily_bars/**/*.parquet")
+df = pl.scan_parquet("data/ashare-lake/curated/daily_bars/**/*.parquet")
 df.filter(pl.col("symbol") == "600519.SH").collect()
 ```
 
 ## 7. 失败重试
 
 ```bash
-sde status --config configs/stockdata.toml    # 找到 failed run_id
-sde retry --run-id <run_id> --config configs/stockdata.toml
+asl status --config configs/ashare-lake.toml    # 找到 failed run_id
+asl retry --run-id <run_id> --config configs/ashare-lake.toml
 ```
 
 retry 只重跑失败 batch；全部成功后自动 compact → derive_adj_factors → audit。
@@ -144,4 +144,4 @@ scripts/install_scheduler.sh   # macOS launchd，每天 16:05
 | `load()` 读不到新数据 | 确认 run 已 compact；分组 run 必须含 `compact` step |
 | `universe="all_a"` 未剔历史 ST | `trading_status` 仅覆盖日更起点之后；2016→上线日回测需注意 |
 | init 中途失败 | 勿重新 `init`，用 `--resume` 或 `retry` |
-| TDX 连接失败 | `sde servers test`；检查 `[tdx_protocol.hosts]` 与网络 |
+| TDX 连接失败 | `asl servers test`；检查 `[tdx_protocol.hosts]` 与网络 |

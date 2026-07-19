@@ -11,9 +11,9 @@ from datetime import date
 
 import polars as pl
 
-from stock_data_engine.config import Config
-from stock_data_engine.steps import reference
-from stock_data_engine.steps.reference import (
+from ashare_lake.config import Config
+from ashare_lake.steps import reference
+from ashare_lake.steps.reference import (
     _backfill_trading_status_st,
     _st_backfilled_symbols,
 )
@@ -42,7 +42,7 @@ def _patch(monkeypatch, *, returns):
         return {"rows_read": df.height, "rows_written": df.height}
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.baostock.st_history.fetch_st_history", fake_fetch
+        "ashare_lake.adapters.baostock.st_history.fetch_st_history", fake_fetch
     )
     monkeypatch.setattr(reference, "write_fetched", fake_write)
     return written
@@ -76,7 +76,7 @@ def test_resume_skips_already_swept_symbols(tmp_path, monkeypatch):
         return pl.DataFrame(schema={"symbol": pl.Utf8}), []
 
     monkeypatch.setattr(
-        "stock_data_engine.adapters.baostock.st_history.fetch_st_history", fake_fetch
+        "ashare_lake.adapters.baostock.st_history.fetch_st_history", fake_fetch
     )
     result = _backfill_trading_status_st(cfg, date(2026, 7, 1), "run2")
     assert "already ST-backfilled" in result["note"]

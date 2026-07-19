@@ -1,6 +1,6 @@
 # baostock 适配器
 
-路径：`src/stock_data_engine/adapters/baostock/`
+路径：`src/ashare_lake/adapters/baostock/`
 
 [Baostock](http://baostock.com) 开源证券数据接口。用于 **历史回填** 场景，非日更主源。
 
@@ -22,7 +22,7 @@
 ## valuation.py
 
 - `DatasetSpec.backfill_source = "baostock"` for `valuation_metrics`
-- `sde backfill valuation_metrics` 走此路径
+- `asl backfill valuation_metrics` 走此路径
 - 日更仍用 EastMoney 快照
 
 ---

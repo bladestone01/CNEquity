@@ -13,7 +13,7 @@ pip install -e ".[tdx,dev]"
 # optional: valuation, macro, nlp, structure — see docs/getting-started/installation.md
 ```
 
-Do not commit `configs/stockdata.toml`, `data/`, or `logs/`.
+Do not commit `configs/ashare-lake.toml`, `data/`, or `logs/`.
 
 ```bash
 ruff format .
@@ -25,7 +25,7 @@ pytest tests/integration
 
 ## Conventions
 
-- Code lives under `src/stock_data_engine/`; keep concerns split (`domain`,
+- Code lives under `src/ashare_lake/`; keep concerns split (`domain`,
   `adapters`, `orchestrator`, `steps`, `storage`, `derive`, `quality`,
   `query`, `config`, `cli`).
 - Steps follow L0–L8 layering under `steps/`; import new modules in

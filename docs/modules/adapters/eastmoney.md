@@ -1,6 +1,6 @@
 # eastmoney 适配器
 
-路径：`src/stock_data_engine/adapters/eastmoney/`
+路径：`src/ashare_lake/adapters/eastmoney/`
 
 东方财富 HTTP API（datacenter、clist、行情接口等）。资金面、估值快照、结构成员、新闻、ST/停牌等的主要 HTTP 源。
 
@@ -53,12 +53,12 @@
 
 - **日更**：板块 clist（概念 + 行业），当日快照。
 - **历史回填**：`push2his` 板块 kline（`secid=90.BKxxxx`），`backfill_source="eastmoney_kline"`。
-- clist 只有当日截面；动量/RRG 需在国内网络跑一次 `sde backfill sector_bars`（~991 板 × 400 日历日）。
+- clist 只有当日截面；动量/RRG 需在国内网络跑一次 `asl backfill sector_bars`（~991 板 × 400 日历日）。
 - push2his 在海外 IP 常不可用；clist 日更一般仍可用。Checkpoint：`meta/state/sector_bars_backfill.json`；`--retry-failed` / `--force` 见 [CLI](../reference/cli.md)。
 - **代理**：`[sources.eastmoney] proxy = "http://127.0.0.1:7890"`（写入 `EastMoneyClient`）；未配置时仍可读 `HTTPS_PROXY` / `HTTP_PROXY`。
 - 板块指数无公司行为，`fqt=0`。
 
-可选 `sde derive sector_routing` 生成 EM×TDX 名称映射（**不参与** sector_bars 采集）。
+可选 `asl derive sector_routing` 生成 EM×TDX 名称映射（**不参与** sector_bars 采集）。
 
 ### 北向持股
 
