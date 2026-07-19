@@ -21,9 +21,16 @@ class SnapshotBackfillError(RuntimeError):
     """Raised when backfill is requested for a snapshot-only dataset."""
 
 
-def write_simple(config: Config, run_id: str, dataset: str, df: pl.DataFrame) -> dict:
+def write_simple(
+    config: Config,
+    run_id: str,
+    dataset: str,
+    df: pl.DataFrame,
+    *,
+    batch_id: str = "batch-0",
+) -> dict:
     writer = StagingWriter(config.staging_root)
-    writer.write_batch(dataset, run_id, "batch-0", df)
+    writer.write_batch(dataset, run_id, batch_id, df)
     return {"rows_read": df.height, "rows_written": df.height}
 
 

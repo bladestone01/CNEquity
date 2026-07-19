@@ -86,6 +86,23 @@ def to_baostock_symbol(symbol: str) -> str:
     return f"{prefix}.{info.code}"
 
 
+def _ensure_socket_timeout(timeout: float = _SOCKET_TIMEOUT_SECONDS) -> None:
+    """Pin timeout on baostock's live socket (setdefaulttimeout is not enough).
+
+    ``SocketUtil.connect`` creates the socket without ``settimeout``; on some
+    platforms the module-global default is ignored once the fd is in a blocking
+    ``recv`` loop waiting for baostock's ``<![CDATA[]]>`` terminator.
+    """
+    try:
+        import baostock.common.context as bctx  # noqa: PLC0415 — optional dep, lazy
+
+        sock = getattr(bctx, "default_socket", None)
+        if sock is not None:
+            sock.settimeout(timeout)
+    except Exception:  # noqa: BLE001 — best-effort; never break the sweep
+        pass
+
+
 def _force_close_baostock_socket() -> None:
     """Interrupt baostock's live socket so a blocked/slowloris read raises at once.
 
@@ -168,6 +185,7 @@ def fetch_per_symbol(
     prev_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(_SOCKET_TIMEOUT_SECONDS)
     _login(bs, sleep=sleep)
+    _ensure_socket_timeout()
     rows: list[dict] = []
     failed: list[str] = []
     n_symbols = len(symbols)
@@ -178,6 +196,7 @@ def fetch_per_symbol(
             if i and _RELOGIN_EVERY and i % _RELOGIN_EVERY == 0:
                 try:
                     _relogin(bs, sleep=sleep)
+                    _ensure_socket_timeout()
                 except RuntimeError as exc:
                     # Keep rows already collected so the caller can checkpoint;
                     # remaining symbols stay on the resume set.
@@ -190,14 +209,14 @@ def fetch_per_symbol(
                     )
                     failed.extend(symbols[i:])
                     break
-            # Heartbeat every 50 symbols so a multi-hour sweep is observable on
-            # stdout even when logging is only WARNING-configured by default.
-            if i == 0 or (i + 1) % 50 == 0 or i + 1 == n_symbols:
+            # Heartbeat every 10 symbols so multi-hour sweeps look alive on stdout.
+            if i == 0 or (i + 1) % 10 == 0 or i + 1 == n_symbols:
                 logger.info(
-                    "%s progress %d/%d ok_rows=%d failed=%d",
+                    "%s progress %d/%d symbol=%s ok_rows=%d failed=%d",
                     label,
                     i + 1,
                     n_symbols,
+                    symbol,
                     len(rows),
                     len(failed),
                 )
@@ -221,6 +240,7 @@ def fetch_per_symbol(
                 sleep(_BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)])
                 try:
                     _relogin(bs, sleep=sleep)
+                    _ensure_socket_timeout()
                 except RuntimeError as exc:
                     logger.error(
                         "%s login failed while retrying %s: %s; returning partial",

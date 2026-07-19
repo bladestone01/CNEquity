@@ -179,7 +179,14 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
         batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
         df, failed = fetch_st_history(batch, BACKFILL_START, trade_date, config=config)
         if not df.is_empty():
-            chunk = write_fetched(config, run_id, "trading_status", df, source="baostock")
+            chunk = write_fetched(
+                config,
+                run_id,
+                "trading_status",
+                df,
+                source="baostock",
+                batch_id=f"batch-{offset:05d}",
+            )
             rows_read += int(chunk.get("rows_read", 0))
             rows_written += int(chunk.get("rows_written", 0))
         failed_set = set(failed)

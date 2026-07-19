@@ -14,6 +14,9 @@ from stock_data_engine.steps.http_common import run_incremental_fetched, write_f
 
 # EastMoney's valuation clist is a live snapshot only; history comes from baostock.
 _VALUATION_BACKFILL_START = date(2016, 1, 1)
+# Checkpoint every N symbols so a mid-sweep kill still keeps prior chunks in
+# curated (resume via ``_symbols_needing_backfill`` / float_mv fill ratio).
+_VALUATION_BACKFILL_CHUNK = 50
 
 
 @register_step("valuation_metrics", group="capital", depends_on=["instruments"])
@@ -42,9 +45,9 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
     """Historical PE/PB/PS + market cap from baostock over all_a (2016 → today).
 
     Resumable: symbols that already have baostock rows *with* ``float_mv`` filled
-    are skipped. Symbols that only have null-MV PE/PB history (pre-market-cap
-    backfill) stay on the todo set so a re-run rewrites them via compact
-    ``keep=last``. Failures are surfaced as audit findings (fail-loud).
+    densely (≥80%) are skipped. Progress is written every
+    ``_VALUATION_BACKFILL_CHUNK`` symbols so a mid-sweep kill still keeps prior
+    chunks. Failures are surfaced as audit findings (fail-loud).
     """
     from stock_data_engine.adapters.baostock.valuation import fetch_valuation_history
     from stock_data_engine.storage.valuation_orphans import purge_valuation_orphan_symbols
@@ -69,22 +72,43 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
             "orphan_purge": purge_summary,
         }
 
-    df, failed = fetch_valuation_history(
-        todo, _VALUATION_BACKFILL_START, trade_date, config=config
-    )
+    rows_read = 0
+    rows_written = 0
+    all_failed: list[str] = []
+    for offset in range(0, len(todo), _VALUATION_BACKFILL_CHUNK):
+        batch = todo[offset : offset + _VALUATION_BACKFILL_CHUNK]
+        df, failed = fetch_valuation_history(
+            batch, _VALUATION_BACKFILL_START, trade_date, config=config
+        )
+        all_failed.extend(failed)
+        if not df.is_empty():
+            # Unique part name per chunk — write_simple's default batch-0 would
+            # overwrite prior chunks in the same run_id before compact.
+            chunk = write_fetched(
+                config,
+                run_id,
+                "valuation_metrics",
+                df,
+                source="baostock",
+                batch_id=f"batch-{offset:05d}",
+            )
+            rows_read += int(chunk.get("rows_read", 0))
+            rows_written += int(chunk.get("rows_written", 0))
 
-    result: dict = {"rows_read": 0, "rows_written": 0, "orphan_purge": purge_summary}
-    if not df.is_empty():
-        result = write_fetched(config, run_id, "valuation_metrics", df, source="baostock")
-        result["orphan_purge"] = purge_summary
-    if failed:
-        result["failed_symbols"] = len(failed)
+    result: dict = {
+        "rows_read": rows_read,
+        "rows_written": rows_written,
+        "orphan_purge": purge_summary,
+        "symbols_todo": len(todo),
+    }
+    if all_failed:
+        result["failed_symbols"] = len(all_failed)
         finding = {
             "dataset": "valuation_metrics",
             "severity": "warning",
             "code": "baostock_backfill_incomplete",
             "message": (
-                f"{len(failed)}/{len(todo)} symbols failed baostock backfill "
+                f"{len(all_failed)}/{len(todo)} symbols failed baostock backfill "
                 f"(throttled/dropped); re-run `sde backfill valuation_metrics` to resume."
             ),
         }

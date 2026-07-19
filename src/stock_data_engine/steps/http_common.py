@@ -19,9 +19,10 @@ def write_fetched(
     df: pl.DataFrame,
     *,
     source: str,
+    batch_id: str = "batch-0",
 ) -> dict:
     df = with_provenance(df, source=source, data_version="v1")
-    return write_simple(config, run_id, dataset, df)
+    return write_simple(config, run_id, dataset, df, batch_id=batch_id)
 
 
 def run_incremental_fetched(

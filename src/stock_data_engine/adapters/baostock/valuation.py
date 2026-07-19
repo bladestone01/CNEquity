@@ -224,8 +224,9 @@ def fetch_valuation_history(
         bs=bs,
         sleep=sleep,
         label="baostock valuation",
-        # Year-chunked k-data + ~11 Q4 profit calls.
-        deadline=120.0,
+        # Decade of year-chunked k-data + ~11 Q4 profit calls; allow headroom
+        # above the 30s socket timeout so a slow-but-alive fetch is not killed.
+        deadline=300.0,
         config=config,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
