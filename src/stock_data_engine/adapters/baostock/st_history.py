@@ -78,6 +78,7 @@ def fetch_st_history(
     *,
     bs=None,
     sleep=time.sleep,
+    config=None,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Per-symbol historical ST-labelled trading_status rows over ``[start, end]``.
 
@@ -86,10 +87,18 @@ def fetch_st_history(
     are returned so the caller can surface them and resume. A symbol that was
     never ST contributes zero rows (a legitimate empty, not a failure).
 
-    ``bs`` / ``sleep`` are injectable for offline tests.
+    ``bs`` / ``sleep`` / ``config`` are injectable for offline tests. Pass
+    ``config`` in production for ``[sources.baostock]`` pacing.
     """
     rows, failed = fetch_per_symbol(
-        symbols, start, end, _fetch_one_st, bs=bs, sleep=sleep, label="baostock ST"
+        symbols,
+        start,
+        end,
+        _fetch_one_st,
+        bs=bs,
+        sleep=sleep,
+        label="baostock ST",
+        config=config,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     return df, failed

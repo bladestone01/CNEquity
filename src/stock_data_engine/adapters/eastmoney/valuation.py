@@ -13,10 +13,15 @@ from stock_data_engine.adapters.eastmoney.em_auth import EastMoneyClient
 _VALUATION_FIELDS = "f12,f13,f9,f23,f45,f20,f21"
 
 
-def fetch_valuation_metrics(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
+def fetch_valuation_metrics(
+    trade_date: date,
+    *,
+    client: EastMoneyClient | None = None,
+    config=None,
+) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
     rows_raw = fetch_clist_pages(client, fields=_VALUATION_FIELDS)
     rows = []
     for sym, item in clist_rows_to_symbols(rows_raw):

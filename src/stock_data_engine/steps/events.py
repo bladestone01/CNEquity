@@ -118,6 +118,6 @@ def step_announcement_index(config: Config, trade_date: date, run_id: str, conte
         trade_date,
         run_id,
         "announcement_index",
-        fetch_announcement_index,
+        lambda d: fetch_announcement_index(d, config=config),
         source="cninfo",
     )

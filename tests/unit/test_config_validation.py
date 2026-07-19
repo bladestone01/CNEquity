@@ -55,3 +55,9 @@ def test_example_config_validates():
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "configs" / "stockdata.example.toml")
     assert validate_config(cfg) == []
+    # Free-source anti-blacklist defaults (time may be slow; bans are worse).
+    assert cfg.source_intervals["baostock"] == 1.0
+    assert cfg.baostock_batch_size == 50
+    assert cfg.baostock_batch_rest_seconds == 45.0
+    assert cfg.source_intervals["eastmoney"] == 1.0
+    assert cfg.tdx_min_interval_ms == 100

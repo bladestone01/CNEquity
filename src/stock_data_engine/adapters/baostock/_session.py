@@ -29,6 +29,10 @@ _RELOGIN_EVERY = 300
 # Retry before failing so a transient blip does not abort thousands of symbols.
 _LOGIN_RETRIES = 5
 _LOGIN_BACKOFF_SECONDS = (2.0, 5.0, 10.0, 20.0, 30.0)
+# Free-API defaults when Config is not wired (tests / ad-hoc calls).
+_DEFAULT_MIN_INTERVAL = 1.0
+_DEFAULT_BATCH_SIZE = 50
+_DEFAULT_BATCH_REST = 45.0
 # Hard per-symbol wall-clock deadline. The socket timeout below catches a fully
 # blocked read, but baostock can *slowloris* a query — trickle keepalive bytes so
 # every recv returns just before the timeout yet the terminator never arrives, so
@@ -105,6 +109,34 @@ def _force_close_baostock_socket() -> None:
         pass
 
 
+def _pace_before_symbol(config, *, sleep=time.sleep) -> None:
+    """Cross-process min_interval when Config is set; else local default sleep."""
+    if config is not None:
+        config.rate_limit("baostock")
+        return
+    sleep(_DEFAULT_MIN_INTERVAL)
+
+
+def _batch_rest(config, index: int, *, sleep=time.sleep) -> None:
+    """Extra pause every N symbols so free APIs cool down between bursts."""
+    batch = (
+        int(getattr(config, "baostock_batch_size", _DEFAULT_BATCH_SIZE))
+        if config is not None
+        else _DEFAULT_BATCH_SIZE
+    )
+    rest = (
+        float(getattr(config, "baostock_batch_rest_seconds", _DEFAULT_BATCH_REST))
+        if config is not None
+        else _DEFAULT_BATCH_REST
+    )
+    if batch <= 0 or rest <= 0:
+        return
+    # Rest after completing a batch (index is 0-based; rest when about to start next).
+    if index > 0 and index % batch == 0:
+        logger.info("baostock batch rest %.0fs after %d symbols", rest, index)
+        sleep(rest)
+
+
 def fetch_per_symbol(
     symbols: list[str],
     start: date,
@@ -116,6 +148,7 @@ def fetch_per_symbol(
     label: str = "baostock",
     deadline: float = _PER_SYMBOL_DEADLINE_SECONDS,
     on_deadline: Callable[[], None] = _force_close_baostock_socket,
+    config=None,
 ) -> tuple[list[dict], list[str]]:
     """Drive ``fetch_one(bs, symbol, start, end)`` over ``symbols`` with retry/relogin.
 
@@ -123,6 +156,11 @@ def fetch_per_symbol(
     error (an ``error_code == '0'`` result with zero rows is a legitimate empty
     and must be returned as ``[]``). Returns ``(rows, failed_symbols)``. Fail-loud
     on login failure. ``bs`` / ``sleep`` are injectable for offline tests.
+
+    Pacing (anti-blacklist for free baostock):
+    - ``config.rate_limit("baostock")`` before each symbol (cross-process), or
+      ``_DEFAULT_MIN_INTERVAL`` when ``config`` is None;
+    - batch rest every ``baostock_batch_size`` symbols.
     """
     if bs is None:
         bs = import_baostock()
@@ -135,6 +173,8 @@ def fetch_per_symbol(
     n_symbols = len(symbols)
     try:
         for i, symbol in enumerate(symbols):
+            _batch_rest(config, i, sleep=sleep)
+            _pace_before_symbol(config, sleep=sleep)
             if i and _RELOGIN_EVERY and i % _RELOGIN_EVERY == 0:
                 try:
                     _relogin(bs, sleep=sleep)

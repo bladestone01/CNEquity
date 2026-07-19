@@ -41,7 +41,7 @@ sde config validate --config configs/stockdata.toml
 | 键 | 默认 | 说明 |
 |----|------|------|
 | `enabled` | true | 禁用后 TDX 相关 step 失败 |
-| `min_interval_ms` | 50 | 单进程内请求间隔 |
+| `min_interval_ms` | 100 | 跨进程限速间隔（建议 ≥100，防多 job 打爆） |
 | `servers` | `"auto"` | `"auto"` 或 `"host:port"` 固定单服 |
 | `connect_timeout_sec` | 10 | 连接超时 |
 | `allow_mock` | false | **仅测试**：源不可用时返回 `source="mock"` 数据；生产必须 false |
@@ -56,13 +56,24 @@ sde config validate --config configs/stockdata.toml
 
 ## `[sources.<name>]`
 
-支持的 name：`eastmoney`、`cninfo`、`akshare`、`sina` 等。
+支持的 name：`eastmoney`、`cninfo`、`akshare`、`sina`、`baostock`。
 
 | 键 | 说明 |
 |----|------|
 | `enabled` | 是否启用该源 |
 | `min_interval_seconds` | 跨进程文件锁限速（见 `domain/rate_limit.py`） |
 | `proxy`（eastmoney） | 可选 HTTP(S) 代理 URL；用于海外访问 push2his。未设时仍可用环境变量 `HTTPS_PROXY` |
+| `batch_size` / `batch_rest_seconds`（baostock） | 全市场回填批次冷却，防 IP 黑名单 |
+
+推荐默认（时间宁可慢，勿被封）：
+
+| source | `min_interval_seconds` | 备注 |
+|--------|------------------------|------|
+| eastmoney | 1.0 | 日更主源；裸 `EastMoneyClient()` 也默认 1.0s 进程内节流 |
+| cninfo | 1.0 | 公告/监管分页 POST |
+| akshare | 1.0 | 底层常打东财，勿低于 EM |
+| sina | 0.3 | 复权因子；经 `adj_factors` 的 `wait_source` |
+| baostock | 1.0 + batch 50/45s | 历史市值/ST；禁止多进程并行扫 |
 
 ---
 

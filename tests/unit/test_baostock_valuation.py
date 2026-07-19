@@ -106,7 +106,7 @@ def test_fetch_valuation_history_maps_market_cap():
         },
     )
     df, failed = fetch_valuation_history(
-        ["600519.SH", "000001.SZ"], date(2016, 1, 1), date(2016, 1, 5), bs=bs
+        ["600519.SH", "000001.SZ"], date(2016, 1, 1), date(2016, 1, 5), bs=bs, sleep=lambda _: None
     )
 
     assert bs.logged_out is True
@@ -143,7 +143,7 @@ def test_fetch_valuation_history_skips_uncovered_symbol():
         }
     )
     df, failed = fetch_valuation_history(
-        ["600519.SH", "999999.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs
+        ["600519.SH", "999999.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs, sleep=lambda _: None
     )
     assert df.height == 1
     assert df["symbol"].unique().to_list() == ["600519.SH"]
@@ -207,5 +207,34 @@ def test_symbols_needing_backfill_includes_null_mv(tmp_path):
     cfg = Config(data_root=root)
     todo = _symbols_needing_backfill(cfg, ["600519.SH", "000001.SZ", "000002.SZ"])
     assert "600519.SH" in todo  # null float_mv → refill
-    assert "000001.SZ" not in todo  # already has float_mv
+    assert "000001.SZ" not in todo  # already has float_mv (100% fill)
     assert "000002.SZ" in todo  # never backfilled
+
+
+def test_symbols_needing_backfill_sparse_fill(tmp_path):
+    """A single non-null day must not mark a sparse history as done (<80%)."""
+    from stock_data_engine.config import Config
+    from stock_data_engine.steps.fundamentals import _symbols_needing_backfill
+
+    root = tmp_path / "data"
+    part = root / "curated" / "valuation_metrics" / "trade_date=2016-01-04"
+    part.mkdir(parents=True)
+    # 1/5 days filled → 20% < 80% done threshold
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"] * 5,
+            "trade_date": [date(2016, 1, d) for d in (4, 5, 6, 7, 8)],
+            "pe_ttm": [12.0] * 5,
+            "pb": [3.0] * 5,
+            "ps_ttm": [8.0] * 5,
+            "total_mv": [1.0e10, None, None, None, None],
+            "float_mv": [1.0e10, None, None, None, None],
+            "source": ["baostock"] * 5,
+            "data_version": ["v1"] * 5,
+            "fetched_at": ["2016-01-04T00:00:00+00:00"] * 5,
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+    cfg = Config(data_root=root)
+    todo = _symbols_needing_backfill(cfg, ["600519.SH"])
+    assert "600519.SH" in todo

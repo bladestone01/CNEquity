@@ -85,7 +85,7 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
     if config.sources.get("akshare", False):
         from stock_data_engine.adapters.akshare.trading_status import fetch_st_symbols_akshare
 
-        extra_st = fetch_st_symbols_akshare()
+        extra_st = fetch_st_symbols_akshare(config=config)
 
     def _fetch(day: date):
         return fetch_trading_status(
@@ -177,7 +177,7 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
     all_failed: list[str] = []
     for offset in range(0, len(todo), _ST_BACKFILL_CHUNK):
         batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
-        df, failed = fetch_st_history(batch, BACKFILL_START, trade_date)
+        df, failed = fetch_st_history(batch, BACKFILL_START, trade_date, config=config)
         if not df.is_empty():
             chunk = write_fetched(config, run_id, "trading_status", df, source="baostock")
             rows_read += int(chunk.get("rows_read", 0))

@@ -20,7 +20,7 @@ def step_macro_indicators(config: Config, trade_date: date, run_id: str, context
         trade_date,
         run_id,
         "macro_indicators",
-        fetch_macro_indicators,
+        lambda d: fetch_macro_indicators(d, config=config),
         source="eastmoney",
         allow_empty=True,
     )
@@ -65,7 +65,7 @@ def step_regulatory_events(config: Config, trade_date: date, run_id: str, contex
         trade_date,
         run_id,
         "regulatory_events",
-        fetch_regulatory_events,
+        lambda d: fetch_regulatory_events(d, config=config),
         source="cninfo",
         allow_empty=True,
     )

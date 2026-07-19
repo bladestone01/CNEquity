@@ -32,7 +32,7 @@ adjust_types = ["hfq"]
 
 [sources.sina]
 enabled = true
-min_interval_seconds = 0.2
+min_interval_seconds = 0.3
 ```
 
 ---

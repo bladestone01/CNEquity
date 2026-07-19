@@ -4,6 +4,18 @@
 
 ---
 
+## 症状：baostock / 免费源「黑名单」或频繁失败
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| `baostock login failed: 黑名单用户` | IP/账号被免费 API 封禁（全市场扫太快） | **停扫**；换出口或等解封（常数小时～数天）。解封后用 `[sources.baostock]` 默认限速 resume，勿提高并发 |
+| 东财 429 / Empty reply / 连接被掐 | 请求过密或海外出口 | 保持 `min_interval_seconds ≥ 1.0`；大陆出口或 `proxy`；见下文 sector_bars |
+| cninfo / akshare 间歇失败 | 同源风控 | 已按页/按调用 `rate_limit`；失败 fail-loud 后降频重试 |
+
+原则：**时间可以等，封禁成本远高于多等一天。** 勿为加速关掉 `min_interval` 或开多进程打同一免费源。
+
+---
+
 ## 症状：load() 读不到新数据
 
 | 可能原因 | 检查 | 处理 |

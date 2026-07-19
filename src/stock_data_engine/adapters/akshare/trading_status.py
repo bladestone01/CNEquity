@@ -23,13 +23,15 @@ def _exchange_from_code(code: str) -> str:
     return "SZ"
 
 
-def fetch_st_symbols_akshare() -> set[str]:
+def fetch_st_symbols_akshare(*, config=None) -> set[str]:
     """Return the current ST / *ST symbol set (empty if akshare is unavailable)."""
     try:
         import akshare as ak  # type: ignore[import-not-found]
     except ImportError:
         return set()
 
+    if config is not None:
+        config.rate_limit("akshare")
     try:
         df = ak.stock_zh_a_st_em()
     except Exception as exc:

@@ -10,7 +10,8 @@ batch_stale_seconds = 3600  # running batches without heartbeat for this long �
 
 [tdx_protocol]
 enabled = true
-min_interval_ms = 50
+# Cross-process paced; 100ms is safer for long daily sweeps than 50ms.
+min_interval_ms = 100
 servers = "auto"
 connect_timeout_sec = 10
 # Test/demo only: return fabricated rows (labeled source="mock") instead of
@@ -47,13 +48,24 @@ timeout_sec = 15
 
 [sources.cninfo]
 enabled = true
+min_interval_seconds = 1.0
 
 [sources.akshare]
 enabled = true
+# Often wraps EastMoney — keep ≥ EM interval to avoid shared bans.
+min_interval_seconds = 1.0
 
 [sources.sina]
 enabled = true
-min_interval_seconds = 0.2
+min_interval_seconds = 0.3
+
+# Free TCP API. Full-market history must be slow or the IP gets blacklisted.
+# ~5000 symbols × (1s + batch rests) ≈ many hours to days — intentional.
+[sources.baostock]
+enabled = true
+min_interval_seconds = 1.0
+batch_size = 50
+batch_rest_seconds = 45
 
 [adj_factors]
 source = "sina"

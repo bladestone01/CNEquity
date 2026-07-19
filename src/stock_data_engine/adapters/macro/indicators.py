@@ -143,7 +143,7 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
     return rows
 
 
-def _akshare_rows(trade_date: date) -> list[dict]:
+def _akshare_rows(trade_date: date, *, config=None) -> list[dict]:
     try:
         import akshare as ak  # type: ignore[import-not-found]
     except ImportError:
@@ -153,6 +153,8 @@ def _akshare_rows(trade_date: date) -> list[dict]:
     for indicator_id, (func_name, col_hint, frequency) in _AKSHARE_SERIES.items():
         if indicator_id == "lpr_1y":
             continue  # prefer EastMoney LPR when present
+        if config is not None:
+            config.rate_limit("akshare")
         try:
             func = getattr(ak, func_name)
             pdf = func()
@@ -190,17 +192,18 @@ def fetch_macro_indicators(
     trade_date: date,
     *,
     client: EastMoneyClient | None = None,
+    config=None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
 
     rows = _eastmoney_daily(client, trade_date)
     if owns:
         client.close()
 
     seen = {(r["indicator_id"], r["obs_date"]) for r in rows}
-    for item in _akshare_rows(trade_date):
+    for item in _akshare_rows(trade_date, config=config):
         key = (item["indicator_id"], item["obs_date"])
         if key not in seen:
             rows.append(item)

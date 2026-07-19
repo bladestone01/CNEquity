@@ -59,6 +59,9 @@ class Config:
     # Per-request timeout for EastMoneyClient (connect+read). Keep modest so
     # overseas daily groups fail fast instead of 30s × max_retries hangs.
     eastmoney_timeout_sec: float = 15.0
+    # baostock free-API pacing (full-market history sweeps).
+    baostock_batch_size: int = 50
+    baostock_batch_rest_seconds: float = 45.0
     universe_default: str = "all_a"
     daily_waves: list[WaveConfig] = field(default_factory=list)
     schedule_groups: dict[str, ScheduleGroup] = field(default_factory=dict)
@@ -156,6 +159,8 @@ def load_config(path: str | Path) -> Config:
     source_intervals: dict[str, float] = {}
     eastmoney_proxy: str | None = None
     eastmoney_timeout_sec = 15.0
+    baostock_batch_size = 50
+    baostock_batch_rest_seconds = 45.0
     for name, val in sources_raw.items():
         if isinstance(val, dict):
             sources[name] = bool(val.get("enabled", True))
@@ -165,6 +170,11 @@ def load_config(path: str | Path) -> Config:
                 eastmoney_proxy = str(val["proxy"]).strip() or None
             if name == "eastmoney" and val.get("timeout_sec") is not None:
                 eastmoney_timeout_sec = float(val["timeout_sec"])
+            if name == "baostock":
+                if val.get("batch_size") is not None:
+                    baostock_batch_size = int(val["batch_size"])
+                if val.get("batch_rest_seconds") is not None:
+                    baostock_batch_rest_seconds = float(val["batch_rest_seconds"])
         else:
             sources[name] = bool(val)
 
@@ -230,6 +240,8 @@ def load_config(path: str | Path) -> Config:
         source_intervals=source_intervals,
         eastmoney_proxy=eastmoney_proxy,
         eastmoney_timeout_sec=eastmoney_timeout_sec,
+        baostock_batch_size=baostock_batch_size,
+        baostock_batch_rest_seconds=baostock_batch_rest_seconds,
         universe_default=str(raw.get("universe", {}).get("default", "all_a")),
         daily_waves=daily_waves,
         schedule_groups=schedule_groups,

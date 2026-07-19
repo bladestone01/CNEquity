@@ -37,6 +37,7 @@ def fetch_regulatory_events(
     trade_date: date,
     *,
     client: httpx.Client | None = None,
+    config=None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
@@ -49,6 +50,8 @@ def fetch_regulatory_events(
     for column in ("szse", "sse"):
         page = 1
         while True:
+            if config is not None:
+                config.rate_limit("cninfo")
             payload = {
                 "pageNum": page,
                 "pageSize": 30,

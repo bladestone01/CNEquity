@@ -138,15 +138,12 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
     def fetch_one(d: date) -> pl.DataFrame:
         client = getattr(local, "client", None)
         if client is None:
-            if workers == 1:
-                client = EastMoneyClient(config=config)
-            else:
-                client = EastMoneyClient(min_interval=1.0)
+            # Prefer config so cross-process [sources.eastmoney] pacing applies
+            # even with multiple workers (file lock serializes across threads).
+            client = EastMoneyClient(config=config)
             local.client = client
             with clients_lock:
                 clients.append(client)
-        if workers == 1:
-            config.rate_limit("eastmoney")
         return fetch_margin_trading(d, client=client)
 
     done = 0

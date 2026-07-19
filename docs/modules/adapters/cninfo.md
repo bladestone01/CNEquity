@@ -37,6 +37,7 @@
 ```toml
 [sources.cninfo]
 enabled = true
+min_interval_seconds = 1.0
 ```
 
 ---

@@ -95,12 +95,19 @@ class EastMoneyClient:
 
     def __init__(
         self,
-        min_interval: float = 0.0,
+        min_interval: float | None = None,
         *,
         config: Config | None = None,
     ):
-        self.min_interval = min_interval
+        # Prefer cross-process Config pacing. Bare clients default to 1.0s
+        # in-process spacing so free EM APIs are not hammered (R-21).
         self.config = config
+        if config is not None:
+            self.min_interval = 0.0
+        elif min_interval is None:
+            self.min_interval = 1.0
+        else:
+            self.min_interval = float(min_interval)
         self._last_request = 0.0
         proxies = None
         timeout = 15.0

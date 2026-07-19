@@ -19,7 +19,9 @@ Provenance ``source="baostock"`` marks historical rows for audit.
 Reliability: baostock throttles/drops a long-held session under a full-market
 sweep. ``fetch_valuation_history`` retries each symbol with a fresh login +
 backoff, and returns symbols that still failed so the caller can fail loud and
-resume.
+resume. Resume skip requires ≥80% non-null ``float_mv`` per symbol
+(``_MV_FILL_DONE_RATIO`` in ``steps/fundamentals``) so a sparse fill cannot
+park a decade of null market-cap rows.
 """
 
 from __future__ import annotations
@@ -203,6 +205,7 @@ def fetch_valuation_history(
     *,
     bs=None,
     sleep=time.sleep,
+    config=None,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Per-symbol daily PE/PB/PS + market cap from baostock over ``[start, end]``.
 
@@ -210,7 +213,8 @@ def fetch_valuation_history(
     symbol is retried up to ``_MAX_RETRIES`` times with a fresh session + backoff
     on a query error; symbols still failing are returned in ``failed_symbols``.
 
-    ``bs`` / ``sleep`` are injectable for offline tests.
+    ``bs`` / ``sleep`` / ``config`` are injectable for offline tests. Pass
+    ``config`` in production so ``[sources.baostock]`` pacing applies.
     """
     rows, failed = fetch_per_symbol(
         symbols,
@@ -222,6 +226,7 @@ def fetch_valuation_history(
         label="baostock valuation",
         # Year-chunked k-data + ~11 Q4 profit calls.
         deadline=120.0,
+        config=config,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     return df, failed

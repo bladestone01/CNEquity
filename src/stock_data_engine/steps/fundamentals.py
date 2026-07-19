@@ -31,7 +31,7 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
         trade_date,
         run_id,
         "valuation_metrics",
-        fetch_valuation_metrics,
+        lambda d: fetch_valuation_metrics(d, config=config),
         source="eastmoney",
         allow_empty=True,
         universe=load_bar_universe(config),
@@ -69,7 +69,9 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
             "orphan_purge": purge_summary,
         }
 
-    df, failed = fetch_valuation_history(todo, _VALUATION_BACKFILL_START, trade_date)
+    df, failed = fetch_valuation_history(
+        todo, _VALUATION_BACKFILL_START, trade_date, config=config
+    )
 
     result: dict = {"rows_read": 0, "rows_written": 0, "orphan_purge": purge_summary}
     if not df.is_empty():
@@ -90,8 +92,13 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
     return result
 
 
+# Require dense MV coverage before skipping a symbol — a single non-null day
+# must not mark a decade of null float_mv/total_mv as "done".
+_MV_FILL_DONE_RATIO = 0.80
+
+
 def _symbols_needing_backfill(config: Config, universe: list[str]) -> list[str]:
-    """Symbols missing baostock history, or with baostock rows but null float_mv."""
+    """Symbols missing baostock history, or with sparse market-cap fill."""
     import polars as pl
 
     part = config.curated_root / "valuation_metrics"
@@ -108,9 +115,12 @@ def _symbols_needing_backfill(config: Config, universe: list[str]) -> list[str]:
         )
         .collect()
     )
-    # Done only when at least one non-null float_mv exists (MV fill landed).
+    # Done when ≥80% of baostock rows have float_mv (MV fill landed densely).
     done = set(
-        stats.filter(pl.col("float_nulls") < pl.col("n"))
+        stats.filter(
+            (pl.col("n") > 0)
+            & ((pl.col("n") - pl.col("float_nulls")) / pl.col("n") >= _MV_FILL_DONE_RATIO)
+        )
         .get_column("symbol")
         .to_list()
     )

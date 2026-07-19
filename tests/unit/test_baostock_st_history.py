@@ -65,7 +65,7 @@ def test_emits_only_traded_st_days():
             )
         }
     )
-    df, failed = fetch_st_history(["000017.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs)
+    df, failed = fetch_st_history(["000017.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None)
 
     assert bs.logged_out is True
     assert failed == []
@@ -82,7 +82,7 @@ def test_emits_only_traded_st_days():
 
 def test_never_st_symbol_is_legit_empty_not_failure():
     bs = _FakeBaostock({"sz.000001": _rows("sz.000001", [("2020-01-02", "1", "0")])})
-    df, failed = fetch_st_history(["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs)
+    df, failed = fetch_st_history(["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None)
     assert failed == []
     assert df.is_empty()
 
