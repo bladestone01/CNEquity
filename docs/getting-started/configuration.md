@@ -97,7 +97,7 @@ sde config validate --config configs/stockdata.toml
 
 ## `[failover]`
 
-多源快照与 diff，**永不自动切换 canonical**（ADR-0003）。
+多源快照与 diff；不会自动切换 canonical（ADR-0003）。
 
 | 键 | 说明 |
 |----|------|

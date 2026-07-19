@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-source single-day smoke test + R-18 failure/retry validation."""
+"""Real-source single-day smoke test + failure/retry validation."""
 
 from __future__ import annotations
 
@@ -128,17 +128,17 @@ def main() -> int:
     )
     skipped = [f for f in findings.get("findings", []) if f.get("check") == "compact_skipped"]
 
-    r18_errors: list[str] = []
+    fail_errors: list[str] = []
     if summary_fail.get("batch_counts", {}).get("failed", 0) == 0:
-        r18_errors.append("expected failed daily_bars batches")
+        fail_errors.append("expected failed daily_bars batches")
     if wm_after_fail != prev:
-        r18_errors.append(f"watermark moved to {wm_after_fail!r}, expected {prev!r}")
+        fail_errors.append(f"watermark moved to {wm_after_fail!r}, expected {prev!r}")
     if not skipped:
-        r18_errors.append("expected compact_skipped audit warning")
-    if r18_errors:
-        _print("R-18 CHECK FAILED", r18_errors)
+        fail_errors.append("expected compact_skipped audit warning")
+    if fail_errors:
+        _print("FAILURE CONTRACT CHECK FAILED", fail_errors)
         return 1
-    _print("R-18 CHECK", "passed")
+    _print("FAILURE CONTRACT CHECK", "passed")
 
     _print("Phase 4", "sde retry — restore network")
     retry = engine.run_job("retry", retry_failed_only=True, run_id=fail_id, trade_date=TRADE_DATE)

@@ -93,9 +93,7 @@ def fetch_clist_pages(
                 active_host = host
                 break
             if active_host is None:
-                # Full-universe snapshot: returning the rows gathered so far
-                # would silently truncate the list (R-22). Fail loud so the
-                # batch is marked failed and retried, not persisted short.
+                # Full-universe snapshot: don't persist a truncated page.
                 raise RuntimeError(
                     f"EastMoney clist page {page} failed on all hosts "
                     f"({len(rows)} rows fetched before failure)"

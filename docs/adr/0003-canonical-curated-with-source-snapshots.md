@@ -27,7 +27,7 @@ Backup snapshots use the alternate source for cross-audit only.
 
 - Reproducible, auditable canonical dataset; provenance always present.
 - Cross-source disagreements are observable instead of hidden.
-- Requires snapshot storage + diff tooling (roadmap M4).
+- Requires snapshot storage + diff tooling.
 
 ## Alternatives considered
 

@@ -1,4 +1,4 @@
-"""L6 macro + L8 risk batch steps (v1.1)."""
+"""L6 macro + L8 risk batch steps."""
 
 from __future__ import annotations
 

@@ -39,7 +39,7 @@ min_interval_seconds = 0.3
 
 ## 已知限制
 
-- 历史断裂：部分老股因子序列不完整（G1 差距项）；audit 有 reconciliation 检查
+- 历史断裂：部分老股因子序列不完整；audit 有 reconciliation 检查
 - 仅 hfq；qfq 不在此拉取（ADR-0004）
 
 ---

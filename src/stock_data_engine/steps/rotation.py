@@ -18,8 +18,7 @@ from stock_data_engine.config import Config
 from stock_data_engine.orchestrator.registry import register_step
 from stock_data_engine.steps.http_common import run_incremental_fetched, write_fetched
 
-# Board kline history depth for `sde backfill sector_bars` — enough for the
-# workbench's sector momentum / RRG lookbacks with a year of slack.
+# Board kline history depth for `sde backfill sector_bars` (~1y+ slack).
 _SECTOR_BARS_BACKFILL_DAYS = 400
 _SECTOR_BARS_BACKFILL_STATE = "sector_bars_backfill"
 _SECTOR_BARS_FAILURE_THRESHOLD = 0.5

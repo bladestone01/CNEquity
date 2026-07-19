@@ -31,14 +31,7 @@ _INDEX_COVERAGE_SAMPLE = 8
 
 
 def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict]:
-    """Flag index symbols whose curated bars don't match the trading calendar.
-
-    An index quotes every trading day, so within a symbol's covered span every
-    calendar trading day must have a bar (missing days) and every bar day must
-    be a calendar trading day (orphan bars). Divergence means either a fetch
-    gap in index_bars or a wrong trading_calendar — both shrink the benchmark
-    sample used downstream for excess-return / tracking-error stats.
-    """
+    """index_bars vs trading_calendar within each symbol's covered span."""
     findings: list[dict] = []
     cal_root = config.curated_root / "trading_calendar"
     ib_root = config.curated_root / "index_bars"
@@ -150,8 +143,7 @@ def _collect_lake_findings(
     if ts_start is not None:
         bars_start = coverage_start_date(config, "daily_bars")
         st_start = st_coverage_start(config)
-        # Suspension is reconstructed from bar gaps across the whole history, so
-        # the only residual universe-filter gap is ST *labels* before st_start.
+        # Suspension from bar gaps; residual gap is ST labels before st_start.
         st_gap = st_start is not None and bars_start is not None and st_start > bars_start
         if st_start is None:
             message = (
@@ -216,11 +208,7 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
 
 
 def lake_health(config: Config, trade_date: date) -> dict:
-    """Whole-lake health snapshot: current findings + per-dataset freshness.
-
-    Independent of any run's stale per-run findings file. Writes a stable
-    ``meta/quality/health-latest.json`` and returns the summary.
-    """
+    """Lake health: findings + freshness → ``meta/quality/health-latest.json``."""
     from stock_data_engine.domain.datasets import is_stale
     from stock_data_engine.query.reader import list_datasets
 
@@ -241,8 +229,6 @@ def lake_health(config: Config, trade_date: date) -> dict:
         if not row["watermarked"]:
             continue
         mark = row["watermark"] or row["coverage_end"]
-        # Tolerance per dataset cadence (T+1, quarterly …) so inherent lag is
-        # not mistaken for a stuck pipeline.
         if is_stale(row["dataset"], mark, anchor):
             stale.append(row["dataset"])
 

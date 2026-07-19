@@ -1,4 +1,4 @@
-"""R-22 — paginated snapshot fetches must fail loud, never silently truncate."""
+"""Paginated snapshot fetches must fail loud, never silently truncate."""
 
 from datetime import date
 

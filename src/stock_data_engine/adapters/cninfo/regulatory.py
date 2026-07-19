@@ -70,8 +70,7 @@ def fetch_regulatory_events(
                 resp.raise_for_status()
                 data = resp.json()
             except Exception as exc:
-                # Truncating regulatory events silently would drop rows that
-                # feed the risk blacklist (R-22). Fail loud, like announcements.
+                # Don't truncate: short pages drop blacklist rows. Fail loud.
                 logger.warning("CNINFO regulatory page failed (%s p%s): %s", column, page, exc)
                 raise RuntimeError(
                     f"CNINFO regulatory pagination failed for {column} page {page}"

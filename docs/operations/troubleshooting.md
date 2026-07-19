@@ -102,7 +102,7 @@ rsync -avz --progress user@VPS:~/StockDataEngine/data/stock-data-engine/ \
 |--------------|------|------|
 | `pk_duplicate` | curated PK 重复 | 查最近 compact；必要时 backfill 重跑该分区 |
 | `mock_rows` | 生产环境 mock 数据 | 关闭 `allow_mock`；清 mock 分区重采 |
-| `adj_close_discontinuity` | 复权收益异常 | `sde derive adj_factors`；查 Sina 源；见 G1 |
+| `adj_close_discontinuity` | 复权收益异常 | `sde derive adj_factors`；查 Sina 源 |
 | `missing_corporate_action` | 除权日无 corp action | `sde backfill corporate_actions` |
 | `trading_status_coverage_start` | ST 覆盖起点晚 | 预期警告；跑 baostock ST 回填 |
 | `partition_row_count_mutation` | 行数突变 | 查是否误 compact 或源口径变化 |
@@ -151,7 +151,7 @@ meta/locks/
 ## 症状：磁盘不足
 
 1. `sde clean` 清理已 compact 的 staging
-2. 压缩或归档旧 `meta/source_snapshots/`（长期会膨胀，G7）
+2. 压缩或归档旧 `meta/source_snapshots/`（长期会膨胀）
 3. curated 勿删；用 backfill 重采而非部分删除
 
 ---

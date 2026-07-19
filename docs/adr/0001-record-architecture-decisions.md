@@ -13,7 +13,7 @@ orchestration model, multi-source policy). New contributors need to understand
 
 Use lightweight Architecture Decision Records (ADRs) stored in `docs/adr/`,
 one Markdown file per decision, numbered sequentially. Copy `0000-template.md`
-for new records. Reference relevant ADRs from the PRD.
+for new records.
 
 ## Consequences
 

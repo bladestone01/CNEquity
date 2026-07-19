@@ -1,11 +1,7 @@
-"""Shared baostock session driver: login, per-symbol retry, periodic relogin.
+"""Shared baostock session: login, per-symbol retry, periodic relogin.
 
-Extracted from the A2 valuation backfill and reused by the C4 ST-history
-backfill. baostock throttles or drops a long-held session under a full-market
-sweep, so each symbol is retried with a fresh session and backoff, and the
-session is refreshed every ``_RELOGIN_EVERY`` symbols. Symbols still failing
-after retries are returned so the caller can surface them (fail-loud) and resume
-rather than ship a silent partial backfill.
+Long sweeps drop sessions; retry each symbol with backoff and refresh every
+``_RELOGIN_EVERY``. Failures are returned to the caller (no silent partial).
 """
 
 from __future__ import annotations
@@ -23,28 +19,15 @@ logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
 _BACKOFF_SECONDS = (1.0, 3.0, 8.0)
-# Refresh the session periodically; a single long-held session dies mid-sweep.
 _RELOGIN_EVERY = 300
-# Login itself is flaky on long sweeps (observed: "网络接收错误" after ~3h).
-# Retry before failing so a transient blip does not abort thousands of symbols.
 _LOGIN_RETRIES = 5
 _LOGIN_BACKOFF_SECONDS = (2.0, 5.0, 10.0, 20.0, 30.0)
-# Free-API defaults when Config is not wired (tests / ad-hoc calls).
 _DEFAULT_MIN_INTERVAL = 1.0
 _DEFAULT_BATCH_SIZE = 50
 _DEFAULT_BATCH_REST = 45.0
-# Hard per-symbol wall-clock deadline. The socket timeout below catches a fully
-# blocked read, but baostock can *slowloris* a query — trickle keepalive bytes so
-# every recv returns just before the timeout yet the terminator never arrives, so
-# the read loops forever at ~0 CPU (observed: 8h hang). A watchdog closes the
-# live socket past this deadline, unblocking the read so it raises and retries.
-# Set well above the ~6s normal query so a slow-but-alive fetch is never killed.
+# Watchdog: baostock can trickle bytes forever at ~0 CPU; kill past this.
 _PER_SYMBOL_DEADLINE_SECONDS = 45.0
-# A single k-data query returns a few thousand rows and should finish in
-# seconds. baostock can silently drop the connection yet leave the socket
-# ESTABLISHED, so a blocking read never returns and the whole sweep hangs
-# indefinitely (observed: 8h of wall time, 13s of CPU). Bound every socket op so
-# a stall raises instead of hanging; the retry loop then relogins and continues.
+# Bound blocked reads (dropped conn can leave ESTABLISHED forever).
 _SOCKET_TIMEOUT_SECONDS = 30.0
 
 

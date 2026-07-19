@@ -99,8 +99,7 @@ class EastMoneyClient:
         *,
         config: Config | None = None,
     ):
-        # Prefer cross-process Config pacing. Bare clients default to 1.0s
-        # in-process spacing so free EM APIs are not hammered (R-21).
+        # Prefer Config pacing; bare clients default to 1.0s in-process spacing.
         self.config = config
         if config is not None:
             self.min_interval = 0.0

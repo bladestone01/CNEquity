@@ -7,17 +7,9 @@
 
 ---
 
-## 1. 评价镜头
+## 1. 引擎在管什么
 
-引擎本身不产生 alpha——那是下游因子与策略的事。引擎决定的是下游三件事的可信度：
-
-| 维度 | 含义 | 失败形态 |
-|------|------|----------|
-| **回测结论可信** | 数据正确 + PIT 无前视 + universe 无幸存者偏差 | 假收益/断裂因子 → 回测好看但实盘亏钱 |
-| **信号及时** | 每交易日收盘后数据按时新鲜 | 漏更一天 = 下游节奏被打断 |
-| **结果可追溯** | 口径可重算、来源可审计 | 数字对不上却查不出为什么 |
-
-强因子不等于赚钱策略；引擎侧能做且必须做的，是保证「迭代所依据的数据不说谎」。
+引擎本身不产生 alpha。它主要影响三件事：回测用的数据是否干净（PIT、universe、复权别搞砸）、日更是否按时到、数字对不上时能不能追到源。脏数据会让回测很好看、实盘很惨——这是引擎侧该挡住的。
 
 ---
 
@@ -100,48 +92,17 @@ load(dataset, *, start, end,
 
 ---
 
-## 4. 已知差距（按影响排序）
+## 4. 已知限制与现状
 
-湖内证据多为 2026-07 前后实测；部分项已修复，表中保留「曾是缺口」的上下文，避免按旧印象重复投入。
+几点用之前心里有数（不少是踩过坑之后的现状，不是待办清单）：
 
-### 4.1 回测结论可信
+- **复权因子**：老股 hfq 曾大面积断裂；现在是 append-only merge，加上 `adj_factor_reconciliation` audit。残余多为 `corporate_actions` 缺事件。
+- **估值历史**：以前不少是当日快照；`valuation_metrics` 已可用 baostock 回填。
+- **ST / 停牌**：日更只抓当天，更早窗口 `universe="all_a"` 不会按历史 ST 剔除（audit 会报覆盖起点）。
+- **北向**：2024-08 后多为季频，别当逐日序列用。
+- **调度**：`daily_pipeline.sh` + cron/launchd + `health_notify.sh` 已有；海外网络下东财组仍可能 soft-fail。
+- **运维**：meta 备份有了；snapshot 目录增长和部分 lazy scan 还能再收。
 
-| # | 缺口 | 说明 |
-|---|------|------|
-| **G1** | adj_factors hfq 历史断裂 | 曾有大比例老股因子断裂；现有 append-only merge + `adj_factor_reconciliation` audit。残余多为 corporate_actions 缺事件 |
-| **G2** | snapshot 类缺历史 | valuation 等曾只有当日快照；`valuation_metrics` 已可通过 baostock 历史回填 |
-| **G3** | trading_status 历史 ST 缺失 | 日更只抓当天；历史区间 `universe="all_a"` 不剔除历史 ST（audit 会报覆盖起点） |
-| G6a | northbound 口径收紧 | 2024-08 后北向多为季频，逐日策略需先做口径预验证 |
-| G6b | index_bars 覆盖 | 核心指数覆盖已基本对齐交易日历；新指数成立日前无 bar 属正常 |
+已经比较稳的：日历 / 指数 / 日线可回填到 2016；财报带 `announce_date` PIT；分组跑完会 compact→audit；CDR（689）和场内 ETF 不进 `all_a`。
 
-### 4.2 信号及时
-
-| # | 缺口 | 说明 |
-|---|------|------|
-| **G4** | 调度/监控 | 已有 `daily_pipeline.sh` + launchd/cron + `health_notify.sh`；海外网络下东财组仍可能 soft-fail |
-
-### 4.3 结果可追溯
-
-| # | 缺口 | 说明 |
-|---|------|------|
-| **G5** | 收益率级护栏 | `adj_close_discontinuity` / `missing_corporate_action` 已接入 `sde audit --full` |
-| G7 | 运维韧性 | meta 备份脚本已有；snapshot 目录增长与部分 lazy scan 仍可继续打磨 |
-
-### 4.4 已解决、不再当缺口
-
-- trading_calendar / index_bars / daily_bars 可回填至 2016
-- financial_statement_items 带 `announce_date` PIT 轴
-- 分组运行会 compact→audit，数据进 curated
-- CDR（689 段）与场内 ETF 不进 `all_a`
-
----
-
-## 5. 设计原则（摘要）
-
-1. **正确性优先于覆盖面** — 假数据伤害大于缺数据
-2. **fail-loud** — 不静默降级/截断/兜底
-3. **防线放在引擎侧** — audit 先于下游自检发现
-4. **口径可重算** — 未复权 + 独立因子、PIT 双时间轴（ADR-0003/0004）
-5. **单人可运维** — 自研编排、Parquet、launchd/cron、SQLite manifest
-
-更细条目见 [architecture/design-principles.md](architecture/design-principles.md)。
+原则摘要见 [design-principles](architecture/design-principles.md)：源失败就暴露、口径可重算、audit 放引擎侧、组件保持单人可运维。

@@ -14,7 +14,6 @@ from stock_data_engine.domain.schemas import validate_dataframe
 
 logger = logging.getLogger(__name__)
 
-# Default retention for ``sde clean`` snapshot pruning (G7 / Phase D).
 DEFAULT_SNAPSHOT_RETENTION_DAYS = 14
 
 

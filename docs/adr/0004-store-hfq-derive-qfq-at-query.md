@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-06
-- Supersedes: partial mitigation of R-20 in CHANGELOG (qfq full-history rewrite deferred)
+- Supersedes: earlier approach that persisted qfq and forced full-history rewrites
 
 ## Context
 
@@ -14,7 +14,7 @@ qfq and hfq after normalizing Sina's qfq divisor.
 corporate action occurs, Sina recomputes the **entire** qfq series. A
 `adj_close` computed today for 2018-06-01 will not match one computed after the
 next ex-date. Persisting qfq snapshots is therefore **not reproducible** and
-forces full-history rewrites on every refresh (R-20).
+forces full-history rewrites on every refresh.
 
 **hfq (backward / 后复权)** is anchored to the IPO/listing basis. Historical
 hfq factors for dates before a new corporate action **do not change** when a
@@ -46,9 +46,8 @@ That requirement is met at **query time**, not in `derived/adj_factors`.
    If config lists `qfq`, derive logs a warning and ignores it (qfq is never
    persisted).
 
-4. **Append-only derive (R-20 follow-up):** refresh only symbols on ex-date
-   (or new listings); merge new hfq rows without rewriting prior partitions.
-   Accepted semantics here; incremental merge is implemented separately.
+4. **Append-only derive:** refresh only symbols on ex-date (or new listings);
+   merge new hfq rows without rewriting prior partitions.
 
 ## Consequences
 
@@ -58,9 +57,6 @@ That requirement is met at **query time**, not in `derived/adj_factors`.
   `[start, end]` window: anchor `T` is explicit.
 - Ex-date refresh touches only affected symbols; no full-market qfq rewrite.
 - Single stored series reduces storage, cache files, and derive HTTP volume.
-- Resolves the architectural half of R-20 (storage semantics); append-only
-  merge remains a mechanical follow-up.
-
 **Negative / neutral**
 
 - `load(..., adjust="qfq")` requires hfq rows through the anchor date `T` per

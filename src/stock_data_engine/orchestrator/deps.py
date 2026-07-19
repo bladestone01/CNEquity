@@ -51,7 +51,7 @@ def _levels_for(
 
 
 def _finalize_execution_levels(finalize_steps: list[str]) -> list[list[str]]:
-    """Return one step per level in canonical finalize order (R-23)."""
+    """Return one step per level in canonical finalize order."""
     names = set(finalize_steps)
     ordered = [s for s in FINALIZE_STEP_ORDER if s in names]
     ordered.extend(sorted(names - set(FINALIZE_STEP_ORDER)))

@@ -50,7 +50,7 @@ Per-dataset source, update frequency, and known limitations.
 | Wave | `daily_bars` (Wave 1, after corporate_actions) |
 | Primary source | tdx_protocol (unadjusted) |
 | Backup | eastmoney |
-| Frequency | daily incremental; full backfill on init Phase 2c |
+| Frequency | daily incremental; full backfill on init |
 | PK | (symbol, trade_date) |
 | Rebackfill | symbols from corporate_actions same-day ex_date |
 | Known limits | TDX rate limit; use ≤8 workers |

@@ -1,31 +1,13 @@
-"""Cross-dataset reconciliation audit checks.
+"""Cross-dataset reconciliation checks.
 
-Single-dataset integrity lives in ``dataset_checks``; these guardrails compare
-two curated datasets against each other, catching gaps that neither dataset's
-own sentinels can see:
+Single-dataset integrity is in ``dataset_checks``. Here:
 
-* ``daily_bars`` × ``trading_calendar`` — the whole market must have bars on
-  every trading day (a zero-bar trading day is a lost ingestion) and must never
-  have bars on a non-trading day (calendar error or forged rows). Per-symbol
-  coverage is *not* checked here: suspensions make legitimate per-stock gaps, so
-  only market-wide aggregates are meaningful.
-* ``valuation_metrics`` × ``daily_bars`` — a valuation row needs a price bar for
-  the same symbol/day; large divergence on a shared day is a valuation fetch
-  gap. Absolute market-cap sanity is intentionally skipped while baostock leaves
-  ``total_mv``/``float_mv`` null.
-* ``daily_bars`` × ``adj_factors`` × ``corporate_actions`` — reconciles the
-  applied hfq adjustment (``adj_close = close × factor``) against the events that
-  should explain it (roadmap G5 / A1 defence line). Two classes, split by whether
-  the *adjusted* series stays continuous:
-  - a discontinuous adjusted move (adj jumps and diverges from raw) between two
-    consecutive trading days is a factor break that poisons every downstream
-    factor/backtest → **error** (ports the Workbench guard into the engine and
-    refines it: adjacency spares legitimate suspension-resume repricing);
-  - a continuous adjusted move whose raw price nonetheless dropped past any board
-    limit with no corporate action on record, **on consecutive trading days**, is a
-    real ex-event missing from ``corporate_actions`` → **warning** (hfq research is
-    fine; ledger accounting is not). Non-adjacent bar pairs (suspension resumes)
-    are spared the same way as the discontinuity error.
+* ``daily_bars`` × ``trading_calendar`` — market-wide only (per-symbol gaps are
+  often suspensions).
+* ``valuation_metrics`` × ``daily_bars`` — coverage on shared days; skip absolute
+  mcap sanity while baostock leaves ``total_mv``/``float_mv`` null.
+* ``daily_bars`` × ``adj_factors`` × ``corporate_actions`` — hfq continuity vs
+  recorded ex-events. Consecutive trading days only (spares suspension resumes).
 """
 
 from __future__ import annotations
@@ -37,36 +19,18 @@ import polars as pl
 from stock_data_engine.config import Config
 from stock_data_engine.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
-# Sample size for date/symbol lists surfaced inside a finding.
 _SAMPLE = 8
-# A shared trading day where valuation covers less than this fraction of the
-# symbols that have bars is flagged as a coverage gap.
+# Flag when valuation covers less than this share of symbols with bars that day.
 _VALUATION_COVERAGE_WARN_RATIO = 0.7
 
-# Adjusted-return discontinuity (the "factor break" class). On two *consecutive*
-# trading days a hfq *adjusted* (total-return) move this large that also diverges
-# from the raw move by the same margin cannot come from a real corporate action
-# (a real ex-event keeps adj≈raw) nor a real price move (board limit ±10–20%): it
-# is a factor break that injects an impossible return into every downstream factor
-# and backtest. Ports the Workbench guard (``data/quality.py``) into the engine —
-# and improves on it: the engine restricts to adjacent trading days, so a
-# suspension resume (a large *legitimate* move over a long halt) is not
-# false-flagged the way the downstream flat-threshold guard does. Error severity.
+# Error: |adj_ret| and |adj_ret - raw_ret| both above this on consecutive TDs
+# (beyond board limits; not a real ex-event).
 ADJ_DISCONTINUITY_RET = 0.35
 
-# Missing corporate action (the lower-severity completeness class). The adjusted
-# series is *continuous* (|adj_ret| below the first bound) yet raw and adjusted
-# diverge past the second bound — wider than any board price limit, so a real
-# ex-event (bonus / large dividend) was adjusted correctly but is absent from
-# corporate_actions. Restricted to *consecutive* trading days when the calendar
-# is present: a gap in bars across a halt is suspension-resume repricing, not a
-# missing ex-date (TDX/EM often have no xdxr there either). hfq research is
-# unaffected; only ledger / dividend accounting is, so this is a warning.
+# Warning: adj continuous but raw diverges past board limit with no CA on record.
 MISSING_EVENT_MAX_ADJ_RET = 0.15
 MISSING_EVENT_MIN_DIVERGENCE = 0.11
 
-# Cap on per-symbol findings per class, so a catastrophic regression floods
-# neither the findings file nor health-latest.json. Overflow is summarised.
 _MAX_RECON_FINDINGS = 50
 
 
@@ -104,8 +68,7 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
     if not bars_dates:
         return findings
 
-    # Bars stamped on a day the calendar says is closed: forged rows or a
-    # wrong calendar. Either way downstream date math is corrupted.
+    # Bars on a closed calendar day.
     orphan = sorted(bars_dates - trading_days)
     if orphan:
         findings.append(
@@ -122,8 +85,7 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
             }
         )
 
-    # Trading days inside the covered span with no bars from any symbol: a whole
-    # day of market data lost. (Edges beyond the span are just coverage bounds.)
+    # Trading days in the covered span with zero bars from any symbol.
     first, last = min(bars_dates), max(bars_dates)
     expected = {d for d in trading_days if first <= d <= last}
     missing = sorted(expected - bars_dates)
@@ -146,21 +108,7 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
 
 
 def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[dict]:
-    """Reconcile valuation_metrics symbol coverage against daily_bars.
-
-    Two directions:
-
-    * lake-wide — valuation symbols with *no* price bar anywhere are delisted /
-      non-tradable names the snapshot should not carry (they never join a
-      tradable-universe query downstream, so they are dead weight and a sign the
-      valuation step is not filtered to the bar universe);
-    * anchor day — of the symbols that traded on the most recent shared day, the
-      fraction that valuation actually priced. A low ratio is a fetch gap. This
-      is bounded to one day so it does not scan the whole cross product.
-
-    Absolute market-cap sanity is skipped while baostock leaves
-    ``total_mv``/``float_mv`` null.
-    """
+    """valuation_metrics vs daily_bars: orphan symbols + one-day coverage ratio."""
     findings: list[dict] = []
     val_root = config.curated_root / "valuation_metrics"
     bars_root = config.curated_root / "daily_bars"
@@ -184,7 +132,6 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
     if not val_syms_all or not bars_syms_all:
         return findings
 
-    # Valuation for symbols that never have a bar: delisted / non-tradable names.
     no_bar_ever = sorted(val_syms_all - bars_syms_all)
     if no_bar_ever:
         findings.append(
@@ -203,7 +150,6 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
             }
         )
 
-    # Anchor-day coverage: of symbols that traded, how many did valuation price?
     val_dates = set(
         scan_parquet_root(val_root, partition_col="trade_date", end=trade_date)
         .select("trade_date")
@@ -251,7 +197,6 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
     if not val_syms or not bars_syms:
         return findings
 
-    # Traded symbols missing valuation: a systematic valuation fetch gap.
     covered = val_syms & bars_syms
     ratio = len(covered) / len(bars_syms)
     if ratio < _VALUATION_COVERAGE_WARN_RATIO:
@@ -276,13 +221,7 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
 
 
 def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
-    """Per (symbol, day) hfq adjusted vs raw returns, plus the previous bar date.
-
-    ``adj_close = close × factor`` holds exactly for stored hfq factors, so the
-    adjusted return is reconstructed by joining ``daily_bars`` (raw close) to the
-    derived ``adj_factors`` — no dependency on the query-layer adjustment. Returns
-    ``None`` when either dataset is absent (cannot reconcile).
-    """
+    """Per (symbol, day) hfq adj vs raw returns + previous bar date. None if missing data."""
     bars_root = config.curated_root / "daily_bars"
     af_root = config.derived_root / "adj_factors"
     if not dataset_has_parquet(bars_root) or not dataset_has_parquet(af_root):
@@ -350,12 +289,7 @@ def _worst_per_symbol(df: pl.DataFrame, by: str) -> pl.DataFrame:
 
 
 def _trading_day_successors(config: Config, trade_date: date) -> pl.DataFrame | None:
-    """[prev_trade_date, next_td] — each trading day paired with the next one.
-
-    Used to keep the discontinuity error to *consecutive* trading days. Returns
-    ``None`` when the calendar is absent (then adjacency cannot be judged and the
-    error stays fail-loud — every discontinuity is reported).
-    """
+    """[prev_trade_date, next_td]. None if calendar missing (then no adjacency filter)."""
     cal_root = config.curated_root / "trading_calendar"
     if not dataset_has_parquet(cal_root):
         return None
@@ -379,27 +313,14 @@ def _iso(value) -> str:
 
 
 def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list[dict]:
-    """Reconcile the applied hfq adjustment against corporate_actions (G5).
-
-    Emits an *error* per symbol whose adjusted series is discontinuous between two
-    consecutive trading days (a factor break — the Workbench guard, now
-    engine-side and refined to spare suspension resumes) and a *warning* per
-    symbol with a continuous adjustment whose raw price nonetheless jumped past a
-    board limit with no corporate action to explain it (a missing event). Each
-    class is ranked worst-first and capped with an overflow summary.
-    """
+    """hfq continuity vs corporate_actions; errors/warnings capped per class."""
     rets = _adjusted_returns(config, trade_date)
     if rets is None or rets.is_empty():
         return []
 
     findings: list[dict] = []
 
-    # Error: adjusted-return discontinuity (a factor break). A >35% adjusted move
-    # is physically impossible only between *consecutive* trading days (board
-    # limit); across a suspension the same threshold false-flags a legitimate
-    # resume repricing (e.g. an 8-month restructuring halt), so restrict to
-    # adjacent trading days. Corporate actions cannot excuse a consecutive-day
-    # discontinuity, so this needs no ex-dates.
+    # Factor break on consecutive TDs only (suspension resumes false-flag otherwise).
     disc = rets.filter(
         (pl.col("adj_ret").abs() > ADJ_DISCONTINUITY_RET)
         & (pl.col("divergence") > ADJ_DISCONTINUITY_RET)
@@ -437,9 +358,7 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
             noun="a discontinuous hfq adjustment",
         )
 
-    # Warning: a continuous adjustment absorbing a real ex-event that is missing
-    # from corporate_actions. Skip symbols already flagged as breaks. Same
-    # consecutive-day gate as the discontinuity error when a calendar is present.
+    # Continuous adj but raw jumped with no CA; skip symbols already flagged.
     ca_root = config.curated_root / "corporate_actions"
     if not dataset_has_parquet(ca_root):
         return findings
@@ -466,10 +385,7 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
     if ex_dates.is_empty():
         matched = candidates.with_columns(pl.lit(None, dtype=pl.Date).alias("_last_ex"))
     else:
-        # A step from bar t_prev to bar t is explained iff a corporate action's
-        # ex-date lies in (t_prev, t]; the interval covers suspensions of any
-        # length (the adjustment lands on the resume bar). join_asof backward
-        # gives the latest ex-date ≤ t; it explains the step when it is > t_prev.
+        # Explained if some ex-date is in (t_prev, t].
         matched = candidates.join_asof(
             ex_dates.rename({"ex_date": "_last_ex"}),
             left_on="trade_date",

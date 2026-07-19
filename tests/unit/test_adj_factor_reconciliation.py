@@ -1,10 +1,7 @@
-"""adj_factor_reconciliation_findings — the G5 adjustment/corporate-action guard.
+"""Tests for adj_factor_reconciliation_findings.
 
-Two classes, split by whether the *adjusted* series stays continuous:
-error ``adj_close_discontinuity`` (a factor break, the ported Workbench guard) and
-warning ``missing_corporate_action`` (a real ex-event absent from the dataset).
-``adj_close = close × factor`` exactly for stored hfq factors, so fixtures write
-raw close + factor and the check reconstructs the adjustment.
+error ``adj_close_discontinuity`` / warning ``missing_corporate_action``.
+Fixtures write raw close + hfq factor; the check reconstructs adj returns.
 """
 
 from datetime import date

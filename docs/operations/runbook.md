@@ -284,7 +284,7 @@ assert "adj_close" in tradable.columns
 1. 主源失败 → batch 退避重试（最多 3 次）
 2. 仍失败 → 标记 batch failed；可选备源写入 `meta/source_snapshots`
 3. `sde audit` 对比主源与 snapshot，由人决定是否切源
-4. 永不静默用备源覆盖 curated canonical 行
+4. 不要静默用备源覆盖 curated canonical 行
 
 ---
 

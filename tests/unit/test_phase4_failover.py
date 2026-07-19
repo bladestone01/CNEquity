@@ -48,7 +48,7 @@ def test_snapshot_store_roundtrip(tmp_path):
 
 
 def test_read_latest_uses_newest_run_only(tmp_path):
-    """G7: read_latest must not concat every historical run_id (would grow unbounded)."""
+    """read_latest must not concat every historical run_id (would grow unbounded)."""
     store = SnapshotStore(tmp_path / "meta")
     store.write(
         "daily_bars",
