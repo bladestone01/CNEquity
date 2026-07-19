@@ -7,6 +7,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Open-source readiness docs** — `docs/comparison.md` (vs AkShare/Tushare/Baostock/Qlib),
+  `docs/legal-and-data-sources.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, GitHub issue/PR
+  templates; README English summary + positioning section.
 - **earnings_disclosure_schedule** — EM `RPT_PUBLIC_BS_APPOIN` 预约披露时间表（按报告期分区；
   日更刷新披露窗口，`sde backfill` 可回填 2016+）；非 PIT 现值语义。
 - **margin_trading historical backfill** — date-walking sweep over the EM datacenter report
@@ -22,6 +25,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **`sde derive sector_code_map`** — lake-only BK* ↔ BOARD_CODE identity map (`meta/sector_code_map.parquet`) for Workbench membership joins.
 
 ### Changed
+- **Repo hygiene for public release** — ignore `logs/` / `.claude/` / `.cursor/`; fix
+  `pyproject.toml` project URLs to `rootSunc/stock-data-engine`; Shenwan XLS client no
+  longer sets `verify=False` (default TLS verify).
 - **sector_bars: pure EastMoney ingestion** — daily clist + push2his backfill (removed hybrid TDX OHLC path). TDX sector adapter + routing derive remain optional.
 - **`[sources.eastmoney] proxy`** — optional HTTP(S) proxy for `EastMoneyClient` (mainland egress for push2his); env `HTTPS_PROXY` still honored when unset.
 - **`scripts/china_egress_backfill.sh`** — one-shot mainland VPS runner for `sector_bars --force` + `trading_status` ST; baostock sweep logs progress every 50 symbols; `sde backfill` enables INFO logging.

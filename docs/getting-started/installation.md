@@ -12,7 +12,8 @@
 ## 基础安装
 
 ```bash
-git clone <repo-url> StockDataEngine && cd StockDataEngine
+git clone https://github.com/rootSunc/stock-data-engine.git
+cd stock-data-engine
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[tdx]"
 ```
@@ -27,11 +28,15 @@ pip install -e ".[tdx]"
 | `valuation` | baostock ≥ 0.8 | `valuation_metrics` 历史回填；`trading_status` ST 历史回填 |
 | `macro` | akshare ≥ 1.14 | 补充 PMI、M2、社融等月度宏观指标 |
 | `nlp` | snownlp ≥ 0.12 | `sentiment_scores` / `stock_news` NLP 增强 |
+| `structure` | pandas、openpyxl、xlrd | 申万行业分类历史 XLS（`industry_members` 回填路径） |
 | `dev` | pytest, ruff, pytest-cov, pytest-timeout | 开发与测试 |
 
 ```bash
-pip install -e ".[tdx,valuation,macro,nlp,dev]"
+pip install -e ".[tdx,valuation,macro,nlp,structure,dev]"
 ```
+
+选型犹豫（本项目 vs AkShare / Tushare）见 [comparison.md](../comparison.md)。
+运行前请阅读 [legal-and-data-sources.md](../legal-and-data-sources.md)。
 
 ## 配置初始化
 
@@ -40,7 +45,7 @@ cp configs/stockdata.example.toml configs/stockdata.toml
 # 编辑 data.root — 生产环境建议使用绝对路径
 ```
 
-`configs/stockdata.toml` 已 gitignore，不会提交到仓库。
+`configs/stockdata.toml`、`data/`、根目录 `logs/` 均已 gitignore，请勿强制加入版本库。
 
 ## 验证安装
 

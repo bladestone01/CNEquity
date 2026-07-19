@@ -509,7 +509,7 @@ Symbol 格式 `{code}.{SH|SZ|BJ}`，独立 `exchange` 列。
 | R-10 | `verify=False` | TLS 中间人风险 | 已移除 | 🟢 已修复 |
 | R-11 | capital/signals 等 step 未注册被静默 skip | 数据集悄悄缺失 | `validate_config`/`validate_steps_registered` 报错 | 🟢 已修复；step 已全部注册 |
 | R-12 | 北交所前缀白名单可能漏覆盖（仅 `92`，历史含 `43/83/87/88`） | universe 不全 | 确认 BSE 编码规则后修正 | 🔴 |
-| R-13 | 第三方数据 ToS/版权 | 合规风险 | 保守限速默认值 | 🟡 持续 |
+| R-13 | 第三方数据 ToS/版权 | 合规风险 | 保守限速；开源文档声明「代码 MIT ≠ 数据可再分发」（`docs/legal-and-data-sources.md`） | 🟡 持续 |
 | R-14 | 数据源失败静默返回 mock 假数据入湖 | 下游选股被投毒 | 默认 fail-loud；mock 仅限 `allow_mock` 且标记 `source="mock"` + audit 拦截 | 🟢 已修复 |
 
 **2026-07-06 架构评审新增（修复计划见 §11.1）：**

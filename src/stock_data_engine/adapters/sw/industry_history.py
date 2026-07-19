@@ -60,7 +60,7 @@ def fetch_sw_industry_intervals(*, client: httpx.Client | None = None) -> pl.Dat
 
     owns = client is None
     if client is None:
-        client = httpx.Client(timeout=120.0, follow_redirects=True, verify=False)
+        client = httpx.Client(timeout=120.0, follow_redirects=True)
     try:
         resp = client.get(SW_INDUSTRY_XLS_URL, headers=_HEADERS)
         resp.raise_for_status()

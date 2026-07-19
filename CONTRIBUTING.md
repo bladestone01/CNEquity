@@ -1,11 +1,20 @@
 # Contributing
 
+Please read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security issues go through
+[SECURITY.md](SECURITY.md), not public issues.
+
+Before proposing large features, check [docs/comparison.md](docs/comparison.md)
+(scope: data layer only) and [docs/legal-and-data-sources.md](docs/legal-and-data-sources.md).
+
 ## Development setup
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[tdx,dev]"
+# optional: valuation, macro, nlp, structure — see docs/getting-started/installation.md
 ```
+
+Do not commit `configs/stockdata.toml`, `data/`, or `logs/`.
 
 ## Common tasks
 

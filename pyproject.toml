@@ -40,9 +40,10 @@ structure = ["pandas>=2.0", "openpyxl>=3.0", "xlrd>=2.0"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-timeout>=2.3", "ruff>=0.4"]
 
 [project.urls]
-Documentation = "https://github.com/your-org/StockDataEngine/tree/main/docs"
-Source = "https://github.com/your-org/StockDataEngine"
-Changelog = "https://github.com/your-org/StockDataEngine/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/rootSunc/stock-data-engine/tree/main/docs"
+Source = "https://github.com/rootSunc/stock-data-engine"
+Changelog = "https://github.com/rootSunc/stock-data-engine/blob/main/CHANGELOG.md"
+Issues = "https://github.com/rootSunc/stock-data-engine/issues"
 
 [project.scripts]
 sde = "stock_data_engine.cli.main:cli"

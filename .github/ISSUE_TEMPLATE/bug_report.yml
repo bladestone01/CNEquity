@@ -1,0 +1,37 @@
+name: Bug report
+description: Report incorrect data, crashes, or broken CLI/API behavior
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For **security** issues use
+        [SECURITY.md](https://github.com/rootSunc/stock-data-engine/security/advisories/new)
+        instead of a public issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Expected vs actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal commands/config (redact local paths and proxies).
+      placeholder: |
+        sde run daily --group reference --config configs/stockdata.toml
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      placeholder: "0.1.0 or git SHA"
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "Python 3.12, macOS, extras=[tdx,valuation]"

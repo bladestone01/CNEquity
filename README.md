@@ -4,10 +4,37 @@
 
 - **CLI**：`sde`　**Python 包**：`stock_data_engine`
 - **交付物**：curated Parquet 分区数据湖 + DuckDB 视图 + Python 读取 API
-- **定位**：下游选股/因子项目的唯一数据源；本引擎只管数据，不做回测与信号
+- **定位**：下游选股/因子项目的本地数据层；本引擎只管数据，不做回测与信号
+
+<details>
+<summary>English summary</summary>
+
+Self-hosted **A-share data layer**: multi-source ingest, job orchestration, and a
+versioned Parquet lake with provenance columns, DuckDB views, and a `load()` API
+(`adjust` / `universe` / point-in-time `as_of`). Not a scraping SDK dump, not a
+backtester. **Code is MIT; upstream market-data terms still apply** — see
+[docs/legal-and-data-sources.md](docs/legal-and-data-sources.md).
+How we differ from AkShare / Tushare / Baostock:
+[docs/comparison.md](docs/comparison.md).
+
+</details>
 
 > 状态标注：✅ 已可用　🚧 开发中　🔜 规划中（详见[路线图](#路线图可实施步骤)）。
 > 使用方式按**终态**描述，未标注的示例即当前已可用。
+
+---
+
+## 和同类项目差在哪
+
+| 你已有的 | 通常缺什么 | StockDataEngine |
+|----------|------------|-----------------|
+| AkShare / efinance 等 | 落盘契约、日更续跑、溯源列 | 编排 + curated 湖 + audit |
+| Tushare Pro | 本地可控、无积分墙的历史湖 | 自建 Parquet，数据在你磁盘上 |
+| Baostock / mootdx | 多源统一 schema 与查询口径 | 多适配器 → 同一套 PK/分区/`load()` |
+| Qlib / vn.py | 「只要数据层、不要平台」 | 只做数据；策略留给下游 |
+
+坚持：**永不伪造、可溯源、多源不自动切主源、财报 PIT**。完整对照与「何时不该用」见
+[docs/comparison.md](docs/comparison.md)。
 
 ---
 
@@ -45,9 +72,14 @@
 ## 安装
 
 ```bash
+git clone https://github.com/rootSunc/stock-data-engine.git
+cd stock-data-engine
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[tdx]"        # tdx = mootdx 行情源；开发另加 [dev]
 ```
+
+完整 extras（`valuation` / `macro` / `nlp` / `structure`）见
+[docs/getting-started/installation.md](docs/getting-started/installation.md)。
 
 ## 快速开始
 
@@ -208,15 +240,19 @@ sde run daily --group research --config configs/stockdata.toml       # 18:30（�
 
 | 分类 | 文档 |
 |------|------|
+| 定位 | [与同类项目差异](docs/comparison.md) · [许可与数据合规](docs/legal-and-data-sources.md) |
 | 入门 | [安装](docs/getting-started/installation.md) · [快速开始](docs/getting-started/quickstart.md) · [配置](docs/getting-started/configuration.md) |
 | 架构 | [总览](docs/architecture/overview.md) · [数据流](docs/architecture/data-flow.md) · [数据湖](docs/architecture/lake-layout.md) · [差距分析](docs/architecture.md) |
 | 模块 | [模块索引](docs/modules/README.md)（config / orchestrator / steps / adapters / query …） |
 | 数据集 | [目录](docs/datasets/catalog.md) · [查询指南](docs/datasets/query-guide.md) · [Schema 契约](docs/PRD.md) |
 | 运维 | [Runbook](docs/operations/runbook.md) · [故障排查](docs/operations/troubleshooting.md) |
-| 开发 | [新增数据集](docs/development/adding-dataset.md) · [测试](docs/development/testing.md) |
+| 开发 | [新增数据集](docs/development/adding-dataset.md) · [测试](docs/development/testing.md) · [CONTRIBUTING](CONTRIBUTING.md) |
 | 参考 | [CLI](docs/reference/cli.md) · [Python API](docs/reference/python-api.md) |
-| 其他 | [PRD](docs/PRD.md) · [路线图](docs/roadmap.md) · [ADR](docs/adr/) · [CHANGELOG](CHANGELOG.md) · [CONTRIBUTING](CONTRIBUTING.md) |
+| 其他 | [PRD](docs/PRD.md) · [路线图](docs/roadmap.md) · [ADR](docs/adr/) · [CHANGELOG](CHANGELOG.md) · [SECURITY](SECURITY.md) |
 
-## License
+## 许可与合规
 
-MIT
+- **代码**：[MIT](LICENSE)
+- **数据**：运行后落盘的行情/公告等仍受各上游条款约束；本仓库不附带数据湖，也不授予数据再分发权。详见 [docs/legal-and-data-sources.md](docs/legal-and-data-sources.md)。
+- **安全漏洞**：[SECURITY.md](SECURITY.md)（请勿公开 issue 贴密钥）
+- **行为准则**：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)

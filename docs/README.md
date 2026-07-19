@@ -8,10 +8,22 @@
 | Python 包 | `stock_data_engine` |
 | 默认配置 | `configs/stockdata.toml`（从 `stockdata.example.toml` 复制） |
 | 数据湖根目录 | `{data.root}`，默认 `./data/stock-data-engine` |
+| 仓库 | https://github.com/rootSunc/stock-data-engine |
+
+开源读者建议先读：[与同类项目差异](comparison.md) → [许可与数据合规](legal-and-data-sources.md) → [安装](getting-started/installation.md)。
 
 ---
 
 ## 文档地图
+
+### 定位与合规
+
+| 文档 | 内容 |
+|------|------|
+| [与同类项目差异](comparison.md) | 相对 AkShare / Tushare / Baostock / Qlib 等的边界与选型 |
+| [许可与数据合规](legal-and-data-sources.md) | MIT 覆盖代码；上游数据条款与用户责任 |
+| [SECURITY](../SECURITY.md) | 漏洞私下报告 |
+| [行为准则](../CODE_OF_CONDUCT.md) | Contributor Covenant |
 
 ### 入门
 

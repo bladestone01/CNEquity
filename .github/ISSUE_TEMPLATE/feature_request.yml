@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a dataset, adapter, or engine improvement
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What downstream stock-selection need is blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Dataset shape, source, and how it fits L0–L8 (see docs/comparison.md).
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This is a **data-layer** need (ingest/schema/query), not a strategy/signal feature
+          required: true
+        - label: I have checked docs/datasets/catalog.md and related issues
+          required: false

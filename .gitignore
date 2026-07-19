@@ -15,7 +15,7 @@ htmlcov/
 
 # Virtual environments
 .venv/
-.venv-test/
+.venv-*/
 venv/
 env/
 
@@ -28,6 +28,13 @@ configs/stockdata.toml
 data/
 *.duckdb
 *.duckdb.wal
+
+# Runtime logs (prefer {data.root}/logs/; never commit either)
+logs/
+
+# Local AI / editor tooling
+.claude/
+.cursor/
 
 # Editor / OS
 .idea/
