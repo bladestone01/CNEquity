@@ -1,11 +1,11 @@
 # 数据集目录（逐源限制与更新频率）
 
-Per-dataset source, update frequency, and known limitations.
+各数据集的主源、更新频率与已知限制。
 
-### Legend
+### 图例
 
-- **Wave:** daily batch step name
-- **On-demand:** fetched by `OnDemandService` on first query
+- **波次（Wave）：** 日更批处理中的 step 名
+- **按需（On-demand）：** 首次查询时由 `OnDemandService` 拉取
 
 ---
 
@@ -13,161 +13,160 @@ Per-dataset source, update frequency, and known limitations.
 
 #### instruments
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Wave | `instruments` (Wave 0) |
-| Primary source | tdx_protocol (mootdx security_list) |
-| Backup | akshare |
-| Frequency | daily |
-| PK | symbol |
-| Universe | SH/SZ/BJ prefix whitelist 60/68/00/30/92 |
-| Known limits | `delist_date` inferred when symbol absent from TDX snapshot; EM enriches `list_date` |
+| 波次 | `instruments`（Wave 0） |
+| 主源 | tdx_protocol（mootdx security_list） |
+| 备源 | akshare |
+| 频率 | 每日 |
+| 主键 | symbol |
+| 股票池 | SH/SZ/BJ 前缀白名单 60/68/00/30/92 |
+| 已知限制 | 快照中消失时推断 `delist_date`；东财补充 `list_date` |
 
 #### trading_calendar
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Wave | `trading_calendar` (Wave 0) |
-| Primary source | tdx_protocol |
-| Backup | exchange CSV |
-| Frequency | yearly refresh + daily check |
-| PK | trade_date |
+| 波次 | `trading_calendar`（Wave 0） |
+| 主源 | tdx_protocol |
+| 备源 | 交易所 CSV |
+| 频率 | 年度刷新 + 每日检查 |
+| 主键 | trade_date |
 
 #### trading_status
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Wave | `trading_status` (Wave 0) |
-| Primary source | tdx_protocol |
-| Backup | eastmoney |
-| Frequency | daily |
-| PK | (symbol, trade_date) |
+| 波次 | `trading_status`（Wave 0） |
+| 主源 | tdx_protocol |
+| 备源 | eastmoney |
+| 频率 | 每日 |
+| 主键 | (symbol, trade_date) |
 
 #### daily_bars
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Wave | `daily_bars` (Wave 1, after corporate_actions) |
-| Primary source | tdx_protocol (unadjusted) |
-| Backup | eastmoney |
-| Frequency | daily incremental; full backfill on init |
-| PK | (symbol, trade_date) |
-| Rebackfill | symbols from corporate_actions same-day ex_date |
-| Known limits | TDX rate limit; use ≤8 workers |
+| 波次 | `daily_bars`（Wave 1，依赖 corporate_actions） |
+| 主源 | tdx_protocol（未复权） |
+| 备源 | eastmoney |
+| 频率 | 每日增量；init 时全量回填 |
+| 主键 | (symbol, trade_date) |
+| 重拉 | 当日 `corporate_actions` 的除权日对应标的 |
+| 已知限制 | TDX 限速；建议 workers ≤ 8 |
 
 #### index_bars
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Wave | `index_bars` (Wave 2) |
-| Primary source | tdx_protocol |
-| Backup | eastmoney |
-| Frequency | daily |
-| PK | (symbol, trade_date, frequency) |
+| 波次 | `index_bars`（Wave 2） |
+| 主源 | tdx_protocol |
+| 备源 | eastmoney |
+| 频率 | 每日 |
+| 主键 | (symbol, trade_date, frequency) |
 
 #### corporate_actions
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Wave | `corporate_actions` (Wave 1, before daily_bars) |
-| Primary source | tdx_protocol ex_rights |
-| Backup | eastmoney datacenter |
-| Frequency | daily |
-| PK | (symbol, ex_date, action_type) |
-| Output | `symbols_to_rebackfill` manifest metadata |
+| 波次 | `corporate_actions`（Wave 1，先于 daily_bars） |
+| 主源 | tdx_protocol 除权 |
+| 备源 | eastmoney datacenter |
+| 频率 | 每日 |
+| 主键 | (symbol, ex_date, action_type) |
+| 输出 | manifest 元数据 `symbols_to_rebackfill` |
 
-#### adj_factors (derived)
+#### adj_factors（derived）
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Step | `derive_adj_factors` (Wave finalize) |
-| Primary source | sina (qfq/hfq factor series) |
-| Input | daily_bars trade dates + external factor API |
-| Frequency | daily after compact |
-| PK | (symbol, trade_date, adjust_type) |
-| Note | External cumulative factors aligned to daily_bars; `adj_close = close * factor` |
+| Step | `derive_adj_factors`（finalize 波次） |
+| 主源 | sina（qfq/hfq 因子序列） |
+| 输入 | daily_bars 交易日 + 外部因子 API |
+| 频率 | compact 之后每日 |
+| 主键 | (symbol, trade_date, adjust_type) |
+| 说明 | 外部累计因子对齐 daily_bars；`adj_close = close * factor` |
 
 ---
 
-### v1.0-full (batch 2)
+### v1.0-full（第二批）
 
 #### fund_flow
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Group | core@16:30 |
-| Primary source | eastmoney |
-| PK | (symbol, trade_date) |
+| 分组 | core@16:30 |
+| 主源 | eastmoney |
+| 主键 | (symbol, trade_date) |
 
 #### northbound_holdings / northbound_flows
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Group | capital@16:30 |
-| Primary source | eastmoney |
-| PK | 见 [schema.md](schema.md) |
+| 分组 | capital@16:30 |
+| 主源 | eastmoney |
+| 主键 | 见 [schema.md](schema.md) |
 
 #### margin_trading
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Group | signals@17:00 |
-| Primary source | eastmoney / akshare |
-| PK | (symbol, trade_date) |
+| 分组 | signals@17:00 |
+| 主源 | eastmoney / akshare |
+| 主键 | (symbol, trade_date) |
 
 #### valuation_metrics
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Daily source | eastmoney（clist 实时快照，盖当日 trade_date） |
-| History source | baostock（`asl backfill valuation_metrics`；per-symbol 每日 PE/PB/PS 回填至 2016） |
-| PK | (symbol, trade_date) |
-| Known limits | baostock 历史含 pe_ttm/pb/ps_ttm；`float_mv`←amount/turn，`total_mv`←Q4 totalShare×close；日更 EM 快照覆盖最新交易日 |
+| 日更源 | eastmoney（clist 实时快照，覆盖当日 trade_date） |
+| 历史源 | baostock（`asl backfill valuation_metrics`；按标的每日 PE/PB/PS 回填至 2016） |
+| 主键 | (symbol, trade_date) |
+| 已知限制 | baostock 历史含 pe_ttm/pb/ps_ttm；`float_mv`←amount/turn，`total_mv`←Q4 totalShare×close；日更 EM 快照覆盖最新交易日 |
 
 #### announcement_index
 
-| Item | Value |
+| 项 | 值 |
 |------|-------|
-| Primary source | cninfo |
-| PK | announcement_id |
-| Note | Full text via on-demand `announcement_body` |
+| 主源 | cninfo |
+| 主键 | announcement_id |
+| 说明 | 全文走 on-demand `announcement_body` |
 
 ---
 
-### On-demand datasets
+### 按需数据集（On-demand）
 
-Not in daily Wave. Cached under `meta/on_demand/` and optional DuckDB tables.
+不在日更波次中。缓存于 `meta/on_demand/`，可选写入 DuckDB 表。
 
-| Dataset | Source | Trigger |
+| 数据集 | 来源 | 触发 |
 |---------|--------|---------|
 | announcement_body | cninfo | `asl query --dataset announcement_body --symbol` |
-| stock_news | eastmoney / akshare | per symbol |
-| research_reports | eastmoney reportapi | per symbol |
-| financial_reports | sina / gpcw | per symbol |
+| stock_news | eastmoney / akshare | 按标的 |
+| research_reports | eastmoney reportapi | 按标的 |
+| financial_reports | sina / gpcw | 按标的 |
 
 ---
 
-### Meta datasets
+### Meta 数据集
 
-| Dataset | Storage |
+| 数据集 | 存储 |
 |---------|---------|
 | ingestion_runs | manifest.db |
 | ingestion_batches | manifest.db |
 | quality_findings | meta/quality/findings/ |
 | source_diffs | meta/quality/source_diffs/ |
-| data_catalog | generated by `asl catalog` |
+| data_catalog | 由 `asl catalog` 生成 |
 
 ---
 
-### Source availability matrix
+### 源可用性矩阵
 
-| Source | Protocol | MVP usage | Backup | Degrade |
+| 来源 | 协议 | MVP 用途 | 备源 | 降级策略 |
 |--------|----------|-----------|--------|---------|
-| tdx_protocol | TCP | bars, instruments, calendar | eastmoney | audit alert only |
-| sina | HTTP | adj_factors (qfq/hfq) | — | skip symbol + quality finding |
-| eastmoney | HTTP | corp actions backup, capital | akshare | skip + quality finding |
-| cninfo | HTTP | announcement_index | — | on-demand only |
-| akshare | HTTP | optional | — | disabled by default |
+| tdx_protocol | TCP | bars、instruments、calendar | eastmoney | 仅 audit 告警 |
+| sina | HTTP | adj_factors（qfq/hfq） | — | 跳过该标的 + quality finding |
+| eastmoney | HTTP | 公司行为备源、资金面 | akshare | 跳过 + quality finding |
+| cninfo | HTTP | announcement_index | — | 仅按需 |
+| akshare | HTTP | 可选 | — | 默认关闭 |
 
-调度与 failover 见 [运维 Runbook](../operations/runbook.md)。
-
+调度与主备切换见 [运维 Runbook](../operations/runbook.md)。

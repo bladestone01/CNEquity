@@ -123,13 +123,25 @@ df = bars.filter(pl.col("symbol") == "600519.SH").collect()
   duckdb/    ashare-lake.duckdb
 ```
 
-## 设计取舍
+## 定位：与同类差异与设计取舍
 
-- 源失败就 fail batch，不静默塞假数；测试里 `allow_mock` 必须标 `source="mock"`
-- 行上带 `source` / `data_version` / `fetched_at`，问题数据可以追到来源和批次
-- 日线存未复权价，复权因子单独存；qfq / hfq 在查询时组合
-- curated 每主键一行；备源进 snapshot，audit 出 diff，不自动顶替主源
-- 财报等低频数据带 `announce_date`，用 `load(..., as_of=)` 做 PIT，避免前视
+AkShare / efinance 解决「怎么拉数」；本仓库解决拉完之后：多源进同一套主键 / 分区 / `load()` 契约，落成可日更续跑、带溯源的本地 curated Parquet。逐项说明见 [comparison](docs/comparison.md)。
+
+| | ashare-lake | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
+|--|-------------|-------------------|-------------|-------------------|--------------|
+| 定位 | 自建数据湖 + 日更编排 | 拉数函数库 | 云端积分 API | 单源会话/协议 | 研究/交易平台 |
+| 交付 | curated Parquet + `load()` | 内存 DataFrame | 远端表 | DataFrame | 平台内数据 |
+| 编排 / 水位 / 重试 | 有 | 无 | 无 | 无 | 各平台自有 |
+| Schema / 溯源 | 写前校验 + provenance | 通常无 | 平台字段 | 无湖契约 | 视模块 |
+| 多源 | 主源进 curated；备源仅 snapshot | 单源调用 | 单平台 | 单源 | 视配置 |
+
+| 取舍 | 选择 |
+|------|------|
+| 源失败 | fail batch，不静默塞假数；测试 `allow_mock` 须标 `source="mock"` |
+| 溯源 | 每行 `source` / `data_version` / `fetched_at` |
+| 复权 | 日线存未复权；因子单独存；`qfq` / `hfq` 查询时组合 |
+| 主备 | curated 每主键一行；备源进 snapshot，audit 出 diff，不自动顶替 |
+| 前视 | 财报等带 `announce_date`，`load(..., as_of=)` 做 PIT |
 
 ## 已知限制
 
@@ -137,27 +149,22 @@ df = bars.filter(pl.col("symbol") == "600519.SH").collect()
 - 部分 HTTP 源在海外访问不稳定，大陆出口更稳；`sector_bars` 等历史回填需要国内网络或代理，见 [runbook](docs/operations/runbook.md)。
 - 尚未发布 PyPI，目前只支持源码安装。
 
-## 和同类项目的差异
-
-AkShare / efinance 解决"怎么拉数"，这里解决的是拉完之后的事：多适配器进同一套主键 / 分区 / `load()` 契约，数据是你磁盘上可日更续跑、带溯源的 curated Parquet。Tushare Pro 有积分墙；Baostock / mootdx 单源、schema 互不兼容；Qlib / vn.py 则是整包研究平台。逐项对照见 [docs/comparison.md](docs/comparison.md)。
-
 ## 项目状态
 
 当前 [0.1.0](CHANGELOG.md)，是作者自用数据层的首个公开版本，日常跑在自己的日更 cron 上。1.0 之前数据集名、schema、`load()` 签名可能有破坏性调整，变更都记录在 [CHANGELOG](CHANGELOG.md)。
 
-这是个人项目：issue 和 PR 都欢迎，响应尽力而为。提 PR 前请看 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题走 [SECURITY.md](SECURITY.md)。
+这是个人项目：issue 和 PR 都欢迎，响应尽力而为。提 PR 前请看 [贡献指南](CONTRIBUTING.md)；安全问题走 [安全策略](SECURITY.md)。文档以中文为主；[CHANGELOG](CHANGELOG.md) 与 [ADR](docs/adr/) 为英文。
 
 ## 文档
 
 入口在 [docs/README.md](docs/README.md)。常用的几份：
 
-[和同类项目差异](docs/comparison.md) · [许可与数据合规](docs/legal-and-data-sources.md) ·
+[定位对照](docs/comparison.md) · [许可与数据合规](docs/legal-and-data-sources.md) ·
 [安装](docs/getting-started/installation.md) · [快速开始](docs/getting-started/quickstart.md) ·
 [配置](docs/getting-started/configuration.md) · [架构总览](docs/architecture/overview.md) ·
 [数据集目录](docs/datasets/catalog.md) · [Schema](docs/datasets/schema.md) ·
 [查询指南](docs/datasets/query-guide.md) · [Runbook](docs/operations/runbook.md) ·
 [CLI](docs/reference/cli.md) · [Python API](docs/reference/python-api.md) ·
-[ADR](docs/adr/) · [CHANGELOG](CHANGELOG.md)
 
 ## 许可
 

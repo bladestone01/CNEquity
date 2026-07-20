@@ -70,10 +70,10 @@
 
 ---
 
-## Failover
+## 主备角色（Failover）
 
-- `daily_bars`：**备源**（主源 TDX 失败时 snapshot）
-- `corporate_actions`：**daily 主源**
+- `daily_bars`：**备源**（主源 TDX 失败时写入 source_snapshots）
+- `corporate_actions`：**日更主源**
 
 ---
 

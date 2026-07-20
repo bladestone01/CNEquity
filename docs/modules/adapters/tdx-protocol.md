@@ -52,12 +52,12 @@
 
 ---
 
-## Failover 角色
+## 主备角色（Failover）
 
 | 数据集 | 角色 |
 |--------|------|
 | daily_bars | **主源** |
-| corporate_actions | backfill 主源；daily 时 EM 主、TDX snapshot |
+| corporate_actions | 回填主源；日更时东财为主、TDX 写 snapshot |
 
 ---
 

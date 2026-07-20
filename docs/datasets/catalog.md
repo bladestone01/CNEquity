@@ -20,7 +20,7 @@
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | EM failover snapshot |
+| daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | 东财备源快照（failover） |
 | index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
 | adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`asl derive adj_factors` |
 
@@ -30,7 +30,7 @@
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| corporate_actions | ex_date | symbol, ex_date, action_type | by_date | ✓ | eastmoney (daily) | backfill: tdx_protocol |
+| corporate_actions | ex_date | symbol, ex_date, action_type | by_date | ✓ | eastmoney（日更） | 回填：tdx_protocol |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` 过滤 |
 | earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`asl backfill` 走 2016 起全报告期 |
 
@@ -41,7 +41,7 @@
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
 | financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区 |
-| valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | backfill: baostock |
+| valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 回填：baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
 
 ---
@@ -90,7 +90,7 @@
 |--------|--------|------|------|------|------|------|
 | sentiment_scores | trade_date | symbol, trade_date, score_channel | by_date | ✓ | derived | |
 | hot_rank | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 人气榜 top500 |
-| sector_bars | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | backfill: eastmoney_kline（push2his） |
+| sector_bars | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 回填：eastmoney_kline（push2his） |
 | sector_fund_flow | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 板块主力净流入 |
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 7×24 快讯 |
 
@@ -108,7 +108,7 @@
 
 ---
 
-## Failover 配置（meta/source_snapshots）
+## 主备配置（Failover → meta/source_snapshots）
 
 | 数据集 | 主源 | 备源 |
 |--------|------|------|

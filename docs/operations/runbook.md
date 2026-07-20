@@ -104,7 +104,7 @@ asl catalog                    # 行数概览
 
 ---
 
-## SLO
+## 服务目标（SLO）
 
 | 指标 | 目标 |
 |------|------|
@@ -151,9 +151,6 @@ asl run daily --group core   # 增量续采
 
 ---
 
-
----
-
 ## 数据湖目录（init 后）
 
 ```
@@ -175,13 +172,13 @@ asl run daily --group core   # 增量续采
 分组模式（`--group`）各组末尾会自动 compact→audit，数据写入 curated：
 
 ```cron
-# Core reference + bars + derive (Mon-Fri 16:05)
+# 核心参考 + 行情 + 派生（周一至周五 16:05）
 5 16 * * 1-5 cd /path/to/ashare-lake && asl run daily --group core --config configs/ashare-lake.toml
 
-# Capital tables (16:35)
+# 资金面（16:35）
 35 16 * * 1-5 asl run daily --group capital --config configs/ashare-lake.toml
 
-# Signals (17:05)
+# 信号类（17:05）
 5 17 * * 1-5 asl run daily --group signals --config configs/ashare-lake.toml
 ```
 

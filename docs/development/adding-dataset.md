@@ -75,7 +75,7 @@ def test_my_dataset_normalizes(monkeypatch):
 
 ---
 
-## Worker step
+## Worker Step
 
 仅当需要按 symbol 并行（如全市场日线）时设 `requires_workers=True`。大多数 HTTP 全市场接口用单 step + 内部分页即可。
 

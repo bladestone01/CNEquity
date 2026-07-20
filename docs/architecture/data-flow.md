@@ -6,6 +6,7 @@
 
 ## Init（全量回填）
 
+
 触发：`asl init`
 
 ```
@@ -35,7 +36,7 @@ run_init_phases() — 按 [job.init.phases] 顺序
 
 ---
 
-## Daily Run（日更）
+## 日更（Daily Run）
 
 触发：`asl run daily` 或 `--group <name>`
 
@@ -48,12 +49,12 @@ start_run("daily" | "daily:<group>")
         ├── 非 worker step：adapter 拉取 → validate_dataframe → staging
         ├── daily_bars：ProcessPoolExecutor × workers
         │     每 batch：manifest 记录 → 拉取 → staging
-        └── failover：主源失败时写 source_snapshots（不进 curated）
+        └── 主备切换：主源失败时写 source_snapshots（不进 curated）
 
-finalize（wave 末尾或 group 内显式 steps）：
+finalize（波次末尾或分组内显式 steps）：
   compact
     ├── compact_gate：本 run 有 incomplete batch 的数据集跳过
-    ├── PK dedupe：sort(fetched_at).unique(pk, keep="last")
+    ├── 主键去重：sort(fetched_at).unique(pk, keep="last")
     ├── instruments：特殊 merge，保留退市股
     └── 成功 compact 的数据集 → 更新 meta/state 水位
 
@@ -85,11 +86,11 @@ finalize（wave 末尾或 group 内显式 steps）：
 
 ---
 
-## Audit
+## 审计（Audit）
 
-**Per-run**：`asl audit --run-id <id>` → `meta/quality/findings/{run_id}.json`
+**单次 run**：`asl audit --run-id <id>` → `meta/quality/findings/{run_id}.json`
 
-**湖级健康**：`asl audit --full` → 汇总 freshness、STALE、error/warning findings；UNHEALTHY 时退出码 1。
+**湖级健康**：`asl audit --full` → 汇总新鲜度、STALE、error/warning findings；UNHEALTHY 时退出码 1。
 
 关键检查：
 
@@ -99,7 +100,7 @@ finalize（wave 末尾或 group 内显式 steps）：
 
 ---
 
-## Retry
+## 重试（Retry）
 
 触发：`asl retry --run-id <id>`
 
@@ -115,7 +116,7 @@ run_lock 获取
 
 ---
 
-## Backfill 单数据集
+## 单数据集回填（Backfill）
 
 触发：`asl backfill <dataset>`
 
@@ -125,7 +126,7 @@ run_lock 获取
 
 ---
 
-## On-Demand 路径
+## 按需路径（On-Demand）
 
 不经过 staging/curated 主路径：
 

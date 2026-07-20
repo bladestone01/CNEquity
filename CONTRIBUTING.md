@@ -1,47 +1,45 @@
-# Contributing
+# 贡献指南
 
-Security issues go through [SECURITY.md](SECURITY.md), not public issues.
+安全问题请走 [SECURITY.md](SECURITY.md)，不要开公开 issue。
 
-Before proposing large features, check [docs/comparison.md](docs/comparison.md)
-(scope: data layer only) and [docs/legal-and-data-sources.md](docs/legal-and-data-sources.md).
+提较大功能前，请先看 [定位与差异](docs/comparison.md)（本仓库只做数据层）和
+[许可与数据合规](docs/legal-and-data-sources.md)。
 
-## Setup
+## 环境
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[tdx,dev]"
-# optional: valuation, macro, nlp, structure — see docs/getting-started/installation.md
+# 可选 extras：valuation / macro / nlp / structure
+# 见 docs/getting-started/installation.md
 ```
 
-Do not commit `configs/ashare-lake.toml`, `data/`, or `logs/`.
+请勿提交 `configs/ashare-lake.toml`、`data/`、`logs/`。
 
 ```bash
 ruff format .
 ruff check .
-pytest                 # all
-pytest tests/unit      # fast
+pytest                 # 全部
+pytest tests/unit      # 快速
 pytest tests/integration
 ```
 
-## Conventions
+## 约定
 
-- Code lives under `src/ashare_lake/`; keep concerns split (`domain`,
-  `adapters`, `orchestrator`, `steps`, `storage`, `derive`, `quality`,
-  `query`, `config`, `cli`).
-- Steps follow L0–L8 layering under `steps/`; import new modules in
-  `steps/__init__.py` so they register.
-- New datasets need schema + PK in `domain/schemas.py`, a partition key, and
-  provenance columns (`source`, `data_version`, `fetched_at`).
-- Adapters stay thin (I/O + source quirks); normalization belongs in
-  `steps/` / `domain/`.
-- Unit tests stay offline. Network only in clearly marked integration tests.
-- Non-trivial architecture choices go in `docs/adr/` (copy `0000-template.md`).
+- 代码在 `src/ashare_lake/`，按职责拆分（`domain`、`adapters`、`orchestrator`、
+  `steps`、`storage`、`derive`、`quality`、`query`、`config`、`cli`）。
+- Step 按 L0–L8 分层放在 `steps/`；新模块需在 `steps/__init__.py` 中 import 以注册。
+- 新数据集：在 `domain/schemas.py` 声明 schema + 主键、分区键，以及溯源列
+  （`source`、`data_version`、`fetched_at`）。
+- Adapter 保持薄（I/O 与源侧 quirks）；归一化放在 `steps/` / `domain/`。
+- 单测默认离线；需要联网的测试须明确标记。
+- 非平凡架构取舍写入 `docs/adr/`（复制 `0000-template.md`；ADR 正文保持英文）。
 
-## New dataset checklist
+## 新增数据集清单
 
-1. Schema + PK + partition key
-2. `@register_step` with `depends_on` / `group` / `requires_workers`
-3. Write-time schema validation passes
-4. Unit test for normalization + at least one edge case
-5. Entries in [`docs/datasets/catalog.md`](docs/datasets/catalog.md) and
+1. Schema + 主键 + 分区键
+2. `@register_step`，填好 `depends_on` / `group` / `requires_workers`
+3. 写时 schema 校验通过
+4. 归一化单测 + 至少一个边界用例
+5. 更新 [`docs/datasets/catalog.md`](docs/datasets/catalog.md) 与
    [`docs/datasets/sources.md`](docs/datasets/sources.md)

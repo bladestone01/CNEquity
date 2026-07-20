@@ -34,7 +34,7 @@ EastMoney ST 列表偶发不全时，akshare 提供第二路 ST 标记集合，s
 ```toml
 [sources.akshare]
 enabled = true
-# Often wraps EastMoney — keep ≥ EM interval.
+# 常包装东财接口 — 间隔建议 ≥ 东财配置
 min_interval_seconds = 1.0
 ```
 

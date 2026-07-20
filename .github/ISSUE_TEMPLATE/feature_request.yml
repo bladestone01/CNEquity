@@ -1,28 +1,28 @@
-name: Feature request
-description: Propose a dataset, adapter, or engine improvement
+name: 功能请求
+description: 提议新数据集、适配器或引擎改进
 title: "[feat] "
 labels: ["enhancement"]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: Problem / use case
-      description: What downstream stock-selection need is blocked?
+      label: 问题 / 使用场景
+      description: 下游选股或研究被什么卡住了？
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Proposal
-      description: Dataset shape, source, and how it fits L0–L8 (see docs/comparison.md).
+      label: 提议
+      description: 数据集形态、来源，以及如何落入 L0–L8（见 docs/comparison.md）。
     validations:
       required: true
   - type: checkboxes
     id: scope
     attributes:
-      label: Scope check
+      label: 范围确认
       options:
-        - label: This is a **data-layer** need (ingest/schema/query), not a strategy/signal feature
+        - label: 这是**数据层**需求（采集/schema/查询），不是策略/信号功能
           required: true
-        - label: I have checked docs/datasets/catalog.md and related issues
+        - label: 已查阅 docs/datasets/catalog.md 及相关 issue
           required: false

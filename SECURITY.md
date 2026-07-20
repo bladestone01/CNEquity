@@ -1,37 +1,31 @@
-# Security Policy
+# 安全策略
 
-## Supported versions
+## 支持的版本
 
-Security fixes are applied to the latest commit on `main`. Pre-1.0 releases
-(`0.x`) do not maintain long-lived patch branches.
+安全修复合入 `main` 的最新提交。1.0 之前的 `0.x` 不维护长期补丁分支。
 
-## Reporting a vulnerability
+## 如何报告漏洞
 
-Please **do not** open a public GitHub issue for security problems.
+请 **不要** 为安全问题开公开 GitHub issue。
 
-Prefer one of:
+优先任选其一：
 
 1. [GitHub Security Advisories](https://github.com/rootSunc/ashare-lake/security/advisories/new)
-   (private report), or
-2. Open a private channel with the maintainers via the repository owner
-   (`rootSunc` on GitHub).
+   （私密报告），或
+2. 通过仓库所有者（GitHub：`rootSunc`）建立私密联系渠道。
 
-Include:
+报告时请尽量包含：
 
-- Affected version / commit
-- Impact (data integrity, credential exposure, remote code execution, etc.)
-- Minimal reproduction steps
-- Whether a fix or workaround is already known
+- 受影响版本 / commit
+- 影响面（数据完整性、凭证泄露、远程代码执行等）
+- 最小复现步骤
+- 是否已有修复或变通办法
 
-We aim to acknowledge reports within 7 days and to coordinate disclosure after
-a fix is available.
+我们目标在 7 日内确认收到，并在修复可用后协商披露节奏。
 
-## Scope notes
+## 范围说明
 
-- This project fetches market data from third-party HTTP/TCP endpoints. Issues
-  that are solely upstream site availability, rate limits, or ToS disputes are
-  **not** security vulnerabilities — see
-  [docs/legal-and-data-sources.md](docs/legal-and-data-sources.md).
-- Local config (`configs/ashare-lake.toml`), lake data under `data/`, and runtime
-  logs must never be committed. If you discover secrets in git history, report
-  privately so history can be scrubbed before wider disclosure.
+- 本项目从第三方 HTTP/TCP 接口拉取行情等数据。仅涉及上游可用性、限速或服务条款争议的问题，
+  **不算** 安全漏洞——见 [许可与数据合规](docs/legal-and-data-sources.md)。
+- 本地配置（`configs/ashare-lake.toml`）、`data/` 下的湖数据与运行日志不得提交。
+  若在 git 历史中发现密钥，请私下报告，以便在更广披露前清理历史。

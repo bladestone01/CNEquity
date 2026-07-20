@@ -22,7 +22,7 @@ ashare-lake 交付 **27 个注册数据集**（26 curated + 1 derived `adj_facto
 
 ---
 
-## Ingestion 模式
+## 采集模式
 
 | 模式 | 含义 | 示例 |
 |------|------|------|
@@ -30,7 +30,7 @@ ashare-lake 交付 **27 个注册数据集**（26 curated + 1 derived `adj_facto
 | **derived** | 由 curated 计算，可 `asl derive` 重算 | adj_factors |
 | **on-demand** | 按 symbol 抓取，缓存于 meta | stock_news, announcement_body |
 
-### fetch_semantics
+### 拉取语义（fetch_semantics）
 
 | 值 | 行为 | 数据集示例 |
 |----|------|------------|
@@ -60,7 +60,7 @@ ashare-lake 交付 **27 个注册数据集**（26 curated + 1 derived `adj_facto
 
 ---
 
-## On-Demand 数据集
+## 按需数据集（On-Demand）
 
 配置于 `[on_demand].datasets`：
 

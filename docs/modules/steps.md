@@ -34,21 +34,21 @@ from ashare_lake.steps import reference, bars, events, ...  # noqa
 
 | Step | 数据集 | Worker | 主源 |
 |------|--------|--------|------|
-| daily_bars | daily_bars | **是** | tdx_protocol（failover → EM snapshot） |
+| daily_bars | daily_bars | **是** | tdx_protocol（失败时东财备源快照） |
 | index_bars | index_bars | 否 | tdx_protocol |
 
 ### events.py（L2）
 
 | Step | 数据集 | 主源 |
 |------|--------|------|
-| corporate_actions | corporate_actions | EM daily / TDX backfill |
+| corporate_actions | corporate_actions | 日更东财 / 回填 TDX |
 | announcement_index | announcement_index | cninfo |
 
 ### fundamentals.py（L3）
 
 | Step | 数据集 | 主源 |
 |------|--------|------|
-| valuation_metrics | valuation_metrics | EM snapshot；backfill baostock |
+| valuation_metrics | valuation_metrics | 东财快照；回填 baostock |
 | financial_statement_items | financial_statement_items | eastmoney |
 
 ### capital.py（L4）

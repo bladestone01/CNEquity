@@ -114,18 +114,28 @@ Lake layout:
   duckdb/    ashare-lake.duckdb
 ```
 
-## Design choices
+## Positioning: peers and trade-offs
 
-- A failed source fails the batch — no silent fake rows; test-only `allow_mock`
-  data must be tagged `source="mock"`
-- Every row carries `source` / `data_version` / `fetched_at`, so bad data is
-  traceable to a source and batch
-- Daily bars are stored unadjusted; adjustment factors live separately and
-  qfq / hfq are composed at query time
-- One row per primary key in curated; secondary sources go to snapshots and
-  audits emit diffs — they never silently replace the primary source
-- Low-frequency data (financials etc.) carries `announce_date`; use
-  `load(..., as_of=)` for point-in-time views without lookahead
+AkShare / efinance solve fetching; this repo solves what comes after: many
+adapters into one primary-key / partition / `load()` contract, as resumable,
+provenance-tagged curated Parquet on disk. Details:
+[comparison](docs/comparison.md) (Chinese).
+
+| | ashare-lake | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
+|--|-------------|-------------------|-------------|-------------------|--------------|
+| Role | Self-hosted lake + daily jobs | Fetch helpers | Cloud API (credits) | Single-source API/protocol | Research / trading platform |
+| Deliverable | Curated Parquet + `load()` | In-memory DataFrame | Remote tables | DataFrame | In-platform data |
+| Orchestration / watermarks / retry | Yes | No | No | No | Platform-specific |
+| Schema / provenance | Write-time checks + provenance cols | Usually none | Platform fields | No lake contract | Varies |
+| Multi-source | Primary → curated; backup → snapshot only | Single call | Single vendor | Single source | Varies |
+
+| Trade-off | Choice |
+|-----------|--------|
+| Source failure | Fail the batch — no silent fake data; `allow_mock` tests must tag `source="mock"` |
+| Provenance | Every row: `source` / `data_version` / `fetched_at` |
+| Adjustment | Store unadjusted bars; factors separate; compose `qfq` / `hfq` at query time |
+| Failover | One curated row per PK; backups stay in snapshots; audit diffs; never auto-replace |
+| Lookahead | Financials carry `announce_date`; use `load(..., as_of=)` for PIT |
 
 ## Known limitations
 
@@ -138,15 +148,6 @@ Lake layout:
   [runbook](docs/operations/runbook.md).
 - Not published to PyPI yet; source install only.
 
-## How it differs from AkShare / Tushare / Baostock
-
-AkShare / efinance solve fetching; this project solves what comes after: many
-adapters normalized into one primary-key / partition / `load()` contract, with
-the data as resumable, provenance-tagged curated Parquet on your own disk.
-Tushare Pro sits behind a credit wall; Baostock / mootdx are single-source with
-incompatible schemas; Qlib / vn.py bundle a full research platform. Detailed
-comparison: [docs/comparison.md](docs/comparison.md).
-
 ## Project status
 
 Currently [0.1.0](CHANGELOG.md) — the first public release of a data layer the
@@ -155,12 +156,14 @@ signature may change before 1.0; everything is tracked in the
 [CHANGELOG](CHANGELOG.md).
 
 This is a personal project: issues and PRs are welcome, responses are
-best-effort. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR;
-security reports go through [SECURITY.md](SECURITY.md).
+best-effort. See [CONTRIBUTING.md](CONTRIBUTING.md) (Chinese) before opening a
+PR; security reports go through [SECURITY.md](SECURITY.md) (Chinese).
+User-facing docs are Chinese-first; [CHANGELOG](CHANGELOG.md) and
+[ADRs](docs/adr/) stay in English.
 
 ## Docs
 
-Start at [docs/README.md](docs/README.md). Frequently used:
+Start at [docs/README.md](docs/README.md) (Chinese). Frequently used:
 [comparison](docs/comparison.md) ·
 [legal & data sources](docs/legal-and-data-sources.md) ·
 [installation](docs/getting-started/installation.md) ·

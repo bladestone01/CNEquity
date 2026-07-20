@@ -1,12 +1,12 @@
-## Summary
+## 摘要
 
-<!-- What changed and why (1–3 bullets). -->
+<!-- 改了什么、为什么（1–3 条）。 -->
 
 -
 
-## Checklist
+## 检查清单
 
-- [ ] Tests added/updated when behavior changes (`pytest tests/unit` still offline)
-- [ ] Docs / dataset catalog / CHANGELOG updated if user-visible
-- [ ] No local config, lake data, or logs committed
-- [ ] New network I/O stays in adapters; schema/PK declared in `domain/`
+- [ ] 行为变更时补充/更新测试（`pytest tests/unit` 仍保持离线）
+- [ ] 用户可见变更已更新文档 / 数据集目录 / CHANGELOG
+- [ ] 未提交本地配置、湖数据或日志
+- [ ] 新增网络 I/O 放在 adapters；schema/主键在 `domain/` 中声明

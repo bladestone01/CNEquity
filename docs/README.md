@@ -6,11 +6,27 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。默认从 `configs/ashare-lake.exa
 
 开源读者建议顺序：[与同类项目差异](comparison.md) → [许可与数据合规](legal-and-data-sources.md) → [安装](getting-started/installation.md)。
 
+面向使用者的文档以中文为准；[CHANGELOG](../CHANGELOG.md) 与 [ADR](adr/) 保持英文（技术决策与版本记录）。英文简介见 [README.en.md](../README.en.md)。
+
+### 术语约定
+
+| 中文 | 英文/代码 | 含义 |
+|------|-----------|------|
+| 波次 | Wave | 日更编排中的一批并行/串行 step |
+| 主键 | PK / primary key | curated 去重与契约键 |
+| 主源 / 备源 | primary / backup | 写入 curated 的源 vs 仅进 source_snapshots 的源 |
+| 主备切换 | Failover | 主源失败时写备源快照，不自动顶替 curated |
+| 权威行 | canonical | curated 中每主键一行的正式数据 |
+| 溯源 | provenance | `source` / `data_version` / `fetched_at` |
+| 水位 | watermark | `meta/state` 中已成功 compact 的进度 |
+| 按需 | on-demand | 不进日更主路径、按 symbol 拉取并缓存 |
+| 备份 | backup（脚本/目录） | 元数据归档；与「备源」不同 |
+
 ## 定位与合规
 
 - [与同类项目差异](comparison.md)
 - [许可与数据合规](legal-and-data-sources.md)
-- [SECURITY](../SECURITY.md)（漏洞私下报告）
+- [安全策略](../SECURITY.md)（漏洞私下报告）
 
 ## 入门
 
@@ -22,7 +38,7 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。默认从 `configs/ashare-lake.exa
 
 - [架构总览](architecture/overview.md) · [数据流](architecture/data-flow.md) · [数据湖布局](architecture/lake-layout.md)
 - [设计原则](architecture/design-principles.md) · [架构设计（完整版）](architecture.md)
-- [ADR](adr/)
+- [ADR](adr/)（英文）
 
 ## 模块与数据集
 
@@ -37,7 +53,7 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。默认从 `configs/ashare-lake.exa
 
 - [Runbook](operations/runbook.md) · [脚本说明](operations/scripts.md) · [故障排查](operations/troubleshooting.md)
 - [开发约定](development/conventions.md) · [测试](development/testing.md) · [新增数据集](development/adding-dataset.md)
-- [CONTRIBUTING](../CONTRIBUTING.md)
+- [贡献指南](../CONTRIBUTING.md)
 
 ## 参考
 

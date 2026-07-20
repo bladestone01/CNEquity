@@ -1,37 +1,37 @@
 # Schema 契约
 
-ashare-lake curated datasets share provenance columns and explicit primary keys.
+ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 
-### Global conventions
+### 全局约定
 
-| Rule | Value |
+| 规则 | 取值 |
 |------|-------|
-| Timezone | `Asia/Shanghai` for all `trade_date` and business timestamps |
-| Symbol | `{code}.{SH\|SZ\|BJ}` e.g. `600519.SH` |
-| Exchange column | `SH`, `SZ`, or `BJ` |
-| Provenance columns | `source`, `data_version`, `fetched_at` (UTC timestamp) on every curated row |
-| Null semantics | Suspended days: OHLCV present, `volume=0`, `amount=0` |
-| Schema evolution | Additive columns only; breaking changes bump `dataset_schema_version` |
+| 时区 | 所有 `trade_date` 与业务时间戳使用 `Asia/Shanghai` |
+| Symbol | `{code}.{SH\|SZ\|BJ}`，如 `600519.SH` |
+| 交易所列 | `SH` / `SZ` / `BJ` |
+| 溯源列 | 每行必有 `source`、`data_version`、`fetched_at`（UTC 时间戳） |
+| 空值语义 | 停牌日：OHLCV 仍有值，`volume=0`、`amount=0` |
+| Schema 演进 | 只允许加列；破坏性变更须提升 `dataset_schema_version` |
 
-### Partition keys (curated)
+### 分区键（curated）
 
-| Dataset | Partition |
+| 数据集 | 分区 |
 |---------|-----------|
 | daily_bars | `trade_date` |
 | index_bars | `trade_date` |
 | minute_bars | `frequency`, `trade_date`, `symbol_bucket` |
 | trading_status | `trade_date` |
-| corporate_actions | `ex_date` (year-month) |
+| corporate_actions | `ex_date`（按年月） |
 | adj_factors | `trade_date` |
 | financial_statement_items | `report_period` |
 | industry_members | `as_of_date` |
 | northbound_flows | `trade_date` |
 
-Multi-source snapshots: `meta/source_snapshots/{dataset}/source={source}/data_version={ver}/`
+多源快照路径：`meta/source_snapshots/{dataset}/source={source}/data_version={ver}/`
 
-### Primary keys
+### 主键
 
-| Dataset | Primary key |
+| 数据集 | 主键 |
 |---------|-------------|
 | instruments | `(symbol)` |
 | trading_calendar | `(trade_date)` |
@@ -51,28 +51,28 @@ Multi-source snapshots: `meta/source_snapshots/{dataset}/source={source}/data_ve
 | financial_statement_items | `(symbol, report_period, statement_type, item_code)` |
 | industry_members | `(symbol, classification_system, as_of_date)` |
 
-### MVP-P0 column definitions
+### MVP-P0 列定义
 
 #### instruments
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
-| symbol | string | PK |
+| symbol | string | 主键 |
 | name | string | |
 | exchange | string | SH/SZ/BJ |
 | asset_type | string | stock/etf/index |
-| list_date | date | nullable |
-| delist_date | date | nullable |
-| prev_symbol | string | nullable |
+| list_date | date | 可空 |
+| delist_date | date | 可空 |
+| prev_symbol | string | 可空 |
 | source | string | |
 | data_version | string | |
 | fetched_at | timestamp | |
 
 #### trading_calendar
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
-| trade_date | date | PK |
+| trade_date | date | 主键 |
 | is_trading | bool | |
 | source | string | |
 | data_version | string | |
@@ -80,7 +80,7 @@ Multi-source snapshots: `meta/source_snapshots/{dataset}/source={source}/data_ve
 
 #### trading_status
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
@@ -92,96 +92,94 @@ Multi-source snapshots: `meta/source_snapshots/{dataset}/source={source}/data_ve
 
 #### daily_bars
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
-| open | float64 | unadjusted |
+| open | float64 | 未复权 |
 | high | float64 | |
 | low | float64 | |
 | close | float64 | |
-| volume | int64 | shares |
-| amount | float64 | CNY |
+| volume | int64 | 股 |
+| amount | float64 | 人民币 |
 | source | string | |
 | data_version | string | |
 | fetched_at | timestamp | |
 
 #### index_bars
 
-Same as daily_bars plus `frequency` (default `1d`), `asset_type=index`.
+与 daily_bars 相同，另加 `frequency`（默认 `1d`）、`asset_type=index`。
 
 #### corporate_actions
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | ex_date | date | |
 | action_type | string | cash_dividend/bonus/transfer/allotment |
-| cash_dividend | float64 | **per share** (yuan, pretax) |
-| bonus_ratio | float64 | **per share** (送股: new shares per held share) |
-| transfer_ratio | float64 | **per share** (转股: new shares per held share) |
-| allotment_ratio | float64 | **per share** (配股: offered shares per held share), nullable |
-| allotment_price | float64 | per allotted share (yuan), NOT a ratio, nullable |
+| cash_dividend | float64 | **每股**（元，税前） |
+| bonus_ratio | float64 | **每股**（送股：每持有 1 股送出股数） |
+| transfer_ratio | float64 | **每股**（转股：每持有 1 股转增股数） |
+| allotment_ratio | float64 | **每股**（配股：每持有 1 股可配股数），可空 |
+| allotment_price | float64 | 配股价（元/股），**不是**比率，可空 |
 | source | string | |
 | data_version | string | |
 | fetched_at | timestamp | |
 
-> **Unit contract (per-share).** All ratios/amounts are per ONE held share, not
-> the raw "每10股" convention that TDX (`xdxr`) and EastMoney quote. Adapters
-> divide raw per-10-share source values by 10 before staging (e.g. "10派8.5元"
-> → 0.85, "10送8股" → 0.8, "10转4股" → 0.4, "10配3股" → 0.3). Downstream
-> real-share accounting is uniform with no /10 magic numbers:
-> `shares_after = shares × (1 + bonus_ratio + transfer_ratio)`,
-> `cash = shares × cash_dividend`. `allotment_price` is a per-share price, not
-> a ratio, and is left un-divided. Note: TDX `xdxr` does not split 送 vs 转 —
-> it puts the combined 送转 total into `bonus_ratio` (transfer_ratio=0); the
-> total mult is exact but the 送/转 split is only distinguished on EM daily.
+> **单位契约（每股）。** 所有比率/金额均相对于「持有 1 股」，
+> 不是通达信（`xdxr`）/东财常见的「每 10 股」口径。Adapter 在入 staging 前
+> 把源侧「每 10 股」数值除以 10（例如「10 派 8.5 元」→ 0.85，「10 送 8 股」→ 0.8，
+> 「10 转 4 股」→ 0.4，「10 配 3 股」→ 0.3）。下游按真实持股统一核算，无需再除 10：
+> `shares_after = shares × (1 + bonus_ratio + transfer_ratio)`，
+> `cash = shares × cash_dividend`。`allotment_price` 是每股价格而非比率，不做除 10。
+> 注意：TDX `xdxr` 不拆分送/转，会把送转合计写入 `bonus_ratio`（`transfer_ratio=0`）；
+> 总乘数正确，但送/转拆分仅在东财日更路径可区分。
 
 #### adj_factors
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
 | adjust_type | string | qfq/hfq |
-| factor | float64 | cumulative factor; qfq: `1/sina_qfq_factor`, hfq: `sina_hfq_factor` |
-| source | string | sina (default) |
+| factor | float64 | 累计因子；qfq：`1/sina_qfq_factor`，hfq：`sina_hfq_factor` |
+| source | string | sina（默认） |
 | data_version | string | |
 | fetched_at | timestamp | |
 
 #### financial_statement_items
 
-Point-in-time (PIT) queries **must** filter on `announce_date <= as_of` at read time
-(`load(..., as_of=)`); never align fundamentals by `report_period` alone.
+时点（PIT）查询在读侧 **必须** 过滤 `announce_date <= as_of`
+（`load(..., as_of=)`）；切勿仅按 `report_period` 对齐基本面。
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
-| report_period | string | e.g. ``2024Q1`` |
+| report_period | string | 如 ``2024Q1`` |
 | statement_type | string | income / balance / cashflow |
-| item_code | string | e.g. ``roe``, ``revenue`` |
+| item_code | string | 如 ``roe``、``revenue`` |
 | item_value | float64 | |
-| announce_date | date | **PIT axis** — public disclosure date |
+| announce_date | date | **PIT 轴** — 公开披露日 |
 | source | string | |
 | data_version | string | |
 | fetched_at | timestamp | |
 
 #### fund_flow
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
-| main_net_inflow | float64 | CNY |
+| main_net_inflow | float64 | 人民币 |
 | super_large_net_inflow | float64 | |
 | large_net_inflow | float64 | |
 | medium_net_inflow | float64 | |
 | small_net_inflow | float64 | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### margin_trading
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
@@ -189,34 +187,34 @@ Point-in-time (PIT) queries **must** filter on `announce_date <= as_of` at read 
 | margin_buy | float64 | |
 | short_balance | float64 | |
 | short_sell_volume | float64 | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### northbound_holdings
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
-| channel | string | SH / SZ connect |
+| channel | string | 沪/深股通 |
 | holding_shares | float64 | |
 | holding_mv | float64 | |
 | holding_ratio | float64 | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### northbound_flows
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | trade_date | date | |
 | channel | string | SH / SZ |
 | net_buy | float64 | |
 | buy_amount | float64 | |
 | sell_amount | float64 | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### valuation_metrics
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
@@ -225,31 +223,31 @@ Point-in-time (PIT) queries **must** filter on `announce_date <= as_of` at read 
 | ps_ttm | float64 | |
 | total_mv | float64 | |
 | float_mv | float64 | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### sector_members
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | sector_code | string | |
 | sector_name | string | |
-| as_of_date | date | snapshot date |
-| source / data_version / fetched_at | | provenance |
+| as_of_date | date | 快照日 |
+| source / data_version / fetched_at | | 溯源 |
 
 #### announcement_index
 
-PIT queries filter `announce_date <= as_of`.
+PIT 查询过滤 `announce_date <= as_of`。
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
-| announcement_id | string | PK |
+| announcement_id | string | 主键 |
 | symbol | string | |
 | title | string | |
-| announce_date | date | **PIT axis** |
+| announce_date | date | **PIT 轴** |
 | category | string | |
 | url | string | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### earnings_disclosure_schedule
 
@@ -257,18 +255,18 @@ PIT queries filter `announce_date <= as_of`.
 现值语义、非 PIT：预约变更覆盖 `scheduled_date`，`first_scheduled_date` 保留首次预约，
 `actual_date` 实际披露后回填（此前为 null）。
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
-| report_period | string | e.g. ``2026Q2``（分区键） |
+| report_period | string | 如 ``2026Q2``（分区键） |
 | scheduled_date | date | 当前有效预约披露日 |
 | first_scheduled_date | date | 首次预约披露日 |
 | actual_date | date | 实际披露日，未披露为 null |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### dragon_tiger
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
@@ -276,145 +274,145 @@ PIT queries filter `announce_date <= as_of`.
 | buy_amount | float64 | |
 | sell_amount | float64 | |
 | net_amount | float64 | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### block_trades
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
 | price | float64 | |
 | volume | float64 | |
 | amount | float64 | |
-| premium_ratio | float64 | discount vs close |
-| source / data_version / fetched_at | | provenance |
+| premium_ratio | float64 | 相对收盘价折溢价 |
+| source / data_version / fetched_at | | 溯源 |
 
 #### index_constituents
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
-| index_symbol | string | e.g. ``000300.SH`` |
-| symbol | string | constituent |
-| as_of_date | date | snapshot / rebalance date |
-| weight | float64 | index weight (percent or ratio per source) |
-| source / data_version / fetched_at | | provenance |
+| index_symbol | string | 如 ``000300.SH`` |
+| symbol | string | 成分股 |
+| as_of_date | date | 快照 / 调样日 |
+| weight | float64 | 权重（百分比或比率，依源） |
+| source / data_version / fetched_at | | 溯源 |
 
 #### industry_members
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
-| classification_system | string | e.g. ``sw``, ``eastmoney`` |
+| classification_system | string | 如 ``sw``、``eastmoney`` |
 | industry_code | string | |
 | industry_name | string | |
-| as_of_date | date | classification snapshot |
-| source / data_version / fetched_at | | provenance |
+| as_of_date | date | 分类快照日 |
+| source / data_version / fetched_at | | 溯源 |
 
 #### macro_indicators
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
-| indicator_id | string | e.g. ``shibor_3m``, ``cnbond_yield_10y``, ``lpr_1y`` |
-| obs_date | date | observation / release date |
+| indicator_id | string | 如 ``shibor_3m``、``cnbond_yield_10y``、``lpr_1y`` |
+| obs_date | date | 观测 / 发布日 |
 | value | float64 | |
 | frequency | string | ``daily`` / ``monthly`` |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### market_breadth
 
-Computed from curated ``daily_bars`` vs prior trading day.
+由 curated ``daily_bars`` 相对前一交易日计算。
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | trade_date | date | |
-| metric_id | string | ``advance_count``, ``decline_count``, ``limit_up_count``, … |
+| metric_id | string | ``advance_count``、``decline_count``、``limit_up_count`` 等 |
 | value | float64 | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### share_unlock_schedule
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
-| unlock_date | date | scheduled unlock |
+| unlock_date | date | 计划解禁日 |
 | unlock_shares | float64 | |
-| unlock_ratio | float64 | fraction of float/total per source |
-| unlock_type | string | e.g. IPO lock-up, private placement |
-| source / data_version / fetched_at | | provenance |
+| unlock_ratio | float64 | 占流通/总股本比例（依源） |
+| unlock_type | string | 如 IPO 限售、定向增发 |
+| source / data_version / fetched_at | | 溯源 |
 
 #### regulatory_events
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
-| event_id | string | PK |
+| event_id | string | 主键 |
 | symbol | string | |
-| event_date | date | announcement date |
-| event_type | string | ``penalty``, ``investigation``, ``regulatory_letter``, … |
+| event_date | date | 公告日 |
+| event_type | string | ``penalty``、``investigation``、``regulatory_letter`` 等 |
 | title | string | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
 #### institutional_holdings
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
-| holder_type | string | ``fund``, ``qfii``, ``social_security``, … |
-| report_period | string | e.g. ``2024Q1`` |
-| holding_shares | float64 | holder count or share volume per source |
-| holding_ratio | float64 | pct of float/total |
-| holding_mv | float64 | market value |
-| source / data_version / fetched_at | | provenance |
+| holder_type | string | ``fund``、``qfii``、``social_security`` 等 |
+| report_period | string | 如 ``2024Q1`` |
+| holding_shares | float64 | 持股数量或家数（依源） |
+| holding_ratio | float64 | 占流通/总股本百分比 |
+| holding_mv | float64 | 市值 |
+| source / data_version / fetched_at | | 溯源 |
 
 #### analyst_consensus
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
-| forecast_date | date | publish / update date |
-| forecast_year | int64 | target fiscal year |
-| eps_forecast | float64 | consensus EPS |
-| pe_forecast | float64 | implied PE |
-| target_price | float64 | avg target price |
-| rating | string | e.g. 买入/增持 |
-| analyst_count | int64 | covering institutions |
-| source / data_version / fetched_at | | provenance |
+| forecast_date | date | 发布 / 更新日期 |
+| forecast_year | int64 | 目标财年 |
+| eps_forecast | float64 | 一致预期 EPS |
+| pe_forecast | float64 | 隐含 PE |
+| target_price | float64 | 平均目标价 |
+| rating | string | 如 买入/增持 |
+| analyst_count | int64 | 覆盖机构数 |
+| source / data_version / fetched_at | | 溯源 |
 
 #### sentiment_scores
 
-Dual channels: ``announcement_keywords`` (公告标题) and ``stock_news_nlp`` (EastMoney 个股新闻 + keyword/SnowNLP).
+双通道：``announcement_keywords``（公告标题）与 ``stock_news_nlp``（东财个股新闻 + 关键词/SnowNLP）。
 
-| Column | Type | Notes |
+| 列 | 类型 | 说明 |
 |--------|------|-------|
 | symbol | string | |
 | trade_date | date | |
-| score_channel | string | PK axis; ``announcement_keywords`` / ``stock_news_nlp`` |
+| score_channel | string | 主键维度；``announcement_keywords`` / ``stock_news_nlp`` |
 | sentiment_score | float64 | [-1, 1] |
-| headline_count | int64 | headlines scored |
-| source / data_version / fetched_at | | provenance |
+| headline_count | int64 | 计入评分的标题数 |
+| source / data_version / fetched_at | | 溯源 |
 
-#### stock_news (on-demand cache)
+#### stock_news（按需缓存）
 
-Cached JSON at ``meta/on_demand/stock_news/{symbol}.json``; fetched via ``asl query --dataset stock_news --symbol``.
+缓存 JSON：``meta/on_demand/stock_news/{symbol}.json``；经 ``asl query --dataset stock_news --symbol`` 拉取。
 
-| Field | Type | Notes |
+| 字段 | 类型 | 说明 |
 |-------|------|-------|
 | symbol | string | |
 | items[].news_id | string | |
 | items[].title | string | |
 | items[].publish_time | string | |
-| items[].publish_date | string | ISO date when parseable |
-| items[].sentiment_score | float64 | per-headline NLP score |
+| items[].publish_date | string | 可解析时为 ISO 日期 |
+| items[].sentiment_score | float64 | 单条 NLP 分 |
 | items[].sentiment_method | string | ``keyword`` / ``snownlp`` / ``keyword+snownlp`` |
-| aggregate_sentiment | float64 | mean of item scores |
+| aggregate_sentiment | float64 | 条目分数均值 |
 | headline_count | int64 | |
-| source / data_version / fetched_at | | provenance |
+| source / data_version / fetched_at | | 溯源 |
 
-### Compact deduplication
+### Compact 去重
 
-On compact: group by primary key, keep row with max(`fetched_at`).
+Compact 时按主键分组，保留 `fetched_at` 最大的一行。
 
-### DuckDB views
+### DuckDB 视图
 
 ```sql
 CREATE VIEW daily_bars_view AS
@@ -426,4 +424,3 @@ FROM daily_bars_view b
 LEFT JOIN read_parquet('{root}/derived/adj_factors/**/*.parquet', hive_partitioning=true) a
   ON b.symbol = a.symbol AND b.trade_date = a.trade_date AND a.adjust_type = 'qfq';
 ```
-

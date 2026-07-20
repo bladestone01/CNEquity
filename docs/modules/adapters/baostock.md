@@ -21,9 +21,9 @@
 
 ## valuation.py
 
-- `DatasetSpec.backfill_source = "baostock"` for `valuation_metrics`
+- `valuation_metrics` 的 `DatasetSpec.backfill_source = "baostock"`
 - `asl backfill valuation_metrics` 走此路径
-- 日更仍用 EastMoney 快照
+- 日更仍用东财快照
 
 ---
 
