@@ -11,7 +11,7 @@ from ashare_lake.adapters.calendar.exchange_calendar import (
     calendar_seed_end,
 )
 from ashare_lake.config import Config
-from ashare_lake.domain.datasets import PARTITION_COLS
+from ashare_lake.domain.datasets import PARTITION_COLS, curated_dataset_names
 from ashare_lake.quality.cross_checks import (
     adj_factor_reconciliation_findings,
     daily_bars_calendar_findings,
@@ -91,6 +91,41 @@ def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict
             }
         )
     return findings
+
+
+def _unregistered_curated_dirs(config: Config) -> list[dict]:
+    """Directories under ``curated/`` that no dataset in the registry owns.
+
+    Manual surgery leaves things like ``corporate_actions.bak.20260709T122646Z``
+    sitting next to the real dataset. Every engine path is keyed by dataset name
+    so nothing reads them — which is exactly the problem: they are invisible to
+    audit, they double the layer's apparent size, and a downstream consumer
+    scanning ``curated/**/*.parquet`` rather than one dataset at a time silently
+    reads a stale copy alongside the live one. Backups belong in ``backups/``.
+    """
+    root = config.curated_root
+    if not root.exists():
+        return []
+    known = curated_dataset_names()
+    stray = sorted(d.name for d in root.iterdir() if d.is_dir() and d.name not in known)
+    if not stray:
+        return []
+    return [
+        {
+            "dataset": "curated",
+            "severity": "warning",
+            "check": "unregistered_curated_dir",
+            "message": (
+                f"{len(stray)} directory(ies) under curated/ belong to no registered "
+                f"dataset ({', '.join(stray[:5])}"
+                + (f", +{len(stray) - 5} more" if len(stray) > 5 else "")
+                + ") — leftover backups or renamed datasets; move them out of the "
+                "curated layer so whole-layer scans cannot pick them up"
+            ),
+            "stray_count": len(stray),
+            "stray_dirs": stray[:20],
+        }
+    ]
 
 
 def _collect_lake_findings(
@@ -177,6 +212,7 @@ def _collect_lake_findings(
     findings.extend(valuation_bars_coverage_findings(config, trade_date))
     findings.extend(adj_factor_reconciliation_findings(config, trade_date))
     findings.extend(universe_survivorship_findings(config, trade_date))
+    findings.extend(_unregistered_curated_dirs(config))
 
     for ds, pcol in PARTITION_COLS.items():
         findings.extend(

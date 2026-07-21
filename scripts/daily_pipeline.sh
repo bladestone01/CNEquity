@@ -89,6 +89,16 @@ if ! "$REPO_ROOT/scripts/backup_meta.sh" >>"$LOG" 2>&1; then
   log "backup FAILED"
 fi
 
+# Staging is per-run scratch; once a run succeeded and compact merged it into
+# curated it is pure duplication. Nothing ran this automatically before, so it
+# grew to ~60% of the curated layer. `asl clean` only drops staging whose run
+# succeeded *and* compacted (or is an unknown orphan past retention) — the
+# staging of a failed run is resumable state and is always kept.
+log "--- clean staging ---"
+if ! "$ASL" clean --config "$CONFIG" >>"$LOG" 2>&1; then
+  log "staging cleanup FAILED (non-fatal)"
+fi
+
 log "---- group summary (gate=${GATE_GROUP_LIST}) ----"
 i=0
 while [[ $i -lt ${#summary_names[@]} ]]; do
