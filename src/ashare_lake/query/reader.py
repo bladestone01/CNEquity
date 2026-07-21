@@ -384,7 +384,7 @@ def list_datasets(
     Uses hive partition directory names and ``meta/state`` watermarks — no
     parquet data is read, so this is cheap even on a 10-year lake.
     """
-    from ashare_lake.query.parquet_scan import list_hive_partition_dates
+    from ashare_lake.query.parquet_scan import list_partitions
     from ashare_lake.storage.state import StateStore
 
     cfg = resolve_config(config=config, data_root=data_root)
@@ -395,9 +395,12 @@ def list_datasets(
         has_data = dataset_has_parquet(root)
         first_part = last_part = None
         if has_data and spec.partition_col:
-            parts = list_hive_partition_dates(root, spec.partition_col)
+            # Period bounds, not directory labels: for a month/year partition the
+            # last directory's *start* would understate coverage by up to a year,
+            # and lake_health treats coverage_end as a freshness fallback.
+            parts = list_partitions(root, spec.partition_col)
             if parts:
-                first_part, last_part = parts[0], parts[-1]
+                first_part, last_part = parts[0].start, parts[-1].end
         rows.append(
             {
                 "dataset": name,

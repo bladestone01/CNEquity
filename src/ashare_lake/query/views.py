@@ -9,6 +9,7 @@ import polars as pl
 
 from ashare_lake.config import Config
 from ashare_lake.domain.datasets import DATASETS, DatasetSpec
+from ashare_lake.domain.partitions import uses_hive
 from ashare_lake.domain.schemas import DATASET_SCHEMAS
 
 
@@ -43,7 +44,13 @@ def _view_glob(data_root: str, spec: DatasetSpec) -> tuple[str, bool]:
     layer_dir = "derived" if spec.layer == "derived" else "curated"
     if spec.partition_col is None:
         return f"{data_root}/{layer_dir}/{spec.name}/*.parquet", False
-    return f"{data_root}/{layer_dir}/{spec.name}/**/*.parquet", True
+    # Hive parsing only for day granularity: a `trade_date=2024` directory
+    # cannot be read as the DATE column it sits beside. The real column is in
+    # the file either way, so the view is identical apart from pruning.
+    return (
+        f"{data_root}/{layer_dir}/{spec.name}/**/*.parquet",
+        uses_hive(spec.partition_granularity),
+    )
 
 
 def _glob_has_files(pattern: str) -> bool:

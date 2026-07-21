@@ -17,7 +17,7 @@ from ashare_lake.query.parquet_scan import (
     lazy_mock_row_count,
     lazy_n_unique_symbol,
     lazy_row_count,
-    list_hive_partition_dates,
+    list_partitions,
     scan_parquet_files,
     scan_parquet_root,
 )
@@ -25,8 +25,10 @@ from ashare_lake.query.parquet_scan import (
 _AUDIT_SAMPLE_FILES = 20
 
 
-def partition_parquet_files(root: Path, partition_col: str, partition_value: date) -> list[Path]:
-    part_dir = root / f"{partition_col}={partition_value.isoformat()}"
+def partition_parquet_files(root: Path, partition_col: str, partition_value: str) -> list[Path]:
+    """Files in one partition directory. *partition_value* is the literal
+    directory value — a day, month or year label depending on granularity."""
+    part_dir = root / f"{partition_col}={partition_value}"
     if not part_dir.exists():
         return []
     return sorted(part_dir.glob("**/*.parquet"))
@@ -63,11 +65,16 @@ def check_partition_row_mutation(
     dataset: str,
     partition_col: str,
     *,
-    current_value: date,
-    previous_value: date,
+    current_value: str,
+    previous_value: str,
     current_stats: dict[str, int | None],
     previous_stats: dict[str, int | None],
 ) -> dict | None:
+    """Flag a partition that shrank sharply against the one before it.
+
+    Under month/year granularity the comparison is period-over-period and the
+    current period is usually still filling, so the check only fires once the
+    prior period is large enough to be a meaningful baseline."""
     prev_rows = int(previous_stats["rows"])
     cur_rows = int(current_stats["rows"])
     if prev_rows < ROW_COUNT_MUTATION_MIN_BASELINE_ROWS:
@@ -92,8 +99,8 @@ def check_partition_row_mutation(
 
     parts = [
         (
-            f"partition {partition_col}={current_value.isoformat()} has {cur_rows} rows "
-            f"vs {prev_rows} on {previous_value.isoformat()} "
+            f"partition {partition_col}={current_value} has {cur_rows} rows "
+            f"vs {prev_rows} in {previous_value} "
             f"({row_ratio:.0%} of prior)"
         )
     ]
@@ -105,8 +112,8 @@ def check_partition_row_mutation(
         "check": "row_count_mutation",
         "message": "; ".join(parts),
         "partition_col": partition_col,
-        "current_partition": current_value.isoformat(),
-        "previous_partition": previous_value.isoformat(),
+        "current_partition": current_value,
+        "previous_partition": previous_value,
         "current_rows": cur_rows,
         "previous_rows": prev_rows,
         "row_ratio": round(row_ratio, 4),
@@ -151,17 +158,20 @@ def audit_curated_dataset(
         return findings
 
     audit_files: list[Path] | None = None
-    partition_value: date | None = None
-    previous_value: date | None = None
+    partition_value: str | None = None
+    previous_value: str | None = None
     audit_lf: pl.LazyFrame
 
     if partition_col is not None:
-        partition_dates = list_hive_partition_dates(root, partition_col)
-        if trade_date in partition_dates:
-            partition_value = trade_date
-            prior = [d for d in partition_dates if d < trade_date]
-            previous_value = prior[-1] if prior else None
-            part_files = partition_parquet_files(root, partition_col, trade_date)
+        # The audited unit is the partition holding trade_date, which under
+        # month/year granularity is a period rather than the single day.
+        partitions = list_partitions(root, partition_col)
+        current = next((p for p in partitions if p.covers(trade_date)), None)
+        if current is not None:
+            partition_value = current.value
+            prior = [p for p in partitions if p.start < current.start]
+            previous_value = prior[-1].value if prior else None
+            part_files = partition_parquet_files(root, partition_col, current.value)
             if part_files:
                 audit_files = part_files
                 audit_lf = scan_parquet_files(part_files)
@@ -169,8 +179,8 @@ def audit_curated_dataset(
                 audit_lf = scan_parquet_root(
                     root,
                     partition_col=partition_col,
-                    start=trade_date,
-                    end=trade_date,
+                    start=current.start,
+                    end=current.end,
                 )
         else:
             audit_lf = scan_parquet_root(root, partition_col=partition_col)
@@ -208,14 +218,14 @@ def audit_curated_dataset(
             "message": (
                 f"{row_count} rows"
                 + (
-                    f" in {partition_col}={partition_value.isoformat()}"
+                    f" in {partition_col}={partition_value}"
                     if partition_value is not None
                     else " across dataset"
                 )
             ),
             "sample_columns": sample_df.columns[:10],
             "partition_col": partition_col,
-            "partition_value": partition_value.isoformat() if partition_value else None,
+            "partition_value": partition_value,
             "file_count": file_count,
         }
     )
@@ -262,3 +272,60 @@ def audit_curated_dataset(
             findings.append(mutation)
 
     return findings
+
+
+# A partition holding fewer rows than this is mostly Parquet footer: metadata
+# costs ~1KB per file regardless of content, so the dataset spends its bytes and
+# its file opens on overhead. Well below the smallest sensible daily partition.
+PARTITION_FRAGMENTATION_MIN_ROWS = 50
+# Only judge a dataset with enough partitions for the average to mean something.
+PARTITION_FRAGMENTATION_MIN_PARTITIONS = 30
+
+
+def check_partition_fragmentation(
+    dataset: str,
+    partition_col: str | None,
+    root: Path,
+) -> dict | None:
+    """Flag a dataset partitioned far finer than its row volume justifies.
+
+    Guards the granularity choice in the registry: a new dataset added with the
+    default day partitioning, or an existing one whose volume never grew into
+    it, otherwise quietly accumulates thousands of near-empty files that every
+    scan has to open. ``asl repartition`` is the fix.
+    """
+    if partition_col is None or not dataset_has_parquet(root):
+        return None
+    partitions = list_partitions(root, partition_col)
+    if len(partitions) < PARTITION_FRAGMENTATION_MIN_PARTITIONS:
+        return None
+
+    files = sorted(root.glob("**/*.parquet"))
+    rows = lazy_row_count(scan_parquet_files(files))
+    avg = rows / len(partitions)
+    if avg >= PARTITION_FRAGMENTATION_MIN_ROWS:
+        return None
+
+    from ashare_lake.domain.datasets import DATASETS
+
+    spec = DATASETS.get(dataset)
+    granularity = spec.partition_granularity if spec else "day"
+    total_bytes = sum(f.stat().st_size for f in files if f.is_file())
+    return {
+        "dataset": dataset,
+        "severity": "warning",
+        "check": "partition_fragmentation",
+        "message": (
+            f"{len(partitions)} partitions hold {rows} rows ({avg:.1f} per partition, "
+            f"{total_bytes / 1e6:.1f}MB across {len(files)} files) — mostly parquet "
+            f"metadata. Configured granularity is {granularity!r}; coarsen it in the "
+            f"registry and run `asl repartition {dataset}`"
+        ),
+        "partitions": len(partitions),
+        "rows": rows,
+        "rows_per_partition": round(avg, 1),
+        "files": len(files),
+        "bytes": total_bytes,
+        "granularity": granularity,
+        "min_rows_threshold": PARTITION_FRAGMENTATION_MIN_ROWS,
+    }

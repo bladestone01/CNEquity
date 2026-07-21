@@ -60,6 +60,31 @@ curated/{dataset}/{partition_col}={value}/part-merged.parquet
 - `as_of_date` — 快照类成员关系
 - `announce_date` — 公告（PIT）
 
+### 分区粒度
+
+分区值的**周期**按数据集配置，不是一律按天：
+
+| 目录 | 粒度 | 例子 |
+|------|------|------|
+| `trade_date=2024-06-03` | `day` | `daily_bars`（约 4900 行/天） |
+| `trade_date=2024-06` | `month` | `trading_status`、`sector_bars`（50–1000 行/天） |
+| `trade_date=2024` | `year` | `trading_calendar`、`index_bars`（< 50 行/天） |
+
+原因是 Parquet 的 footer / 列元数据大约固定 1KB 一个文件，与内容多少无关。
+一天一行的数据集按天分区，会用 4220 个文件、16MB 存下本来 50KB 的东西，
+而且每次扫描都要打开 4220 个 footer。粒度在 `DatasetSpec.partition_granularity`
+里配，大致按行/天分档：≥1000 → `day`，50–1000 → `month`，<50 → `year`。
+audit 的 `partition_fragmentation` 会在某个数据集明显配细了时告警。
+
+**目录值是自描述的**：`2024` / `2024-06` / `2024-06-03` 三种形状读的时候直接按
+形状解析，不看配置。所以改粒度不需要迁移——老的按天目录照常能读，只是比新写入的碎。
+`asl repartition <dataset>` 把历史改写成配置的粒度（只是省空间和文件句柄，不影响正确性）；
+不带参数则列出当前布局和配置不一致的数据集。
+
+粗粒度目录关闭 Hive 解析：polars 会按同名列的类型去解析目录值，
+`trade_date=2024` 撞上 Date 列会直接报 `could not find a 'date/datetime' pattern for '2024'`。
+真实日期列本来就在文件里，所以只是改成按目录周期做裁剪，语义不变。
+
 ---
 
 ## derived/

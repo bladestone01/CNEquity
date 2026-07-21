@@ -13,7 +13,10 @@ a registered step.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Literal
+
+from ashare_lake.domain.partitions import Granularity, partition_value
 
 FetchSemantics = Literal["by_date", "snapshot"]
 Layer = Literal["curated", "derived"]
@@ -26,6 +29,13 @@ class DatasetSpec:
     partition_col:
         Hive partition directory key under the lake (None = merge-style single
         file, e.g. instruments).
+    partition_granularity:
+        Period each partition directory covers — ``day``, ``month`` or ``year``.
+        Pick it from rows per day, not from habit: a Parquet footer costs ~1KB
+        whatever it holds, so a dataset with a handful of rows a day spends
+        almost all its bytes and all its file opens on metadata. Rough bands
+        used here: ≥1000 rows/day → ``day``, 50–1000 → ``month``, <50 → ``year``.
+        Only ``day`` values can be hive-parsed (see domain/partitions.py).
     date_col:
         Column used for query date-range filters; defaults to ``partition_col``.
     fetch_semantics:
@@ -52,6 +62,7 @@ class DatasetSpec:
     name: str
     layer: Layer = "curated"
     partition_col: str | None = None
+    partition_granularity: Granularity = "day"
     date_col: str | None = None
     fetch_semantics: FetchSemantics = "by_date"
     watermark: bool = True
@@ -68,6 +79,10 @@ class DatasetSpec:
     def query_date_col(self) -> str | None:
         return self.date_col or self.partition_col
 
+    def partition_for(self, d: date) -> str:
+        """Directory value of the partition holding *d* for this dataset."""
+        return partition_value(d, self.partition_granularity)
+
 
 _SPECS = [
     # L0 reference
@@ -80,23 +95,24 @@ _SPECS = [
         watermark=False,
         backfill_source="baostock",
     ),
-    DatasetSpec("trading_calendar", partition_col="trade_date"),
-    DatasetSpec("trading_status", partition_col="trade_date"),
+    DatasetSpec("trading_calendar", partition_col="trade_date", partition_granularity="year"),
+    DatasetSpec("trading_status", partition_col="trade_date", partition_granularity="month"),
     # L1 bars
     DatasetSpec("daily_bars", partition_col="trade_date"),
-    DatasetSpec("index_bars", partition_col="trade_date"),
+    DatasetSpec("index_bars", partition_col="trade_date", partition_granularity="year"),
     # Domestic commodity futures main-continuous (东财主连) + narrow offshore
     # gold (Sina COMEX ``GC0.CMX``); not A-share equity.
     DatasetSpec(
         "commodity_bars",
         partition_col="trade_date",
+        partition_granularity="year",
         fetch_semantics="by_date",
         backfill_source="eastmoney_kline+sina_global",
         required=False,
         max_staleness_days=2,
     ),
     # L2 corporate events
-    DatasetSpec("corporate_actions", partition_col="ex_date"),
+    DatasetSpec("corporate_actions", partition_col="ex_date", partition_granularity="year"),
     DatasetSpec("announcement_index", partition_col="announce_date", pit=True),
     # Current-state timetable (revisions overwrite scheduled_date; not PIT).
     DatasetSpec(
@@ -124,15 +140,21 @@ _SPECS = [
     # Per-stock northbound holdings are quarterly since Aug 2024; tolerate the
     # gap to the next quarter-end before flagging stale.
     DatasetSpec("northbound_holdings", partition_col="trade_date", max_staleness_days=100),
-    DatasetSpec("northbound_flows", partition_col="trade_date", max_staleness_days=2),
-    DatasetSpec("dragon_tiger", partition_col="trade_date"),
-    DatasetSpec("block_trades", partition_col="trade_date"),
+    DatasetSpec(
+        "northbound_flows",
+        partition_col="trade_date",
+        partition_granularity="year",
+        max_staleness_days=2,
+    ),
+    DatasetSpec("dragon_tiger", partition_col="trade_date", partition_granularity="month"),
+    DatasetSpec("block_trades", partition_col="trade_date", partition_granularity="month"),
     DatasetSpec("institutional_holdings", partition_col="report_period", watermark=False),
     # L5 structure
     DatasetSpec("sector_members", partition_col="as_of_date", fetch_semantics="snapshot"),
     DatasetSpec(
         "index_constituents",
         partition_col="as_of_date",
+        partition_granularity="month",
         fetch_semantics="snapshot",
         # CNI adjustment history reconstructs 399001/399006 from ~2021-12;
         # CSI indices still accumulate via daily EM snapshots only.
@@ -146,31 +168,53 @@ _SPECS = [
         backfill_source="sw",
     ),
     # L6 macro
-    DatasetSpec("macro_indicators", partition_col="obs_date"),
-    DatasetSpec("market_breadth", partition_col="trade_date"),
+    DatasetSpec("macro_indicators", partition_col="obs_date", partition_granularity="year"),
+    DatasetSpec("market_breadth", partition_col="trade_date", partition_granularity="year"),
     # L7 sentiment / rotation
-    DatasetSpec("sentiment_scores", partition_col="trade_date"),
-    DatasetSpec("hot_rank", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec("sentiment_scores", partition_col="trade_date", partition_granularity="month"),
+    DatasetSpec(
+        "hot_rank",
+        partition_col="trade_date",
+        partition_granularity="month",
+        fetch_semantics="snapshot",
+    ),
     DatasetSpec(
         "sector_bars",
         partition_col="trade_date",
+        partition_granularity="month",
         fetch_semantics="snapshot",
         backfill_source="eastmoney_kline",
     ),
-    DatasetSpec("sector_fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
-    DatasetSpec("news_headlines", partition_col="publish_date", fetch_semantics="snapshot"),
-    DatasetSpec("flash_news_wire", partition_col="publish_date", fetch_semantics="snapshot"),
+    DatasetSpec(
+        "sector_fund_flow",
+        partition_col="trade_date",
+        partition_granularity="month",
+        fetch_semantics="snapshot",
+    ),
+    DatasetSpec(
+        "news_headlines",
+        partition_col="publish_date",
+        partition_granularity="month",
+        fetch_semantics="snapshot",
+    ),
+    DatasetSpec(
+        "flash_news_wire",
+        partition_col="publish_date",
+        partition_granularity="month",
+        fetch_semantics="snapshot",
+    ),
     # EM datacenter report RPT_ECONOMICCALENDAR was retired (code 9501); keep the
     # schema/registry for a replacement source, but do not fail lake health.
     DatasetSpec(
         "economic_calendar",
         partition_col="event_date",
+        partition_granularity="year",
         fetch_semantics="snapshot",
         required=False,
     ),
     # L8 risk
-    DatasetSpec("share_unlock_schedule", partition_col="unlock_date"),
-    DatasetSpec("regulatory_events", partition_col="event_date"),
+    DatasetSpec("share_unlock_schedule", partition_col="unlock_date", partition_granularity="year"),
+    DatasetSpec("regulatory_events", partition_col="event_date", partition_granularity="year"),
     # derived
     DatasetSpec("adj_factors", layer="derived", partition_col="trade_date"),
 ]

@@ -15,24 +15,25 @@ from ashare_lake.storage.state import StateStore
 
 
 def _max_partition_date(config: Config, dataset: str, partition_col: str) -> date | None:
+    """Freshest date actually present, for the watermark.
+
+    Reads the column rather than trusting the directory name: under month/year
+    granularity a ``trade_date=2026`` directory says nothing about how far into
+    the year the data goes, and taking the period start as the watermark would
+    rewind it by up to a year and re-fetch everything since.
+    """
+    from ashare_lake.query.parquet_scan import list_partitions, partition_dir
+
     root = config.curated_root / dataset
     if not root.exists():
         return None
 
-    prefix = f"{partition_col}="
-    max_dt: date | None = None
-    for entry in root.iterdir():
-        if entry.is_dir() and entry.name.startswith(prefix):
-            try:
-                candidate = date.fromisoformat(entry.name[len(prefix) :])
-            except ValueError:
-                continue
-            if max_dt is None or candidate > max_dt:
-                max_dt = candidate
-    if max_dt is not None:
-        return max_dt
-
-    files = list(root.glob("**/*.parquet"))
+    parts = list_partitions(root, partition_col)
+    if parts:
+        # Newest period only — earlier ones cannot hold a later date.
+        files = sorted(partition_dir(root, partition_col, parts[-1].value).glob("**/*.parquet"))
+    else:
+        files = list(root.glob("**/*.parquet"))
     if not files:
         return None
     combined = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")

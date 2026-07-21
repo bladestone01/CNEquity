@@ -79,6 +79,27 @@ asl backfill sector_bars --config configs/ashare-lake.toml --retry-failed
 
 ---
 
+## asl repartition [dataset]
+
+| 选项 | 说明 |
+|------|------|
+| `--all` | 改写所有布局与配置不一致的数据集 |
+| `--dry-run` | 只报告效果，不落盘 |
+
+把历史分区改写成 `DatasetSpec.partition_granularity` 配的周期
+（见 [分区粒度](../architecture/lake-layout.md#分区粒度)）。不带参数则列出待改写的数据集。
+
+读路径按目录形状自解析，改粒度本身**不需要**迁移；这条命令只是把碎文件收回来。
+写入是先建临时目录、逐分区写完并核对总行数，再一次 rename 换上去，中途挂掉不动原数据；
+重复执行是幂等的。
+
+```bash
+asl repartition --all --dry-run   # 先看影响
+asl repartition trading_calendar  # 单个数据集
+```
+
+---
+
 ## asl derive [name]
 
 | name | 说明 |

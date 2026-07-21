@@ -499,6 +499,54 @@ def compact(config_path: str, run_id: str | None):
 
 
 @cli.command()
+@click.argument("dataset", required=False)
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--all", "do_all", is_flag=True, help="Repartition every dataset that needs it.")
+@click.option("--dry-run", is_flag=True, help="Report the effect without swapping anything.")
+def repartition(config_path: str, dataset: str | None, do_all: bool, dry_run: bool):
+    """Rewrite a dataset's partitions at its configured granularity.
+
+    Reads work whatever period the directories span, so this only reclaims the
+    space and file opens a too-fine partitioning wastes. With no argument, lists
+    the datasets whose layout does not match the registry.
+    """
+    from ashare_lake.storage.repartition import (
+        RepartitionError,
+        repartition_candidates,
+        repartition_dataset,
+    )
+
+    cfg = _cfg(config_path)
+    if dataset and do_all:
+        raise click.ClickException("Pass a dataset or --all, not both.")
+
+    candidates = repartition_candidates(cfg)
+    if not dataset and not do_all:
+        click.echo(json.dumps({"needs_repartition": candidates}, indent=2))
+        return
+
+    targets = [dataset] if dataset else candidates
+    results = []
+    for name in targets:
+        try:
+            res = repartition_dataset(cfg, name, dry_run=dry_run)
+        except RepartitionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        results.append(
+            {
+                "dataset": res.dataset,
+                "changed": res.changed,
+                "rows": res.rows,
+                "files": f"{res.files_before} -> {res.files_after}",
+                "partitions": f"{res.partitions_before} -> {res.partitions_after}",
+                "mb": f"{res.bytes_before / 1e6:.1f} -> {res.bytes_after / 1e6:.1f}",
+                "mb_saved": round(res.bytes_saved / 1e6, 1),
+            }
+        )
+    click.echo(json.dumps({"dry_run": dry_run, "results": results}, indent=2))
+
+
+@cli.command()
 @click.argument("name", default="adj_factors")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(

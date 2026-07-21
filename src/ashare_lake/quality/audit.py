@@ -18,7 +18,10 @@ from ashare_lake.quality.cross_checks import (
     universe_survivorship_findings,
     valuation_bars_coverage_findings,
 )
-from ashare_lake.quality.dataset_checks import audit_curated_dataset
+from ashare_lake.quality.dataset_checks import (
+    audit_curated_dataset,
+    check_partition_fragmentation,
+)
 from ashare_lake.quality.source_diff import run_source_diffs
 from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from ashare_lake.query.universe import (
@@ -215,14 +218,11 @@ def _collect_lake_findings(
     findings.extend(_unregistered_curated_dirs(config))
 
     for ds, pcol in PARTITION_COLS.items():
-        findings.extend(
-            audit_curated_dataset(
-                ds,
-                pcol,
-                config.curated_root / ds,
-                trade_date,
-            )
-        )
+        root = config.curated_root / ds
+        findings.extend(audit_curated_dataset(ds, pcol, root, trade_date))
+        fragmented = check_partition_fragmentation(ds, pcol, root)
+        if fragmented is not None:
+            findings.append(fragmented)
     return findings
 
 
