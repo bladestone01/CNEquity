@@ -48,7 +48,7 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 | sector_members | `(symbol, sector_code, as_of_date)` |
 | valuation_metrics | `(symbol, trade_date)` |
 | announcement_index | `(announcement_id)` |
-| financial_statement_items | `(symbol, report_period, statement_type, item_code)` |
+| financial_statement_items | `(symbol, report_period, statement_type, item_code, announce_date)` |
 | industry_members | `(symbol, classification_system, as_of_date)` |
 
 ### MVP-P0 列定义

@@ -17,7 +17,7 @@ from ashare_lake.domain.datasets import (
     derived_dataset_names,
     pit_dataset_names,
 )
-from ashare_lake.domain.schemas import DATASET_SCHEMAS, validate_dataframe
+from ashare_lake.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS, validate_dataframe
 from ashare_lake.query.parquet_scan import (
     collect_parquet_root,
     dataset_has_parquet,
@@ -212,18 +212,30 @@ def _apply_adjustment(
 
 def _apply_pit_filters(
     df: pl.DataFrame,
+    dataset: str,
     *,
     as_of: date,
     items: list[str] | None,
+    all_vintages: bool,
 ) -> pl.DataFrame:
     if df.is_empty():
         return df
     if "announce_date" not in df.columns:
-        raise ReaderError("financial_statement_items requires announce_date column (PIT contract)")
+        raise ReaderError(f"{dataset} requires announce_date column (PIT contract)")
     df = df.filter(pl.col("announce_date") <= as_of)
     if items and "item_code" in df.columns:
         df = df.filter(pl.col("item_code").is_in(items))
-    return df
+    if all_vintages or df.is_empty():
+        return df
+
+    # announce_date is in the PK, so a restated fact keeps both its original and
+    # its revised row. Filtering alone would return every vintage announced on or
+    # before as_of and silently double-count the fact; collapse to the one that
+    # was current on that date.
+    key = [c for c in PRIMARY_KEYS.get(dataset, []) if c != "announce_date"]
+    if not key or not all(c in df.columns for c in key):
+        return df
+    return df.sort("announce_date").group_by(key, maintain_order=True).last()
 
 
 def load(
@@ -237,6 +249,7 @@ def load(
     items: list[str] | None = None,
     symbols: list[str] | None = None,
     strict_adj: bool = False,
+    all_vintages: bool = False,
     config: Config | None = None,
     data_root: str | Path | None = None,
 ) -> pl.DataFrame:
@@ -266,9 +279,17 @@ def load(
         ``trading_status_coverage_start``) are **not** ST/suspended-filtered;
         long backtests may include ST names in early windows.
     as_of:
-        Point-in-time date for ``financial_statement_items`` (filters ``announce_date``).
+        Point-in-time date for ``financial_statement_items``. Keeps only facts
+        announced on or before this date, and — because a restatement stores a
+        second vintage of the same fact rather than overwriting the first —
+        returns the vintage that was current on that date.
     items:
         ``item_code`` filter for ``financial_statement_items``.
+    all_vintages:
+        Return every vintage announced on or before ``as_of`` instead of only
+        the one current then. For studying revisions (a restatement's size and
+        direction is itself a signal); not for cross-sectional screens, where
+        multiple vintages of one fact would double-count it.
     symbols:
         Restrict to these symbols when the dataset has a ``symbol`` column.
     config, data_root:
@@ -292,7 +313,7 @@ def load(
         if as_of_d is None:
             raise ReaderError(f"{dataset} requires as_of= for point-in-time queries")
         df = _read_dataset(cfg, dataset, symbols=symbols)
-        df = _apply_pit_filters(df, as_of=as_of_d, items=items)
+        df = _apply_pit_filters(df, dataset, as_of=as_of_d, items=items, all_vintages=all_vintages)
         df = _apply_symbol_filter(df, symbols)
         sort_cols = [
             c for c in ("announce_date", "symbol", "report_period", "item_code") if c in df.columns

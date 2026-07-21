@@ -22,6 +22,7 @@ def load(
     items: list[str] | None = None,
     symbols: list[str] | None = None,
     strict_adj: bool = False,
+    all_vintages: bool = False,
     config: Config | None = None,
     data_root: str | Path | None = None,
 ) -> pl.DataFrame
@@ -35,10 +36,11 @@ def load(
 | `start`, `end` | 含边界日期窗口（数据集主日期列） |
 | `adjust` | `hfq` / `qfq`；仅价量数据集 |
 | `universe` | `"all_a"` 可交易过滤 |
-| `as_of` | PIT 截止日（`announce_date <= as_of`） |
+| `as_of` | PIT 截止日：过滤 `announce_date <= as_of`，并对同一科目取当时生效的那一版 |
 | `items` | 财报科目 code 列表 |
 | `symbols` | symbol 白名单 |
 | `strict_adj` | True 时缺复权因子抛 `ReaderError` |
+| `all_vintages` | True 时返回 `as_of` 前的**全部**版本（研究财报修订用）；截面选股勿开，会重复计同一事实 |
 | `config` / `data_root` | 湖位置；默认读 `configs/ashare-lake.toml` |
 
 ### 返回

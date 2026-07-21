@@ -99,6 +99,22 @@ items = load(
 - 同一 `(symbol, report_period, item)` 取 `announce_date` 最新一行
 - 禁止用 `end=` 代替 `as_of` 做财报对齐
 
+`announce_date` 在主键里，所以财报修订是**新增一版**而不是覆盖原值：同一科目可以同时存在
+首发值和修订值。默认只返回 `as_of` 当时生效的那一版；要看修订本身（修订幅度和方向本身
+就是信号）加 `all_vintages=True`：
+
+```python
+# 000001.SZ 2024Q1 营收被改过几次、每次改了多少
+load(
+    "financial_statement_items",
+    symbols=["000001.SZ"], items=["revenue"],
+    as_of="2026-07-21", all_vintages=True,
+).select("report_period", "announce_date", "item_value")
+```
+
+注意：只有日更逐日累积的版本是严格 PIT；回填拿到的是东财*当前*版本配首发日，
+早期期间只有一版（见 [schema](schema.md#financial_statement_items)）。
+
 ---
 
 ## 符号与列过滤

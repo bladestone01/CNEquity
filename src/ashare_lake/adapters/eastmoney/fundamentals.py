@@ -48,7 +48,9 @@ logger = logging.getLogger(__name__)
 _BACKFILL_START_YEAR = 2016
 _QUARTER_END_MMDD = (("03", "31"), ("06", "30"), ("09", "30"), ("12", "31"))
 
-_PK = ["symbol", "report_period", "statement_type", "item_code"]
+# Mirrors PRIMARY_KEYS["financial_statement_items"]: announce_date is part of the
+# key so a restatement adds a vintage instead of erasing the original.
+_PK = ["symbol", "report_period", "statement_type", "item_code", "announce_date"]
 
 
 @dataclass(frozen=True)

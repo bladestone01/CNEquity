@@ -471,7 +471,20 @@ PRIMARY_KEYS = {
     "commodity_bars": ["symbol", "trade_date"],
     "corporate_actions": ["symbol", "ex_date", "action_type"],
     "adj_factors": ["symbol", "trade_date", "adjust_type"],
-    "financial_statement_items": ["symbol", "report_period", "statement_type", "item_code"],
+    # announce_date is part of the key, not an attribute of it: a restatement
+    # republishes the same (period, item) with a new value on a new date, and
+    # keying without the date lets the newer row destroy the original. That
+    # silently rewrites history — a query as of a date before the restatement
+    # would find the item missing entirely — and makes revision-based signals
+    # impossible. With the date in the key, vintages accumulate and the reader
+    # picks the latest one known as of the query date.
+    "financial_statement_items": [
+        "symbol",
+        "report_period",
+        "statement_type",
+        "item_code",
+        "announce_date",
+    ],
     "fund_flow": ["symbol", "trade_date"],
     "margin_trading": ["symbol", "trade_date"],
     "northbound_holdings": ["symbol", "trade_date", "channel"],
