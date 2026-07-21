@@ -467,7 +467,11 @@ def backfill(
     cfg._backfill_workers = workers
     engine = JobEngine(cfg)
     result = engine.run_job("backfill", steps=[dataset], backfill=True)
-    if result["status"] == "success":
+    # Compact partial sweeps too. `compact` only ever drains the *current* run's
+    # staging, so skipping it on a warning would strand every row the sweep did
+    # fetch — while its resume checkpoint already counts those boards as done,
+    # which is how a partial backfill turns into a silent hole in curated.
+    if result["status"] in ("success", "warning"):
         # Through the engine, not step_compact directly: the recorded compact
         # batch is what later lets `asl clean` release this run's staging.
         compact_out = engine.run_step("compact", date.today(), result["run_id"])
@@ -939,3 +943,99 @@ def push2his_probe(config_path: str):
 
 if __name__ == "__main__":
     cli()
+
+
+@cli.group("delisted")
+def delisted_grp():
+    """Reconstruct the delisted universe (survivorship-bias repair)."""
+
+
+@delisted_grp.command("discover")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--limit", default=None, type=int, help="Probe at most N codes this run.")
+def delisted_discover(config_path: str, limit: int | None):
+    """Sweep the issued code space for codes that used to trade.
+
+    Resumable: a re-run continues where the last one stopped. Codes whose probe
+    failed stay pending rather than being filed as never-issued.
+    """
+    import logging
+
+    from ashare_lake.steps.delisted import discover_delisted
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    result = discover_delisted(_cfg(config_path), limit=limit)
+    click.echo(
+        json.dumps(
+            {
+                "probed": result.probed,
+                "delisted": result.delisted,
+                "never_issued": result.never_issued,
+                "failed": len(result.failed),
+                "remaining": result.remaining,
+                "complete": result.complete,
+            },
+            indent=2,
+        )
+    )
+
+
+@delisted_grp.command("status")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--since", default="2016-01-01", show_default=True, help="Lake window start.")
+@click.option("--sample", default=15, show_default=True, help="Rows of detail to print.")
+def delisted_status(config_path: str, since: str, sample: int):
+    """Summarise the catalogue: how many, from when, and what is left to probe."""
+    from collections import Counter
+
+    from ashare_lake.steps.delisted import (
+        delisted_symbols_in_window,
+        load_delisted_catalog,
+        pending_codes,
+    )
+
+    cfg = _cfg(config_path)
+    start = date.fromisoformat(since)
+    catalog = load_delisted_catalog(cfg)
+    in_window = {s: d for s, d in catalog.items() if d >= start}
+    by_year = Counter(d.year for d in in_window.values())
+    by_board = Counter(s.split(".")[1] for s in in_window)
+    recent = sorted(in_window.items(), key=lambda kv: kv[1], reverse=True)[:sample]
+    click.echo(
+        json.dumps(
+            {
+                "catalogued": len(catalog),
+                "in_window": len(in_window),
+                "window_start": since,
+                "pending_probe": len(pending_codes(cfg)),
+                "not_yet_ingested": len(delisted_symbols_in_window(cfg, start)),
+                "by_year": dict(sorted(by_year.items())),
+                "by_exchange": dict(sorted(by_board.items())),
+                "most_recent": [{"symbol": s, "last_traded": d.isoformat()} for s, d in recent],
+            },
+            indent=2,
+        )
+    )
+
+
+@delisted_grp.command("backfill")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--since", default="2016-01-01", show_default=True, help="Lake window start.")
+def delisted_backfill(config_path: str, since: str):
+    """Fetch price history for catalogued delistings and compact it into the lake."""
+    import logging
+
+    from ashare_lake.steps.delisted import backfill_delisted_bars
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    cfg = _cfg(config_path)
+    engine = JobEngine(cfg)
+    run_id = engine.manifest.start_run("delisted_backfill", {"since": since})
+    result = backfill_delisted_bars(cfg, run_id, date.fromisoformat(since))
+    compact_out = engine.run_step("compact", date.today(), run_id)
+    engine.manifest.finish_run(run_id, "success", rows_written=result.get("rows_written", 0))
+    click.echo(
+        json.dumps({"run_id": run_id, **result, "compact": compact_out}, indent=2, default=str)
+    )
