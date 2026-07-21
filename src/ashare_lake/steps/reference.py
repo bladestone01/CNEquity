@@ -9,6 +9,8 @@ import os
 import tempfile
 from datetime import date, timedelta
 
+import polars as pl
+
 from ashare_lake.adapters.eastmoney.instruments import enrich_instrument_list_dates
 from ashare_lake.adapters.tdx_protocol.client import (
     fetch_instruments,
@@ -46,7 +48,75 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
     df = fetch_instruments(rate_limit=rl, allow_mock=config.tdx_allow_mock, config=config)
     df = normalize_with_source(df)
     df = enrich_instrument_list_dates(config, df)
+    if getattr(config, "_backfill", False):
+        df = _merge_delisted_instruments(config, df)
     return write_simple(config, run_id, "instruments", df)
+
+
+def _merge_delisted_instruments(config: Config, df: pl.DataFrame) -> pl.DataFrame:
+    """Add baostock's delisted names to a live-snapshot instrument list.
+
+    TDX and EastMoney both answer "what is listed today", so on their own they
+    build a survivors-only lake (audit: ``universe_survivorship_absent``).
+    baostock's ``query_stock_basic`` is the one free source that also returns
+    codes that *stopped* existing, which is what makes a point-in-time universe
+    possible at all.
+
+    Only rows baostock marks delisted are appended. Names it calls listed but the
+    live snapshot omits are ambiguous — a delisting the snapshot has not caught up
+    with, or a baostock staleness artefact — and appending them would inject
+    untradable symbols into ``all_a``; they are counted and logged instead.
+
+    Fail-loud: this runs only under an explicit ``--backfill``, whose entire
+    purpose is the delisted set, so a broken baostock session must not quietly
+    degrade into "no delisted names exist".
+    """
+    if not config.sources.get("baostock", False):
+        logger.warning(
+            "instruments backfill: [sources.baostock] disabled — delisted symbols "
+            "cannot be recovered from TDX/EastMoney alone; universe stays survivors-only"
+        )
+        return df
+
+    from ashare_lake.adapters.baostock.instruments import fetch_instrument_basics
+
+    config.rate_limit("baostock")
+    basics = fetch_instrument_basics()
+    if basics.is_empty():
+        raise RuntimeError(
+            "baostock query_stock_basic returned no rows; refusing to write a "
+            "survivors-only instrument list under --backfill"
+        )
+
+    live = set(df["symbol"].to_list())
+    delisted = basics.filter(pl.col("delist_date").is_not_null() & ~pl.col("symbol").is_in(live))
+    unlisted_unknown = basics.filter(
+        pl.col("delist_date").is_null() & ~pl.col("symbol").is_in(live)
+    ).height
+
+    # baostock's ipoDate reaches further back than EastMoney's clist, so it also
+    # fills list_date holes on names that are still trading.
+    known_list_dates = basics.filter(pl.col("list_date").is_not_null()).select(
+        ["symbol", pl.col("list_date").alias("_bs_list_date")]
+    )
+    df = (
+        df.join(known_list_dates, on="symbol", how="left")
+        .with_columns(pl.coalesce(pl.col("list_date"), pl.col("_bs_list_date")).alias("list_date"))
+        .drop("_bs_list_date")
+    )
+
+    logger.info(
+        "instruments backfill: +%d delisted symbol(s) from baostock "
+        "(%d listed-but-absent skipped as ambiguous)",
+        delisted.height,
+        unlisted_unknown,
+    )
+    if delisted.is_empty():
+        return df
+    return pl.concat(
+        [df, with_provenance(delisted, source="baostock", data_version="v1")],
+        how="diagonal_relaxed",
+    )
 
 
 @register_step("trading_calendar", group="core")

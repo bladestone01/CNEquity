@@ -10,7 +10,7 @@
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 补 list_date；merge 保留退市 |
+| instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 补 list_date；baostock 回填退市股（`asl backfill instruments`）；merge 保留退市 |
 | trading_calendar | trade_date | trade_date | by_date | ✓ | exchange_calendar | 种子 CSV 2016–2027 |
 | trading_status | trade_date | symbol, trade_date | by_date | ✓ | eastmoney | + akshare ST；baostock ST 回填；派生停牌 |
 

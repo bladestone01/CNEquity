@@ -71,7 +71,15 @@ class DatasetSpec:
 
 _SPECS = [
     # L0 reference
-    DatasetSpec("instruments", partition_col=None, watermark=False),
+    # Live sources (TDX/EM) only list what trades today; baostock's stock_basic
+    # is what recovers delisted codes, so `asl backfill instruments` is the only
+    # path to a survivorship-free universe.
+    DatasetSpec(
+        "instruments",
+        partition_col=None,
+        watermark=False,
+        backfill_source="baostock",
+    ),
     DatasetSpec("trading_calendar", partition_col="trade_date"),
     DatasetSpec("trading_status", partition_col="trade_date"),
     # L1 bars

@@ -33,7 +33,6 @@ def compact_instruments(
         how="diagonal_relaxed",
     )
     incoming = incoming.sort("fetched_at").unique(subset=["symbol"], keep="last")
-    incoming = incoming.with_columns(pl.lit(None).cast(pl.Date).alias("delist_date"))
 
     out_path = curated_root / "instruments" / "part-merged.parquet"
     if out_path.exists():
@@ -74,12 +73,18 @@ def compact_instruments(
             [
                 "symbol",
                 pl.col("list_date").alias("_prior_list_date"),
+                pl.col("delist_date").alias("_prior_delist_date"),
             ]
         )
         incoming = incoming.join(prior_dates, on="symbol", how="left")
+        # Both dates are sticky: a live snapshot carries neither (TDX has no such
+        # field), so coalescing is what keeps a delist_date — inferred from an
+        # earlier absence or fetched from baostock — from being erased the next
+        # day. Never resurrect a name a prior run buried.
         incoming = incoming.with_columns(
-            pl.coalesce(pl.col("list_date"), pl.col("_prior_list_date")).alias("list_date")
-        ).drop("_prior_list_date")
+            pl.coalesce(pl.col("list_date"), pl.col("_prior_list_date")).alias("list_date"),
+            pl.coalesce(pl.col("delist_date"), pl.col("_prior_delist_date")).alias("delist_date"),
+        ).drop("_prior_list_date", "_prior_delist_date")
     else:
         preserved = pl.DataFrame(schema=INSTRUMENTS_SCHEMA)
 
