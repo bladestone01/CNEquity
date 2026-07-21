@@ -217,6 +217,16 @@ _SPECS = [
     DatasetSpec("regulatory_events", partition_col="event_date", partition_granularity="year"),
     # derived
     DatasetSpec("adj_factors", layer="derived", partition_col="trade_date"),
+    # How each recovered delisting's price series ends — see
+    # DELISTING_EVENTS_SCHEMA. Merge-style: one row per symbol, a few hundred
+    # rows total. date_col (not partition_col) so load(start=/end=) still filters.
+    DatasetSpec(
+        "delisting_events",
+        layer="derived",
+        partition_col=None,
+        date_col="last_trade_date",
+        watermark=False,
+    ),
 ]
 
 DATASETS: dict[str, DatasetSpec] = {spec.name: spec for spec in _SPECS}
@@ -244,6 +254,11 @@ def pit_dataset_names() -> frozenset[str]:
 def fetch_semantics(dataset: str) -> FetchSemantics:
     spec = DATASETS.get(dataset)
     return spec.fetch_semantics if spec else "by_date"
+
+
+def granularity_for_dataset(dataset: str) -> Granularity:
+    spec = DATASETS.get(dataset)
+    return spec.partition_granularity if spec else "day"
 
 
 def is_stale(dataset: str, mark, anchor) -> bool:

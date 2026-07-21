@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import tempfile
+from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date
@@ -288,6 +289,7 @@ def backfill_delisted_bars(
     rows_written = 0
     failed: list[str] = []
     spans: dict[str, tuple[date, date]] = {}
+    events: list[dict] = []
     pending_frames: list[pl.DataFrame] = []
     pending_symbols: list[str] = []
 
@@ -321,6 +323,17 @@ def backfill_delisted_bars(
             if not bars.is_empty():
                 pending_frames.append(bars)
                 spans[symbol] = (bars["trade_date"].min(), bars["trade_date"].max())
+                # Classified from the *full* fetched series, before the window
+                # filter — the halt and the resumption drop are what identify a
+                # consolidation period, and they sit at the very end.
+                events.append(
+                    {
+                        "symbol": symbol,
+                        "first_trade_date": bars["trade_date"].min(),
+                        "last_trade_date": bars["trade_date"].max(),
+                        **classify_ending(bars),
+                    }
+                )
             pending_symbols.append(symbol)
             if index % _INGEST_CHUNK == 0:
                 flush(index // _INGEST_CHUNK)
@@ -332,12 +345,14 @@ def backfill_delisted_bars(
     instruments = _instruments_rows(config, spans)
     if not instruments.is_empty():
         write_fetched(config, run_id, "instruments", instruments, source="sina")
+    write_delisting_events(config, events)
 
     result: dict = {
         "rows_read": rows_written,
         "rows_written": rows_written,
         "symbols": len(todo),
         "recovered": len(spans),
+        "ending_patterns": dict(Counter(e["ending_pattern"] for e in events)),
     }
     if failed:
         result["failed_symbols"] = len(failed)
@@ -352,3 +367,100 @@ def backfill_delisted_bars(
             }
         ]
     return result
+
+
+# --- ending pattern ---------------------------------------------------------
+# Whether a recovered series runs through the 退市整理期 decides whether a
+# backtest realises the final loss or marks the position at its last
+# pre-suspension price. On this lake that period is worth -27% to -92%.
+#
+# The shapes, measured over 24 recent delistings:
+#   consolidation   — a halt of 14-56 days, then a -27% to -92% resumption day,
+#                     then a short tail. The series is complete through the worst.
+#   abrupt_decline  — no halt, ends low after a grind at the ±5% ST limit. The
+#                     signature of a trading-rule delisting (面值/市值), which has
+#                     no consolidation period — but a vendor series truncated at
+#                     the suspension looks identical, so this bucket is the one
+#                     that needs a sensitivity check before being trusted.
+#   abrupt_stable   — no halt, ends at an ordinary price with a flat or positive
+#                     tail: absorption/merger or a voluntary delisting.
+_FINAL_WINDOW = 60
+_HALT_GAP_DAYS = 10
+_CONSOLIDATION_DROP = -0.25
+_DECLINE_TAIL_RETURN = -0.40
+_DECLINE_MAX_CLOSE = 2.0
+_MIN_BARS_TO_CLASSIFY = 30
+
+
+def classify_ending(bars: pl.DataFrame) -> dict:
+    """Describe how a price series ends, with the evidence behind the label."""
+    out = {
+        "ending_pattern": "insufficient",
+        "final_close": None,
+        "halt_gap_days": None,
+        "worst_final_return": None,
+        "final_window_return": None,
+        "bars": bars.height,
+    }
+    if bars.height < _MIN_BARS_TO_CLASSIFY:
+        return out
+
+    tail = bars.sort("trade_date").tail(_FINAL_WINDOW)
+    days = tail["trade_date"].to_list()
+    gap = max((days[i] - days[i - 1]).days for i in range(1, len(days)))
+    rets = tail.select((pl.col("close") / pl.col("close").shift(1) - 1).alias("r")).drop_nulls()[
+        "r"
+    ]
+    worst = float(rets.min())
+    window_return = float(tail["close"][-1] / tail["close"][0] - 1)
+    final_close = float(tail["close"][-1])
+
+    if gap > _HALT_GAP_DAYS and worst < _CONSOLIDATION_DROP:
+        pattern = "consolidation"
+    elif window_return < _DECLINE_TAIL_RETURN and final_close < _DECLINE_MAX_CLOSE:
+        pattern = "abrupt_decline"
+    else:
+        pattern = "abrupt_stable"
+
+    out.update(
+        ending_pattern=pattern,
+        final_close=final_close,
+        halt_gap_days=gap,
+        worst_final_return=worst,
+        final_window_return=window_return,
+    )
+    return out
+
+
+def write_delisting_events(config: Config, events: list[dict]) -> int:
+    """Merge *events* into ``derived/delisting_events`` (one row per symbol)."""
+    from ashare_lake.domain.schemas import DELISTING_EVENTS_SCHEMA, with_provenance
+    from ashare_lake.storage.atomic import write_parquet_atomic
+
+    if not events:
+        return 0
+    incoming = with_provenance(
+        pl.DataFrame(
+            events,
+            schema={
+                k: v
+                for k, v in DELISTING_EVENTS_SCHEMA.items()
+                if k not in ("source", "data_version", "fetched_at")
+            },
+        ),
+        source="sina",
+        data_version="v1",
+    )
+    out_path = config.derived_root / "delisting_events" / "part-merged.parquet"
+    frames = [incoming]
+    if out_path.exists():
+        frames.append(pl.read_parquet(out_path))
+    merged = (
+        pl.concat(frames, how="diagonal_relaxed")
+        .sort("fetched_at")
+        .unique(subset=["symbol"], keep="last")
+        .sort("last_trade_date", descending=True)
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    write_parquet_atomic(out_path, merged, compression="zstd")
+    return merged.height

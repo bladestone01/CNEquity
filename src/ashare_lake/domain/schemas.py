@@ -425,6 +425,31 @@ ECONOMIC_CALENDAR_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# One row per recovered delisting, describing how its price series *ends*.
+#
+# Whether a series runs through the 退市整理期 decides whether a backtest can
+# realise the final loss or marks the position at its last pre-suspension price.
+# Measured on this lake, that period is worth -27% to -92%, so the distinction is
+# not cosmetic — and it cannot be assumed, because trading-rule delistings
+# (面值/市值) legitimately have no consolidation period while a truncated vendor
+# series looks identical. Recording the shape lets research separate them
+# instead of silently treating both as complete.
+DELISTING_EVENTS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "first_trade_date": pl.Date,
+    "last_trade_date": pl.Date,
+    # consolidation | abrupt_decline | abrupt_stable | insufficient
+    "ending_pattern": pl.Utf8,
+    "final_close": pl.Float64,
+    "halt_gap_days": pl.Int64,
+    "worst_final_return": pl.Float64,
+    "final_window_return": pl.Float64,
+    "bars": pl.Int64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 DATASET_SCHEMAS = {
     "instruments": INSTRUMENTS_SCHEMA,
     "trading_calendar": TRADING_CALENDAR_SCHEMA,
@@ -460,6 +485,7 @@ DATASET_SCHEMAS = {
     "news_headlines": NEWS_HEADLINES_SCHEMA,
     "flash_news_wire": FLASH_NEWS_WIRE_SCHEMA,
     "economic_calendar": ECONOMIC_CALENDAR_SCHEMA,
+    "delisting_events": DELISTING_EVENTS_SCHEMA,
 }
 
 PRIMARY_KEYS = {
@@ -510,6 +536,7 @@ PRIMARY_KEYS = {
     "news_headlines": ["news_id"],
     "flash_news_wire": ["wire_id", "wire_source"],
     "economic_calendar": ["event_id"],
+    "delisting_events": ["symbol"],
 }
 
 
