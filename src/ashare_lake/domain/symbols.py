@@ -23,6 +23,38 @@ ETF_PREFIXES = {
     "SZ": ("15", "16"),
 }
 
+# Numeric bands the exchanges have actually issued equity codes from, as
+# ``(exchange, first, last_exclusive)``. Narrower than PREFIX_WHITELIST, which
+# admits e.g. all of 60xxxx — enumerating every prefix would mean 50,000 codes
+# where ~14,000 covers the issued space.
+#
+# This exists because no free source will hand over a list of *delisted* codes.
+# Sweeping the space and asking a vendor "did this code ever trade" reconstructs
+# the delisted set from the outside, which is the only route to a
+# survivorship-free universe once the vendor lists are unavailable. Widen a band
+# if a probe finds live codes at its edge; the sweep is cheap enough that erring
+# wide costs minutes, while erring narrow silently loses delisted names.
+ISSUED_CODE_BANDS: tuple[tuple[str, int, int], ...] = (
+    ("SH", 600000, 606000),  # main board: 600/601/603/605
+    ("SH", 688000, 689000),  # STAR (689xxx CDRs excluded from all_a)
+    ("SZ", 1, 5000),  # main board 000/001, SME 002, 003
+    ("SZ", 300000, 302000),  # ChiNext
+    ("BJ", 920000, 921000),  # BSE (legacy 430/830 codes are outside the whitelist)
+)
+
+
+def issued_code_space() -> list[str]:
+    """Every equity symbol the exchanges could plausibly have issued, ascending."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for exchange, first, last in ISSUED_CODE_BANDS:
+        for num in range(first, last):
+            symbol = format_symbol(f"{num:06d}", exchange)
+            if symbol not in seen:
+                seen.add(symbol)
+                out.append(symbol)
+    return out
+
 
 @dataclass(frozen=True)
 class SymbolInfo:
