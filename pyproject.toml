@@ -39,7 +39,15 @@ macro = ["akshare>=1.14"]
 nlp = ["snownlp>=0.12"]
 valuation = ["baostock>=0.8"]
 structure = ["pandas>=2.0", "openpyxl>=3.0", "xlrd>=2.0"]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-timeout>=2.3", "ruff>=0.4"]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "pytest-timeout>=2.3",
+  # Pinned to a minor line: CI runs `ruff format --check`, and the formatter's
+  # line-wrapping changes between minors, so an unpinned `ruff>=0.4` turns any
+  # upstream release into a red build on code nobody touched.
+  "ruff>=0.15,<0.16",
+]
 
 [project.urls]
 Documentation = "https://github.com/rootSunc/ashare-lake/tree/main/docs"

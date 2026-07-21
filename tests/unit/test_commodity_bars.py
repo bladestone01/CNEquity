@@ -57,12 +57,15 @@ def test_fetch_commodity_bars_parses_kline():
     fake_client.__exit__.return_value = None
 
     only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
-    with patch(
-        "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
-        return_value=fake_client,
-    ), patch(
-        "ashare_lake.adapters.sina.global_futures.fetch_offshore_commodity_bars_range",
-        return_value=pl.DataFrame(),
+    with (
+        patch(
+            "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
+            return_value=fake_client,
+        ),
+        patch(
+            "ashare_lake.adapters.sina.global_futures.fetch_offshore_commodity_bars_range",
+            return_value=pl.DataFrame(),
+        ),
     ):
         df = fetch_commodity_bars_range(
             date(2026, 7, 20),
@@ -91,12 +94,15 @@ def test_fetch_commodity_bars_empty_on_failure():
     fake_client.__exit__.return_value = None
 
     only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
-    with patch(
-        "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
-        return_value=fake_client,
-    ), patch(
-        "ashare_lake.adapters.sina.global_futures.fetch_offshore_commodity_bars_range",
-        return_value=pl.DataFrame(),
+    with (
+        patch(
+            "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
+            return_value=fake_client,
+        ),
+        patch(
+            "ashare_lake.adapters.sina.global_futures.fetch_offshore_commodity_bars_range",
+            return_value=pl.DataFrame(),
+        ),
     ):
         df = fetch_commodity_bars_range(
             date(2026, 7, 21),

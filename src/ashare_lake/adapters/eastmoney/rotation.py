@@ -324,8 +324,7 @@ def fetch_sector_bars_history(
         for i, board in enumerate(todo):
             if batch > 0 and rest > 0 and i > 0 and i % batch == 0:
                 logger.info(
-                    "sector_bars history: batch rest %.0fs after %d boards "
-                    "(ok=%d failed=%d)",
+                    "sector_bars history: batch rest %.0fs after %d boards (ok=%d failed=%d)",
                     rest,
                     i,
                     len(succeeded),
@@ -348,17 +347,13 @@ def fetch_sector_bars_history(
                 fail_streak += 1
                 if fail_streak >= _STREAK_COOLDOWN_AFTER:
                     logger.warning(
-                        "sector_bars history: %d consecutive failures — "
-                        "cooling down %.0fs",
+                        "sector_bars history: %d consecutive failures — cooling down %.0fs",
                         fail_streak,
                         _STREAK_COOLDOWN_SECONDS,
                     )
                     time.sleep(_STREAK_COOLDOWN_SECONDS)
                     fail_streak = 0
-                if (
-                    not succeeded
-                    and len(failed) >= _EARLY_ABORT_AFTER_FAILURES
-                ):
+                if not succeeded and len(failed) >= _EARLY_ABORT_AFTER_FAILURES:
                     remaining = [b["sector_code"] for b in todo[i + 1 :]]
                     logger.error(
                         "sector_bars history: aborting — first %d boards failed "

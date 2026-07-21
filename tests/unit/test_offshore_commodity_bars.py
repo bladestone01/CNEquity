@@ -90,7 +90,5 @@ def test_fetch_offshore_empty_on_bad_payload():
         raise_for_status=MagicMock(),
         json=MagicMock(return_value={"error": True}),
     )
-    df = fetch_offshore_commodity_bars_range(
-        date(2026, 7, 21), date(2026, 7, 21), client=client
-    )
+    df = fetch_offshore_commodity_bars_range(date(2026, 7, 21), date(2026, 7, 21), client=client)
     assert df.is_empty()

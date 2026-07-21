@@ -24,9 +24,7 @@ _URL = (
 )
 
 # (lake_symbol, sina_symbol, name, exchange)
-OFFSHORE_CONTRACTS: tuple[tuple[str, str, str, str], ...] = (
-    ("GC0.CMX", "GC", "COMEX黄金", "CMX"),
-)
+OFFSHORE_CONTRACTS: tuple[tuple[str, str, str, str], ...] = (("GC0.CMX", "GC", "COMEX黄金", "CMX"),)
 
 DEFAULT_BACKFILL_START = date(2020, 1, 1)
 
@@ -81,7 +79,9 @@ def _parse_rows(
                 "close": close,
                 "volume": int(vol) if vol is not None else 0,
                 "amount": None,
-                "open_interest": oi if oi and oi > 0 else (settle if settle and settle > 0 else None),
+                "open_interest": oi
+                if oi and oi > 0
+                else (settle if settle and settle > 0 else None),
                 "source": "sina",
             }
         )
