@@ -77,6 +77,16 @@ _SPECS = [
     # L1 bars
     DatasetSpec("daily_bars", partition_col="trade_date"),
     DatasetSpec("index_bars", partition_col="trade_date"),
+    # Domestic commodity futures main-continuous (东财主连) + narrow offshore
+    # gold (Sina COMEX ``GC0.CMX``); not A-share equity.
+    DatasetSpec(
+        "commodity_bars",
+        partition_col="trade_date",
+        fetch_semantics="by_date",
+        backfill_source="eastmoney_kline+sina_global",
+        required=False,
+        max_staleness_days=2,
+    ),
     # L2 corporate events
     DatasetSpec("corporate_actions", partition_col="ex_date"),
     DatasetSpec("announcement_index", partition_col="announce_date", pit=True),

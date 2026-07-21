@@ -22,6 +22,7 @@
 |--------|--------|------|------|------|------|------|
 | daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | 东财备源快照（failover） |
 | index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
+| commodity_bars | trade_date | symbol, trade_date | by_date | ✓ | eastmoney+sina | 国内主连 + COMEX金 `GC0.CMX`；`asl backfill commodity_bars`；required=false |
 | adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`asl derive adj_factors` |
 
 ---
@@ -128,6 +129,7 @@
 | capital.py | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades |
 | structure.py | sector_members, index_constituents, industry_members |
 | macro_risk.py | macro_indicators, market_breadth, share_unlock_schedule, regulatory_events |
+| commodity.py | commodity_bars |
 | research.py | institutional_holdings, analyst_consensus, sentiment_scores |
 | rotation.py | hot_rank, sector_bars, sector_fund_flow, news_headlines |
 | finalize.py | compact, derive_adj_factors, audit |

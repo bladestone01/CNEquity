@@ -26,6 +26,25 @@ DAILY_BARS_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# Domestic commodity futures main-continuous daily bars (东财主连).
+# symbol = {ROOT}0.{EXCH} e.g. AU0.SHF / I0.DCE — not A-share .SH/.SZ.
+COMMODITY_BARS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "name": pl.Utf8,
+    "exchange": pl.Utf8,
+    "trade_date": pl.Date,
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    "volume": pl.Int64,
+    "amount": pl.Float64,
+    "open_interest": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 INSTRUMENTS_SCHEMA = {
     "symbol": pl.Utf8,
     "name": pl.Utf8,
@@ -412,6 +431,7 @@ DATASET_SCHEMAS = {
     "trading_status": TRADING_STATUS_SCHEMA,
     "daily_bars": DAILY_BARS_SCHEMA,
     "index_bars": {**DAILY_BARS_SCHEMA, "frequency": pl.Utf8},
+    "commodity_bars": COMMODITY_BARS_SCHEMA,
     "corporate_actions": CORPORATE_ACTIONS_SCHEMA,
     "adj_factors": ADJ_FACTORS_SCHEMA,
     "financial_statement_items": FINANCIAL_STATEMENT_ITEMS_SCHEMA,
@@ -448,6 +468,7 @@ PRIMARY_KEYS = {
     "trading_status": ["symbol", "trade_date"],
     "daily_bars": ["symbol", "trade_date"],
     "index_bars": ["symbol", "trade_date", "frequency"],
+    "commodity_bars": ["symbol", "trade_date"],
     "corporate_actions": ["symbol", "ex_date", "action_type"],
     "adj_factors": ["symbol", "trade_date", "adjust_type"],
     "financial_statement_items": ["symbol", "report_period", "statement_type", "item_code"],

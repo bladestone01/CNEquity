@@ -65,6 +65,16 @@
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date, frequency) |
 
+#### commodity_bars
+
+| 项 | 值 |
+|------|-------|
+| 组 | `macro_risk`（日更） |
+| 主源 | eastmoney（国内主连）+ sina（外盘窄集：COMEX 金 `GC0.CMX`） |
+| 回填 | `asl backfill commodity_bars`（默认自 2020-01-01；可用 `--start`/`--end`） |
+| 主键 | (symbol, trade_date) |
+| 已知限制 | 主连非真实交割月；夜盘归结算日；水位按 SSE 日历近似；海外无 egress 时国内主连可能空但新浪外盘仍可写；伦敦金等未收录 |
+
 #### corporate_actions
 
 | 项 | 值 |

@@ -1,6 +1,6 @@
 # 数据集总览
 
-ashare-lake 交付 **27 个注册数据集**（26 curated + 1 derived `adj_factors`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。
+ashare-lake 交付 **28 个注册数据集**（27 curated + 1 derived `adj_factors`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -11,7 +11,7 @@ ashare-lake 交付 **27 个注册数据集**（26 curated + 1 derived `adj_facto
 | 层次 | 说明 | 代表数据集 |
 |------|------|------------|
 | **L0** 基础参考 | Universe、日历、交易状态 | instruments, trading_calendar, trading_status |
-| **L1** 行情 | 未复权价量 + 复权因子 | daily_bars, index_bars, adj_factors |
+| **L1** 行情 | 未复权价量 + 复权因子 + 商品期货主连 | daily_bars, index_bars, commodity_bars, adj_factors |
 | **L2** 公司事件 | 除权除息、公告、预约披露 | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | **L3** 基本面 | 财报、估值、一致预期 | financial_statement_items, valuation_metrics, analyst_consensus |
 | **L4** 资金面 | 北向、融资、主力 | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades, institutional_holdings |

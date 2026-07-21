@@ -110,6 +110,26 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 
 与 daily_bars 相同，另加 `frequency`（默认 `1d`）、`asset_type=index`。
 
+#### commodity_bars
+
+国内商品期货**主力连续**日 K（东财主连）+ 窄口径外盘（新浪 COMEX 金 ``GC0.CMX``）。
+
+| 列 | 类型 | 说明 |
+|--------|------|-------|
+| symbol | string | 国内 `{根}0.{交易所}`（如 `AU0.SHF`）；外盘 `GC0.CMX`（COMEX 金连续） |
+| name | string | 合约中文名 |
+| exchange | string | `SHF` / `DCE` / `CZC` / `INE` / `GFE` / `CMX` |
+| trade_date | date | 源交易所会话日（外盘为 COMEX 日历；与 A 股对齐在研究侧 as-of） |
+| open/high/low/close | float64 | |
+| volume | int64 | 手（东财口径；新浪外盘常为 0） |
+| amount | float64 | 成交额（外盘可空） |
+| open_interest | float64 | 可空 |
+| source / data_version / fetched_at | | 溯源（`eastmoney` / `sina`） |
+
+主键：`(symbol, trade_date)`。分区：`trade_date`。  
+日更：`macro_risk` 组。历史：`asl backfill commodity_bars [--start 2020-01-01 --end …]`。  
+`required=false`。外盘 v1 **仅黄金**；不进 A 股回测引擎。
+
 #### corporate_actions
 
 | 列 | 类型 | 说明 |

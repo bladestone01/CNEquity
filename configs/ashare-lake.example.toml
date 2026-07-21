@@ -147,7 +147,7 @@ steps = [
 
 [job.daily.groups.macro_risk]
 at = "18:00"
-steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events", "compact"]
+steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events", "commodity_bars", "compact"]
 
 [job.daily.groups.research]
 at = "18:30"
