@@ -17,7 +17,6 @@ from ashare_lake.orchestrator.run_lock import RunLockError
 from ashare_lake.quality.audit import run_audit
 from ashare_lake.query.on_demand import OnDemandService
 from ashare_lake.query.views import ensure_duckdb_views
-from ashare_lake.steps.finalize import step_compact
 from ashare_lake.storage.layout import init_data_layout
 from ashare_lake.storage.source_snapshots import (
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
@@ -467,7 +466,9 @@ def backfill(
     engine = JobEngine(cfg)
     result = engine.run_job("backfill", steps=[dataset], backfill=True)
     if result["status"] == "success":
-        compact_out = step_compact(cfg, date.today(), result["run_id"], {})
+        # Through the engine, not step_compact directly: the recorded compact
+        # batch is what later lets `asl clean` release this run's staging.
+        compact_out = engine.run_step("compact", date.today(), result["run_id"])
         result["compact"] = compact_out
     click.echo(json.dumps(result, indent=2, default=str))
     if result["status"] != "success":
@@ -487,7 +488,7 @@ def compact(config_path: str, run_id: str | None):
             raise click.ClickException("No runs found")
         run_id = latest["run_id"]
 
-    out = step_compact(cfg, date.today(), run_id, {})
+    out = JobEngine(cfg).run_step("compact", date.today(), run_id)
     click.echo(
         json.dumps(
             {"run_id": run_id, "rows_written": out.get("rows_written", 0), **out},
@@ -825,6 +826,64 @@ def servers(action: str, config_path: str):
         click.echo("mootdx not installed — install with: pip install -e '.[tdx]'")
     except Exception as exc:
         click.echo(f"TDX connection failed: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
+@cli.group("push2his")
+def push2his_grp():
+    """push2his CDN edge sticky / probe (sector_bars kline)."""
+
+
+@push2his_grp.command("remember")
+@click.argument("endpoint")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+def push2his_remember(endpoint: str, config_path: str):
+    """Save Chrome DevTools Remote Address as sticky CDN edge.
+
+    Example: asl push2his remember 61.129.129.199:443
+    """
+    from ashare_lake.adapters.eastmoney.em_auth import remember_push2his_endpoint
+
+    cfg = _cfg(config_path)
+    remember_push2his_endpoint(endpoint, config=cfg)
+    click.echo(f"sticky push2his edge → {endpoint.split(':')[0]}")
+
+
+@push2his_grp.command("probe")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+def push2his_probe(config_path: str):
+    """Discover CDN edges and probe which ones answer kline (updates sticky on hit)."""
+    from ashare_lake.adapters.eastmoney.em_auth import (
+        EastMoneyClient,
+        _candidate_ips,
+        _sticky_path,
+    )
+
+    cfg = _cfg(config_path)
+    sticky = _sticky_path(cfg)
+    candidates = _candidate_ips("push2his.eastmoney.com", sticky, force_discover=True)
+    click.echo(f"candidates ({len(candidates)}): {', '.join(candidates)}")
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "secid": "90.BK1152",
+        "fields1": "f1",
+        "fields2": "f51",
+        "klt": 101,
+        "fqt": 1,
+        "beg": 0,
+        "end": "20500101",
+        "lmt": 2,
+    }
+    try:
+        with EastMoneyClient(config=cfg) as client:
+            resp = client.get(url, params=params)
+        code = int(getattr(resp, "status_code", 0) or 0)
+        body = getattr(resp, "text", "") or ""
+        click.echo(f"probe OK status={code} bytes={len(body.encode('utf-8', 'replace'))}")
+        if sticky and sticky.exists():
+            click.echo(f"sticky: {sticky.read_text().strip()}")
+    except Exception as exc:
+        click.echo(f"probe FAILED: {exc}", err=True)
         raise SystemExit(1) from exc
 
 

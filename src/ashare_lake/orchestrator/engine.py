@@ -141,6 +141,23 @@ class JobEngine:
                 "rows_written": total_written,
             }
 
+    def run_step(
+        self,
+        name: str,
+        trade_date: date,
+        run_id: str,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run one registered step against *run_id*, recording its batch.
+
+        For CLI paths that execute a single step outside a job (``asl backfill``
+        finalizing with compact, ``asl compact``). Calling the step function
+        directly skips the manifest bookkeeping, which silently breaks anything
+        that reads the batch log — notably staging cleanup, whose readiness test
+        is "this run recorded a successful compact".
+        """
+        return self._run_step(name, trade_date, run_id, context or {})
+
     @contextlib.contextmanager
     def _optional_job_lock(self, lock_name: str | None):
         if lock_name is None:

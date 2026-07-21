@@ -67,8 +67,14 @@
 
 - **现象**：日志 `sector kline failed for BKxxxx on all push2his hosts`；`failed_sectors` 接近 991。
 - **原因**：`push2his.eastmoney.com` 在海外 IP 常不可用；日更 clist 仍可能正常。
-- **处理**：在大陆出口或 `HTTPS_PROXY` / `[sources.eastmoney] proxy` 下
-  `asl backfill sector_bars --retry-failed`；全量换源后 `--force`。
+  CDN 边缘（Azure Traffic Manager）按 DNS 源轮转——Chrome DevTools Remote Address
+  （如 `61.129.129.199:443`）与系统 DNS 常不一致；可用边缘也会突然 Empty reply。
+- **处理**：
+  1. 客户端已自动 sticky + 多源发现 + 失败降级（`meta/state/push2his_endpoint.json`）。
+  2. 浏览器能开、脚本不能时：DevTools 复制 Remote Address，
+     `asl push2his remember 61.129.129.199:443`，再 `asl push2his probe`。
+  3. 仍全挂：换大陆出口或 `[sources.eastmoney] proxy`，然后
+     `asl backfill sector_bars --retry-failed`；全量换源后 `--force`。
   Checkpoint：`meta/state/sector_bars_backfill.json`。
 
 ### 海外机器 + 国内阿里云 VPS（推荐跑在 VPS 上）

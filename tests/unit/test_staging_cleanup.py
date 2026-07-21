@@ -5,7 +5,11 @@ import polars as pl
 from ashare_lake.config import Config
 from ashare_lake.orchestrator.manifest import Manifest
 from ashare_lake.storage import StagingWriter
-from ashare_lake.storage.staging_cleanup import clean_staging, list_staging_run_ids
+from ashare_lake.storage.staging_cleanup import (
+    clean_staging,
+    list_staging_run_ids,
+    run_ready_for_staging_cleanup,
+)
 
 
 def _bar_row(symbol: str, trade_date: date) -> dict:
@@ -167,3 +171,25 @@ def test_clean_removes_orphan_staging_without_manifest(tmp_path):
     result = clean_staging(cfg, orphan_retention_days=7)
     assert run_id in result.orphan_run_ids
     assert run_id not in list_staging_run_ids(cfg.staging_root)
+
+
+def test_engine_run_step_records_a_compact_batch(tmp_path):
+    """`asl backfill` / `asl compact` route through the engine so cleanup can fire.
+
+    Calling step_compact directly leaves no compact batch in the manifest, and
+    run_ready_for_staging_cleanup then refuses that run's staging forever.
+    """
+    import ashare_lake.steps  # noqa: F401 — register steps
+    from ashare_lake.orchestrator.engine import JobEngine
+
+    cfg = Config(data_root=tmp_path / "data", daily_waves=[])
+    engine = JobEngine(cfg)
+    run_id = engine.manifest.start_run("backfill", {})
+
+    result = engine.run_step("compact", date(2026, 7, 21), run_id)
+    engine.manifest.finish_run(run_id, "success")
+
+    assert result["status"] == "success"
+    batches = engine.manifest.get_batches_for_run(run_id)
+    assert [(b["dataset"], b["status"]) for b in batches] == [("compact", "success")]
+    assert run_ready_for_staging_cleanup(engine.manifest, run_id) is True
