@@ -59,5 +59,9 @@ def test_example_config_validates():
     assert cfg.source_intervals["baostock"] == 1.0
     assert cfg.baostock_batch_size == 50
     assert cfg.baostock_batch_rest_seconds == 45.0
-    assert cfg.source_intervals["eastmoney"] == 1.0
+    # EastMoney pacing is a floor, not a fixed value: push2his bans bursty
+    # overseas IPs, so the example config may raise it further. AKShare mostly
+    # wraps EastMoney, so it must never be faster or the two share a ban.
+    assert cfg.source_intervals["eastmoney"] >= 1.0
+    assert cfg.source_intervals["akshare"] <= cfg.source_intervals["eastmoney"]
     assert cfg.tdx_min_interval_ms == 100
