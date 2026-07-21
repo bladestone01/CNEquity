@@ -176,13 +176,32 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 |--------|------|-------|
 | symbol | string | |
 | report_period | string | 如 ``2024Q1`` |
-| statement_type | string | income / balance / cashflow |
-| item_code | string | 如 ``roe``、``revenue`` |
-| item_value | float64 | |
-| announce_date | date | **PIT 轴** — 公开披露日 |
+| statement_type | string | income / balance / cashflow / indicator |
+| item_code | string | 见下表 |
+| item_value | float64 | 金额单位人民币元；比率类为百分数；每股类为元/股 |
+| announce_date | date | **PIT 轴** — 首次披露日（取自业绩报表 `RPT_LICO_FN_CPD`） |
 | source | string | |
 | data_version | string | |
 | fetched_at | timestamp | |
+
+**item_code 一览**（按 `statement_type`）：
+
+| statement_type | item_code |
+|----------------|-----------|
+| income | `revenue` `operating_cost` `operating_profit` `total_profit` `net_profit` `net_profit_deducted` `income_tax` `sale_expense` `manage_expense` `finance_expense` |
+| balance | `total_assets` `total_equity` `total_liabilities` `inventory` `accounts_receivable` `monetary_funds` `fixed_assets` |
+| cashflow | `net_cash_operate` `net_cash_invest` `net_cash_finance` `capex` `end_cash` |
+| indicator | `roe` `eps` `eps_deducted` `bps` `gross_margin` `ocf_per_share` `revenue_yoy` `net_profit_yoy` |
+
+口径提醒：
+
+- `total_equity` 是**股东权益合计**（含少数股东权益），不是归母净资产；做 B/P 时注意分子口径，
+  或改用 `bps`（每股净资产）× 股本。
+- `capex` 取「购建固定资产、无形资产和其他长期资产支付的现金」，是代理量而非严格资本开支。
+- **回填值是修订后的**：东财只提供某期财务数据的*当前*版本。回填拿到的是修订值，
+  但配的是首次披露日（statement 报表自带的 `NOTICE_DATE` 是「最后一次重述日」，
+  往往晚 1–2 年，直接用会让基本面在 PIT 查询里整体迟到）。因此存在小幅前视：
+  修订后的数字在首次披露日其实还不知道。只有日更逐日累积的版本才是严格 PIT。
 
 #### fund_flow
 
