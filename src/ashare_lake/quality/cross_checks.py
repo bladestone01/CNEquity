@@ -568,3 +568,151 @@ def universe_survivorship_findings(config: Config, trade_date: date) -> list[dic
         }
     )
     return findings
+
+
+# --- cross-source close verification ----------------------------------------
+# A capture that fires before the session closes writes a bar that passes every
+# single-source check: the PK is unique, the calendar day is real, the row count
+# is normal. Only the close is wrong — and with it every return, every
+# cross-sectional factor value, and the day's backtest P&L.
+#
+# A volume-vs-trailing-median heuristic cannot separate that from a genuinely
+# quiet session: on this lake it flagged the 2016-01-07 circuit-breaker halt and
+# the 2020-02-03 limit-down open alongside the one real defect. Comparing the
+# close against an independent vendor does separate them — those four days
+# matched Sina to the cent, the truncated one did not.
+CLOSE_CROSSCHECK_SAMPLE = 12
+# Prices carry 2dp; anything past 0.1% is a different print, not rounding.
+CLOSE_CROSSCHECK_TOLERANCE = 0.001
+# Above this share of the sample the cause is the capture, not one bad symbol.
+CLOSE_CROSSCHECK_SYSTEMATIC_RATIO = 0.5
+
+
+def _liquid_symbols_on(config: Config, trade_date: date, limit: int) -> list[str]:
+    """Most-traded symbols that day — continuous prints, no stale-quote noise."""
+    root = config.curated_root / "daily_bars"
+    if not dataset_has_parquet(root):
+        return []
+    lf = scan_parquet_root(root, partition_col="trade_date", start=trade_date, end=trade_date)
+    cols = lf.collect_schema().names()
+    rank_col = "amount" if "amount" in cols else "volume"
+    df = (
+        lf.filter(pl.col("close").is_not_null() & (pl.col("close") > 0))
+        .select("symbol", rank_col)
+        .sort(rank_col, descending=True, nulls_last=True)
+        .limit(limit)
+        .collect()
+    )
+    return df["symbol"].to_list()
+
+
+def _curated_closes(config: Config, trade_date: date, symbols: list[str]) -> dict[str, float]:
+    root = config.curated_root / "daily_bars"
+    df = (
+        scan_parquet_root(root, partition_col="trade_date", start=trade_date, end=trade_date)
+        .filter(pl.col("symbol").is_in(symbols))
+        .select("symbol", "close")
+        .collect()
+    )
+    return {r["symbol"]: float(r["close"]) for r in df.iter_rows(named=True)}
+
+
+def _sina_closes(symbols: list[str], trade_date: date) -> dict[str, float]:
+    import httpx
+
+    from ashare_lake.adapters.sina.bars import fetch_daily_bars_sina
+
+    out: dict[str, float] = {}
+    with httpx.Client(timeout=20.0) as client:
+        for sym in symbols:
+            df = fetch_daily_bars_sina(
+                sym, start=trade_date, end=trade_date, datalen=30, client=client
+            )
+            if not df.is_empty():
+                out[sym] = float(df["close"][0])
+    return out
+
+
+def daily_bars_close_crosscheck_findings(
+    config: Config,
+    trade_date: date,
+    *,
+    reference_closes=None,
+) -> list[dict]:
+    """Compare a liquid sample of that day's closes against an independent vendor.
+
+    Runs only when ``[sources.sina]`` is enabled, so a lake configured without it
+    (and every unit test) makes no network call. A source that is unreachable
+    yields an info finding, never an audit failure — an unavailable second
+    opinion is not evidence of bad data.
+
+    ``reference_closes`` is injectable for tests.
+    """
+    if not config.sources.get("sina", False) and reference_closes is None:
+        return []
+
+    symbols = _liquid_symbols_on(config, trade_date, CLOSE_CROSSCHECK_SAMPLE)
+    if not symbols:
+        return []
+    ours = _curated_closes(config, trade_date, symbols)
+    if not ours:
+        return []
+
+    fetch = reference_closes or _sina_closes
+    try:
+        theirs = fetch(symbols, trade_date)
+    except Exception as exc:  # noqa: BLE001 — a dead vendor must not fail the audit
+        return [
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "close_crosscheck_unavailable",
+                "message": f"could not reach the reference source for {trade_date.isoformat()}: {exc}",
+            }
+        ]
+
+    compared: list[tuple[str, float, float]] = []
+    for sym, ref in theirs.items():
+        mine = ours.get(sym)
+        if mine is None or ref <= 0:
+            continue
+        compared.append((sym, mine, ref))
+    if not compared:
+        return []
+
+    mismatched = [
+        (sym, mine, ref)
+        for sym, mine, ref in compared
+        if abs(mine - ref) / ref > CLOSE_CROSSCHECK_TOLERANCE
+    ]
+    if not mismatched:
+        return []
+
+    ratio = len(mismatched) / len(compared)
+    systematic = ratio >= CLOSE_CROSSCHECK_SYSTEMATIC_RATIO
+    sample = "; ".join(
+        f"{sym} {mine:.2f} vs {ref:.2f} ({(mine - ref) / ref:+.2%})"
+        for sym, mine, ref in mismatched[:_SAMPLE]
+    )
+    message = (
+        f"{len(mismatched)}/{len(compared)} sampled closes on {trade_date.isoformat()} "
+        f"disagree with the reference source ({sample})"
+    )
+    if systematic:
+        message += (
+            " — a whole-market disagreement, typically a capture that ran before "
+            "the session closed; refetch the day"
+        )
+    return [
+        {
+            "dataset": "daily_bars",
+            "severity": "error" if systematic else "warning",
+            "check": "daily_bars_close_mismatch",
+            "message": message,
+            "trade_date": trade_date.isoformat(),
+            "compared": len(compared),
+            "mismatched": len(mismatched),
+            "mismatch_ratio": round(ratio, 3),
+            "symbols": [sym for sym, _, _ in mismatched[:_SAMPLE]],
+        }
+    ]

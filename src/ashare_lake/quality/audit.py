@@ -15,6 +15,7 @@ from ashare_lake.domain.datasets import PARTITION_COLS, curated_dataset_names
 from ashare_lake.quality.cross_checks import (
     adj_factor_reconciliation_findings,
     daily_bars_calendar_findings,
+    daily_bars_close_crosscheck_findings,
     universe_survivorship_findings,
     valuation_bars_coverage_findings,
 )
@@ -212,6 +213,11 @@ def _collect_lake_findings(
 
     findings.extend(_index_bars_coverage_findings(config, trade_date))
     findings.extend(daily_bars_calendar_findings(config, trade_date))
+    # Reaches an external vendor for ~12 quotes; gated on [sources.sina] so a
+    # lake without it (and every unit test) stays offline.
+    findings.extend(
+        daily_bars_close_crosscheck_findings(config, _last_trading_day(config, trade_date))
+    )
     findings.extend(valuation_bars_coverage_findings(config, trade_date))
     findings.extend(adj_factor_reconciliation_findings(config, trade_date))
     findings.extend(universe_survivorship_findings(config, trade_date))
