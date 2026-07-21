@@ -31,7 +31,14 @@ _BOARD_KLINE_PATH = "/api/qt/stock/kline/get"
 # f51..f61: date,open,close,high,low,volume,amount,amplitude,change_pct,change,turnover
 _KLINE_FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
 _KLINE_MAX_RETRIES = 3
-_KLINE_RETRY_BACKOFF_SECONDS = 1.0
+_KLINE_RETRY_BACKOFF_SECONDS = 3.0
+# Abort a dead egress early instead of hammering ~991 boards into a ban.
+_EARLY_ABORT_AFTER_FAILURES = 15
+# After a streak of transport failures, pause before the next board.
+_STREAK_COOLDOWN_AFTER = 5
+_STREAK_COOLDOWN_SECONDS = 90.0
+_DEFAULT_BATCH_SIZE = 15
+_DEFAULT_BATCH_REST = 60.0
 
 
 def _hot_symbol(sc: str) -> str | None:
@@ -303,10 +310,32 @@ def fetch_sector_bars_history(
         todo = [b for b in boards if b["sector_code"] not in skip]
         if only_sectors is not None:
             todo = [b for b in todo if b["sector_code"] in only_sectors]
-        for board in todo:
+        batch = (
+            int(getattr(config, "eastmoney_batch_size", _DEFAULT_BATCH_SIZE))
+            if config is not None
+            else _DEFAULT_BATCH_SIZE
+        )
+        rest = (
+            float(getattr(config, "eastmoney_batch_rest_seconds", _DEFAULT_BATCH_REST))
+            if config is not None
+            else _DEFAULT_BATCH_REST
+        )
+        fail_streak = 0
+        for i, board in enumerate(todo):
+            if batch > 0 and rest > 0 and i > 0 and i % batch == 0:
+                logger.info(
+                    "sector_bars history: batch rest %.0fs after %d boards "
+                    "(ok=%d failed=%d)",
+                    rest,
+                    i,
+                    len(succeeded),
+                    len(failed),
+                )
+                time.sleep(rest)
             try:
                 rows.extend(_fetch_board_kline_rows(client, board, start, end))
                 succeeded.append(board["sector_code"])
+                fail_streak = 0
             except Exception as exc:
                 logger.warning(
                     "sector_bars history: %s (%s) failed: %s: %s",
@@ -316,6 +345,31 @@ def fetch_sector_bars_history(
                     exc,
                 )
                 failed.append(board["sector_code"])
+                fail_streak += 1
+                if fail_streak >= _STREAK_COOLDOWN_AFTER:
+                    logger.warning(
+                        "sector_bars history: %d consecutive failures — "
+                        "cooling down %.0fs",
+                        fail_streak,
+                        _STREAK_COOLDOWN_SECONDS,
+                    )
+                    time.sleep(_STREAK_COOLDOWN_SECONDS)
+                    fail_streak = 0
+                if (
+                    not succeeded
+                    and len(failed) >= _EARLY_ABORT_AFTER_FAILURES
+                ):
+                    remaining = [b["sector_code"] for b in todo[i + 1 :]]
+                    logger.error(
+                        "sector_bars history: aborting — first %d boards failed "
+                        "(push2his unreachable); %d left unmarked for retry",
+                        len(failed),
+                        len(remaining),
+                    )
+                    # Leave remaining unmarked so --retry-failed / next --force
+                    # can resume; do not append them to failed (would pollute
+                    # checkpoint as permanent misses).
+                    break
     return (pl.DataFrame(rows) if rows else pl.DataFrame()), failed, succeeded
 
 

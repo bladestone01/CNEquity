@@ -57,6 +57,9 @@
 - push2his 在海外 IP 常不可用；clist 日更一般仍可用。Checkpoint：`meta/state/sector_bars_backfill.json`；`--retry-failed` / `--force` 见 [CLI](../reference/cli.md)。
 - **代理**：`[sources.eastmoney] proxy = "http://127.0.0.1:7890"`（写入 `EastMoneyClient`）；未配置时仍可读 `HTTPS_PROXY` / `HTTP_PROXY`。
 - 板块指数无公司行为，`fqt=0`。
+- **防 Empty reply**：海外裸 `httpx`/`curl` 常 TLS 后被掐；`EastMoneyClient.get` 对
+  `push2his` / `91.push2his` 走 `curl_cffi` Chrome impersonation（同页 `ut` + Referer）。
+  短时密集扫仍可能被掐 → 降速后 `--retry-failed`。
 
 可选 `asl derive sector_routing` 生成 EM×TDX 名称映射（**不参与** sector_bars 采集）。
 

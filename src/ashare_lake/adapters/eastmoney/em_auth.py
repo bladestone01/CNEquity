@@ -1,11 +1,17 @@
-"""EastMoney NID auth — inject nid cookie for datacenter/reportapi domains."""
+"""EastMoney NID auth — inject nid cookie for datacenter/reportapi domains.
+
+``push2his`` (and peers) often drop plain ``httpx``/``curl`` TLS from overseas
+IPs (Empty reply) while a real Chrome session succeeds. Those hosts therefore
+go through ``curl_cffi`` Chrome impersonation — same URL/params as the quote
+page DevTools request, matching browser JA3.
+"""
 
 from __future__ import annotations
 
 import logging
 import random
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -26,10 +32,25 @@ _EASTMONEY_DOMAINS = (
 )
 _PUSH2_DOMAINS = (
     "push2.eastmoney.com",
+    "push2delay.eastmoney.com",
+    "push2his.eastmoney.com",
+    "91.push2his.eastmoney.com",
+    "40.push2.eastmoney.com",
+)
+# Only historical kline hosts need Chrome JA3; live clist (push2/push2delay) is fine on httpx.
+_PUSH2HIS_CHROME_DOMAINS = (
     "push2his.eastmoney.com",
     "91.push2his.eastmoney.com",
 )
 _QUOTE_REFERER = "https://quote.eastmoney.com/"
+# Front-end token from quote.eastmoney.com kline calls (stable across sessions).
+_PUSH2_UT = "fa5fd1943c7b386f172d6893dbfba10b"
+_CHROME_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/150.0.0.0 Safari/537.36"
+)
+_CHROME_IMPERSONATE = "chrome131"
 
 
 def fetch_nid(client: httpx.Client | None = None) -> str:
@@ -71,7 +92,7 @@ def get_nid() -> str:
 
 
 def build_eastmoney_headers(url: str) -> dict[str, str]:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": _CHROME_UA, "Accept": "*/*", "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
     if any(d in url for d in _PUSH2_DOMAINS):
         headers["Referer"] = _QUOTE_REFERER
         return headers
@@ -82,12 +103,44 @@ def build_eastmoney_headers(url: str) -> dict[str, str]:
     return headers
 
 
+def _needs_chrome_tls(url: str) -> bool:
+    return any(d in url for d in _PUSH2HIS_CHROME_DOMAINS)
+
+
 def is_transport_fail_fast(exc: BaseException) -> bool:
     """True for connect/timeout/protocol drops that retries will not fix overseas."""
-    return isinstance(
+    if isinstance(
         exc,
         (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError),
-    )
+    ):
+        return True
+    # curl_cffi wraps libcurl drops as generic ConnectionError / RequestException.
+    name = type(exc).__name__
+    return name in {"ConnectError", "ConnectionError", "Timeout", "RemoteProtocolError"}
+
+
+def _chrome_get(
+    url: str,
+    *,
+    headers: dict[str, str],
+    params: dict[str, Any] | None = None,
+    timeout: float = 30.0,
+    proxy: str | None = None,
+) -> Any:
+    """GET with Chrome TLS fingerprint (required for push2his from many overseas IPs)."""
+    from curl_cffi import requests as creq  # noqa: PLC0415 — optional-ish runtime dep
+
+    q = dict(params or {})
+    q.setdefault("ut", _PUSH2_UT)
+    kwargs: dict[str, Any] = {
+        "params": q,
+        "headers": headers,
+        "timeout": timeout,
+        "impersonate": _CHROME_IMPERSONATE,
+    }
+    if proxy:
+        kwargs["proxy"] = proxy
+    return creq.get(url, **kwargs)
 
 
 class EastMoneyClient:
@@ -108,22 +161,23 @@ class EastMoneyClient:
         else:
             self.min_interval = float(min_interval)
         self._last_request = 0.0
-        proxy = None
+        self._proxy = None
         timeout = 15.0
         if config is not None:
             if getattr(config, "eastmoney_proxy", None):
-                proxy = config.eastmoney_proxy
+                self._proxy = config.eastmoney_proxy
             timeout = float(getattr(config, "eastmoney_timeout_sec", 15.0) or 15.0)
+        self._timeout = timeout
         # httpx>=0.28 removed ``proxies``; mootdx-pinned httpx<0.28 still needs it.
         client_kwargs: dict = {"timeout": timeout, "follow_redirects": True}
-        if proxy is not None:
-            client_kwargs["proxy"] = proxy
+        if self._proxy is not None:
+            client_kwargs["proxy"] = self._proxy
         try:
             self._client = httpx.Client(**client_kwargs)
         except TypeError:
-            if proxy is not None:
+            if self._proxy is not None:
                 client_kwargs.pop("proxy", None)
-                client_kwargs["proxies"] = proxy
+                client_kwargs["proxies"] = self._proxy
             self._client = httpx.Client(**client_kwargs)
 
     def _throttle(self) -> None:
@@ -137,10 +191,22 @@ class EastMoneyClient:
             time.sleep(self.min_interval - elapsed)
         self._last_request = time.time()
 
-    def get(self, url: str, **kwargs) -> httpx.Response:
+    def get(self, url: str, **kwargs) -> Any:
         self._throttle()
         headers = kwargs.pop("headers", {})
         headers.update(build_eastmoney_headers(url))
+        if _needs_chrome_tls(url):
+            timeout = float(kwargs.pop("timeout", self._timeout) or self._timeout)
+            params = kwargs.pop("params", None)
+            # Ignore leftover httpx-only kwargs so callers stay unchanged.
+            kwargs.pop("follow_redirects", None)
+            return _chrome_get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=timeout,
+                proxy=self._proxy,
+            )
         return self._client.get(url, headers=headers, **kwargs)
 
     def post(self, url: str, **kwargs) -> httpx.Response:

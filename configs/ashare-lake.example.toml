@@ -39,9 +39,12 @@ standard = [
 
 [sources.eastmoney]
 enabled = true
-min_interval_seconds = 1.0
+# push2his bans bursty overseas/cloud IPs — keep slow for sector_bars sweeps.
+min_interval_seconds = 3.0
 # Per-request timeout (seconds). Connect/timeout/protocol errors do not retry.
-timeout_sec = 15
+timeout_sec = 30
+batch_size = 15
+batch_rest_seconds = 60
 # Optional: mainland HTTP(S) proxy for push2his kline (sector_bars backfill).
 # When unset, httpx still honors HTTPS_PROXY / HTTP_PROXY env vars.
 # proxy = "http://127.0.0.1:7890"

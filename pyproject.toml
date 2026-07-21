@@ -27,6 +27,8 @@ dependencies = [
   # features are used) so the optional [tdx] extra's mootdx (httpx>=0.25,<0.26)
   # can co-resolve; without [tdx], uv still picks the newest httpx.
   "httpx>=0.25",
+  # Chrome TLS impersonation for push2his (plain httpx often gets Empty reply overseas).
+  "curl_cffi>=0.7",
   "polars>=1.0",
   "pyarrow>=15.0",
 ]
