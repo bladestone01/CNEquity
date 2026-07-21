@@ -216,6 +216,83 @@ def test_fetch_sector_bars_history_skips_completed(monkeypatch):
     assert mock_client.get.call_count >= 1
 
 
+def _kline_client(monkeypatch, boards, *, fails: set[str] | None = None):
+    """Mock EastMoneyClient serving one kline per board; `fails` raise instead."""
+    fails = fails or set()
+    mock_client = MagicMock()
+
+    def get_side_effect(url, **kwargs):
+        secid = str((kwargs.get("params") or {}).get("secid") or "")
+        code = secid.split(".")[-1]
+        if code in fails:
+            raise RuntimeError("disconnect")
+        resp = MagicMock()
+        resp.json.return_value = {
+            "data": {"klines": ["2026-07-13,100.0,102.0,103.0,99.0,1200,6000000.0,4.0,2.0,2.0,2.1"]}
+        }
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    mock_client.get.side_effect = get_side_effect
+    monkeypatch.setattr(
+        "ashare_lake.adapters.eastmoney.rotation.fetch_clist_pages",
+        lambda client, **kw: [{"f12": code, "f14": code} for code in boards],
+    )
+
+    class CM:
+        def __enter__(self):
+            return mock_client
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(
+        "ashare_lake.adapters.eastmoney.rotation.EastMoneyClient", lambda *a, **kw: CM()
+    )
+    # Retry backoff / cool-down sleeps are bound as defaults at def time; muting
+    # the module's sleep is what keeps these tests sub-second.
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.rotation.time.sleep", lambda s: None)
+    return mock_client
+
+
+def test_fetch_sector_bars_history_flushes_each_batch(monkeypatch):
+    """A multi-hour sweep must hand rows over as it goes, not at the very end."""
+    boards = [f"BK{i:04d}" for i in range(5)]
+    _kline_client(monkeypatch, boards)
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.rotation._DEFAULT_BATCH_SIZE", 2)
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.rotation._DEFAULT_BATCH_REST", 0.0)
+
+    seen: list[tuple[int, list[str]]] = []
+    df, failed, succeeded = fetch_sector_bars_history(
+        date(2026, 6, 1),
+        date(2026, 7, 14),
+        on_batch=lambda frame, codes: seen.append((frame.height, list(codes))),
+    )
+
+    assert failed == []
+    assert succeeded == boards
+    # Batches of 2, 2, then the trailing 1 flushed on the way out.
+    assert [codes for _, codes in seen] == [boards[:2], boards[2:4], boards[4:]]
+    assert [height for height, _ in seen] == [2, 2, 1]
+    # Everything was handed over, so nothing is left in the returned frame.
+    assert df.is_empty()
+
+
+def test_fetch_sector_bars_history_aborts_when_egress_dies_midway(monkeypatch):
+    """Fail-fast must not be disarmed by boards that succeeded before the drop."""
+    boards = [f"BK{i:04d}" for i in range(12)]
+    # First board lands, then the egress dies (laptop changes network).
+    _kline_client(monkeypatch, boards, fails=set(boards[1:]))
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.rotation._DEAD_EGRESS_STREAK", 3)
+
+    df, failed, succeeded = fetch_sector_bars_history(date(2026, 6, 1), date(2026, 7, 14))
+
+    assert succeeded == [boards[0]]
+    # Aborted at the streak threshold instead of grinding all 12 boards.
+    assert failed == boards[1:4]
+    assert df.height == 1
+
+
 def test_fetch_news_headlines_filters_date(monkeypatch):
     mock_client = MagicMock()
     mock_resp = MagicMock()

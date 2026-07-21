@@ -411,13 +411,15 @@ def run_catchup(
     "--start",
     "start_str",
     default=None,
-    help="Range start (YYYY-MM-DD) for date-walking backfills (margin_trading).",
+    help="Range start (YYYY-MM-DD) for date-walking backfills (margin_trading) "
+    "and to narrow the sector_bars kline window (default: 400 days back).",
 )
 @click.option(
     "--end",
     "end_str",
     default=None,
-    help="Range end (YYYY-MM-DD) for date-walking backfills (margin_trading).",
+    help="Range end (YYYY-MM-DD) for date-walking backfills (margin_trading) "
+    "and sector_bars (default: today).",
 )
 @click.option(
     "--workers",

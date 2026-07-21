@@ -16,7 +16,9 @@ from ashare_lake.steps.rotation import (
 
 
 def _patch_history(monkeypatch, *, returns):
-    def fake_history(start, end, *, config=None, skip_sectors=None, only_sectors=None):
+    def fake_history(
+        start, end, *, config=None, skip_sectors=None, only_sectors=None, on_batch=None
+    ):
         df, failed, succeeded = returns
         skip = skip_sectors or set()
         succeeded = [s for s in succeeded if s not in skip]
@@ -25,11 +27,16 @@ def _patch_history(monkeypatch, *, returns):
             part = df.filter(pl.col("sector_code").is_in(succeeded))
         else:
             part = pl.DataFrame()
+        # Real adapter hands every row to on_batch and returns an empty frame.
+        if on_batch is not None:
+            if succeeded:
+                on_batch(part, succeeded)
+            return pl.DataFrame(), failed, succeeded
         return part, failed, succeeded
 
     written: list[pl.DataFrame] = []
 
-    def fake_write(config, run_id, dataset, df, *, source):
+    def fake_write(config, run_id, dataset, df, *, source, batch_id="batch-0"):
         written.append(df)
         return {"rows_read": df.height, "rows_written": df.height}
 
@@ -67,7 +74,9 @@ def test_marks_succeeded_boards_and_resumes(tmp_path, monkeypatch):
 
     captured: dict = {}
 
-    def fake_history(start, end, *, config=None, skip_sectors=None, only_sectors=None):
+    def fake_history(
+        start, end, *, config=None, skip_sectors=None, only_sectors=None, on_batch=None
+    ):
         captured["skip"] = skip_sectors
         return pl.DataFrame(), [], []
 

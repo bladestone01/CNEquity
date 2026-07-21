@@ -386,6 +386,21 @@ def _chrome_get(
     q = dict(params or {})
     q.setdefault("ut", _PUSH2_UT)
     host = _host_from_url(url)
+
+    # A proxy resolves the hostname on its own side, so CURLOPT_RESOLVE never
+    # applies to the CONNECT tunnel: walking the candidate ladder would replay
+    # the *same* request through the *same* egress a dozen times. With a
+    # mainland proxy configured the pin is pointless — go straight through.
+    if proxy:
+        return creq.get(
+            url,
+            params=q,
+            headers=headers,
+            timeout=timeout,
+            impersonate=_CHROME_IMPERSONATE,
+            proxy=proxy,
+        )
+
     candidates = _candidate_ips(host, sticky_path)
     last_exc: Exception | None = None
 

@@ -17,6 +17,8 @@ from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
 from ashare_lake.domain.symbols import format_symbol
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ashare_lake.config import Config
 
 logger = logging.getLogger(__name__)
@@ -32,8 +34,10 @@ _BOARD_KLINE_PATH = "/api/qt/stock/kline/get"
 _KLINE_FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
 _KLINE_MAX_RETRIES = 3
 _KLINE_RETRY_BACKOFF_SECONDS = 3.0
-# Abort a dead egress early instead of hammering ~991 boards into a ban.
-_EARLY_ABORT_AFTER_FAILURES = 15
+# Abort a dead egress instead of hammering ~991 boards into a ban. Counted on
+# *consecutive* failures only, so an egress that dies mid-sweep (roaming laptop
+# changing networks) is caught just as fast as one that was dead from board 1.
+_DEAD_EGRESS_STREAK = 15
 # After a streak of transport failures, pause before the next board.
 _STREAK_COOLDOWN_AFTER = 5
 _STREAK_COOLDOWN_SECONDS = 90.0
@@ -276,6 +280,7 @@ def fetch_sector_bars_history(
     config: Config | None = None,
     skip_sectors: set[str] | None = None,
     only_sectors: set[str] | None = None,
+    on_batch: Callable[[pl.DataFrame, list[str]], None] | None = None,
 ) -> tuple[pl.DataFrame, list[str], list[str]]:
     """Historical daily board bars via the EastMoney kline API (secid ``90.BKxxxx``).
 
@@ -284,14 +289,30 @@ def fetch_sector_bars_history(
     ``(frame, failed_sector_codes, succeeded_sector_codes)`` — partial sweeps
     must be visible to the caller (audit finding), never silently dropped.
 
+    ``on_batch(frame, sector_codes)`` makes progress durable: a ~991-board sweep
+    is hours long, so accumulating every row until the end means an interruption
+    at board 900 writes nothing. When supplied it is called at each batch
+    boundary and the accumulator is cleared, so the returned frame holds only
+    what was never handed over (empty for a batched caller).
+
     Board catalog prefers live clist; on clist failure (overseas / 502), falls
     back to distinct boards already in curated ``sector_bars`` so a kline-only
     path still works under mainland egress.
     """
     rows: list[dict] = []
+    pending: list[str] = []
     failed: list[str] = []
     succeeded: list[str] = []
     skip = skip_sectors or set()
+
+    def flush() -> None:
+        nonlocal rows, pending
+        if on_batch is None or not pending:
+            return
+        on_batch(pl.DataFrame(rows) if rows else pl.DataFrame(), list(pending))
+        rows = []
+        pending = []
+
     client_kwargs: dict = {"config": config} if config is not None else {"min_interval": 0.3}
     with EastMoneyClient(**client_kwargs) as client:
         boards: list[dict] = []
@@ -320,21 +341,31 @@ def fetch_sector_bars_history(
             if config is not None
             else _DEFAULT_BATCH_REST
         )
-        fail_streak = 0
+        # `cooldown_streak` resets after each pause (it only paces retries);
+        # `dead_streak` resets only on success, so it can actually reach the
+        # fail-fast threshold.
+        cooldown_streak = 0
+        dead_streak = 0
         for i, board in enumerate(todo):
-            if batch > 0 and rest > 0 and i > 0 and i % batch == 0:
-                logger.info(
-                    "sector_bars history: batch rest %.0fs after %d boards (ok=%d failed=%d)",
-                    rest,
-                    i,
-                    len(succeeded),
-                    len(failed),
-                )
-                time.sleep(rest)
+            if batch > 0 and i > 0 and i % batch == 0:
+                # Hand the batch over before resting: an interrupt during the
+                # pause must not cost the boards already fetched.
+                flush()
+                if rest > 0:
+                    logger.info(
+                        "sector_bars history: batch rest %.0fs after %d boards (ok=%d failed=%d)",
+                        rest,
+                        i,
+                        len(succeeded),
+                        len(failed),
+                    )
+                    time.sleep(rest)
             try:
                 rows.extend(_fetch_board_kline_rows(client, board, start, end))
                 succeeded.append(board["sector_code"])
-                fail_streak = 0
+                pending.append(board["sector_code"])
+                cooldown_streak = 0
+                dead_streak = 0
             except Exception as exc:
                 logger.warning(
                     "sector_bars history: %s (%s) failed: %s: %s",
@@ -344,27 +375,30 @@ def fetch_sector_bars_history(
                     exc,
                 )
                 failed.append(board["sector_code"])
-                fail_streak += 1
-                if fail_streak >= _STREAK_COOLDOWN_AFTER:
-                    logger.warning(
-                        "sector_bars history: %d consecutive failures — cooling down %.0fs",
-                        fail_streak,
-                        _STREAK_COOLDOWN_SECONDS,
-                    )
-                    time.sleep(_STREAK_COOLDOWN_SECONDS)
-                    fail_streak = 0
-                if not succeeded and len(failed) >= _EARLY_ABORT_AFTER_FAILURES:
+                cooldown_streak += 1
+                dead_streak += 1
+                if dead_streak >= _DEAD_EGRESS_STREAK:
                     remaining = [b["sector_code"] for b in todo[i + 1 :]]
                     logger.error(
-                        "sector_bars history: aborting — first %d boards failed "
-                        "(push2his unreachable); %d left unmarked for retry",
-                        len(failed),
+                        "sector_bars history: aborting — %d consecutive failures "
+                        "(push2his unreachable); %d ok so far, %d left unmarked for retry",
+                        dead_streak,
+                        len(succeeded),
                         len(remaining),
                     )
                     # Leave remaining unmarked so --retry-failed / next --force
                     # can resume; do not append them to failed (would pollute
                     # checkpoint as permanent misses).
                     break
+                if cooldown_streak >= _STREAK_COOLDOWN_AFTER:
+                    logger.warning(
+                        "sector_bars history: %d consecutive failures — cooling down %.0fs",
+                        dead_streak,
+                        _STREAK_COOLDOWN_SECONDS,
+                    )
+                    time.sleep(_STREAK_COOLDOWN_SECONDS)
+                    cooldown_streak = 0
+        flush()
     return (pl.DataFrame(rows) if rows else pl.DataFrame()), failed, succeeded
 
 

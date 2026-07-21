@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import polars as pl
 
 from ashare_lake.config import Config
-from ashare_lake.domain.datasets import PARTITION_COLS, WATERMARK_SKIP, fetch_semantics
+from ashare_lake.domain.datasets import PARTITION_COLS, WATERMARK_SKIP
 from ashare_lake.orchestrator.registry import register_step
 from ashare_lake.storage import StagingWriter, compact_dataset
 from ashare_lake.storage.instruments import compact_instruments
 from ashare_lake.storage.state import StateStore
+
+logger = logging.getLogger(__name__)
 
 
 def _max_partition_date(config: Config, dataset: str, partition_col: str) -> date | None:
@@ -42,23 +45,80 @@ def _max_partition_date(config: Config, dataset: str, partition_col: str) -> dat
     return combined[partition_col].max()
 
 
+def _watermarked_datasets() -> list[tuple[str, str]]:
+    return [
+        (dataset, pcol)
+        for dataset, pcol in PARTITION_COLS.items()
+        if pcol is not None and dataset not in WATERMARK_SKIP
+    ]
+
+
 def _update_watermarks(
     config: Config,
     datasets: frozenset[str] | None,
     trade_date: date,
 ) -> None:
+    """Advance each compacted dataset's watermark to the freshest date it holds.
+
+    The watermark answers "through what date do we have data", so it is read
+    back from the lake rather than assumed from the run date. Snapshot datasets
+    used to be stamped with ``trade_date`` unconditionally, which made the
+    watermark lie whenever a snapshot produced nothing: a partial baostock
+    valuation backfill writing rows for an *earlier* day still pushed the
+    watermark to today, so lake_health called valuation_metrics fresh on a day
+    it had zero rows, and the missed days never showed up as coverage gaps.
+    Snapshot fetching only ever requests trade_date, so a truthful (possibly
+    older) watermark cannot trigger a re-fetch storm — it just surfaces the hole.
+    """
     state = StateStore(config.meta_root)
-    for dataset, pcol in PARTITION_COLS.items():
-        if pcol is None or dataset in WATERMARK_SKIP:
-            continue
+    for dataset, pcol in _watermarked_datasets():
         if datasets is not None and dataset not in datasets:
-            continue
-        if fetch_semantics(dataset) == "snapshot":
-            state.set_date(dataset, trade_date)
             continue
         max_dt = _max_partition_date(config, dataset, pcol)
         if max_dt is not None:
             state.update_max_date(dataset, max_dt)
+
+
+def _reconcile_watermarks(config: Config) -> list[dict]:
+    """Pull back any watermark that claims data the lake does not have.
+
+    Advancing only covers datasets that compacted this run, so a dataset whose
+    source went dark — writing nothing, therefore never compacting — would keep
+    a stale-but-fresh-looking watermark forever, which is exactly the case that
+    hides an outage. This runs over every watermarked dataset and only ever
+    corrects downward, so it cannot mask a real advance.
+    """
+    state = StateStore(config.meta_root)
+    findings: list[dict] = []
+    for dataset, pcol in _watermarked_datasets():
+        current = state.get_date(dataset)
+        if current is None:
+            continue
+        max_dt = _max_partition_date(config, dataset, pcol)
+        if max_dt is None or current <= max_dt:
+            continue
+        state.set_date(dataset, max_dt)
+        findings.append(
+            {
+                "dataset": dataset,
+                "severity": "warning",
+                "check": "watermark_ahead_of_data",
+                "message": (
+                    f"watermark claimed {current.isoformat()} but the freshest "
+                    f"{pcol} in curated is {max_dt.isoformat()}; corrected. The "
+                    "source produced nothing for the days in between"
+                ),
+                "claimed": current.isoformat(),
+                "actual": max_dt.isoformat(),
+            }
+        )
+        logger.warning(
+            "%s: watermark %s ahead of data %s; corrected",
+            dataset,
+            current.isoformat(),
+            max_dt.isoformat(),
+        )
+    return findings
 
 
 @register_step("compact", group="finalize", parallelizable=False)
@@ -126,6 +186,7 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
 
     if compacted:
         _update_watermarks(config, frozenset(compacted), trade_date)
+    audit_findings.extend(_reconcile_watermarks(config))
 
     from ashare_lake.query.views import ensure_duckdb_views
 

@@ -105,13 +105,43 @@ def _backfill_sector_bars(config: Config, trade_date: date, run_id: str) -> dict
     if getattr(config, "_sector_bars_force", False):
         clear_sector_bars_backfill_state(config)
 
-    start = trade_date - timedelta(days=_SECTOR_BARS_BACKFILL_DAYS)
+    # `--start/--end` narrow the sweep: filling a 4-day hole should not re-fetch
+    # 400 days × ~991 boards. Default stays the full backfill window.
+    end = getattr(config, "_backfill_end", None) or trade_date
+    start = getattr(config, "_backfill_start", None) or (
+        end - timedelta(days=_SECTOR_BARS_BACKFILL_DAYS)
+    )
     completed = _sector_bars_completed(config)
+
+    # Write + checkpoint per batch so an interrupted multi-hour sweep keeps the
+    # boards it already fetched, and a resume skips them.
+    written = {"rows_read": 0, "rows_written": 0}
+    batches = 0
+
+    def on_batch(frame, sector_codes: list[str]) -> None:
+        nonlocal batches
+        if not frame.is_empty():
+            out = write_fetched(
+                config,
+                run_id,
+                "sector_bars",
+                frame,
+                source="eastmoney",
+                batch_id=f"batch-{batches}",
+            )
+            written["rows_read"] += out["rows_read"]
+            written["rows_written"] += out["rows_written"]
+            batches += 1
+        # Checkpoint only after the rows are durable — the reverse order would
+        # let a crash mark boards done whose bars were never written.
+        _mark_sector_bars_completed(config, sector_codes)
+
     df, failed, succeeded = fetch_sector_bars_history(
         start,
-        trade_date,
+        end,
         config=config,
         skip_sectors=completed,
+        on_batch=on_batch,
     )
     attempted = len(succeeded) + len(failed)
     if attempted == 0:
@@ -121,12 +151,10 @@ def _backfill_sector_bars(config: Config, trade_date: date, run_id: str) -> dict
             "note": "all boards already sector_bars-backfilled",
         }
 
-    result: dict = {"rows_read": 0, "rows_written": 0}
-    if not df.is_empty():
-        result = write_fetched(config, run_id, "sector_bars", df, source="eastmoney")
-
-    if succeeded:
-        _mark_sector_bars_completed(config, succeeded)
+    # `on_batch` drains the accumulator on every path, so the returned frame is
+    # always empty here; rows and checkpoints are already durable.
+    del df
+    result: dict = dict(written)
 
     if failed:
         result["failed_sectors"] = len(failed)
