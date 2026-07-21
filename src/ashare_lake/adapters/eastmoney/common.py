@@ -9,6 +9,8 @@ DATACENTER_BASE = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 PUSH2_CLIST_HOSTS = (
     "https://push2.eastmoney.com",
     "https://push2delay.eastmoney.com",
+    # AkShare ST board uses this numbered host; useful when push2 is 502.
+    "https://40.push2.eastmoney.com",
 )
 PUSH2_CLIST = f"{PUSH2_CLIST_HOSTS[0]}/api/qt/clist/get"
 PUSH2HIS_KLINE_HOSTS = (

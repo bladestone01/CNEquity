@@ -63,6 +63,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
     ) = args
     start = date.fromisoformat(start_iso)
     end = date.fromisoformat(end_iso)
+    staging_root = Path(staging_root)
     rl = RateLimitSpec(*rate_limit) if rate_limit else None
     manifest = Manifest(manifest_path) if manifest_path else None
 
@@ -276,8 +277,9 @@ def fetch_daily_bars_parallel(
                     batch_id,
                     stale_seconds,
                 )
-            except Exception:
+            except Exception as exc:
                 had_error = True
+                logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
 
     if had_error:
         raise RuntimeError(f"{dataset}: one or more symbol batches failed")

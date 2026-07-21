@@ -57,6 +57,36 @@ def test_worker_pool_records_symbol_batches(worker_config, monkeypatch):
     }
 
 
+def test_manifest_accepts_str_db_path(tmp_path):
+    """Process-pool workers pass manifest_path as str across the boundary."""
+    db = tmp_path / "meta" / "manifest.db"
+    manifest = Manifest(str(db))
+    assert manifest.db_path == db
+    run_id = manifest.start_run("test")
+    assert run_id
+
+
+def test_worker_pool_multiprocess_records_batches(worker_config, monkeypatch):
+    """Regression: workers>1 used to crash Manifest(str) before start_batch."""
+    worker_config.workers = 2
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("test")
+
+    fetch_daily_bars_parallel(
+        worker_config,
+        ["600519.SH", "000001.SZ"],
+        date(2024, 6, 27),
+        date(2024, 6, 28),
+        run_id,
+        "daily_bars",
+    )
+
+    batches = manifest.get_batches_for_run(run_id)
+    assert len(batches) == 2
+    assert all(b["status"] == "success" for b in batches)
+
+
 def test_symbol_batch_ids_unique_per_window(worker_config, monkeypatch):
     init_data_layout(worker_config)
     manifest = Manifest(worker_config.manifest_path)

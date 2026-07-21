@@ -7,15 +7,20 @@ from datetime import date
 
 import polars as pl
 
+from ashare_lake.adapters.eastmoney.clist import fetch_clist_pages
+from ashare_lake.adapters.eastmoney.common import symbol_from_clist
 from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
 from ashare_lake.domain.symbols import format_symbol, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
 
-_ST_FS = "m:0+t:5,m:0+t:6,m:0+t:7,m:0+t:80,m:1+t:2,m:1+t:23"
+# Risk-warning board (ST / *ST), same fs as akshare.stock_zh_a_st_em /
+# quote.eastmoney.com st_board. Do NOT use all-A market fs here.
+_ST_FS = "m:0+f:4,m:1+f:4"
 _SUSPEND_REPORT = "RPT_CUSTOM_SUSPEND_DATA_INTERFACE"
-_CLIST = "https://push2.eastmoney.com/api/qt/clist/get"
 _DATACENTER = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+# Smaller pages: large pz on push2 often 502s (esp. overseas).
+_ST_PAGE_SIZE = 100
 
 
 def _exchange_from_code(code: str) -> str:
@@ -27,34 +32,24 @@ def _exchange_from_code(code: str) -> str:
 
 
 def _fetch_st_symbols(client: EastMoneyClient) -> set[str]:
-    symbols: set[str] = set()
-    page = 1
-    while True:
-        url = (
-            f"{_CLIST}?pn={page}&pz=5000&po=1&np=1&fltt=2&invt=2"
-            f"&fid=f3&fs={_ST_FS}&fields=f12,f13,f14"
+    """Current ST-tagged symbols via clist (push2 → push2delay failover)."""
+    try:
+        rows = fetch_clist_pages(
+            client,
+            fields="f12,f13,f14",
+            fs=_ST_FS,
+            page_size=_ST_PAGE_SIZE,
         )
-        try:
-            resp = client.get(url)
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as exc:
-            logger.warning("EastMoney ST list failed (page %s): %s", page, exc)
-            break
+    except Exception as exc:
+        # Non-fatal: caller still labels universe as normal (+ AKShare union).
+        logger.warning("EastMoney ST list failed: %s", exc)
+        return set()
 
-        diff = (payload.get("data") or {}).get("diff") or []
-        if not diff:
-            break
-        for item in diff:
-            code = str(item.get("f12", "")).zfill(6)
-            market = int(item.get("f13", 0))
-            exch = "SH" if market == 1 else ("BJ" if market == 2 else "SZ")
-            if is_all_a_symbol(code, exch):
-                symbols.add(format_symbol(code, exch))
-        total = int((payload.get("data") or {}).get("total") or 0)
-        if page * 5000 >= total:
-            break
-        page += 1
+    symbols: set[str] = set()
+    for item in rows:
+        sym = symbol_from_clist(str(item.get("f12", "")), int(item.get("f13") or 0))
+        if sym:
+            symbols.add(sym)
     return symbols
 
 

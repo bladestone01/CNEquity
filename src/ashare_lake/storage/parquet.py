@@ -9,8 +9,9 @@ from ashare_lake.storage.atomic import write_parquet_atomic
 
 
 class StagingWriter:
-    def __init__(self, staging_root: Path):
-        self.staging_root = staging_root
+    def __init__(self, staging_root: Path | str):
+        # Process-pool workers may pass a str path across the boundary.
+        self.staging_root = Path(staging_root)
 
     def write_batch(
         self,

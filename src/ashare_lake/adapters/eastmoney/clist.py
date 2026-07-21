@@ -67,7 +67,9 @@ def fetch_clist_pages(
     *,
     fields: str,
     fs: str = ALL_A_FS,
-    page_size: int = 5000,
+    # pz=5000 often trips push2 502 mid-universe (esp. overseas); 100 matches
+    # rotation boards. Callers that need fewer round-trips may pass a larger pz.
+    page_size: int = 100,
 ) -> list[dict]:
     rows: list[dict] = []
     active_host: str | None = None

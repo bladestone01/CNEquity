@@ -45,8 +45,9 @@ class BatchRecord:
 
 
 class Manifest:
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
+    def __init__(self, db_path: Path | str):
+        # Worker-pool children pass a str path across process boundaries.
+        self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
