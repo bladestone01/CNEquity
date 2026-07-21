@@ -8,6 +8,8 @@ Single-dataset integrity is in ``dataset_checks``. Here:
   mcap sanity while baostock leaves ``total_mv``/``float_mv`` null.
 * ``daily_bars`` × ``adj_factors`` × ``corporate_actions`` — hfq continuity vs
   recorded ex-events. Consecutive trading days only (spares suspension resumes).
+* ``daily_bars`` × ``instruments`` — survivorship: does the lake still contain the
+  names that stopped trading, and are they marked delisted?
 """
 
 from __future__ import annotations
@@ -32,6 +34,15 @@ MISSING_EVENT_MAX_ADJ_RET = 0.15
 MISSING_EVENT_MIN_DIVERGENCE = 0.11
 
 _MAX_RECON_FINDINGS = 50
+
+# --- survivorship -----------------------------------------------------------
+# A symbol whose last bar precedes the lake's last bar by more than this has
+# stopped trading (delisted, or suspended long enough to be untradable). Well
+# past the longest routine suspension so ordinary halts are not counted.
+RETIRED_GAP_DAYS = 180
+# Only judge lakes spanning at least this long: over a short window a real
+# market genuinely may retire nobody, so zero retirements proves nothing.
+SURVIVORSHIP_MIN_SPAN_DAYS = 730
 
 
 def _trading_days(config: Config, trade_date: date) -> set[date]:
@@ -425,4 +436,135 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
             severity="warning",
             noun="a raw move with no corporate action on record",
         )
+    return findings
+
+
+def _symbol_last_bar(config: Config, trade_date: date) -> pl.DataFrame | None:
+    """Per-symbol first/last bar date in curated ``daily_bars``. None if absent."""
+    bars_root = config.curated_root / "daily_bars"
+    if not dataset_has_parquet(bars_root):
+        return None
+    out = (
+        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+        .group_by("symbol")
+        .agg(
+            pl.col("trade_date").min().alias("first_bar"),
+            pl.col("trade_date").max().alias("last_bar"),
+        )
+        .collect()
+    )
+    return None if out.is_empty() else out
+
+
+def _instruments_frame(config: Config) -> pl.DataFrame | None:
+    root = config.curated_root / "instruments"
+    if not dataset_has_parquet(root):
+        return None
+    out = scan_parquet_root(root, hive=False).collect()
+    return None if out.is_empty() else out
+
+
+def universe_survivorship_findings(config: Config, trade_date: date) -> list[dict]:
+    """Does the lake still hold the names that stopped trading?
+
+    A history backfilled from *today's* listing snapshot contains only survivors:
+    every delisted name — in A-shares typically after an 80–95% drawdown — is
+    missing, so every backtest run on it overstates returns, and the bias lands
+    hardest on exactly the small/value/distressed buckets a factor screen buys.
+
+    The tell is structural rather than statistical: over a multi-year span a real
+    market always retires names, so a lake where *no* symbol's series ever ends is
+    proof the universe was pinned to the current listing, not evidence of an
+    unusually healthy market. Retired names that ``instruments`` never marks
+    delisted are the second half of the problem — ``universe="all_a"`` keeps
+    treating them as listed forever.
+    """
+    last_bar = _symbol_last_bar(config, trade_date)
+    if last_bar is None:
+        return []
+
+    lake_first = last_bar["first_bar"].min()
+    lake_last = last_bar["last_bar"].max()
+    span_days = (lake_last - lake_first).days
+    if span_days < SURVIVORSHIP_MIN_SPAN_DAYS:
+        return []
+
+    retired = last_bar.filter(
+        (pl.lit(lake_last) - pl.col("last_bar")).dt.total_days() > RETIRED_GAP_DAYS
+    )
+    total = last_bar.height
+    span_years = span_days / 365.25
+
+    if retired.is_empty():
+        return [
+            {
+                "dataset": "daily_bars",
+                "severity": "error",
+                "check": "universe_survivorship_absent",
+                "message": (
+                    f"all {total} symbols in daily_bars are still trading as of "
+                    f"{lake_last.isoformat()} after {span_years:.1f} years — no name "
+                    "ever leaves the lake, so history was backfilled from the current "
+                    "listing snapshot. Every backtest is survivorship-biased; "
+                    "backfill delisted symbols before trusting any return series"
+                ),
+                "symbols": total,
+                "span_years": round(span_years, 2),
+                "coverage_start": lake_first.isoformat(),
+                "coverage_end": lake_last.isoformat(),
+                "retired_gap_days": RETIRED_GAP_DAYS,
+            }
+        ]
+
+    findings: list[dict] = [
+        {
+            "dataset": "daily_bars",
+            "severity": "info",
+            "check": "universe_survivorship",
+            "message": (
+                f"{retired.height}/{total} symbols stopped trading more than "
+                f"{RETIRED_GAP_DAYS} days before {lake_last.isoformat()} "
+                f"({retired.height / total:.1%} of the lake over {span_years:.1f} years)"
+            ),
+            "retired_symbols": retired.height,
+            "total_symbols": total,
+            "span_years": round(span_years, 2),
+        }
+    ]
+
+    instruments = _instruments_frame(config)
+    if instruments is None or "delist_date" not in instruments.columns:
+        return findings
+
+    unmarked = (
+        retired.join(instruments.select(["symbol", "delist_date"]), on="symbol", how="left")
+        .filter(pl.col("delist_date").is_null())
+        .sort("last_bar")
+    )
+    if unmarked.is_empty():
+        return findings
+
+    sample = unmarked.head(_SAMPLE)
+    findings.append(
+        {
+            "dataset": "instruments",
+            "severity": "warning",
+            "check": "retired_symbol_missing_delist_date",
+            "message": (
+                f"{unmarked.height} symbol(s) stopped producing bars but carry no "
+                f"delist_date in instruments (e.g. "
+                + ", ".join(
+                    f"{r['symbol']} last bar {_iso(r['last_bar'])}"
+                    for r in sample.iter_rows(named=True)
+                )
+                + ") — universe='all_a' keeps selecting them after they stopped trading"
+            ),
+            "unmarked_count": unmarked.height,
+            "retired_symbols": retired.height,
+            "sample": [
+                {"symbol": r["symbol"], "last_bar": _iso(r["last_bar"])}
+                for r in sample.iter_rows(named=True)
+            ],
+        }
+    )
     return findings

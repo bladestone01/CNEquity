@@ -96,6 +96,10 @@ load(dataset, *, start, end,
 
 几点用之前心里有数（不少是踩过坑之后的现状，不是待办清单）：
 
+- **幸存者偏差（当前最大的正确性缺口）**：历史是按当前上市名单回填的——湖里 7354 个 symbol
+  没有一个在 2026 前停止过交易，`instruments` 只有 11 条 `delist_date`。真实 A 股 2016–2026
+  退市数以百计，且退市前普遍已跌 80–95%。`universe="all_a"` 无法补救：数据本身就不在。
+  audit 的 `universe_survivorship_absent` 会以 error 报出，补齐退市股前别拿收益序列做结论。
 - **复权因子**：老股 hfq 曾大面积断裂；现在是 append-only merge，加上 `adj_factor_reconciliation` audit。残余多为 `corporate_actions` 缺事件。
 - **估值历史**：以前不少是当日快照；`valuation_metrics` 已可用 baostock 回填。
 - **ST / 停牌**：日更只抓当天，更早窗口 `universe="all_a"` 不会按历史 ST 剔除（audit 会报覆盖起点）。
