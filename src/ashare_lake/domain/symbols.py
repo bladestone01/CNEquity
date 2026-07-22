@@ -43,6 +43,30 @@ ISSUED_CODE_BANDS: tuple[tuple[str, int, int], ...] = (
 )
 
 
+# Exchanges the TDX protocol serves. mootdx rejects anything else outright
+# ("市场代码错误, 目前只支持沪深市场"), so the Beijing exchange has no TDX route
+# at all — which is why the lake carried zero BJ instruments despite
+# PREFIX_WHITELIST admitting the prefix, and why `universe="all_a"` silently
+# meant "Shanghai and Shenzhen only". BJ bars come from Sina instead.
+TDX_EXCHANGES = frozenset({"SH", "SZ"})
+
+
+def is_tdx_servable(symbol: str) -> bool:
+    """Whether the TDX protocol can serve this symbol's quotes."""
+    try:
+        return parse_symbol(symbol).exchange in TDX_EXCHANGES
+    except ValueError:
+        return False
+
+
+def split_by_quote_source(symbols: list[str]) -> tuple[list[str], list[str]]:
+    """Partition into ``(tdx_servable, needs_fallback)`` preserving order."""
+    tdx, fallback = [], []
+    for symbol in symbols:
+        (tdx if is_tdx_servable(symbol) else fallback).append(symbol)
+    return tdx, fallback
+
+
 def issued_code_space() -> list[str]:
     """Every equity symbol the exchanges could plausibly have issued, ascending."""
     out: list[str] = []

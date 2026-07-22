@@ -20,7 +20,7 @@ from ashare_lake.adapters.tdx_protocol.client import (
 )
 from ashare_lake.config import Config
 from ashare_lake.domain.schemas import with_provenance
-from ashare_lake.domain.symbols import is_all_a_symbol, parse_symbol
+from ashare_lake.domain.symbols import is_all_a_symbol, is_tdx_servable, parse_symbol
 from ashare_lake.orchestrator.registry import register_step
 from ashare_lake.steps.common import (
     BACKFILL_START,
@@ -48,9 +48,57 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
     df = fetch_instruments(rate_limit=rl, allow_mock=config.tdx_allow_mock, config=config)
     df = normalize_with_source(df)
     df = enrich_instrument_list_dates(config, df)
+    df = _merge_untdxable_instruments(config, df)
     if getattr(config, "_backfill", False):
         df = _merge_delisted_instruments(config, df)
     return write_simple(config, run_id, "instruments", df)
+
+
+def _merge_untdxable_instruments(config: Config, df: pl.DataFrame) -> pl.DataFrame:
+    """Add listed symbols the TDX security list structurally cannot contain.
+
+    mootdx serves Shanghai and Shenzhen only, so the Beijing exchange never
+    appeared in the snapshot and the lake carried zero BJ instruments — meaning
+    ``universe="all_a"`` quietly resolved to two exchanges out of three. The
+    code-space sweep is what discovers them (``asl delisted discover``); this
+    reads its live-but-missing bucket so the daily bar step has symbols to
+    route to the fallback vendor.
+
+    Runs every day, not only under --backfill: without it the next instruments
+    compact would see every BJ name as absent from the snapshot and start
+    inferring delistings for stocks that are trading normally.
+    """
+    from ashare_lake.steps.delisted import load_live_missing
+
+    try:
+        live_missing = load_live_missing(config)
+    except Exception as exc:  # noqa: BLE001 — a missing catalogue is not fatal
+        logger.debug("no delisted catalogue to read untdxable instruments from: %s", exc)
+        return df
+    known = set(df["symbol"].to_list()) if not df.is_empty() else set()
+    recovered = sorted(s for s in live_missing if s not in known and not is_tdx_servable(s))
+    if not recovered:
+        return df
+
+    logger.info(
+        "instruments: +%d listed symbol(s) with no TDX route (e.g. %s)",
+        len(recovered),
+        ", ".join(recovered[:3]),
+    )
+    rows = pl.DataFrame(
+        {
+            "symbol": recovered,
+            "name": [None] * len(recovered),
+            "exchange": [s.split(".")[1] for s in recovered],
+            "asset_type": ["stock"] * len(recovered),
+            "list_date": pl.Series([None] * len(recovered), dtype=pl.Date),
+            "delist_date": pl.Series([None] * len(recovered), dtype=pl.Date),
+            "prev_symbol": [None] * len(recovered),
+        }
+    )
+    return pl.concat(
+        [df, with_provenance(rows, source="sina", data_version="v1")], how="diagonal_relaxed"
+    )
 
 
 def _merge_delisted_instruments(config: Config, df: pl.DataFrame) -> pl.DataFrame:
