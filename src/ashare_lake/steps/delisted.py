@@ -28,7 +28,7 @@ import tempfile
 from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -87,10 +87,52 @@ def _write_catalog(config: Config, payload: dict) -> None:
         raise
 
 
-def load_delisted_catalog(config: Config) -> dict[str, date]:
-    """Discovered delisted symbols -> their last trading date."""
+# A code the vendor still quotes close to the market's latest session is
+# trading, not delisted — it is simply absent from `instruments`. The sweep
+# cannot tell the two apart from "has data", and the whole BJ board turned out
+# to be exactly this: 328 codes quoting yesterday's close that the lake had
+# never heard of. Filing those as delistings would have written a delist_date
+# for live stocks and frozen them out of the universe.
+#
+# 30 days is deliberately generous: a suspended-but-listed name must not be
+# mistaken for a delisting, and a genuinely delisted one merely waits for the
+# next sweep to age past the threshold. Classification happens at read time, so
+# the catalogue needs no migration and corrects itself as time passes.
+LIVE_RECENCY_DAYS = 30
+
+
+def _reference_date(config: Config) -> date:
+    """The market's latest session, as the lake sees it."""
+    from ashare_lake.query.parquet_scan import list_partitions
+
+    parts = list_partitions(config.curated_root / "daily_bars", "trade_date")
+    return parts[-1].end if parts else date.today()
+
+
+def classify_catalog(config: Config) -> tuple[dict[str, date], dict[str, date]]:
+    """Split the swept catalogue into (delisted, live-but-missing)."""
     raw = _read_catalog(config)["delisted"]
-    return {sym: date.fromisoformat(d) for sym, d in raw.items()}
+    cutoff = _reference_date(config) - timedelta(days=LIVE_RECENCY_DAYS)
+    delisted: dict[str, date] = {}
+    live: dict[str, date] = {}
+    for sym, value in raw.items():
+        last = date.fromisoformat(value)
+        (delisted if last < cutoff else live)[sym] = last
+    return delisted, live
+
+
+def load_delisted_catalog(config: Config) -> dict[str, date]:
+    """Symbols that genuinely stopped trading -> their last trading date."""
+    return classify_catalog(config)[0]
+
+
+def load_live_missing(config: Config) -> dict[str, date]:
+    """Symbols still trading that the lake's instrument list does not carry.
+
+    Not a survivorship problem — a coverage hole. These need adding to the daily
+    pipeline, not a historical backfill of a dead name.
+    """
+    return classify_catalog(config)[1]
 
 
 def pending_codes(config: Config) -> list[str]:

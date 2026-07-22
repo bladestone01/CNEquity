@@ -1,13 +1,17 @@
 """Code-space sweep that reconstructs the delisted universe without a vendor list."""
 
-from datetime import date
+import json
+from datetime import date, timedelta
 
 import polars as pl
 
 from ashare_lake.config import Config
 from ashare_lake.domain.symbols import ISSUED_CODE_BANDS, issued_code_space
 from ashare_lake.steps.delisted import (
+    LIVE_RECENCY_DAYS,
     catalog_path,
+    classify_catalog,
+    delisted_symbols_in_window,
     discover_delisted,
     load_delisted_catalog,
     pending_codes,
@@ -132,3 +136,76 @@ def test_sweep_reports_what_is_left(tmp_path):
     assert result.complete is False
     assert result.remaining == len(pending_codes(cfg))
     assert result.remaining > 0
+
+
+# --- live vs delisted -------------------------------------------------------
+
+
+def _catalog(cfg, entries: dict[str, str]):
+    path = catalog_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"delisted": entries, "never_issued": []}))
+
+
+def _with_bars_through(cfg, last: date):
+    part = cfg.curated_root / "daily_bars" / f"trade_date={last.isoformat()}"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [last]}).write_parquet(
+        part / "part-merged.parquet"
+    )
+
+
+def test_a_code_still_quoting_today_is_not_a_delisting(tmp_path):
+    """The BJ board: 328 live codes the instrument list simply never had."""
+    cfg = _cfg(tmp_path)
+    _with_bars_through(cfg, date(2026, 7, 21))
+    _catalog(cfg, {"920000.BJ": "2026-07-21", "600001.SH": "2009-12-15"})
+
+    delisted, live = classify_catalog(cfg)
+
+    assert set(delisted) == {"600001.SH"}
+    assert set(live) == {"920000.BJ"}
+
+
+def test_a_long_suspension_is_not_read_as_a_delisting(tmp_path):
+    """Erring here would write a delist_date for a listed name and freeze it out."""
+    cfg = _cfg(tmp_path)
+    _with_bars_through(cfg, date(2026, 7, 21))
+    _catalog(cfg, {"600123.SH": (date(2026, 7, 21) - timedelta(days=20)).isoformat()})
+
+    delisted, live = classify_catalog(cfg)
+
+    assert delisted == {}
+    assert "600123.SH" in live
+
+
+def test_a_delisting_past_the_recency_window_is_classified(tmp_path):
+    cfg = _cfg(tmp_path)
+    _with_bars_through(cfg, date(2026, 7, 21))
+    stale = date(2026, 7, 21) - timedelta(days=LIVE_RECENCY_DAYS + 5)
+    _catalog(cfg, {"600123.SH": stale.isoformat()})
+
+    delisted, live = classify_catalog(cfg)
+
+    assert delisted == {"600123.SH": stale}
+    assert live == {}
+
+
+def test_reference_is_the_lake_not_the_wall_clock(tmp_path):
+    """A lake that stopped updating must not reclassify its universe as delisted."""
+    cfg = _cfg(tmp_path)
+    _with_bars_through(cfg, date(2026, 3, 2))
+    _catalog(cfg, {"600123.SH": "2026-03-02"})
+
+    delisted, live = classify_catalog(cfg)
+
+    assert delisted == {}
+    assert "600123.SH" in live
+
+
+def test_backfill_targets_only_genuine_delistings(tmp_path):
+    cfg = _cfg(tmp_path)
+    _with_bars_through(cfg, date(2026, 7, 21))
+    _catalog(cfg, {"920000.BJ": "2026-07-21", "600070.SH": "2025-04-10"})
+
+    assert delisted_symbols_in_window(cfg, date(2016, 1, 1)) == ["600070.SH"]

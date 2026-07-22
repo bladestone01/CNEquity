@@ -990,14 +990,15 @@ def delisted_status(config_path: str, since: str, sample: int):
     from collections import Counter
 
     from ashare_lake.steps.delisted import (
+        LIVE_RECENCY_DAYS,
+        classify_catalog,
         delisted_symbols_in_window,
-        load_delisted_catalog,
         pending_codes,
     )
 
     cfg = _cfg(config_path)
     start = date.fromisoformat(since)
-    catalog = load_delisted_catalog(cfg)
+    catalog, live_missing = classify_catalog(cfg)
     in_window = {s: d for s, d in catalog.items() if d >= start}
     by_year = Counter(d.year for d in in_window.values())
     by_board = Counter(s.split(".")[1] for s in in_window)
@@ -1005,8 +1006,16 @@ def delisted_status(config_path: str, since: str, sample: int):
     click.echo(
         json.dumps(
             {
-                "catalogued": len(catalog),
+                "delisted": len(catalog),
                 "in_window": len(in_window),
+                # Still quoting near the latest session: either a code the
+                # instrument list is missing, or a delisting inside the recency
+                # window that will reclassify on the next sweep.
+                "live_or_recent": len(live_missing),
+                "live_or_recent_by_exchange": dict(
+                    sorted(Counter(s.split(".")[1] for s in live_missing).items())
+                ),
+                "live_recency_days": LIVE_RECENCY_DAYS,
                 "window_start": since,
                 "pending_probe": len(pending_codes(cfg)),
                 "not_yet_ingested": len(delisted_symbols_in_window(cfg, start)),
