@@ -12,8 +12,11 @@ from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
 
 _BOARD_REPORT = "RPT_BOARD_CONSTITUENT"
 _BOARD_COLUMNS = "SECURITY_CODE,BOARD_CODE,BOARD_NAME,BOARD_TYPE_NEW"
-# EastMoney concept/theme boards use BOARD_TYPE_NEW=3 (regional/theme) and 4 (concept tags).
-_CONCEPT_BOARD_TYPES = {"3", "4"}
+# BOARD_TYPE_NEW: 1=地域, 2=行业, 3=概念/主题, 4=指数成分与风格标签.
+# Industry (2) is included because rotation joins board bars to their members by
+# name, and the bars now come from 同花顺 whose universe is 90 行业 + 361 概念 —
+# without type 2 every industry board would carry a signal but no tradable names.
+_CONCEPT_BOARD_TYPES = {"2", "3", "4"}
 
 
 def fetch_sector_members(
