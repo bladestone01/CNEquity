@@ -4,9 +4,9 @@ from pathlib import Path
 
 import polars as pl
 
+from ashare_lake.domain.datasets import granularity_for_dataset
 from ashare_lake.domain.partitions import Granularity
 from ashare_lake.domain.schemas import PRIMARY_KEYS, validate_dataframe
-from ashare_lake.query.parquet_scan import granularity_for_dataset
 from ashare_lake.storage.atomic import write_parquet_atomic
 
 

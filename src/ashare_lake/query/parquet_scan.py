@@ -16,22 +16,20 @@ from pathlib import Path
 
 import polars as pl
 
+from ashare_lake.domain.datasets import granularity_for_dataset
 from ashare_lake.domain.partitions import (
-    Granularity,
     Partition,
     parse_partition,
 )
 
+# Re-exported for callers that reach for it here; it is dataset registry
+# metadata and lives in the domain layer so `storage` can read it without
+# importing `query` (which imports `derive`, which imports `storage`).
+__all__ = ["granularity_for_dataset"]
+
 
 def dataset_has_parquet(root: Path) -> bool:
     return root.exists() and any(root.rglob("*.parquet"))
-
-
-def granularity_for_dataset(dataset: str) -> Granularity:
-    from ashare_lake.domain.datasets import DATASETS
-
-    spec = DATASETS.get(dataset)
-    return spec.partition_granularity if spec else "day"
 
 
 def _all_day_partitions(root: Path, partition_col: str | None) -> bool:
