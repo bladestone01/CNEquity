@@ -90,6 +90,10 @@ _UDP_DNS_RESOLVERS = (
 )
 _FAIL_DEMOTE_SEC = 300.0
 _DISCOVER_CACHE_SEC = 60.0
+# Consecutive end-to-end ladder failures before we accept the egress is blocked,
+# and how long that verdict stands before one probe is allowed through.
+_BREAKER_TRIP_AFTER = 3
+_BREAKER_COOLDOWN_SEC = 300.0
 
 # Process-local sticky (survives within one backfill); file sticky spans runs.
 _STICKY_IP: str | None = None
@@ -97,6 +101,43 @@ _STICKY_IP: str | None = None
 _FAILED_UNTIL: dict[str, float] = {}
 # Cached discovery: (expires_at, ips).
 _DISCOVER_CACHE: dict[str, tuple[float, list[str]]] = {}
+# host -> (consecutive whole-ladder failures, unix time the breaker reopens).
+_BREAKER: dict[str, tuple[int, float]] = {}
+
+
+def reset_egress_breaker(host: str | None = None) -> None:
+    """Forget the blocked-egress verdict (host, or all hosts when None)."""
+    if host is None:
+        _BREAKER.clear()
+    else:
+        _BREAKER.pop(host, None)
+
+
+def _breaker_guard(host: str) -> None:
+    fails, open_until = _BREAKER.get(host, (0, 0.0))
+    remaining = open_until - time.time()
+    if remaining > 0:
+        raise EgressUnavailable(
+            f"{host}: {fails} consecutive CDN-ladder failures — skipping the "
+            f"ladder for another {remaining:.0f}s"
+        )
+
+
+def _breaker_record(host: str, *, ok: bool) -> None:
+    if ok:
+        # Half-open probe succeeded (or the egress was fine all along).
+        _BREAKER.pop(host, None)
+        return
+    fails = _BREAKER.get(host, (0, 0.0))[0] + 1
+    tripped = fails >= _BREAKER_TRIP_AFTER
+    _BREAKER[host] = (fails, time.time() + _BREAKER_COOLDOWN_SEC if tripped else 0.0)
+    if tripped:
+        logger.warning(
+            "%s unreachable after %d full CDN-ladder attempts — failing fast for %.0fs",
+            host,
+            fails,
+            _BREAKER_COOLDOWN_SEC,
+        )
 
 
 def fetch_nid(client: httpx.Client | None = None) -> str:
@@ -157,8 +198,23 @@ def _needs_chrome_tls(url: str) -> bool:
     return any(d in url for d in _PUSH2HIS_CHROME_DOMAINS)
 
 
+class EgressUnavailable(ConnectionError):
+    """push2his refused this egress repeatedly — the CDN ladder is skipped.
+
+    Walking every candidate edge costs ~23s a call (16 DoH lookups, several
+    ``dig`` subprocesses, ~15 TLS attempts) and pays off only when *some* edge
+    is reachable. From a blocked egress every edge resets, so a ~991-board sweep
+    spends ~13h proving the same thing 2000 times over. Once the ladder has
+    failed end-to-end a few times running, the honest conclusion is that this
+    network cannot reach push2his at all; the breaker holds that conclusion for
+    a cool-down so callers fail in microseconds instead of re-deriving it.
+    """
+
+
 def is_transport_fail_fast(exc: BaseException) -> bool:
     """True for connect/timeout/protocol drops that retries will not fix overseas."""
+    if isinstance(exc, EgressUnavailable):
+        return True
     if isinstance(
         exc,
         (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError),
@@ -379,8 +435,11 @@ def _chrome_get(
     proxy: str | None = None,
     sticky_path: Path | None = None,
 ) -> Any:
-    """GET with Chrome TLS fingerprint + CDN IP failover via CURLOPT_RESOLVE."""
-    from curl_cffi import CurlOpt  # noqa: PLC0415
+    """GET with Chrome TLS fingerprint + CDN IP failover via CURLOPT_RESOLVE.
+
+    Guarded by a per-host breaker so a blocked egress costs one ladder walk,
+    not one per request (see :class:`EgressUnavailable`).
+    """
     from curl_cffi import requests as creq  # noqa: PLC0415
 
     q = dict(params or {})
@@ -401,6 +460,31 @@ def _chrome_get(
             proxy=proxy,
         )
 
+    _breaker_guard(host)
+    try:
+        resp = _chrome_get_via_ladder(
+            url, headers=headers, params=q, timeout=timeout, host=host, sticky_path=sticky_path
+        )
+    except Exception:
+        _breaker_record(host, ok=False)
+        raise
+    _breaker_record(host, ok=int(getattr(resp, "status_code", 0) or 0) == 200)
+    return resp
+
+
+def _chrome_get_via_ladder(
+    url: str,
+    *,
+    headers: dict[str, str],
+    params: dict[str, Any],
+    timeout: float,
+    host: str,
+    sticky_path: Path | None,
+) -> Any:
+    from curl_cffi import CurlOpt  # noqa: PLC0415
+    from curl_cffi import requests as creq  # noqa: PLC0415
+
+    q = params
     candidates = _candidate_ips(host, sticky_path)
     last_exc: Exception | None = None
 
@@ -414,8 +498,6 @@ def _chrome_get(
                 "impersonate": _CHROME_IMPERSONATE,
                 "curl_options": {CurlOpt.RESOLVE: [f"{host}:443:{ip}"]},
             }
-            if proxy:
-                kwargs["proxy"] = proxy
             resp = creq.get(url, **kwargs)
             if int(getattr(resp, "status_code", 0) or 0) == 200:
                 prev = _load_sticky(sticky_path)
@@ -445,8 +527,6 @@ def _chrome_get(
                 "impersonate": _CHROME_IMPERSONATE,
                 "curl_options": {CurlOpt.RESOLVE: [f"{host}:443:{ip}"]},
             }
-            if proxy:
-                kwargs["proxy"] = proxy
             resp = creq.get(url, **kwargs)
             if int(getattr(resp, "status_code", 0) or 0) == 200:
                 logger.info("push2his CDN rediscover → %s", ip)
@@ -466,8 +546,6 @@ def _chrome_get(
             "timeout": timeout,
             "impersonate": _CHROME_IMPERSONATE,
         }
-        if proxy:
-            kwargs["proxy"] = proxy
         resp = creq.get(url, **kwargs)
         if int(getattr(resp, "status_code", 0) or 0) == 200:
             # Capture whatever edge libcurl actually used, if reported.
@@ -531,6 +609,11 @@ class EastMoneyClient:
         self._last_request = time.time()
 
     def get(self, url: str, **kwargs) -> Any:
+        # Check the breaker before paying the rate limiter: throttling a request
+        # that is about to be refused locally just adds min_interval to every
+        # board of a dead sweep.
+        if _needs_chrome_tls(url) and not self._proxy:
+            _breaker_guard(_host_from_url(url))
         self._throttle()
         headers = kwargs.pop("headers", {})
         headers.update(build_eastmoney_headers(url))

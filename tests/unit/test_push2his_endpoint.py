@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 import ashare_lake.adapters.eastmoney.em_auth as em
 
 
@@ -12,6 +14,128 @@ def _reset_state() -> None:
     em._STICKY_IP = None
     em._FAILED_UNTIL.clear()
     em._DISCOVER_CACHE.clear()
+    em.reset_egress_breaker()
+
+
+def _fake_curl(monkeypatch, get_fn):
+    """Swap curl_cffi for a stub whose .get is ``get_fn``."""
+
+    class CurlOpt:
+        RESOLVE = "RESOLVE"
+
+    fake_curl_cffi = MagicMock()
+    fake_curl_cffi.CurlOpt = CurlOpt
+    fake_requests = MagicMock()
+    fake_requests.get = get_fn
+    fake_curl_cffi.requests = fake_requests
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "curl_cffi", fake_curl_cffi)
+    monkeypatch.setitem(sys.modules, "curl_cffi.requests", fake_requests)
+
+
+def test_breaker_stops_walking_the_ladder_once_egress_is_blocked(monkeypatch, tmp_path: Path):
+    """A blocked egress must cost one ladder walk, not one per request."""
+    _reset_state()
+    ladder_walks = {"n": 0}
+
+    def counting_candidates(host, path, force_discover=False):
+        ladder_walks["n"] += 1
+        return ["1.1.1.1", "2.2.2.2"]
+
+    monkeypatch.setattr(em, "_candidate_ips", counting_candidates)
+    _fake_curl(monkeypatch, lambda url, **kw: (_ for _ in ()).throw(ConnectionError("closed")))
+
+    def call():
+        return em._chrome_get(
+            "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+            headers={},
+            params={"secid": "90.BK1152"},
+            sticky_path=tmp_path / "sticky.json",
+        )
+
+    for _ in range(em._BREAKER_TRIP_AFTER):
+        with pytest.raises(Exception) as exc_info:
+            call()
+        assert not isinstance(exc_info.value, em.EgressUnavailable)
+    walks_before = ladder_walks["n"]
+    assert walks_before > 0
+
+    # Breaker is now open: the next call must not touch DNS or the edge list.
+    with pytest.raises(em.EgressUnavailable):
+        call()
+    assert ladder_walks["n"] == walks_before
+    # And callers must read it as a dead egress, not a retryable blip.
+    with pytest.raises(em.EgressUnavailable) as exc_info:
+        call()
+    assert em.is_transport_fail_fast(exc_info.value)
+
+
+def test_breaker_reopens_after_cooldown_and_clears_on_success(monkeypatch, tmp_path: Path):
+    _reset_state()
+    monkeypatch.setattr(em, "_candidate_ips", lambda host, path, force_discover=False: ["1.1.1.1"])
+    outcome = {"ok": False}
+
+    def fake_get(url, **kwargs):
+        if not outcome["ok"]:
+            raise ConnectionError("closed")
+        resp = MagicMock()
+        resp.status_code = 200
+        return resp
+
+    _fake_curl(monkeypatch, fake_get)
+
+    def call():
+        return em._chrome_get(
+            "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+            headers={},
+            params={"secid": "90.BK1152"},
+            sticky_path=tmp_path / "sticky.json",
+        )
+
+    for _ in range(em._BREAKER_TRIP_AFTER):
+        with pytest.raises(ConnectionError):
+            call()
+    with pytest.raises(em.EgressUnavailable):
+        call()
+
+    # Cool-down elapsed: one probe is allowed through, and it succeeds.
+    monkeypatch.setattr(em, "_BREAKER_COOLDOWN_SEC", 0.0)
+    em._BREAKER["push2his.eastmoney.com"] = (em._BREAKER_TRIP_AFTER, 0.0)
+    outcome["ok"] = True
+    assert call().status_code == 200
+    assert "push2his.eastmoney.com" not in em._BREAKER
+
+
+def test_proxy_skips_the_pinning_ladder(monkeypatch, tmp_path: Path):
+    """CURLOPT_RESOLVE never reaches a CONNECT tunnel — don't replay the ladder."""
+    _reset_state()
+
+    def boom(host, path, force_discover=False):
+        raise AssertionError("candidate ladder must not run behind a proxy")
+
+    monkeypatch.setattr(em, "_candidate_ips", boom)
+    seen: dict = {}
+
+    def fake_get(url, **kwargs):
+        seen.update(kwargs)
+        resp = MagicMock()
+        resp.status_code = 200
+        return resp
+
+    _fake_curl(monkeypatch, fake_get)
+
+    resp = em._chrome_get(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        headers={},
+        params={"secid": "90.BK1152"},
+        proxy="http://127.0.0.1:7890",
+        sticky_path=tmp_path / "sticky.json",
+    )
+    assert resp.status_code == 200
+    assert seen["proxy"] == "http://127.0.0.1:7890"
+    assert "curl_options" not in seen
 
 
 def test_candidate_ips_prefer_sticky_then_discovered(tmp_path: Path, monkeypatch):
