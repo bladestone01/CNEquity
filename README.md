@@ -149,6 +149,8 @@ AkShare / efinance 解决「怎么拉数」；本仓库解决拉完之后：多�
   （audit 检查 `universe_survivorship_absent` 会报错）。A 股退市前普遍已跌 80%+，缺了它们的
   回测收益会系统性偏高，且偏差集中在小盘 / 低估值这些因子最爱买的桶里。补齐前所有收益序列都要打折看。
 - `universe="all_a"` 的 ST / 停牌过滤只在 `trading_status` 有覆盖的日期生效——日更只抓当天，更早的历史窗口不会按历史 ST 剔除（可用 `asl backfill` 补历史）。
+- 北交所行情走 Sina 而非 TDX（TDX 协议不提供北交所）；BJ 行的 `amount` 为 null，
+  新上市的 BJ 票需 `asl delisted discover` 扫到后才进 `instruments`。
 - 部分 HTTP 源在海外访问不稳定，大陆出口更稳；`sector_bars` 等历史回填需要国内网络或代理，见 [runbook](docs/operations/runbook.md)。
 - 尚未发布 PyPI，目前只支持源码安装。
 

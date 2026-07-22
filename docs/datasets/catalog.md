@@ -24,6 +24,7 @@
 | index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
 | commodity_bars | trade_date | symbol, trade_date | by_date | ✓ | eastmoney+sina | 国内主连 + COMEX金 `GC0.CMX`；`asl backfill commodity_bars`；required=false |
 | adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`asl derive adj_factors` |
+| delisting_events | —（单文件 merge） | symbol | derived | — | sina | 每只退市股的结尾形态；`asl delisted backfill` 产出 |
 
 ---
 
@@ -132,6 +133,7 @@
 | commodity.py | commodity_bars |
 | research.py | institutional_holdings, analyst_consensus, sentiment_scores |
 | rotation.py | hot_rank, sector_bars, sector_fund_flow, news_headlines |
+| delisted.py | 退市股发现 / 回填 → daily_bars, instruments, delisting_events |
 | finalize.py | compact, derive_adj_factors, audit |
 
 ---

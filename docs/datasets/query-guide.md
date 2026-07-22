@@ -81,6 +81,20 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a")
 
 审计项 `trading_status_coverage_start` 会报告覆盖起点。长期回测需知此偏差或运行 ST 历史回填（baostock + `asl derive trading_status`）。
 
+### 交易所覆盖
+
+`all_a` 含沪深北三所。但**北交所曾长期为空**——TDX 协议不提供北交所
+（`mootdx` 直接报「市场代码错误, 目前只支持沪深市场」），而 `PREFIX_WHITELIST`
+认 `92` 前缀，于是 `all_a` 名义三所、实际两所，任何"全 A 股"回测跑的都是沪深。
+
+现在 BJ 行情走 Sina（`domain/symbols.py::split_by_quote_source` 分流），
+instruments 每次日更从代码空间扫描的「在市但缺失」桶补齐。注意两点：
+
+- BJ 行的 `source` 是 `sina`，且 **`amount` 为 null**（Sina 不给成交额），
+  换手额类因子对北交所会缺失
+- 新上市的北交所票要等下一次 `asl delisted discover` 扫到才会进 instruments，
+  不是当天自动出现
+
 ---
 
 ## PIT（Point-in-Time）
