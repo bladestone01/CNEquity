@@ -81,7 +81,55 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
             "rows_written": result.get("rows_written", 0) + fallback.get("rows_written", 0),
             **{k: v for k, v in fallback.items() if k not in ("rows_read", "rows_written")},
         }
+
+    _reject_preopen_placeholder(config, run_id, trade_date)
     return result
+
+
+# A bar captured before the session opens is the previous close stamped on every
+# field: open==high==low==close and zero volume. A handful of these on any day
+# are genuine suspensions, but a whole universe of them means the fetch ran too
+# early — 2026-07-22 arrived that way from a pre-open run. Below this share it is
+# suspensions; at or above it, it is a mis-timed capture.
+_PLACEHOLDER_SHARE_LIMIT = 0.5
+
+
+def _reject_preopen_placeholder(config: Config, run_id: str, trade_date: date) -> None:
+    """Fail the step if the freshest staged day is mostly pre-open placeholders.
+
+    Checked against staging, before compact promotes anything, so a mis-timed
+    run stays quarantined in staging instead of overwriting a good curated
+    partition. `by_date` semantics mean the fix is simply to re-run after the
+    close, which a failed step invites rather than hides.
+    """
+    import polars as pl
+
+    from ashare_lake.storage import StagingWriter
+
+    files = StagingWriter(config.staging_root).list_run_files("daily_bars", run_id)
+    if not files:
+        return
+    df = (
+        pl.scan_parquet([str(f) for f in files])
+        .filter(pl.col("trade_date") == trade_date)
+        .select("open", "high", "low", "close", "volume")
+        .collect()
+    )
+    if df.is_empty():
+        return
+    placeholder = df.filter(
+        (pl.col("open") == pl.col("close"))
+        & (pl.col("high") == pl.col("low"))
+        & (pl.col("open") == pl.col("high"))
+        & (pl.col("volume") == 0)
+    ).height
+    share = placeholder / df.height
+    if share >= _PLACEHOLDER_SHARE_LIMIT:
+        raise RuntimeError(
+            f"daily_bars {trade_date}: {placeholder}/{df.height} rows "
+            f"({share:.0%}) are pre-open placeholders (OHLC flat, zero volume) — "
+            "the capture ran before the close. Re-run after the session closes."
+        )
 
 
 def fetch_bars_via_sina(

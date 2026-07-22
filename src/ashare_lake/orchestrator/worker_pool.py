@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -236,50 +237,85 @@ def fetch_daily_bars_parallel(
             raise RuntimeError(f"{dataset}: one or more symbol batches failed")
         return {"rows_read": total_read, "rows_written": total_written}
 
-    futures: dict = {}
-    with ProcessPoolExecutor(max_workers=min(config.workers, len(batches))) as pool:
-        for batch_id, batch_symbols, batch_start, batch_end in batches:
-            backfill = _window_backfill(batch_start)
-            task = (
-                batch_symbols,
-                batch_start.isoformat(),
-                batch_end.isoformat(),
-                str(staging_root),
-                dataset,
-                run_id,
-                batch_id,
-                rate_limit_tuple,
-                config.tdx_allow_mock,
-                manifest_path,
-                config.failover_enabled,
-                backfill,
-                str(config.config_path) if config.config_path else "",
-            )
-            futures[pool.submit(_worker_fetch_batch, task)] = batch_id
+    def _task_for(batch: tuple) -> tuple:
+        batch_id, batch_symbols, batch_start, batch_end = batch
+        return (
+            batch_symbols,
+            batch_start.isoformat(),
+            batch_end.isoformat(),
+            str(staging_root),
+            dataset,
+            run_id,
+            batch_id,
+            rate_limit_tuple,
+            config.tdx_allow_mock,
+            manifest_path,
+            config.failover_enabled,
+            _window_backfill(batch_start),
+            str(config.config_path) if config.config_path else "",
+        )
 
-        had_error = False
-        for fut in as_completed(futures):
-            batch_id = futures[fut]
+    had_error = False
+    # A worker killed by the OS (memory pressure under load) raises
+    # BrokenProcessPool, which poisons the *whole* pool: every not-yet-collected
+    # future then fails too, turning one dead batch into a wiped run. Track which
+    # batches actually produced a result so the survivors of a broken pool can be
+    # retried serially instead of lost with it.
+    pending = {batch[0]: batch for batch in batches}
+    try:
+        futures: dict = {}
+        with ProcessPoolExecutor(max_workers=min(config.workers, len(batches))) as pool:
+            for batch in batches:
+                futures[pool.submit(_worker_fetch_batch, _task_for(batch))] = batch[0]
+            for fut in as_completed(futures):
+                batch_id = futures[fut]
+                try:
+                    result = fut.result(timeout=stale_seconds)
+                    total_read += result["rows_read"]
+                    total_written += result["rows_written"]
+                    pending.pop(batch_id, None)
+                except TimeoutError:
+                    had_error = True
+                    pending.pop(batch_id, None)
+                    manifest.mark_batch_stale(
+                        run_id, batch_id, f"worker result timeout after {stale_seconds}s"
+                    )
+                    logger.warning(
+                        "%s batch %s timed out after %ss; marked stale",
+                        dataset,
+                        batch_id,
+                        stale_seconds,
+                    )
+                except BrokenProcessPool:
+                    # This one poisoned the pool. Leave it (and everything still
+                    # pending) for the serial retry below rather than recording it
+                    # as a genuine batch failure — BrokenProcessPool is an
+                    # Exception subclass, so it must be caught before the generic
+                    # handler or the fallback never runs.
+                    raise
+                except Exception as exc:
+                    had_error = True
+                    pending.pop(batch_id, None)
+                    logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
+    except BrokenProcessPool:
+        # The pool died mid-run. Whatever is still pending never got a verdict —
+        # retry it in-process, where there is no pool to break, rather than fail
+        # the run over a transient resource spike.
+        logger.warning(
+            "%s: worker pool broke (likely OOM under load); retrying %d batch(es) serially",
+            dataset,
+            len(pending),
+        )
+        for batch in list(pending.values()):
+            batch_id = batch[0]
             try:
-                result = fut.result(timeout=stale_seconds)
+                result = _run_batch(batch_id, batch[1], batch[2], batch[3])
                 total_read += result["rows_read"]
                 total_written += result["rows_written"]
-            except TimeoutError:
-                had_error = True
-                manifest.mark_batch_stale(
-                    run_id,
-                    batch_id,
-                    f"worker result timeout after {stale_seconds}s",
-                )
-                logger.warning(
-                    "%s batch %s timed out after %ss; marked stale",
-                    dataset,
-                    batch_id,
-                    stale_seconds,
-                )
+                pending.pop(batch_id, None)
             except Exception as exc:
                 had_error = True
-                logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
+                logger.warning("%s batch %s failed on serial retry: %s", dataset, batch_id, exc)
 
     if had_error:
         raise RuntimeError(f"{dataset}: one or more symbol batches failed")
