@@ -58,25 +58,34 @@ _CATALOG_FILE = "ths_board_catalog.json"
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_SECONDS = 2.0
 _DEFAULT_MIN_INTERVAL = 1.0
+# The listing host is two orders of magnitude less tolerant than the data host:
+# `d.10jqka.com.cn` served ~1300 sequential kline requests at 1 req/s without a
+# single failure, while `q.10jqka.com.cn` started returning 401 after ~23 at the
+# same pace. They therefore get separate limiters. The listing interval below is
+# a conservative guess — the only measurement is the rate that *failed*, not a
+# rate observed to be safe — so lower it only with evidence.
+_PAGE_HOST = "q.10jqka.com.cn"
+_PAGE_SOURCE = "ths_pages"
+_DEFAULT_PAGE_MIN_INTERVAL = 20.0
 
 
 class ThsError(RuntimeError):
     """A 同花顺 fetch failed in a way the caller must not paper over."""
 
 
-def _throttle(config: Config | None) -> None:
-    """Pace requests. 10jqka is unauthenticated and ungenerous — one shared
-    limiter keeps a 451-board sweep from looking like an attack."""
+def _throttle(url: str, config: Config | None) -> None:
+    """Pace requests, per host — see the note on the two limiters above."""
+    is_page = _PAGE_HOST in url
     if config is not None:
-        config.rate_limit("ths")
+        config.rate_limit(_PAGE_SOURCE if is_page else "ths")
         return
-    time.sleep(_DEFAULT_MIN_INTERVAL)
+    time.sleep(_DEFAULT_PAGE_MIN_INTERVAL if is_page else _DEFAULT_MIN_INTERVAL)
 
 
 def _get(url: str, *, config: Config | None, timeout: float = 20.0) -> str:
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
-        _throttle(config)
+        _throttle(url, config)
         try:
             resp = httpx.get(url, headers=_HEADERS, timeout=timeout, follow_redirects=True)
         except Exception as exc:  # noqa: BLE001 — retried below, raised as ThsError
