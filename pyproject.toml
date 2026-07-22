@@ -62,7 +62,11 @@ asl = "ashare_lake.cli.main:cli"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ashare_lake = ["py.typed", "adapters/calendar/seeds/*.csv"]
+ashare_lake = [
+    "py.typed",
+    "adapters/calendar/seeds/*.csv",
+    "adapters/ths/seeds/*.json",
+]
 
 [tool.ruff]
 line-length = 100

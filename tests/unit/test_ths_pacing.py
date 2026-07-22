@@ -48,3 +48,27 @@ def test_without_config_the_two_hosts_still_differ(monkeypatch):
     assert slept[0] == boards._DEFAULT_MIN_INTERVAL
     assert slept[1] == boards._DEFAULT_PAGE_MIN_INTERVAL
     assert slept[1] > slept[0]
+
+
+def test_seed_catalog_covers_the_boards_bars_need(tmp_path):
+    """A cache loss must not strand bars behind an uncooperative host.
+
+    The seed only has to carry `sector_code` (which drives the kline URL) and
+    `detail_code` (listing pages); it goes stale as boards are added, which
+    costs coverage of the new board rather than correctness of the rest.
+    """
+
+    class Cfg:
+        meta_root = tmp_path  # deliberately empty: no cached catalog
+
+    seeded = boards.load_cached_catalog(Cfg())
+    assert len(seeded) > 400
+    assert all(b["sector_code"] and b["detail_code"] for b in seeded)
+    kinds = {b["board_type"] for b in seeded}
+    assert kinds == {"industry", "concept"}
+    # Industry boards trade and list under the same code; concepts do not.
+    industry = [b for b in seeded if b["board_type"] == "industry"]
+    concept = [b for b in seeded if b["board_type"] == "concept"]
+    assert all(b["sector_code"] == b["detail_code"] for b in industry)
+    assert all(b["sector_code"].startswith("88") for b in seeded)
+    assert any(b["sector_code"] != b["detail_code"] for b in concept)

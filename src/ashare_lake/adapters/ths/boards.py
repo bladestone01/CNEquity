@@ -29,13 +29,13 @@ import logging
 import re
 import time
 from datetime import date
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from ashare_lake.config import Config
 
@@ -62,8 +62,8 @@ _DEFAULT_MIN_INTERVAL = 1.0
 # `d.10jqka.com.cn` served ~1300 sequential kline requests at 1 req/s without a
 # single failure, while `q.10jqka.com.cn` started returning 401 after ~23 at the
 # same pace. They therefore get separate limiters. The listing interval below is
-# a conservative guess — the only measurement is the rate that *failed*, not a
-# rate observed to be safe — so lower it only with evidence.
+# a conservative guess: the only rate ever measured is the one that failed, and
+# no safe rate has been established, so lower it only with evidence.
 _PAGE_HOST = "q.10jqka.com.cn"
 _PAGE_SOURCE = "ths_pages"
 _DEFAULT_PAGE_MIN_INTERVAL = 20.0
@@ -114,15 +114,44 @@ def _catalog_path(config: Config) -> Path:
     return config.meta_root / "state" / _CATALOG_FILE
 
 
-def load_cached_catalog(config: Config) -> list[dict]:
-    path = _catalog_path(config)
-    if not path.exists():
-        return []
+_SEED_CATALOG = Path(__file__).with_name("seeds") / "board_catalog_seed.json"
+
+
+def _read_catalog(path: Path) -> list[dict]:
     try:
         return json.loads(path.read_text(encoding="utf-8")).get("boards", [])
     except (OSError, ValueError) as exc:
-        logger.warning("THS catalog cache unreadable (%s); will rebuild", exc)
+        logger.warning("THS catalog at %s unreadable (%s)", path, exc)
         return []
+
+
+def load_cached_catalog(config: Config) -> list[dict]:
+    """Cached board catalog, falling back to the seed shipped with the package.
+
+    Rebuilding the catalog means ~95 requests to the listing host, and that host
+    starts answering 401 partway through: a sweep at 1 req/s got 23 boards in
+    before it tripped, and kept refusing while the requests continued. How long
+    it stays tripped is not known — it had cleared by the time it was checked
+    again, so treat a rebuild as something that may or may not finish today.
+
+    That is enough to want a fallback: without one, losing the workspace cache
+    would strand board bars behind a host that may not cooperate on demand. The
+    seed only goes stale as boards are added, which costs coverage of the new
+    board rather than correctness of the existing ones.
+    """
+    boards = _read_catalog(_catalog_path(config))
+    if boards:
+        return boards
+    if _SEED_CATALOG.exists():
+        boards = _read_catalog(_SEED_CATALOG)
+        if boards:
+            logger.warning(
+                "THS catalog cache missing; using the %d-board seed shipped with the "
+                "package. Run `fetch_board_catalog(refresh=True)` when the listing "
+                "host is willing to pick up boards added since.",
+                len(boards),
+            )
+    return boards
 
 
 def _save_catalog(config: Config, boards: list[dict]) -> None:
