@@ -573,6 +573,11 @@ def derive(name: str, config_path: str, full: bool):
                 f"({result.fail_ratio:.1%})",
                 err=True,
             )
+    elif name == "industry_index":
+        from ashare_lake.derive.industry_index import derive_industry_index
+
+        summary = derive_industry_index(cfg, full=full)
+        click.echo(json.dumps(summary, indent=2, default=str))
     elif name == "trading_status":
         from ashare_lake.derive.trading_status_history import derive_suspension_history
 

@@ -217,6 +217,15 @@ _SPECS = [
     DatasetSpec("regulatory_events", partition_col="event_date", partition_granularity="year"),
     # derived
     DatasetSpec("adj_factors", layer="derived", partition_col="trade_date"),
+    # Industry returns computed from 申万 membership × hfq bars rather than
+    # fetched, so index and constituents cannot disagree. Yearly partitions:
+    # ~3 levels × 2 weightings × ~500 industries a day.
+    DatasetSpec(
+        "industry_index",
+        layer="derived",
+        partition_col="trade_date",
+        partition_granularity="year",
+    ),
     # How each recovered delisting's price series ends — see
     # DELISTING_EVENTS_SCHEMA. Merge-style: one row per symbol, a few hundred
     # rows total. date_col (not partition_col) so load(start=/end=) still filters.

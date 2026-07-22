@@ -434,6 +434,28 @@ ECONOMIC_CALENDAR_SCHEMA = {
 # (面值/市值) legitimately have no consolidation period while a truncated vendor
 # series looks identical. Recording the shape lets research separate them
 # instead of silently treating both as complete.
+INDUSTRY_INDEX_SCHEMA = {
+    "trade_date": pl.Date,
+    "industry_code": pl.Utf8,
+    # L1 / L2 / L3 — the 申万 code is prefix-hierarchical, so one membership
+    # series yields all three depths.
+    "level": pl.Utf8,
+    # equal | amount. Both are stored because free-float cap, the 申万
+    # convention, is only ~69% populated in valuation_metrics.
+    "weighting": pl.Utf8,
+    "ret": pl.Float64,
+    # Members known that day, members that actually had a priced bar, and the
+    # difference — names without an adjustment factor (北交所) cannot enter the
+    # index, and which industries that distorts has to stay visible.
+    "n_members": pl.Int64,
+    "n_priced": pl.Int64,
+    "n_excluded": pl.Int64,
+    "amount": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 DELISTING_EVENTS_SCHEMA = {
     "symbol": pl.Utf8,
     "first_trade_date": pl.Date,
@@ -466,6 +488,7 @@ DATASET_SCHEMAS = {
     "northbound_flows": NORTHBOUND_FLOWS_SCHEMA,
     "valuation_metrics": VALUATION_METRICS_SCHEMA,
     "sector_members": SECTOR_MEMBERS_SCHEMA,
+    "industry_index": INDUSTRY_INDEX_SCHEMA,
     "announcement_index": ANNOUNCEMENT_INDEX_SCHEMA,
     "earnings_disclosure_schedule": EARNINGS_DISCLOSURE_SCHEDULE_SCHEMA,
     "dragon_tiger": DRAGON_TIGER_SCHEMA,
@@ -517,6 +540,7 @@ PRIMARY_KEYS = {
     "northbound_flows": ["trade_date", "channel"],
     "valuation_metrics": ["symbol", "trade_date"],
     "sector_members": ["symbol", "sector_code", "as_of_date"],
+    "industry_index": ["trade_date", "industry_code", "level", "weighting"],
     "announcement_index": ["announcement_id"],
     "earnings_disclosure_schedule": ["symbol", "report_period"],
     "dragon_tiger": ["symbol", "trade_date", "reason"],
