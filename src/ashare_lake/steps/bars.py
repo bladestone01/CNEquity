@@ -219,3 +219,67 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
     from ashare_lake.steps.common import write_simple
 
     return write_simple(config, run_id, "index_bars", df)
+
+
+# The primary vendor serves 2016 onward; 同花顺 keeps per-year files back to each
+# listing. Deep history is a separate step, not a wider window on the daily one:
+# it uses a different source, runs for hours, and must never be on the daily path.
+HISTORY_BACKFILL_START = date(2001, 1, 1)
+
+
+@register_step(
+    "daily_bars_history",
+    group="backfill",
+    depends_on=["instruments"],
+)
+def step_daily_bars_history(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    """Backfill pre-2016 unadjusted daily bars from 同花顺.
+
+    Writes into ``daily_bars`` like the daily step, so `compact` and every reader
+    treat the older rows identically. Only raw prices are fetched — hfq stays
+    derived from the Sina factors already in use, which reach back to listing, so
+    one adjustment convention spans the whole series (verified continuous across
+    the 2015→2016 seam at 0.0bps).
+    """
+    import polars as pl
+
+    from ashare_lake.adapters.ths.stock_bars import sweep_stock_bars
+    from ashare_lake.domain.schemas import with_provenance
+    from ashare_lake.storage import StagingWriter
+
+    start = getattr(config, "_backfill_start", None) or HISTORY_BACKFILL_START
+    end = getattr(config, "_backfill_end", None) or date(2015, 12, 31)
+    symbols = [s for s in load_symbols(config) if not s.startswith("92")]
+    resume = set(context.get("_history_done") or [])
+    if resume:
+        symbols = [s for s in symbols if s not in resume]
+
+    logger.info(
+        "daily_bars_history: %d symbols, %s..%s (北交所 excluded — no adj factors)",
+        len(symbols),
+        start,
+        end,
+    )
+    writer = StagingWriter(config.staging_root)
+    written = 0
+    batch_no = 0
+
+    def _flush(rows: list[dict], done: list[str]) -> None:
+        nonlocal written, batch_no
+        if not rows:
+            return
+        batch_no += 1
+        df = with_provenance(pl.DataFrame(rows), source="ths", data_version="v1")
+        writer.write_batch("daily_bars", run_id, f"history-{batch_no:04d}", df)
+        written += df.height
+        logger.info(
+            "daily_bars_history: batch %d — %d rows, %d symbols", batch_no, df.height, len(done)
+        )
+
+    _, failed = sweep_stock_bars(symbols, start, end, config=config, on_batch=_flush)
+    return {
+        "rows_read": written,
+        "rows_written": written,
+        "failed_symbols": len(failed),
+        "note": f"{start}..{end} via 同花顺 (raw only; hfq derives from Sina factors)",
+    }
