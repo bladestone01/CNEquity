@@ -97,3 +97,56 @@ def test_a_factor_step_at_the_seam_is_a_real_action_not_a_break():
     seam_hfq = (first_new_raw * f_after) / (last_old_raw * f_before) - 1.0
     seam_raw = first_new_raw / last_old_raw - 1.0
     assert seam_hfq > seam_raw  # the payout offsets part of the price drop
+
+
+def _plan(tmp_path, rows, start=date(2001, 1, 1), end=date(2015, 12, 31), symbols=None):
+    """Build a history plan against a throwaway instruments table."""
+    import polars as pl
+
+    from ashare_lake.config import Config
+    from ashare_lake.steps import bars as mod
+
+    root = tmp_path / "curated" / "instruments"
+    root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(rows).write_parquet(root / "part-000.parquet")
+    cfg = Config(data_root=tmp_path)  # curated_root derives as data_root/curated
+    syms = symbols or [r["symbol"] for r in rows]
+    import ashare_lake.steps.bars as b
+
+    orig = b.load_symbols
+    b.load_symbols = lambda _c: syms
+    try:
+        return mod._history_plan(cfg, start, end)
+    finally:
+        b.load_symbols = orig
+
+
+def test_plan_skips_etfs_and_symbols_listed_after_the_window(tmp_path):
+    """ETFs have no adjustment factors, so deeper raw bars could never be served
+    as hfq; a 2016 IPO has no pre-2016 history to fetch."""
+    rows = [
+        {"symbol": "600519.SH", "list_date": date(2001, 8, 27), "asset_type": "stock"},
+        {"symbol": "510300.SH", "list_date": date(2012, 5, 4), "asset_type": "etf"},
+        {"symbol": "301000.SZ", "list_date": date(2021, 6, 1), "asset_type": "stock"},
+    ]
+    plan = _plan(tmp_path, rows)
+    assert [s for s, _ in plan] == ["600519.SH"]
+
+
+def test_plan_starts_at_the_listing_year(tmp_path):
+    """Fetching a symbol's pre-IPO years is thousands of empty requests."""
+    rows = [
+        {"symbol": "600519.SH", "list_date": date(2001, 8, 27), "asset_type": "stock"},
+        {"symbol": "601969.SH", "list_date": date(2014, 6, 1), "asset_type": "stock"},
+    ]
+    plan = dict(_plan(tmp_path, rows))
+    assert plan["600519.SH"] == date(2001, 1, 1)  # listed before the window
+    assert plan["601969.SH"] == date(2014, 1, 1)  # trimmed to its listing year
+
+
+def test_plan_keeps_stocks_with_unknown_listing_date(tmp_path):
+    """A missing list_date must widen the window, not drop the symbol — the
+    conservative direction, since the alternative silently loses real history."""
+    rows = [{"symbol": "600000.SH", "list_date": None, "asset_type": "stock"}]
+    plan = dict(_plan(tmp_path, rows))
+    assert plan["600000.SH"] == date(2001, 1, 1)

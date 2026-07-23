@@ -243,22 +243,24 @@ def step_daily_bars_history(config: Config, trade_date: date, run_id: str, conte
     """
     import polars as pl
 
-    from ashare_lake.adapters.ths.stock_bars import sweep_stock_bars
     from ashare_lake.domain.schemas import with_provenance
     from ashare_lake.storage import StagingWriter
 
     start = getattr(config, "_backfill_start", None) or HISTORY_BACKFILL_START
     end = getattr(config, "_backfill_end", None) or date(2015, 12, 31)
-    symbols = [s for s in load_symbols(config) if not s.startswith("92")]
+    plan = _history_plan(config, start, end)
     resume = set(context.get("_history_done") or [])
     if resume:
-        symbols = [s for s in symbols if s not in resume]
+        plan = [p for p in plan if p[0] not in resume]
 
+    requests = sum((end.year - s.year + 1) for _, s in plan)
     logger.info(
-        "daily_bars_history: %d symbols, %s..%s (北交所 excluded — no adj factors)",
-        len(symbols),
+        "daily_bars_history: %d symbols, %s..%s, ~%d year-requests "
+        "(ETF and 北交所 excluded — neither has adjustment factors)",
+        len(plan),
         start,
         end,
+        requests,
     )
     writer = StagingWriter(config.staging_root)
     written = 0
@@ -276,10 +278,88 @@ def step_daily_bars_history(config: Config, trade_date: date, run_id: str, conte
             "daily_bars_history: batch %d — %d rows, %d symbols", batch_no, df.height, len(done)
         )
 
-    _, failed = sweep_stock_bars(symbols, start, end, config=config, on_batch=_flush)
+    failed = sweep_stock_bars_planned(plan, end, config=config, on_batch=_flush)
     return {
         "rows_read": written,
         "rows_written": written,
+        "symbols": len(plan),
         "failed_symbols": len(failed),
         "note": f"{start}..{end} via 同花顺 (raw only; hfq derives from Sina factors)",
     }
+
+
+def _history_plan(config: Config, start: date, end: date) -> list[tuple[str, date]]:
+    """``[(symbol, fetch_start)]`` for the symbols worth fetching.
+
+    Two filters and a per-symbol window, which together cut the sweep by ~78%:
+
+    * Stocks only. ETFs dominate the symbols with no ``list_date`` (2189 of
+      2195) and have no adjustment factors, so deeper raw bars for them could
+      never be served as hfq — fetching them would spend hours on data the
+      research path must refuse anyway. 北交所 is excluded for the same reason.
+    * Nothing listed after the window. A 2016 IPO has no pre-2016 history, and
+      asking for it is ~2600 symbols' worth of empty year files.
+    * The rest start at their listing year rather than at ``start``.
+    """
+    import glob
+
+    import polars as pl
+
+    symbols = [s for s in load_symbols(config) if not s.startswith("92")]
+    files = glob.glob(f"{config.curated_root}/instruments/**/*.parquet", recursive=True)
+    if not files:
+        # No instruments to plan against: fall back to the full window rather
+        # than silently fetching nothing.
+        return [(s, start) for s in symbols]
+    inst = pl.read_parquet(files).select("symbol", "list_date", "asset_type")
+    meta = {r["symbol"]: r for r in inst.to_dicts()}
+
+    plan: list[tuple[str, date]] = []
+    for sym in symbols:
+        row = meta.get(sym)
+        if row is None or row.get("asset_type") != "stock":
+            continue
+        listed = row.get("list_date")
+        if listed is not None:
+            if listed > end:
+                continue
+            if listed > start:
+                plan.append((sym, date(listed.year, 1, 1)))
+                continue
+        plan.append((sym, start))
+    return plan
+
+
+def sweep_stock_bars_planned(
+    plan: list[tuple[str, date]],
+    end: date,
+    *,
+    config: Config,
+    on_batch,
+    batch_size: int = 50,
+) -> list[str]:
+    """Sweep a per-symbol plan, batching writes. Returns failed symbols."""
+    from ashare_lake.adapters.ths.stock_bars import fetch_stock_bars
+
+    rows: list[dict] = []
+    batch: list[str] = []
+    failed: list[str] = []
+    streak = 0
+    for i, (symbol, sym_start) in enumerate(plan, start=1):
+        try:
+            rows.extend(fetch_stock_bars(symbol, sym_start, end, config=config))
+            batch.append(symbol)
+            streak = 0
+        except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+            logger.warning("THS history failed for %s: %s", symbol, exc)
+            failed.append(symbol)
+            streak += 1
+            if streak >= 10:
+                logger.error("THS: %d consecutive failures at %s — aborting", streak, symbol)
+                break
+        if i % batch_size == 0 or i == len(plan):
+            on_batch(rows, batch)
+            rows, batch = [], []
+    if batch:
+        on_batch(rows, batch)
+    return failed
