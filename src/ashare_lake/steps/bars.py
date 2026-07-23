@@ -363,3 +363,97 @@ def sweep_stock_bars_planned(
     if batch:
         on_batch(rows, batch)
     return failed
+
+
+# Rosters are sampled rather than walked day by day: a stock that traded at all
+# appears on some quarter-end, and 40 roster queries beat 2,500.
+_ROSTER_SAMPLE_MONTHS = (3, 6, 9, 12)
+
+
+def _delisted_universe(config: Config, start: date, end: date) -> list[str]:
+    """Symbols that traded in the window but hold no bars in the lake.
+
+    Compares baostock's historical rosters against what daily_bars actually
+    carries. Anything present then and absent now is a name the current-roster
+    snapshot lost — the survivorship gap, 16.8% of the cross-section on
+    2016-06-30 and still 6.0% on 2020-06-30.
+    """
+    import polars as pl
+
+    from ashare_lake.adapters.baostock._session import _login, import_baostock
+    from ashare_lake.adapters.baostock.delisted_bars import roster_on
+
+    bars_root = config.curated_root / "daily_bars"
+    have = set(
+        pl.scan_parquet(str(bars_root / "**" / "*.parquet"))
+        .select("symbol")
+        .unique()
+        .collect()["symbol"]
+        .to_list()
+    )
+
+    bs = import_baostock()
+    _login(bs)
+    missing: set[str] = set()
+    try:
+        for year in range(start.year, end.year + 1):
+            for month in _ROSTER_SAMPLE_MONTHS:
+                day = date(year, month, 28)
+                if not (start <= day <= end):
+                    continue
+                roster = roster_on(day, bs=bs, login=False)
+                if not roster:
+                    continue
+                gap = roster - have
+                if gap:
+                    logger.info(
+                        "roster %s: %d stocks, %d absent from daily_bars",
+                        day,
+                        len(roster),
+                        len(gap),
+                    )
+                missing |= gap
+    finally:
+        bs.logout()
+    return sorted(missing)
+
+
+@register_step(
+    "daily_bars_delisted",
+    group="backfill",
+    depends_on=["instruments"],
+)
+def step_daily_bars_delisted(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    """Recover bars for stocks that delisted inside the window.
+
+    The live vendors serve only what currently trades, so this is the one path
+    that can close the survivorship gap; baostock keeps each delisted name
+    through its final session. Rows land in ``daily_bars`` like any other, and
+    hfq keeps deriving from the Sina factors, which still cover these symbols.
+    """
+    import polars as pl
+
+    from ashare_lake.adapters.baostock.delisted_bars import fetch_delisted_bars
+    from ashare_lake.domain.schemas import with_provenance
+    from ashare_lake.storage import StagingWriter
+
+    start = getattr(config, "_backfill_start", None) or date(2016, 1, 1)
+    end = getattr(config, "_backfill_end", None) or trade_date
+    symbols = context.get("_delisted_symbols") or _delisted_universe(config, start, end)
+    if not symbols:
+        return {"rows_read": 0, "rows_written": 0, "note": "no survivorship gap found"}
+
+    logger.info("daily_bars_delisted: %d recovered symbols, %s..%s", len(symbols), start, end)
+    rows, failed = fetch_delisted_bars(symbols, start, end, config=config)
+    written = 0
+    if rows:
+        df = with_provenance(pl.DataFrame(rows), source="baostock", data_version="v1")
+        StagingWriter(config.staging_root).write_batch("daily_bars", run_id, "delisted-0000", df)
+        written = df.height
+    return {
+        "rows_read": written,
+        "rows_written": written,
+        "symbols": len(symbols),
+        "failed_symbols": len(failed),
+        "note": f"survivorship repair {start}..{end} via baostock",
+    }
