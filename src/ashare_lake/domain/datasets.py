@@ -183,7 +183,10 @@ _SPECS = [
         partition_col="trade_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
-        backfill_source="eastmoney_kline",
+        # 同花顺 per-year board-kline files (adapters/ths/boards.sweep_board_bars),
+        # not EastMoney: the source was migrated to a single 同花顺 base to end the
+        # mixed-source basis breaks, and this label had not followed.
+        backfill_source="ths",
     ),
     DatasetSpec(
         "sector_fund_flow",
