@@ -63,8 +63,8 @@ class Config:
     eastmoney_batch_size: int = 15
     eastmoney_batch_rest_seconds: float = 60.0
     # baostock free-API pacing (full-market history sweeps).
-    baostock_batch_size: int = 50
-    baostock_batch_rest_seconds: float = 45.0
+    baostock_batch_size: int = 20
+    baostock_batch_rest_seconds: float = 120.0
     universe_default: str = "all_a"
     daily_waves: list[WaveConfig] = field(default_factory=list)
     schedule_groups: dict[str, ScheduleGroup] = field(default_factory=dict)
@@ -162,8 +162,8 @@ def load_config(path: str | Path) -> Config:
     eastmoney_timeout_sec = 15.0
     eastmoney_batch_size = 15
     eastmoney_batch_rest_seconds = 60.0
-    baostock_batch_size = 50
-    baostock_batch_rest_seconds = 45.0
+    baostock_batch_size = 20
+    baostock_batch_rest_seconds = 120.0
     for name, val in sources_raw.items():
         if isinstance(val, dict):
             sources[name] = bool(val.get("enabled", True))
