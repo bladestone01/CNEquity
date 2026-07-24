@@ -150,3 +150,54 @@ def test_plan_keeps_stocks_with_unknown_listing_date(tmp_path):
     rows = [{"symbol": "600000.SH", "list_date": None, "asset_type": "stock"}]
     plan = dict(_plan(tmp_path, rows))
     assert plan["600000.SH"] == date(2001, 1, 1)
+
+
+def test_calendar_derives_sessions_from_bars_and_closes_the_rest(tmp_path):
+    """Before the seed's 2016 start, bars are the only evidence of a session.
+
+    `_is_trading_day` alone would keep every weekday, marking 春节 and 国庆
+    sessions and inflating 2001-2008 to ~261 days against an actual ~243. Inside
+    the bar era a date with no bar anywhere is a closed market.
+    """
+    import polars as pl
+
+    from ashare_lake.adapters.calendar.exchange_calendar import build_trading_calendar
+
+    root = tmp_path / "curated" / "daily_bars"
+    root.mkdir(parents=True)
+    # Sessions around 春节 2010, which fell on 2010-02-15..19 (all weekdays).
+    # The bar era must start at or before the queried window, mirroring
+    # production where bars reach 2001 and the query starts later.
+    sessions = [date(2010, 2, 10), date(2010, 2, 11), date(2010, 2, 12), date(2010, 2, 22)]
+    pl.DataFrame({"symbol": ["600519.SH"] * len(sessions), "trade_date": sessions}).write_parquet(
+        root / "part-000.parquet"
+    )
+
+    cal = build_trading_calendar(
+        date(2010, 2, 10), date(2010, 2, 24), curated_root=tmp_path / "curated"
+    )
+    trading = set(cal.filter(pl.col("is_trading"))["trade_date"].to_list())
+    assert trading == set(sessions)
+    # 春节 weekdays carry no bar, so they are closed rather than sessions —
+    # which is exactly what `_is_trading_day` alone would get wrong.
+    assert date(2010, 2, 17) not in trading
+
+
+def test_seed_still_wins_inside_its_own_range(tmp_path):
+    """A stray bar row must not flip a known holiday to a trading day."""
+    import polars as pl
+
+    from ashare_lake.adapters.calendar.exchange_calendar import build_trading_calendar
+
+    root = tmp_path / "curated" / "daily_bars"
+    root.mkdir(parents=True)
+    # 2024-10-01 is National Day: closed in the seed, but plant a bar on it.
+    pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [date(2024, 10, 1)]}).write_parquet(
+        root / "part-000.parquet"
+    )
+
+    cal = build_trading_calendar(
+        date(2024, 9, 30), date(2024, 10, 2), curated_root=tmp_path / "curated"
+    )
+    row = cal.filter(pl.col("trade_date") == date(2024, 10, 1))
+    assert not bool(row["is_trading"][0])

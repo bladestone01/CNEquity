@@ -1,4 +1,4 @@
-"""Exchange trading calendar: bundled seed CSV + index-bars derivation fallback."""
+"""Exchange trading calendar: bundled seed CSV + bar-derived fallback."""
 
 from __future__ import annotations
 
@@ -75,16 +75,27 @@ def load_seed_calendar(path: Path | None = None) -> pl.DataFrame:
     return df.with_columns(pl.col("trade_date").str.to_date(strict=False))
 
 
-def _trading_days_from_index_bars(curated_root: Path) -> set[date]:
-    bars_root = curated_root / "index_bars"
-    if not bars_root.exists():
-        return set()
-    files = list(bars_root.glob("**/*.parquet"))
-    if not files:
-        return set()
-    frames = [pl.read_parquet(f).select("trade_date") for f in files]
-    combined = pl.concat(frames, how="diagonal_relaxed")
-    return set(combined["trade_date"].to_list())
+def _trading_days_from_bars(curated_root: Path) -> set[date]:
+    """Dates any bar dataset recorded — a session nobody traded does not exist.
+
+    Reads ``index_bars`` and ``daily_bars`` both. index_bars alone was enough
+    while the lake started in 2016, but deep history reaches back to 2001 in
+    daily_bars only, and without those dates every pre-2016 window resolves to
+    zero trading days and a backtest over it fails outright. daily_bars is also
+    the sounder signal of the two: a whole market trading is harder to
+    misattribute than one index printing a bar.
+    """
+    days: set[date] = set()
+    for dataset in ("index_bars", "daily_bars"):
+        root = curated_root / dataset
+        if not root.exists():
+            continue
+        files = list(root.glob("**/*.parquet"))
+        if not files:
+            continue
+        frames = [pl.read_parquet(f, columns=["trade_date"]) for f in files]
+        days |= set(pl.concat(frames, how="diagonal_relaxed")["trade_date"].to_list())
+    return days
 
 
 def build_trading_calendar(
@@ -94,22 +105,30 @@ def build_trading_calendar(
     seed_path: Path | None = None,
     curated_root: Path | None = None,
 ) -> pl.DataFrame:
-    """Return calendar rows for [start, end] from seed, extended by index bars.
+    """Return calendar rows for [start, end] from seed, extended by bar data.
 
-    The seed is authoritative for every date it covers: index-bars derivation
-    only fills dates outside the seed's range (e.g. future dates beyond the
-    bundled holiday schedule). This prevents a spurious index_bars row from
-    flipping a seed ``is_trading=False`` (a known holiday) to ``True``.
+    The seed is authoritative for every date it covers (2016 onward): bar
+    derivation only fills dates outside its range — future dates past the bundled
+    holiday schedule, and the deep history before it. That ordering keeps a
+    spurious bar row from flipping a seed ``is_trading=False`` (a known holiday)
+    to ``True``.
     """
     seed = load_seed_calendar(seed_path)
     seed = seed.filter((pl.col("trade_date") >= start) & (pl.col("trade_date") <= end))
 
     seed_dates = set(seed["trade_date"].to_list())
-    index_trading_days: set[date] = set()
+    bar_trading_days: set[date] = set()
     if curated_root is not None:
-        # Only consider index-bars-derived trading days for dates the seed
-        # does not cover; within the seed range the seed wins outright.
-        index_trading_days = _trading_days_from_index_bars(curated_root) - seed_dates
+        # Only consider bar-derived trading days for dates the seed does not
+        # cover; within the seed range the seed wins outright.
+        bar_trading_days = _trading_days_from_bars(curated_root) - seed_dates
+
+    # Before the seed and the holiday table begin, bars are the only evidence
+    # there is: `_is_trading_day` would only strip weekends, marking every
+    # 春节/国庆 a session and inflating 2001-2008 to ~261 days against an actual
+    # ~243. Inside this range a date with no bar anywhere is a closed market.
+    bar_era_start = min(bar_trading_days) if bar_trading_days else None
+    seed_start = min(seed_dates) if seed_dates else None
 
     rows: list[dict] = []
     d = start
@@ -117,8 +136,14 @@ def build_trading_calendar(
         in_seed = seed.filter(pl.col("trade_date") == d)
         if not in_seed.is_empty():
             is_trading = bool(in_seed["is_trading"][0])
-        elif d in index_trading_days:
+        elif d in bar_trading_days:
             is_trading = True
+        elif (
+            bar_era_start is not None
+            and bar_era_start <= d
+            and (seed_start is None or d < seed_start)
+        ):
+            is_trading = False  # inside the bar era, no bar means closed
         else:
             is_trading = _is_trading_day(d)
         rows.append({"trade_date": d, "is_trading": is_trading})

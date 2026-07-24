@@ -167,10 +167,29 @@ def _merge_delisted_instruments(config: Config, df: pl.DataFrame) -> pl.DataFram
     )
 
 
+def _earliest_bar_date(config: Config) -> date | None:
+    """First date daily_bars carries — the calendar has to reach at least that
+    far back or every window over the deep history resolves to zero sessions."""
+    import polars as pl
+
+    root = config.curated_root / "daily_bars"
+    if not root.exists():
+        return None
+    files = list(root.glob("**/*.parquet"))
+    if not files:
+        return None
+    frames = [pl.read_parquet(f, columns=["trade_date"]) for f in files]
+    return pl.concat(frames, how="diagonal_relaxed")["trade_date"].min()
+
+
 @register_step("trading_calendar", group="core")
 def step_trading_calendar(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_backfill", False):
-        start = BACKFILL_START
+        start = getattr(config, "_backfill_start", None) or BACKFILL_START
+        # Deep history reaches back further than BACKFILL_START; follow the data.
+        earliest = _earliest_bar_date(config)
+        if earliest is not None and earliest < start:
+            start = earliest
     else:
         start = trade_date - timedelta(days=30)
     end = trade_date + timedelta(days=365)
