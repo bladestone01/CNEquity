@@ -201,3 +201,42 @@ def test_seed_still_wins_inside_its_own_range(tmp_path):
     )
     row = cal.filter(pl.col("trade_date") == date(2024, 10, 1))
     assert not bool(row["is_trading"][0])
+
+
+def test_index_map_excludes_the_wrong_csi1000_series():
+    """000852.SH must stay out until a code is value-checked.
+
+    Both `399852` and `1B0852` return data, but it closes 2015 at 10614 against
+    中证1000's actual ~8378 and starts in 2005 though the index was published in
+    2014 — a different series wearing the code. A benchmark that is quietly wrong
+    corrupts every excess-return number computed against it, so absence is the
+    safer state.
+    """
+    from ashare_lake.adapters.ths.index_bars import INDEX_CODE_MAP
+
+    assert "000852.SH" not in INDEX_CODE_MAP
+    assert "399852" not in INDEX_CODE_MAP.values()
+    assert "1B0852" not in INDEX_CODE_MAP.values()
+
+
+def test_index_kline_rows_carry_frequency():
+    """`index_bars` keys on frequency; the adapter supplies it rather than
+    leaving each caller to remember."""
+    from ashare_lake.adapters.ths.index_bars import _parse_index_kline
+
+    rows = _parse_index_kline(
+        {"data": "20151231,3700.00,3740.00,3690.00,3731.00,123456,9876543210.00"},
+        "000300.SH",
+    )
+    assert len(rows) == 1
+    assert rows[0]["frequency"] == "1d"
+    assert rows[0]["close"] == 3731.00
+
+
+def test_index_symbol_without_a_code_raises():
+    """An unmapped symbol is a caller error — silently fetching nothing would
+    read as 'this index has no history'."""
+    from ashare_lake.adapters.ths.index_bars import fetch_index_bars_history
+
+    with pytest.raises(KeyError, match="no 同花顺 index code"):
+        fetch_index_bars_history("000852.SH", date(2010, 1, 1), date(2010, 12, 31))
