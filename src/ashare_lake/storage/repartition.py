@@ -1,15 +1,17 @@
 """Rewrite a dataset's partitions at its configured granularity.
 
 Reads keep working whatever period the directories on disk span (see
-``domain/partitions.parse_partition``), so this is an optimisation, not a
-correctness fix — it reclaims the space and the file opens that a too-fine
-partitioning wastes. New writes already land at the configured granularity, so
-running this once brings the history into line.
+``domain/partitions.parse_partition``), so collapsing fine leftovers into the
+configured period is usually an optimisation — it reclaims the space and the
+file opens that a too-fine partitioning wastes. When a granularity flip left
+day directories beside year/month ones, the rewrite also PK-dedupes (same rule
+as compact) so the overlap is not baked into the new files.
 
-The rewrite is staged then swapped: the new partitions are built under a
-sibling ``.repartition-tmp`` directory and only replace the live ones once every
-partition is written and the row count is confirmed unchanged. A crash mid-way
-leaves the original untouched.
+New writes already land at the configured granularity; running this once
+brings the history into line. The rewrite is staged then swapped: the new
+partitions are built under a sibling ``.repartition-tmp`` directory and only
+replace the live ones once every partition is written and the (post-dedupe)
+row count is confirmed. A crash mid-way leaves the original untouched.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import polars as pl
 from ashare_lake.config import Config
 from ashare_lake.domain.datasets import DATASETS
 from ashare_lake.domain.partitions import partition_value
-from ashare_lake.domain.schemas import validate_dataframe
+from ashare_lake.domain.schemas import PRIMARY_KEYS, validate_dataframe
 from ashare_lake.query.parquet_scan import list_partitions, partition_dir
 from ashare_lake.storage.atomic import write_parquet_atomic
 
@@ -103,6 +105,20 @@ def repartition_dataset(
     # partial rewrite cannot guarantee the row-count check below.
     frames = [validate_dataframe(pl.read_parquet(f), dataset) for f in files_before]
     combined = pl.concat(frames, how="diagonal_relaxed")
+    # Same PK dedupe as compact: a granularity flip often leaves day dirs beside
+    # the new year/month dirs, and a naive concat would bake those overlaps into
+    # the rewritten files. Keep the freshest row per PK.
+    pk = PRIMARY_KEYS.get(dataset, [])
+    if pk and all(c in combined.columns for c in pk):
+        before = combined.height
+        combined = combined.sort("fetched_at").unique(subset=pk, keep="last")
+        dropped = before - combined.height
+        if dropped:
+            logger.info(
+                "repartition %s: dropped %d duplicate PK row(s) across overlapping partitions",
+                dataset,
+                dropped,
+            )
     rows = combined.height
     result.rows = rows
 

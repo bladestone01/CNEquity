@@ -8,9 +8,11 @@ from pathlib import Path
 import polars as pl
 
 from ashare_lake.domain.datasets import (
+    DATASETS,
     ROW_COUNT_MUTATION_MIN_BASELINE_ROWS,
     ROW_COUNT_MUTATION_MIN_RATIO,
 )
+from ashare_lake.domain.partitions import granularity_of
 from ashare_lake.domain.schemas import MOCK_SOURCE, PRIMARY_KEYS
 from ashare_lake.query.parquet_scan import (
     dataset_has_parquet,
@@ -281,6 +283,80 @@ PARTITION_FRAGMENTATION_MIN_ROWS = 50
 # Only judge a dataset with enough partitions for the average to mean something.
 PARTITION_FRAGMENTATION_MIN_PARTITIONS = 30
 
+# Whole-dataset PK scan when mixed-granularity leftovers are present: the
+# datasets that need a granularity flip are small; cap so a pathological lake
+# cannot turn audit into a full-table scan of daily_bars.
+_MIXED_GRANULARITY_PK_SCAN_MAX_FILES = 20_000
+
+
+def check_mixed_partition_granularity(
+    dataset: str,
+    partition_col: str | None,
+    root: Path,
+) -> dict | None:
+    """Error when on-disk partitions span a different period than the registry.
+
+    Changing ``DatasetSpec.partition_granularity`` (day → year) makes new
+    compact writes land in coarse directories, but the old fine directories stay
+    put. Whole-layer scans then see the same primary key twice — once in
+    ``trade_date=2016-01-04`` and again inside ``trade_date=2016`` — and the
+    sampled ``pk_unique`` check (current period only) never notices.
+    ``asl repartition`` (with PK dedupe) is the fix.
+    """
+    if partition_col is None or not dataset_has_parquet(root):
+        return None
+    spec = DATASETS.get(dataset)
+    if spec is None:
+        return None
+
+    partitions = list_partitions(root, partition_col)
+    if not partitions:
+        return None
+
+    configured = spec.partition_granularity
+    by_gran: dict[str, list[str]] = {}
+    for part in partitions:
+        by_gran.setdefault(granularity_of(part), []).append(part.value)
+    stale = {g: vals for g, vals in by_gran.items() if g != configured}
+    if not stale:
+        return None
+
+    on_disk = sorted(by_gran)
+    stale_count = sum(len(v) for v in stale.values())
+    sample = []
+    for vals in stale.values():
+        sample.extend(vals[:5])
+    sample = sample[:8]
+
+    pk_dupes: int | None = None
+    files = sorted(root.glob("**/*.parquet"))
+    pk = PRIMARY_KEYS.get(dataset, [])
+    if pk and len(files) <= _MIXED_GRANULARITY_PK_SCAN_MAX_FILES:
+        df = scan_parquet_files(files, hive=False).select(pk).collect()
+        if all(c in df.columns for c in pk):
+            pk_dupes = df.height - df.unique(subset=pk).height
+
+    msg = (
+        f"{stale_count} partition(s) still at {[g for g in on_disk if g != configured]} "
+        f"while registry wants {configured!r} (on disk: {on_disk}). "
+        "Overlapping periods republish the same primary key across granularities; "
+        f"quarantine the finer leftovers and run `asl repartition {dataset}`"
+    )
+    if pk_dupes:
+        msg += f" — {pk_dupes} duplicate PK row(s) visible in a whole-dataset scan"
+
+    return {
+        "dataset": dataset,
+        "severity": "error",
+        "check": "mixed_partition_granularity",
+        "message": msg,
+        "configured_granularity": configured,
+        "on_disk_granularities": on_disk,
+        "stale_partitions": stale_count,
+        "stale_sample": sample,
+        "pk_duplicate_rows": pk_dupes,
+    }
+
 
 def check_partition_fragmentation(
     dataset: str,
@@ -305,8 +381,6 @@ def check_partition_fragmentation(
     avg = rows / len(partitions)
     if avg >= PARTITION_FRAGMENTATION_MIN_ROWS:
         return None
-
-    from ashare_lake.domain.datasets import DATASETS
 
     spec = DATASETS.get(dataset)
     granularity = spec.partition_granularity if spec else "day"

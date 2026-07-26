@@ -21,6 +21,7 @@ from ashare_lake.quality.cross_checks import (
 )
 from ashare_lake.quality.dataset_checks import (
     audit_curated_dataset,
+    check_mixed_partition_granularity,
     check_partition_fragmentation,
 )
 from ashare_lake.quality.source_diff import run_source_diffs
@@ -226,6 +227,9 @@ def _collect_lake_findings(
     for ds, pcol in PARTITION_COLS.items():
         root = config.curated_root / ds
         findings.extend(audit_curated_dataset(ds, pcol, root, trade_date))
+        mixed = check_mixed_partition_granularity(ds, pcol, root)
+        if mixed is not None:
+            findings.append(mixed)
         fragmented = check_partition_fragmentation(ds, pcol, root)
         if fragmented is not None:
             findings.append(fragmented)

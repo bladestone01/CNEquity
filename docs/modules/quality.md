@@ -50,8 +50,10 @@
 | 检查 | 严重度 |
 |------|--------|
 | PK 重复 | error |
+| `mixed_partition_granularity` | error（盘上分区粒度与注册表不一致；跨粒度会让同一 PK 出现两次） |
 | `source="mock"` 且非测试 | error |
 | 分区行数相对上次 run 突变 | warning |
+| `partition_fragmentation` | warning（分区过细，几乎全是 footer） |
 | 空数据集（预期非空） | warning |
 
 ---

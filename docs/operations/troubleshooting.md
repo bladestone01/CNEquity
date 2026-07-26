@@ -106,8 +106,9 @@ rsync -avz --progress user@VPS:~/ashare-lake/data/ashare-lake/ \
 
 | Finding 类型 | 含义 | 处理 |
 |--------------|------|------|
-| `pk_duplicate` | curated PK 重复 | 查最近 compact；必要时 backfill 重跑该分区 |
-| `mock_rows` | 生产环境 mock 数据 | 关闭 `allow_mock`；清 mock 分区重采 |
+| `pk_unique` | curated PK 重复（当前分区抽样） | 查最近 compact；必要时 backfill 重跑该分区 |
+| `mixed_partition_granularity` | 盘上仍有细粒度分区叠在年/月分区上，同一 PK 跨粒度重复 | 把细粒度目录移到 `_quarantine/`，再 `asl repartition <dataset>` |
+| `mock_source` | 生产环境 mock 数据 | 关闭 `allow_mock`；清 mock 分区重采 |
 | `adj_close_discontinuity` | 复权收益异常 | `asl derive adj_factors`；查 Sina 源 |
 | `missing_corporate_action` | 除权日无 corp action | `asl backfill corporate_actions` |
 | `trading_status_coverage_start` | ST 覆盖起点晚 | 预期警告；跑 baostock ST 回填 |

@@ -270,3 +270,41 @@ def test_repartition_refuses_an_unknown_dataset(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     with pytest.raises(RepartitionError, match="unknown dataset"):
         repartition_dataset(cfg, "not_a_dataset")
+
+
+def _calendar_row(d: date, *, fetched_at: str, is_trading: bool = True) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "trade_date": [d],
+            "is_trading": [is_trading],
+            "source": ["seed"],
+            "data_version": ["v1"],
+            "fetched_at": [fetched_at],
+        }
+    ).with_columns(pl.col("fetched_at").str.to_datetime(time_unit="us", time_zone="UTC"))
+
+
+def test_repartition_dedupes_pk_when_day_and_year_dirs_overlap(tmp_path):
+    """A granularity flip leaves day dirs beside year dirs; rewrite must not bake the overlap in."""
+    cfg = Config(data_root=tmp_path / "data")
+    root = cfg.curated_root / "trading_calendar"
+    day = date(2024, 6, 3)
+    day_dir = root / f"trade_date={day.isoformat()}"
+    year_dir = root / "trade_date=2024"
+    day_dir.mkdir(parents=True)
+    year_dir.mkdir(parents=True)
+    _calendar_row(day, fetched_at="2026-01-01T00:00:00+00:00", is_trading=False).write_parquet(
+        day_dir / "part-merged.parquet"
+    )
+    _calendar_row(day, fetched_at="2026-07-01T00:00:00+00:00", is_trading=True).write_parquet(
+        year_dir / "part-merged.parquet"
+    )
+
+    result = repartition_dataset(cfg, "trading_calendar")
+
+    assert result.changed is True
+    assert result.rows == 1
+    assert [p.value for p in list_partitions(root, "trade_date")] == ["2024"]
+    df = collect_parquet_root(root, partition_col="trade_date")
+    assert df.height == 1
+    assert df["is_trading"].to_list() == [True], "freshest fetched_at wins"
