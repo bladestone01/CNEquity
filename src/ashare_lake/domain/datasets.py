@@ -19,6 +19,7 @@ from typing import Literal
 from ashare_lake.domain.partitions import Granularity, partition_value
 
 FetchSemantics = Literal["by_date", "snapshot"]
+HistoryMode = Literal["by_date", "snapshot_with_backfill", "snapshot_only"]
 Layer = Literal["curated", "derived"]
 
 
@@ -266,6 +267,28 @@ def pit_dataset_names() -> frozenset[str]:
 def fetch_semantics(dataset: str) -> FetchSemantics:
     spec = DATASETS.get(dataset)
     return spec.fetch_semantics if spec else "by_date"
+
+
+def history_mode_for(spec: DatasetSpec) -> HistoryMode:
+    """Whether the dataset can expose an honest historical series.
+
+    Derived only from registry fields (no parallel flags):
+    - ``by_date`` — gap-fill / date-walk
+    - ``snapshot_with_backfill`` — daily tip snapshot + dedicated history source
+    - ``snapshot_only`` — tip-only; no honest historical replay
+    """
+    if spec.fetch_semantics == "by_date":
+        return "by_date"
+    if spec.backfill_source:
+        return "snapshot_with_backfill"
+    return "snapshot_only"
+
+
+def history_mode(dataset: str) -> HistoryMode:
+    spec = DATASETS.get(dataset)
+    if spec is None:
+        return "by_date"
+    return history_mode_for(spec)
 
 
 def granularity_for_dataset(dataset: str) -> Granularity:

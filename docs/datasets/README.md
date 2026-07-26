@@ -39,6 +39,19 @@ ashare-lake 交付 **28 个注册数据集**（27 curated + 1 derived `adj_facto
 
 `snapshot` 数据集若配置了 `backfill_source`（如 `valuation_metrics` → baostock、`sector_bars` → eastmoney_kline），允许 `asl backfill` 走专用历史源。
 
+### 历史可用性（history_mode）
+
+由 `fetch_semantics` + `backfill_source` 推导（见 `list_datasets()`）：
+
+| history_mode | 含义 | 数据集 |
+|--------------|------|--------|
+| `by_date` | 可按日回补 / 缺口填补 | 绝大多数行情与事件表 |
+| `snapshot_with_backfill` | 日更是快照，但有专用历史源 | `valuation_metrics`→baostock；`index_constituents`→cni；`industry_members`→sw；`sector_bars`→ths |
+| `snapshot_only` | **永远没有诚实历史序列**（只有 tip） | `analyst_consensus`、`fund_flow`、`sector_members`、`hot_rank`、`sector_fund_flow`、`news_headlines`、`flash_news_wire`、`economic_calendar` |
+
+程序化合同：`list_datasets()` 的 `history_mode`、`backfill_source`、`coverage_start` / `coverage_end`。  
+`trading_status` 的 ST/停牌覆盖目前从约 2016 起（`daily_bars` 已到 2001）；audit `trading_status_coverage_start` 会报缺口——**不要**假定 2001 起 `universe="all_a"` 已剔除历史 ST。
+
 ---
 
 ## 溯源列（所有 curated 行）

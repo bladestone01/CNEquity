@@ -9,6 +9,7 @@ from ashare_lake.domain.datasets import (
     derived_dataset_names,
     fetch_semantics,
     get_dataset,
+    history_mode,
     pit_dataset_names,
 )
 from ashare_lake.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
@@ -69,6 +70,9 @@ def test_legacy_tables_match_registry():
     }
     assert fetch_semantics("fund_flow") == "snapshot"
     assert fetch_semantics("daily_bars") == "by_date"
+    assert history_mode("daily_bars") == "by_date"
+    assert history_mode("fund_flow") == "snapshot_only"
+    assert history_mode("valuation_metrics") == "snapshot_with_backfill"
 
 
 def test_layer_partitions():

@@ -17,11 +17,14 @@ df = load("daily_bars", start="2024-01-01", end="2024-12-31")
 # Lazy scan（大窗口）
 lf = scan("daily_bars", start="2020-01-01", end="2024-12-31")
 
-# 湖内数据集概览
+# 湖内数据集概览（含 history_mode / backfill_source / coverage_*）
 meta = list_datasets()  # 或 list_datasets(config=cfg)
+# snapshot_only → 无诚实历史；coverage_start 为盘上分区起点
 ```
 
 配置解析顺序：`config=` → `data_root=` → `configs/ashare-lake.toml`
+
+`list_datasets()` 是研究侧的**可用起点合同**：`history_mode` 区分 `by_date` / `snapshot_with_backfill` / `snapshot_only`；`coverage_start` 来自分区目录（含 `report_period=YYYYQn`）。详见 [datasets README](README.md#历史可用性history_mode)。
 
 ---
 
@@ -77,9 +80,9 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a")
 
 ### 历史 ST 限制
 
-日更只抓当天 `trading_status`。2016 → 覆盖起点之间**无** ST 行，该区间 `all_a` **不会**剔除历史 ST。
+日更只抓当天 `trading_status`。baostock ST 回填与停牌派生目前从约 **2016** 起有行；此前至 `daily_bars` 起点（2001）之间 `all_a` **不会**剔除历史 ST/停牌。
 
-审计项 `trading_status_coverage_start` 会报告覆盖起点。长期回测需知此偏差或运行 ST 历史回填（baostock + `asl derive trading_status`）。
+审计项 `trading_status_coverage_start` 会报告覆盖起点。`list_datasets()` 的 `coverage_start` 反映盘上实际分区，**不要**据此假定已回填到 2001。
 
 ### 交易所覆盖
 

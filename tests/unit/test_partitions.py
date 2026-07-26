@@ -43,6 +43,11 @@ def test_partition_value_per_granularity(granularity, expected):
         ("2024-06", date(2024, 6, 1), date(2024, 6, 30)),
         ("2024-02", date(2024, 2, 1), date(2024, 2, 29)),  # leap year
         ("2024", date(2024, 1, 1), date(2024, 12, 31)),
+        ("2016Q1", date(2016, 1, 1), date(2016, 3, 31)),
+        ("2016Q2", date(2016, 4, 1), date(2016, 6, 30)),
+        ("2016Q3", date(2016, 7, 1), date(2016, 9, 30)),
+        ("2016Q4", date(2016, 10, 1), date(2016, 12, 31)),
+        ("2024q1", date(2024, 1, 1), date(2024, 3, 31)),  # case-insensitive Q
     ],
 )
 def test_parse_partition_infers_period_from_shape(value, start, end):
@@ -51,7 +56,9 @@ def test_parse_partition_infers_period_from_shape(value, start, end):
     assert (part.start, part.end) == (start, end)
 
 
-@pytest.mark.parametrize("value", ["", "junk", "2024-13", "202", "2024-06-03-01", "bak.2024"])
+@pytest.mark.parametrize(
+    "value", ["", "junk", "2024-13", "202", "2024-06-03-01", "bak.2024", "2016Q5", "2016Q"]
+)
 def test_parse_partition_rejects_non_periods(value):
     assert parse_partition(value) is None
 

@@ -75,7 +75,9 @@ def list_datasets(
 ) -> pl.DataFrame
 ```
 
-列：`dataset`, `has_data`, `files`, `rows`, `watermark`, `coverage_start`, `coverage_end`, `watermarked`
+列：`dataset`, `layer`, `date_col`, `fetch_semantics`, `history_mode`, `backfill_source`, `pit`, `has_data`, `coverage_start`, `coverage_end`, `watermarked`, `watermark`
+
+`history_mode` ∈ `by_date` / `snapshot_with_backfill` / `snapshot_only`；与 `coverage_*` 一起构成可用起点合同。
 
 ---
 

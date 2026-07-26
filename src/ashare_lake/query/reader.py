@@ -379,11 +379,15 @@ def list_datasets(
     config: Config | None = None,
     data_root: str | Path | None = None,
 ) -> pl.DataFrame:
-    """Catalog of all datasets: layer, semantics, coverage, and watermark.
+    """Catalog of all datasets: layer, history mode, coverage, and watermark.
 
     Uses hive partition directory names and ``meta/state`` watermarks — no
     parquet data is read, so this is cheap even on a 10-year lake.
+
+    ``history_mode`` / ``backfill_source`` / ``coverage_start`` are the
+    programmatic available-from contract for research consumers.
     """
+    from ashare_lake.domain.datasets import history_mode_for
     from ashare_lake.query.parquet_scan import list_partitions
     from ashare_lake.storage.state import StateStore
 
@@ -407,6 +411,8 @@ def list_datasets(
                 "layer": spec.layer,
                 "date_col": spec.query_date_col,
                 "fetch_semantics": spec.fetch_semantics,
+                "history_mode": history_mode_for(spec),
+                "backfill_source": spec.backfill_source,
                 "pit": spec.pit,
                 "has_data": has_data,
                 "coverage_start": first_part,

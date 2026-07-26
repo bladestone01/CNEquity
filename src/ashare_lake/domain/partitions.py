@@ -13,7 +13,8 @@ mapping between a date and its partition directory value, in both directions.
 
 Directory values stay unambiguous and lexicographically sortable:
 ``trade_date=2024-06-03`` (day), ``trade_date=2024-06`` (month),
-``trade_date=2024`` (year).
+``trade_date=2024`` (year). Report-period datasets also use self-describing
+``report_period=2016Q1`` (calendar quarter).
 
 **Hive partitioning is off for coarse periods, deliberately.** Polars infers the
 hive column's type from the matching file column, so a ``trade_date=2024``
@@ -64,21 +65,42 @@ def partition_value(d: date, granularity: Granularity) -> str:
     return d.isoformat()
 
 
+def _parse_quarter(value: str) -> Partition | None:
+    """``2016Q1`` … ``2016Q4`` → calendar-quarter bounds (report_period dirs)."""
+    if len(value) != 6 or value[4] not in ("Q", "q"):
+        return None
+    try:
+        year = int(value[:4])
+        quarter = int(value[5])
+    except ValueError:
+        return None
+    if quarter not in (1, 2, 3, 4):
+        return None
+    start_month = 3 * (quarter - 1) + 1
+    end_month = start_month + 2
+    end_day = monthrange(year, end_month)[1]
+    return Partition(value, date(year, start_month, 1), date(year, end_month, end_day))
+
+
 def parse_partition(value: str) -> Partition | None:
     """Inverse of :func:`partition_value`, inferring the period from its shape.
 
     Deliberately *not* parameterised by the dataset's configured granularity.
-    A partition directory is self-describing — ``2024``, ``2024-06`` and
-    ``2024-06-03`` are unambiguous — and reading it that way is what lets the
-    registry's granularity change without a migration: a lake still holding
-    day directories keeps being read correctly, just with finer partitions than
-    new writes will produce. Had this trusted the configured granularity
-    instead, flipping a dataset to year would have made every existing day
-    directory unparseable and every range query silently return nothing.
+    A partition directory is self-describing — ``2024``, ``2024-06``,
+    ``2024-06-03``, and ``2016Q1`` are unambiguous — and reading it that way is
+    what lets the registry's granularity change without a migration: a lake
+    still holding day directories keeps being read correctly, just with finer
+    partitions than new writes will produce. Had this trusted the configured
+    granularity instead, flipping a dataset to year would have made every
+    existing day directory unparseable and every range query silently return
+    nothing.
 
     Returns None for anything that is not a period, so stray directories are
     skipped rather than given a wrong range.
     """
+    quarter = _parse_quarter(value)
+    if quarter is not None:
+        return quarter
     parts = value.split("-")
     try:
         if len(parts) == 1:

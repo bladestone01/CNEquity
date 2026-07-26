@@ -309,15 +309,29 @@ def test_list_datasets_catalog(tmp_path):
     out_dir = tmp_path / "curated" / "daily_bars" / "trade_date=2024-06-28"
     out_dir.mkdir(parents=True)
     pl.DataFrame({"symbol": ["000001.SZ"]}).write_parquet(out_dir / "part-0.parquet")
+    fsi_dir = tmp_path / "curated" / "financial_statement_items" / "report_period=2016Q1"
+    fsi_dir.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["000001.SZ"]}).write_parquet(fsi_dir / "part-0.parquet")
 
     df = list_datasets(config=cfg)
     assert df.height >= 26
     row = df.filter(pl.col("dataset") == "daily_bars").to_dicts()[0]
     assert row["has_data"] is True
     assert row["coverage_start"] == date(2024, 6, 28)
+    assert row["history_mode"] == "by_date"
+    assert row["backfill_source"] is None
     row = df.filter(pl.col("dataset") == "fund_flow").to_dicts()[0]
     assert row["fetch_semantics"] == "snapshot"
+    assert row["history_mode"] == "snapshot_only"
+    assert row["backfill_source"] is None
     assert row["has_data"] is False
+    row = df.filter(pl.col("dataset") == "valuation_metrics").to_dicts()[0]
+    assert row["history_mode"] == "snapshot_with_backfill"
+    assert row["backfill_source"] == "baostock"
+    row = df.filter(pl.col("dataset") == "financial_statement_items").to_dicts()[0]
+    assert row["has_data"] is True
+    assert row["coverage_start"] == date(2016, 1, 1)
+    assert row["coverage_end"] == date(2016, 3, 31)
 
 
 def test_dataset_schema_contract():

@@ -4,6 +4,8 @@
 
 **图例**：语义 `by_date` / `snapshot`；水位 ✓ = 维护 `meta/state` 水位。
 
+程序化可用起点与历史模式：`list_datasets()` → `coverage_start` / `coverage_end` / `history_mode` / `backfill_source`（见 [README 历史可用性](README.md#历史可用性history_mode)）。
+
 ---
 
 ## L0 基础参考
