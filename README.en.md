@@ -1,6 +1,7 @@
 # ashare-lake
 
 [![CI](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg)](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/rootSunc/ashare-lake/graph/badge.svg)](https://codecov.io/gh/rootSunc/ashare-lake)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -74,7 +75,13 @@ asl retry  --run-id <id> --config configs/ashare-lake.toml
 
 After the initial backfill, run the acceptance checks in the
 [runbook](docs/operations/runbook.md) (idempotency / semantics / coverage)
-before wiring up cron.
+before wiring up cron:
+
+```bash
+.venv/bin/python scripts/accept_backfill.py snapshot --out /tmp/curated-counts.json
+# re-run daily on the same window, then:
+.venv/bin/python scripts/accept_backfill.py check --compare /tmp/curated-counts.json
+```
 
 ## Reading data
 
@@ -93,10 +100,20 @@ bars = load(
 roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 ```
 
-DuckDB (`asl query --sql "..."` or connect to
-`{data_root}/duckdb/ashare-lake.duckdb` — views already disable unsafe hive
-parsing by partition granularity), or Polars on a **day-partitioned**
-dataset such as `daily_bars`:
+DuckDB:
+
+```bash
+asl query --sql "
+  SELECT symbol, trade_date, adj_close
+  FROM daily_bars_adj
+  WHERE trade_date >= '2025-01-01'
+" --config configs/ashare-lake.toml
+```
+
+You can also connect to `{data_root}/duckdb/ashare-lake.duckdb` directly
+(views already disable unsafe hive parsing by partition granularity).
+
+Or Polars on a **day-partitioned** dataset such as `daily_bars`:
 
 ```python
 import polars as pl
@@ -107,7 +124,7 @@ df = bars.filter(pl.col("symbol") == "600519.SH").collect()
 **Year/month partitions:** datasets like `index_bars`, `trading_calendar`,
 `corporate_actions`, and `trading_status` use directory values `2024` /
 `2024-06`, not full dates. DuckDB `read_parquet(..., hive_partitioning=true)`
-(or Polars hive parsing those labels as DATE) overwrites/conflicts with the
+(or Polars hive-parsing those labels as DATE) overwrites/conflicts with the
 real date column in the file and looks like mass “duplicates.” Prefer
 `asl query`, the published DuckDB views, or
 `from ashare_lake.query import load, scan`. See
@@ -149,10 +166,18 @@ provenance-tagged curated Parquet on disk. Details:
 
 ## Known limitations
 
+- **Survivorship bias:** daily bars can recover delisted names via baostock /
+  `asl delisted backfill`, but you must also run `asl delisted repair` to write
+  `delist_date` into `instruments`; otherwise `universe="all_a"` keeps selecting
+  them. Widen coverage with `asl delisted discover` (includes old NEEQ prefixes
+  43/83/87). Until that is complete, treat any return series with caution.
 - `universe="all_a"` ST / suspension filtering only applies on dates covered by
   `trading_status` — the daily job fetches the current day only, so older
   windows are not filtered by historical ST status (backfill with
   `asl backfill`).
+- BSE (BJ) bars come from Sina, not TDX (the TDX protocol has no BJ feed);
+  BJ `amount` is null, and newly listed BJ names enter `instruments` only after
+  `asl delisted discover` finds them.
 - Some HTTP sources are unreliable outside mainland China; historical backfills
   such as `sector_bars` need a mainland egress or proxy — see the
   [runbook](docs/operations/runbook.md).
@@ -185,8 +210,7 @@ Start at [docs/README.md](docs/README.md) (Chinese). Frequently used:
 [query guide](docs/datasets/query-guide.md) ·
 [runbook](docs/operations/runbook.md) ·
 [CLI](docs/reference/cli.md) ·
-[Python API](docs/reference/python-api.md) ·
-[ADRs](docs/adr/) · [CHANGELOG](CHANGELOG.md)
+[Python API](docs/reference/python-api.md)
 
 ## License
 
