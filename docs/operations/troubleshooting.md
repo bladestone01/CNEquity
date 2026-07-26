@@ -14,6 +14,40 @@
 
 原则：**时间可以等，封禁成本远高于多等一天。** 勿为加速关掉 `min_interval` 或开多进程打同一免费源。
 
+估值历史回填已对 `baostock` 做 **单飞锁**（`RunLock("baostock")`）：并发
+`valuation_2001` / float_mv 扫盘会直接跳过并留下 `baostock_single_flight` warning。
+rate-limit alone 不能阻止 N 个会话同时 `login()`。
+
+---
+
+## 症状：valuation_metrics 水位「新鲜」但覆盖率断崖 / STALE
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| 最近几天只有几百只、`valuation_bars_low_coverage` | 日更 EastMoney `capital` 未跑通，baostock 历史曾以 `end=today` 只写完部分标的 → 稀疏 tip；旧逻辑把 watermark 推到 max partition | **已修**：baostock `end` 封顶在最近「完整」东财 tip（覆盖 ≥70% 当日 bars）；watermark 拒绝推进到稀疏 tip |
+| `asl status --datasets` valuation STALE + 覆盖 ~20% | 同上 | 对缺口日补东财快照（PK `keep=last` 覆盖稀疏 baostock）： |
+
+```bash
+# 例：2026-07-17 … 最近交易日（按实际缺口改）
+for d in 2026-07-17 2026-07-18 2026-07-21 2026-07-22 2026-07-23 2026-07-24 2026-07-25; do
+  uv run asl run daily --group capital --trade-date "$d"
+done
+uv run asl status --datasets   # valuation 不应再停在稀疏 tip
+```
+
+审计 finding `valuation_watermark_coverage_gate`：水位曾越过完整日，已被 compact/reconcile 拉回。
+
+---
+
+## 症状：manifest 里大量 status=running 的僵尸 run
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| `asl status` 显示 `orphaned_running_runs > 0` | 进程被杀 / OOM，旧代码未在 `finally` 里 `finish_run`；status 从不自动 reconcile | **已修**：每次 `asl run` 入口心跳感知 reconcile；retry 全绿也会 `finish_run` |
+| 需要立刻清理 | — | `asl clean --reconcile-runs`（跳过仍持锁的 live run） |
+
+长任务（baostock 回填）靠 **batch heartbeat** 保活，不会仅因 `started_at` 超过 1h 被误杀。
+
 ---
 
 ## 症状：load() 读不到新数据

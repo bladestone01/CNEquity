@@ -709,6 +709,17 @@ def status(config_path: str, show_datasets: bool):
         click.echo("No runs yet.")
         return
     summary = manifest.run_summary(latest["run_id"])
+    orphaned = manifest.count_stale_running_runs(
+        stale_after_seconds=cfg.batch_stale_seconds,
+        locks_root=cfg.meta_root,
+    )
+    if orphaned:
+        summary["orphaned_running_runs"] = orphaned
+        summary["orphaned_note"] = (
+            f"{orphaned} run(s) still status=running with no activity for "
+            f">={int(cfg.batch_stale_seconds)}s — next asl run reconciles them; "
+            "or `asl clean --reconcile-runs`"
+        )
     click.echo(json.dumps(summary, indent=2, default=str))
 
 
@@ -766,9 +777,10 @@ def retry(config_path: str, run_id: str):
 )
 @click.option(
     "--reconcile-after-seconds",
-    default=300,
-    show_default=True,
-    help="Only reconcile runs idle longer than this many seconds.",
+    default=None,
+    type=float,
+    help="Only reconcile runs idle longer than this many seconds "
+    "(default: [orchestrator].batch_stale_seconds).",
 )
 def clean(
     config_path: str,
@@ -777,7 +789,7 @@ def clean(
     snapshot_retention_days: int,
     force: bool,
     reconcile_runs: bool,
-    reconcile_after_seconds: int,
+    reconcile_after_seconds: float | None,
 ):
     """Remove staging for successful compacted runs and aged orphans.
 
@@ -788,8 +800,14 @@ def clean(
     reconciled: dict[str, int] | None = None
     if reconcile_runs:
         manifest = Manifest(cfg.manifest_path)
+        stale_after = (
+            float(reconcile_after_seconds)
+            if reconcile_after_seconds is not None
+            else cfg.batch_stale_seconds
+        )
         reconciled = manifest.reconcile_orphaned_runs(
-            stale_after_seconds=float(reconcile_after_seconds)
+            stale_after_seconds=stale_after,
+            locks_root=cfg.meta_root,
         )
     result = clean_staging(
         cfg,

@@ -28,12 +28,17 @@
 
 主入口。流程：
 
-1. 非 retry：检查交易日（daily）、`start_run`
-2. 解析 steps（显式传入或 config waves）
-3. `deps.topological_levels()` 分层执行
-4. 每层内 parallel step 用线程池；`requires_workers` 走 `worker_pool`
-5. finalize steps：`compact` → `derive_adj_factors` → `audit`
-6. `finish_run(success|failed)`
+1. **非 retry 入口先 `reconcile_orphaned_runs`**：按 batch heartbeat / run start 关闭
+   超时仍 `running` 的僵尸 run（跳过仍持有 `meta/locks/{run_id}.lock` 的进程）
+2. 非 retry：检查交易日（daily）、`start_run`
+3. 解析 steps（显式传入或 config waves）
+4. `deps.topological_levels()` 分层执行
+5. 每层内 parallel step 用线程池；`requires_workers` 走 `worker_pool`
+6. finalize steps：`compact` → `derive_adj_factors` → `audit`
+7. `finish_run(success|failed)`；`try/finally` 保证进程中断时仍以 `failed` /
+   `interrupted` 收口，避免永远停在 `running`
+8. **retry 全绿路径**：若失败 batch 为空且 incomplete=0，直接 `finish_run(success)`
+   （修复「最后一步成功后崩溃、run 仍 running」的僵尸）
 
 ### run_init_phases(trade_date, resume, resume_run_id, keep_going)
 
@@ -83,8 +88,14 @@ SQLite WAL 模式。
 
 Batch 状态：`pending` → `running` → `success` | `failed` | `stale`
 
-- `advance_stale_batches()`：超时 running → stale → failed（retry 前调用）
+- `advance_stale_batches()` / `advance_batch_timeouts()`：超时 running → stale → failed（retry 前调用）
+- `reconcile_orphaned_runs(stale_after_seconds=batch_stale_seconds)`：关闭无活动的
+  `running` run；活动时钟 = `max(run.started_at, batch heartbeat/started)`；
+  更新幂等（`WHERE status='running'`）
+- `count_stale_running_runs()`：只读信号，供 `asl status` 报告孤儿数
 - `run_summary(run_id)`：供 `asl status` 输出
+
+运维也可显式：`asl clean --reconcile-runs`（默认窗口同 `batch_stale_seconds`）。
 
 ---
 

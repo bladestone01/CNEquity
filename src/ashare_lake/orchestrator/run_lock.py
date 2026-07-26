@@ -12,6 +12,24 @@ class RunLockError(RuntimeError):
     """Another process holds the run lock."""
 
 
+def lock_path(meta_root: Path, run_id: str) -> Path:
+    return meta_root / "locks" / f"{run_id}.lock"
+
+
+def is_run_locked(meta_root: Path, run_id: str) -> bool:
+    """True when another process currently holds ``run_lock`` for *run_id*."""
+    path = lock_path(meta_root, run_id)
+    if not path.exists():
+        return False
+    with open(path, "a") as lock_f:
+        try:
+            fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(lock_f, fcntl.LOCK_UN)
+        return False
+
+
 @contextlib.contextmanager
 def run_lock(meta_root: Path, run_id: str, *, blocking: bool = False) -> Iterator[None]:
     """Exclusive lock scoped to *run_id* (or a global name like ``compact``).
@@ -20,9 +38,8 @@ def run_lock(meta_root: Path, run_id: str, *, blocking: bool = False) -> Iterato
     ``blocking=True`` to queue instead — e.g. overlapping runs serializing
     their compact step.
     """
-    lock_dir = meta_root / "locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    path = lock_dir / f"{run_id}.lock"
+    path = lock_path(meta_root, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as lock_f:
         flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:

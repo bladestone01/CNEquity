@@ -56,6 +56,10 @@ class JobEngine:
         if run_id and retry_failed_only:
             return self._retry_run(run_id, trade_date)
 
+        # Close crashed peers before we start — otherwise asl status / compact
+        # keep seeing ghosts, and concurrent baostock jobs pile onto a blacklist.
+        self._reconcile_orphans()
+
         if not backfill and job_name != "init" and not is_trading_day(self.config, trade_date):
             logger.info(
                 "Skipping job %s: %s is not a trading day",
@@ -96,50 +100,58 @@ class JobEngine:
             total_written = 0
             had_error = False
             had_warning = False
+            finalized = False
 
-            for wave in wave_list:
-                logger.info("Wave %s: %s (parallel=%s)", wave.name, wave.steps, wave.parallel)
-                wave_results, wave_read, wave_written, wave_error, wave_warning = self._run_wave(
-                    wave, wave.steps, trade_date, run_id, context
-                )
-                results.extend(wave_results)
-                total_read += wave_read
-                total_written += wave_written
-                had_error = had_error or wave_error
-                had_warning = had_warning or wave_warning
-
-                if "daily_bars" in wave.steps:
-                    promoted = self.manifest.promote_running_to_stale(
-                        run_id, stale_after_seconds=self.config.batch_stale_seconds
+            try:
+                for wave in wave_list:
+                    logger.info("Wave %s: %s (parallel=%s)", wave.name, wave.steps, wave.parallel)
+                    wave_results, wave_read, wave_written, wave_error, wave_warning = (
+                        self._run_wave(wave, wave.steps, trade_date, run_id, context)
                     )
-                    if promoted:
-                        logger.warning(
-                            "Promoted %s running batch(es) to stale after wave %s",
-                            promoted,
-                            wave.name,
-                        )
+                    results.extend(wave_results)
+                    total_read += wave_read
+                    total_written += wave_written
+                    had_error = had_error or wave_error
+                    had_warning = had_warning or wave_warning
 
-            if had_error:
-                status = "failed"
-            elif had_warning:
-                status = "warning"
-            else:
-                status = "success"
-            if finalize_run:
-                self.manifest.finish_run(
-                    run_id,
-                    status,
-                    rows_read=total_read,
-                    rows_written=total_written,
-                    error_message="one or more steps failed" if had_error else None,
-                )
-            return {
-                "run_id": run_id,
-                "status": status,
-                "results": results,
-                "rows_read": total_read,
-                "rows_written": total_written,
-            }
+                    if "daily_bars" in wave.steps:
+                        promoted = self.manifest.promote_running_to_stale(
+                            run_id, stale_after_seconds=self.config.batch_stale_seconds
+                        )
+                        if promoted:
+                            logger.warning(
+                                "Promoted %s running batch(es) to stale after wave %s",
+                                promoted,
+                                wave.name,
+                            )
+
+                if had_error:
+                    status = "failed"
+                elif had_warning:
+                    status = "warning"
+                else:
+                    status = "success"
+                if finalize_run:
+                    self.manifest.finish_run(
+                        run_id,
+                        status,
+                        rows_read=total_read,
+                        rows_written=total_written,
+                        error_message="one or more steps failed" if had_error else None,
+                    )
+                    finalized = True
+                return {
+                    "run_id": run_id,
+                    "status": status,
+                    "results": results,
+                    "rows_read": total_read,
+                    "rows_written": total_written,
+                }
+            finally:
+                if finalize_run and not finalized:
+                    self._finish_if_still_running(
+                        run_id, error_message="interrupted: worker exited without finish_run"
+                    )
 
     def run_step(
         self,
@@ -157,6 +169,25 @@ class JobEngine:
         is "this run recorded a successful compact".
         """
         return self._run_step(name, trade_date, run_id, context or {})
+
+    def _reconcile_orphans(self) -> dict[str, int]:
+        out = self.manifest.reconcile_orphaned_runs(
+            stale_after_seconds=self.config.batch_stale_seconds,
+            locks_root=self.config.meta_root,
+        )
+        if out.get("runs_closed"):
+            logger.warning(
+                "Reconciled %d orphaned running run(s) (%d batch(es)); skipped %d locked",
+                out["runs_closed"],
+                out["batches_closed"],
+                out.get("skipped_locked", 0),
+            )
+        return out
+
+    def _finish_if_still_running(self, run_id: str, *, error_message: str) -> None:
+        run = self.manifest.get_run(run_id)
+        if run is not None and run["status"] == "running":
+            self.manifest.finish_run(run_id, "failed", error_message=error_message)
 
     @contextlib.contextmanager
     def _optional_job_lock(self, lock_name: str | None):
@@ -393,6 +424,10 @@ class JobEngine:
                     "batch_timeout": timeout,
                     "results": fin_results,
                 }
+            # All batches already success but the parent never called finish_run
+            # (crash after the last step). Close the zombie so status is truthful.
+            if auto_finalize:
+                self.manifest.finish_run(run_id, "success")
             return {
                 "run_id": run_id,
                 "status": "success",

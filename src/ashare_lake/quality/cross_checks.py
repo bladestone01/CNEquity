@@ -23,7 +23,9 @@ from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_roo
 
 _SAMPLE = 8
 # Flag when valuation covers less than this share of symbols with bars that day.
-_VALUATION_COVERAGE_WARN_RATIO = 0.7
+# Also the gate for watermark advance / baostock history tip isolation.
+VALUATION_COVERAGE_WARN_RATIO = 0.7
+_VALUATION_COVERAGE_WARN_RATIO = VALUATION_COVERAGE_WARN_RATIO
 
 # Error: |adj_ret| and |adj_ret - raw_ret| both above this on consecutive TDs
 # (beyond board limits; not a real ex-event).
@@ -116,6 +118,93 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
             }
         )
     return findings
+
+
+def valuation_day_coverage_ratio(config: Config, trade_date: date) -> float | None:
+    """``|valuation ∩ bars| / |bars|`` on *trade_date*, or None if either side empty."""
+    val_root = config.curated_root / "valuation_metrics"
+    bars_root = config.curated_root / "daily_bars"
+    if not dataset_has_parquet(val_root) or not dataset_has_parquet(bars_root):
+        return None
+    val_syms = set(
+        scan_parquet_root(val_root, partition_col="trade_date", start=trade_date, end=trade_date)
+        .select("symbol")
+        .unique()
+        .collect()["symbol"]
+        .to_list()
+    )
+    bars_syms = set(
+        scan_parquet_root(bars_root, partition_col="trade_date", start=trade_date, end=trade_date)
+        .select("symbol")
+        .unique()
+        .collect()["symbol"]
+        .to_list()
+    )
+    if not val_syms or not bars_syms:
+        return None
+    return len(val_syms & bars_syms) / len(bars_syms)
+
+
+def last_dense_valuation_date(
+    config: Config,
+    *,
+    min_ratio: float = VALUATION_COVERAGE_WARN_RATIO,
+) -> date | None:
+    """Newest valuation day whose symbol coverage vs bars is ≥ *min_ratio*.
+
+    Walks partitions newest→oldest so a sparse tip (partial baostock refill)
+    cannot pin the watermark or history-end past a complete EastMoney day.
+    """
+    from ashare_lake.query.parquet_scan import list_partitions
+
+    val_root = config.curated_root / "valuation_metrics"
+    if not dataset_has_parquet(val_root):
+        return None
+    parts = list_partitions(val_root, "trade_date")
+    for part in reversed(parts):
+        # Day partitions: value is the date. Coarser periods: probe the max date
+        # inside the period via coverage on that day only after we know it.
+        if part.start == part.end:
+            candidates = [part.start]
+        else:
+            ratio_end = valuation_day_coverage_ratio(config, part.end)
+            if ratio_end is not None and ratio_end >= min_ratio:
+                return part.end
+            # Fall through: sample the period end only; full scan is for day layout.
+            candidates = [part.end]
+        for d in candidates:
+            ratio = valuation_day_coverage_ratio(config, d)
+            if ratio is not None and ratio >= min_ratio:
+                return d
+    return None
+
+
+def last_complete_em_valuation_tip(
+    config: Config,
+    *,
+    min_ratio: float = VALUATION_COVERAGE_WARN_RATIO,
+) -> date | None:
+    """Newest day with EastMoney valuation rows and coverage ≥ *min_ratio*.
+
+    Baostock history must not write past this — those tip dates belong to the
+    daily EastMoney snapshot. Returns None when no complete EM day exists yet.
+    """
+    val_root = config.curated_root / "valuation_metrics"
+    if not dataset_has_parquet(val_root):
+        return None
+    em_days = (
+        scan_parquet_root(val_root, partition_col="trade_date")
+        .filter(pl.col("source") == "eastmoney")
+        .select("trade_date")
+        .unique()
+        .collect()["trade_date"]
+        .to_list()
+    )
+    for d in sorted(em_days, reverse=True):
+        ratio = valuation_day_coverage_ratio(config, d)
+        if ratio is not None and ratio >= min_ratio:
+            return d
+    return None
 
 
 def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[dict]:

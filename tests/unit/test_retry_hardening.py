@@ -102,3 +102,85 @@ def test_reconcile_orphaned_runs_closes_stale_running(tmp_path):
     assert out["runs_closed"] == 1
     assert out["batches_closed"] == 1
     assert manifest.get_run(run_id)["status"] == "failed"
+
+
+def test_reconcile_keeps_a_run_with_fresh_batch_heartbeat(tmp_path):
+    """Long jobs must not be closed just because run.started_at is old."""
+    from datetime import UTC, datetime, timedelta
+
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("valuation_2001", {})
+    # Backdate the run start so a started_at-only check would kill it.
+    old = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    with manifest._connect() as conn:
+        conn.execute(
+            "UPDATE ingestion_runs SET started_at = ? WHERE run_id = ?",
+            (old, run_id),
+        )
+    manifest.start_batch(run_id, "batch-0", "valuation_metrics", "valuation_metrics")
+    # Fresh heartbeat (just set by start_batch).
+    out = manifest.reconcile_orphaned_runs(stale_after_seconds=3600)
+    assert out["runs_closed"] == 0
+    assert manifest.get_run(run_id)["status"] == "running"
+
+
+def test_reconcile_skips_a_run_whose_lock_is_held(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core", {})
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars")
+    with run_lock(cfg.meta_root, run_id):
+        out = manifest.reconcile_orphaned_runs(
+            stale_after_seconds=0, locks_root=cfg.meta_root
+        )
+    assert out["runs_closed"] == 0
+    assert out["skipped_locked"] == 1
+    assert manifest.get_run(run_id)["status"] == "running"
+
+
+def test_reconcile_is_idempotent(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core", {})
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars")
+    assert manifest.reconcile_orphaned_runs(stale_after_seconds=0)["runs_closed"] == 1
+    assert manifest.reconcile_orphaned_runs(stale_after_seconds=0)["runs_closed"] == 0
+
+
+def test_retry_finishes_a_zombie_run_with_all_batches_success(tmp_path):
+    """Crash after the last batch left status=running; retry must close it."""
+    cfg = Config(data_root=tmp_path / "data", tdx_allow_mock=True)
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core", {"trade_date": "2024-06-28"})
+    manifest.start_batch(run_id, "batch-0", "instruments", "instruments")
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+    # Deliberately leave the run in 'running'.
+
+    engine = JobEngine(cfg)
+    result = engine.run_job(
+        "retry",
+        date(2024, 6, 28),
+        run_id=run_id,
+        retry_failed_only=True,
+    )
+    assert result["status"] == "success"
+    assert manifest.get_run(run_id)["status"] == "success"
+
+
+def test_run_job_reconciles_orphans_on_entry(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data", tdx_allow_mock=True, batch_stale_seconds=0)
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    zombie = manifest.start_run("valuation_2001", {})
+    manifest.start_batch(zombie, "batch-0", "valuation_metrics", "valuation_metrics")
+
+    engine = JobEngine(cfg)
+    monkeypatch.setattr(engine, "_run_wave", lambda *args, **kwargs: ([], 0, 0, False, False))
+    engine.run_job("daily:core", date(2024, 6, 28), waves=[])
+
+    assert manifest.get_run(zombie)["status"] == "failed"

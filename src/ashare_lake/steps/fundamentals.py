@@ -41,14 +41,67 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
     )
 
 
+def _valuation_history_end(config: Config, trade_date: date) -> date:
+    """Last date baostock history may write — never the live EastMoney tip.
+
+    Daily snapshots belong to EastMoney. Letting history sweeps use ``end=today``
+    creates sparse tip partitions (only the symbols finished so far) that look
+    like coverage and push the watermark forward. Cap at the last complete EM
+    day; if none exists yet, stay one day behind the run date so a first-time
+    backfill still fills history without inventing today's tip.
+    """
+    from datetime import timedelta
+
+    from ashare_lake.quality.cross_checks import last_complete_em_valuation_tip
+    from ashare_lake.storage.state import StateStore
+
+    em_tip = last_complete_em_valuation_tip(config)
+    if em_tip is not None:
+        return min(trade_date, em_tip)
+    # No complete EM tip yet — stay behind the watermark (or behind trade_date)
+    # so history cannot invent the live tip day that EastMoney still owns.
+    watermark = StateStore(config.meta_root).get_date("valuation_metrics")
+    if watermark is not None:
+        return min(trade_date, watermark - timedelta(days=1))
+    return min(trade_date, trade_date - timedelta(days=1))
+
+
 def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -> dict:
-    """Historical PE/PB/PS + market cap from baostock over all_a (2016 → today).
+    """Historical PE/PB/PS + market cap from baostock over all_a (2016 → tip).
 
     Resumable: symbols that already have baostock rows *with* ``float_mv`` filled
     densely (≥80%) are skipped. Progress is written every
     ``_VALUATION_BACKFILL_CHUNK`` symbols so a mid-sweep kill still keeps prior
     chunks. Failures are surfaced as audit findings (fail-loud).
+
+    Single-flight on ``baostock``: concurrent history jobs are what trip the
+    free-tier IP blacklist. History ``end`` is capped so this path cannot invent
+    a sparse tip past the last complete EastMoney day.
     """
+    from ashare_lake.orchestrator.run_lock import RunLockError, run_lock
+
+    try:
+        with run_lock(config.meta_root, "baostock", blocking=False):
+            return _backfill_valuation_metrics_locked(config, trade_date, run_id)
+    except RunLockError as exc:
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "note": "baostock lock held by another process; retry later",
+            "context_updates": {
+                "audit_findings": [
+                    {
+                        "dataset": "valuation_metrics",
+                        "severity": "warning",
+                        "check": "baostock_single_flight",
+                        "message": str(exc),
+                    }
+                ]
+            },
+        }
+
+
+def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id: str) -> dict:
     from ashare_lake.adapters.baostock.valuation import fetch_valuation_history
     from ashare_lake.storage.valuation_orphans import purge_valuation_orphan_symbols
 
@@ -64,11 +117,21 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
     if bar_universe:
         universe = [s for s in universe if s in bar_universe]
     todo = _symbols_needing_backfill(config, universe)
+    history_end = _valuation_history_end(config, trade_date)
+    if history_end < _VALUATION_BACKFILL_START:
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "note": "history_end before backfill start; nothing to fetch",
+            "history_end": history_end.isoformat(),
+            "orphan_purge": purge_summary,
+        }
     if not todo:
         return {
             "rows_read": 0,
             "rows_written": 0,
             "note": "all symbols already backfilled",
+            "history_end": history_end.isoformat(),
             "orphan_purge": purge_summary,
         }
 
@@ -80,7 +143,7 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
         batch = todo[offset : offset + _VALUATION_BACKFILL_CHUNK]
         try:
             df, failed = fetch_valuation_history(
-                batch, _VALUATION_BACKFILL_START, trade_date, config=config
+                batch, _VALUATION_BACKFILL_START, history_end, config=config
             )
         except RuntimeError as exc:
             # Ban / login death mid-sweep: keep prior chunks, surface remainder.
@@ -108,6 +171,7 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
         "rows_written": rows_written,
         "orphan_purge": purge_summary,
         "symbols_todo": len(todo),
+        "history_end": history_end.isoformat(),
     }
     if aborted_reason:
         result["aborted"] = aborted_reason
@@ -120,7 +184,8 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
             "message": (
                 f"baostock backfill incomplete"
                 f"{f' ({aborted_reason})' if aborted_reason else ''}; "
-                f"wrote {rows_written} rows. Re-run `asl backfill valuation_metrics` to resume."
+                f"wrote {rows_written} rows through {history_end.isoformat()}. "
+                "Re-run `asl backfill valuation_metrics` to resume."
             ),
         }
         result.setdefault("context_updates", {})["audit_findings"] = [finding]

@@ -53,6 +53,23 @@ def _watermarked_datasets() -> list[tuple[str, str]]:
     ]
 
 
+def _watermark_date_for(config: Config, dataset: str, partition_col: str) -> date | None:
+    """Freshest date that is safe to claim as covered.
+
+    For ``valuation_metrics`` a sparse tip (partial baostock refill at 20% of
+    bars) must not advance the watermark — walk back to the last dense day.
+    """
+    if dataset == "valuation_metrics":
+        from ashare_lake.quality.cross_checks import last_dense_valuation_date
+
+        dense = last_dense_valuation_date(config)
+        if dense is not None:
+            return dense
+        # No dense day yet — fall through to raw max so a brand-new lake can
+        # still establish a watermark from its first complete EM snapshot.
+    return _max_partition_date(config, dataset, partition_col)
+
+
 def _update_watermarks(
     config: Config,
     datasets: frozenset[str] | None,
@@ -74,7 +91,7 @@ def _update_watermarks(
     for dataset, pcol in _watermarked_datasets():
         if datasets is not None and dataset not in datasets:
             continue
-        max_dt = _max_partition_date(config, dataset, pcol)
+        max_dt = _watermark_date_for(config, dataset, pcol)
         if max_dt is not None:
             state.update_max_date(dataset, max_dt)
 
@@ -94,28 +111,38 @@ def _reconcile_watermarks(config: Config) -> list[dict]:
         current = state.get_date(dataset)
         if current is None:
             continue
-        max_dt = _max_partition_date(config, dataset, pcol)
+        max_dt = _watermark_date_for(config, dataset, pcol)
         if max_dt is None or current <= max_dt:
             continue
+        claimed = current
         state.set_date(dataset, max_dt)
+        check = (
+            "valuation_watermark_coverage_gate"
+            if dataset == "valuation_metrics"
+            else "watermark_ahead_of_data"
+        )
         findings.append(
             {
                 "dataset": dataset,
                 "severity": "warning",
-                "check": "watermark_ahead_of_data",
+                "check": check,
                 "message": (
-                    f"watermark claimed {current.isoformat()} but the freshest "
-                    f"{pcol} in curated is {max_dt.isoformat()}; corrected. The "
-                    "source produced nothing for the days in between"
+                    f"watermark claimed {claimed.isoformat()} but the freshest "
+                    f"complete {pcol} in curated is {max_dt.isoformat()}; corrected"
+                    + (
+                        " (coverage below 70% of daily_bars on newer tip days)"
+                        if dataset == "valuation_metrics"
+                        else ". The source produced nothing for the days in between"
+                    )
                 ),
-                "claimed": current.isoformat(),
+                "claimed": claimed.isoformat(),
                 "actual": max_dt.isoformat(),
             }
         )
         logger.warning(
-            "%s: watermark %s ahead of data %s; corrected",
+            "%s: watermark %s ahead of complete data %s; corrected",
             dataset,
-            current.isoformat(),
+            claimed.isoformat(),
             max_dt.isoformat(),
         )
     return findings
