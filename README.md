@@ -102,15 +102,17 @@ asl query --sql "
 " --config configs/ashare-lake.toml
 ```
 
-也可直连 `{data_root}/duckdb/ashare-lake.duckdb`。
+也可直连 `{data_root}/duckdb/ashare-lake.duckdb`（库内视图已按分区粒度关掉不安全的 hive 解析）。
 
-或者 Polars 直读 Parquet：
+或者 Polars 直读 **按日** 分区的数据集（如 `daily_bars`）：
 
 ```python
 import polars as pl
 bars = pl.scan_parquet("data/ashare-lake/curated/daily_bars/**/*.parquet")
 df = bars.filter(pl.col("symbol") == "600519.SH").collect()
 ```
+
+**注意（年/月分区）：** `index_bars`、`trading_calendar`、`corporate_actions`、`trading_status` 等目录值是 `2024` / `2024-06`，不是完整日期。DuckDB `read_parquet(..., hive_partitioning=true)` 或让 Polars 把目录当成 DATE 列解析时，会用目录标签盖掉/撞上文件里的真日期，看起来像大量“重复”。请优先 `asl query`、已发布的 DuckDB 视图，或 `from ashare_lake.query import load, scan`。原理见 [lake-layout 分区粒度](docs/architecture/lake-layout.md)。
 
 湖目录大致是：
 

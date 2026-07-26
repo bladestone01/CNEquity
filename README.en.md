@@ -94,14 +94,24 @@ roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 ```
 
 DuckDB (`asl query --sql "..."` or connect to
-`{data_root}/duckdb/ashare-lake.duckdb` directly), or Polars straight off the
-Parquet files:
+`{data_root}/duckdb/ashare-lake.duckdb` — views already disable unsafe hive
+parsing by partition granularity), or Polars on a **day-partitioned**
+dataset such as `daily_bars`:
 
 ```python
 import polars as pl
 bars = pl.scan_parquet("data/ashare-lake/curated/daily_bars/**/*.parquet")
 df = bars.filter(pl.col("symbol") == "600519.SH").collect()
 ```
+
+**Year/month partitions:** datasets like `index_bars`, `trading_calendar`,
+`corporate_actions`, and `trading_status` use directory values `2024` /
+`2024-06`, not full dates. DuckDB `read_parquet(..., hive_partitioning=true)`
+(or Polars hive parsing those labels as DATE) overwrites/conflicts with the
+real date column in the file and looks like mass “duplicates.” Prefer
+`asl query`, the published DuckDB views, or
+`from ashare_lake.query import load, scan`. See
+[lake-layout partition granularity](docs/architecture/lake-layout.md).
 
 Lake layout:
 

@@ -453,7 +453,13 @@ Compact 时按主键分组，保留 `fetched_at` 最大的一行。
 
 ### DuckDB 视图
 
+优先用 `asl init` / compact 生成的 `{data_root}/duckdb/ashare-lake.duckdb` 视图，
+不要手写整层 glob。`hive_partitioning=true` **仅**适用于按日分区的数据集
+（目录值为 `YYYY-MM-DD`）；年/月分区必须 `hive_partitioning=false`（真实日期在文件列里）。
+见 [lake-layout](../architecture/lake-layout.md)。
+
 ```sql
+-- daily_bars / adj_factors 为按日分区，hive=true 安全
 CREATE VIEW daily_bars_view AS
 SELECT * FROM read_parquet('{root}/curated/daily_bars/**/*.parquet', hive_partitioning=true);
 
@@ -462,4 +468,7 @@ SELECT b.*, b.close * a.factor AS adj_close
 FROM daily_bars_view b
 LEFT JOIN read_parquet('{root}/derived/adj_factors/**/*.parquet', hive_partitioning=true) a
   ON b.symbol = a.symbol AND b.trade_date = a.trade_date AND a.adjust_type = 'qfq';
+
+-- 反例：index_bars 等按年分区时必须关掉 hive，否则目录 "1993" 会污染 DATE 列
+-- SELECT * FROM read_parquet('.../index_bars/**/*.parquet', hive_partitioning=false);
 ```
