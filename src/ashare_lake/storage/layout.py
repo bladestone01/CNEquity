@@ -20,6 +20,7 @@ def init_data_layout(config: Config) -> None:
         config.meta_root / "on_demand",
         config.data_root / "duckdb",
         config.data_root / "raw",
+        config.data_root / "backups",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)

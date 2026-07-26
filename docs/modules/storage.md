@@ -25,7 +25,7 @@
 `init_data_layout(cfg)` 创建：
 
 ```
-staging/, curated/, derived/, raw/, meta/, duckdb/, meta/locks/
+staging/, curated/, derived/, raw/, meta/, duckdb/, backups/, meta/locks/
 ```
 
 并初始化空 `manifest.db`、刷新 DuckDB 视图。

@@ -180,6 +180,7 @@ rsync -avz --progress user@VPS:~/ashare-lake/data/ashare-lake/ \
 | `missing_corporate_action` | 除权日无 corp action | `asl backfill corporate_actions` |
 | `trading_status_coverage_start` | ST 覆盖起点晚 | 预期警告；跑 baostock ST 回填 |
 | `partition_row_count_mutation` | 行数突变 | 查是否误 compact 或源口径变化 |
+| `unregistered_curated_dir` | `curated/` 下有未注册目录（如 `*.bak*`） | `mv curated/<stray> {data_root}/backups/`；勿删前确认非误移的活数据 |
 
 Findings 文件：`meta/quality/findings/{run_id}.json`
 

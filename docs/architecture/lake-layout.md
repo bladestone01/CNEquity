@@ -15,8 +15,10 @@
 ├── meta/             # 编排元数据、水位、质量、缓存
 ├── duckdb/           # DuckDB 视图数据库
 ├── logs/             # 运维脚本日志（gitignored）
-└── backups/          # 元数据备份（可选）
+└── backups/          # 元数据 tarball + 从 curated 挪出的手术残留（*.bak* 等）
 ```
+
+`backups/` 不是 curated 的一部分。手工改湖时把旧数据集目录挪到这里（例如 `corporate_actions.bak.<ts>`），**不要**留在 `curated/` 旁——整层 `curated/**` 扫描会读到陈旧副本；audit 的 `unregistered_curated_dir` 会报警。
 
 ---
 
