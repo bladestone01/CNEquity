@@ -574,7 +574,19 @@ def repartition(config_path: str, dataset: str | None, do_all: bool, dry_run: bo
     default=False,
     help="Rewrite all adj_factors partitions (default: append-only since watermark).",
 )
-def derive(name: str, config_path: str, full: bool):
+@click.option(
+    "--start",
+    "start_str",
+    default=None,
+    help="trading_status: only derive suspensions on/after this date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end",
+    "end_str",
+    default=None,
+    help="trading_status: only derive suspensions on/before this date (YYYY-MM-DD).",
+)
+def derive(name: str, config_path: str, full: bool, start_str: str | None, end_str: str | None):
     """Derive computed datasets."""
     cfg = _cfg(config_path)
     if name == "adj_factors":
@@ -594,7 +606,11 @@ def derive(name: str, config_path: str, full: bool):
     elif name == "trading_status":
         from ashare_lake.derive.trading_status_history import derive_suspension_history
 
-        rows = derive_suspension_history(cfg)
+        start = date.fromisoformat(start_str) if start_str else None
+        end = date.fromisoformat(end_str) if end_str else None
+        if start and end and start > end:
+            raise click.ClickException("--start must be on or before --end")
+        rows = derive_suspension_history(cfg, start=start, end=end)
         click.echo(f"Derived historical suspension: {rows} rows into trading_status")
     elif name == "sector_routing":
         from ashare_lake.derive.sector_routing import derive_sector_routing

@@ -7,6 +7,9 @@ feeds (EastMoney / AKShare current-snapshot) cannot reach.
 
 Only sparse ``suspended`` rows are written; real daily rows (EM/AKShare) win on
 any primary-key overlap.
+
+Optional ``start`` / ``end`` bound the calendar cross-join so a 2001→today
+rebuild can run year-by-year without OOM.
 """
 
 from __future__ import annotations
@@ -28,7 +31,12 @@ _DERIVED_SOURCE = "derived_bar_gap"
 _STATUS_SPEC = DATASETS["trading_status"]
 
 
-def _suspended_pairs(config: Config) -> pl.DataFrame:
+def _suspended_pairs(
+    config: Config,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> pl.DataFrame:
     """(symbol, trade_date) that were trading days in a symbol's active range but have no bar."""
     bars_root = config.curated_root / "daily_bars"
     cal_root = config.curated_root / "trading_calendar"
@@ -38,27 +46,44 @@ def _suspended_pairs(config: Config) -> pl.DataFrame:
     ):
         return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 
-    bars = (
+    # Lifetime bounds from the full bar history (cheap scan aggregate).
+    sym_range = (
         scan_parquet_root(bars_root, partition_col="trade_date")
-        .select(["symbol", "trade_date"])
-        .unique()
+        .group_by("symbol")
+        .agg(
+            pl.col("trade_date").min().alias("bmin"),
+            pl.col("trade_date").max().alias("bmax"),
+        )
         .collect()
     )
-    if bars.is_empty():
+    if sym_range.is_empty():
         return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 
-    cal = (
+    # Anti-join only needs bars inside the derive window.
+    bars_lf = scan_parquet_root(bars_root, partition_col="trade_date").select(
+        ["symbol", "trade_date"]
+    )
+    if start is not None:
+        bars_lf = bars_lf.filter(pl.col("trade_date") >= start)
+    if end is not None:
+        bars_lf = bars_lf.filter(pl.col("trade_date") <= end)
+    bars = bars_lf.unique().collect()
+
+    cal_lf = (
         scan_parquet_root(cal_root, partition_col="trade_date")
         .filter(pl.col("is_trading"))
         .select("trade_date")
-        .collect()
     )
+    if start is not None:
+        cal_lf = cal_lf.filter(pl.col("trade_date") >= start)
+    if end is not None:
+        cal_lf = cal_lf.filter(pl.col("trade_date") <= end)
+    cal = cal_lf.collect()
+    if cal.is_empty():
+        return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
+
     inst = pl.read_parquet(inst_path).select(["symbol", "list_date", "delist_date"])
 
-    sym_range = bars.group_by("symbol").agg(
-        pl.col("trade_date").min().alias("bmin"),
-        pl.col("trade_date").max().alias("bmax"),
-    )
     active = inst.join(sym_range, on="symbol", how="inner").with_columns(
         pl.max_horizontal(pl.col("list_date").fill_null(pl.col("bmin")), pl.col("bmin")).alias(
             "astart"
@@ -67,6 +92,15 @@ def _suspended_pairs(config: Config) -> pl.DataFrame:
             "aend"
         ),
     )
+    if start is not None:
+        active = active.with_columns(
+            pl.max_horizontal(pl.col("astart"), pl.lit(start)).alias("astart")
+        )
+    if end is not None:
+        active = active.with_columns(pl.min_horizontal(pl.col("aend"), pl.lit(end)).alias("aend"))
+    active = active.filter(pl.col("astart") <= pl.col("aend"))
+    if active.is_empty():
+        return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 
     expected = (
         active.select(["symbol", "astart", "aend"])
@@ -79,9 +113,18 @@ def _suspended_pairs(config: Config) -> pl.DataFrame:
     return expected.join(bars, on=["symbol", "trade_date"], how="anti")
 
 
-def derive_suspension_history(config: Config) -> int:
-    """Write derived ``suspended`` rows into curated trading_status. Returns row count."""
-    pairs = _suspended_pairs(config)
+def derive_suspension_history(
+    config: Config,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> int:
+    """Write derived ``suspended`` rows into curated trading_status. Returns row count.
+
+    When *start* / *end* are set, only that calendar window is considered — use
+    yearly chunks for a full-history rebuild to keep the cross-join bounded.
+    """
+    pairs = _suspended_pairs(config, start=start, end=end)
     if pairs.is_empty():
         return 0
 

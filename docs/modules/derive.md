@@ -47,13 +47,14 @@
 
 ## trading_status_history.py
 
-`derive_suspension_history(cfg)`：
+`derive_suspension_history(cfg, *, start=None, end=None)` / `asl derive trading_status [--start] [--end]`：
 
 - 对比 `daily_bars` 有成交的日期与 `trading_calendar`
 - 推断历史停牌区间
 - 按 `DATASETS["trading_status"].partition_for`（月分区 `trade_date=YYYY-MM`）合并写入 `trading_status`（`status="suspended"`）
+- `start` / `end` 限制日历窗口（按年分块重建，避免全历史 cross-join OOM）
 
-与 baostock ST 历史回填互补；不替代 EastMoney 当日 ST 列表。
+覆盖可与 `daily_bars` 同起点（约 2001）。与 baostock ST 历史回填互补（ST 标签仍约从 2016 起）；不替代 EastMoney 当日 ST 列表。
 
 ---
 

@@ -80,9 +80,9 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a")
 
 ### 历史 ST 限制
 
-日更只抓当天 `trading_status`。baostock ST 回填与停牌派生目前从约 **2016** 起有行；此前至 `daily_bars` 起点（2001）之间 `all_a` **不会**剔除历史 ST/停牌。
+日更只抓当天 `trading_status`。停牌可由 `asl derive trading_status --start/--end` 按年重建，覆盖可与 `daily_bars` 同起点（约 2001）。**ST 标签**仍依赖 baostock，约从 **2016** 起；此前 `all_a` 不会剔除历史 ST（会剔除已派生的停牌）。
 
-审计项 `trading_status_coverage_start` 会报告覆盖起点。`list_datasets()` 的 `coverage_start` 反映盘上实际分区，**不要**据此假定已回填到 2001。
+审计项 `trading_status_coverage_start` 区分总覆盖与 `st_coverage_start`。
 
 ### 交易所覆盖
 
