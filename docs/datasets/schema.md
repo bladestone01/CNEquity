@@ -17,12 +17,12 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 
 | 数据集 | 分区 |
 |---------|-----------|
-| daily_bars | `trade_date` |
-| index_bars | `trade_date` |
+| daily_bars | `trade_date`（按日） |
+| index_bars | `trade_date`（按年） |
 | minute_bars | `frequency`, `trade_date`, `symbol_bucket` |
-| trading_status | `trade_date` |
-| corporate_actions | `ex_date`（按年月） |
-| adj_factors | `trade_date` |
+| trading_status | `trade_date`（按月） |
+| corporate_actions | `ex_date`（按年） |
+| adj_factors | `trade_date`（按日） |
 | financial_statement_items | `report_period` |
 | industry_members | `as_of_date` |
 | northbound_flows | `trade_date` |

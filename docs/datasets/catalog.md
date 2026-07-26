@@ -12,7 +12,7 @@
 |--------|--------|------|------|------|------|------|
 | instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 补 list_date；baostock 回填退市股（`asl backfill instruments`）；merge 保留退市 |
 | trading_calendar | trade_date | trade_date | by_date | ✓ | exchange_calendar | 种子 CSV 2016–2027 |
-| trading_status | trade_date | symbol, trade_date | by_date | ✓ | eastmoney | + akshare ST；baostock ST 回填；派生停牌 |
+| trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | + akshare ST；baostock ST 回填；派生停牌写月分区 |
 
 ---
 
@@ -32,7 +32,7 @@
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| corporate_actions | ex_date | symbol, ex_date, action_type | by_date | ✓ | eastmoney（日更） | 回填：tdx_protocol |
+| corporate_actions | ex_date（按年） | symbol, ex_date, action_type | by_date | ✓ | eastmoney（日更） | 回填：tdx_protocol；混粒度用 `asl repartition` |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` 过滤 |
 | earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`asl backfill` 走 2016 起全报告期 |
 

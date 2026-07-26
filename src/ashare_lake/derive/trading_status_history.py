@@ -17,6 +17,7 @@ from datetime import date
 import polars as pl
 
 from ashare_lake.config import Config
+from ashare_lake.domain.datasets import DATASETS
 from ashare_lake.domain.schemas import validate_dataframe, with_provenance
 from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from ashare_lake.storage.parquet import CuratedWriter
@@ -24,6 +25,7 @@ from ashare_lake.storage.parquet import CuratedWriter
 logger = logging.getLogger(__name__)
 
 _DERIVED_SOURCE = "derived_bar_gap"
+_STATUS_SPEC = DATASETS["trading_status"]
 
 
 def _suspended_pairs(config: Config) -> pl.DataFrame:
@@ -90,12 +92,20 @@ def derive_suspension_history(config: Config) -> int:
     rows = with_provenance(rows, source=_DERIVED_SOURCE, data_version="v1")
     rows = validate_dataframe(rows, "trading_status")
 
+    # trading_status is month-partitioned — never write day dirs that fight the
+    # registry (audit: mixed_partition_granularity) and republish PKs.
     writer = CuratedWriter(config.curated_root)
+    pcol = _STATUS_SPEC.partition_col or "trade_date"
+    part_vals = [
+        _STATUS_SPEC.partition_for(td) if isinstance(td, date) else str(td)
+        for td in rows["trade_date"].to_list()
+    ]
+    rows = rows.with_columns(pl.Series("_part", part_vals))
     total = 0
-    for key, group in rows.partition_by("trade_date", as_dict=True).items():
-        td = key[0] if isinstance(key, tuple) else key
-        val = td.isoformat() if isinstance(td, date) else str(td)
-        existing_dir = writer.partition_path("trading_status", "trade_date", val)
+    for key, group in rows.partition_by("_part", as_dict=True).items():
+        val = str(key[0] if isinstance(key, tuple) else key)
+        group = group.drop("_part")
+        existing_dir = writer.partition_path("trading_status", pcol, val)
         frames = [group]
         stray_parts: list = []
         if existing_dir.exists():
@@ -111,7 +121,7 @@ def derive_suspension_history(config: Config) -> int:
         merged = merged.unique(subset=["symbol", "trade_date"], keep="first").drop("_is_derived")
         # Reuse compact's filename so we overwrite the single canonical part
         # rather than adding a second file (which would double-count on read).
-        writer.write_partition("trading_status", "trade_date", val, merged, "part-merged.parquet")
+        writer.write_partition("trading_status", pcol, val, merged, "part-merged.parquet")
         for stray in stray_parts:
             stray.unlink(missing_ok=True)
         total += group.height

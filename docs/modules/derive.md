@@ -51,7 +51,7 @@
 
 - 对比 `daily_bars` 有成交的日期与 `trading_calendar`
 - 推断历史停牌区间
-- 合并写入 `trading_status`（`status="suspended"`）
+- 按 `DATASETS["trading_status"].partition_for`（月分区 `trade_date=YYYY-MM`）合并写入 `trading_status`（`status="suspended"`）
 
 与 baostock ST 历史回填互补；不替代 EastMoney 当日 ST 列表。
 

@@ -75,12 +75,16 @@ def test_derive_suspension_from_bar_gaps(tmp_path):
     n = derive_suspension_history(cfg)
     assert n == 1  # only 000001 on 2024-06-27
 
-    ts = pl.read_parquet(
-        root / "curated" / "trading_status" / "trade_date=2024-06-27" / "part-merged.parquet"
-    )
+    # trading_status is month-partitioned (DatasetSpec); never write day dirs.
+    month_dir = root / "curated" / "trading_status" / "trade_date=2024-06"
+    assert month_dir.is_dir()
+    assert not (root / "curated" / "trading_status" / "trade_date=2024-06-27").exists()
+
+    ts = pl.read_parquet(month_dir / "part-merged.parquet")
     susp = ts.filter(pl.col("status") == "suspended")
     assert susp.height == 1
     assert susp["symbol"][0] == "000001.SZ"
+    assert susp["trade_date"][0] == date(2024, 6, 27)
     assert susp["is_trading"][0] is False
     assert susp["source"][0] == "derived_bar_gap"
 
