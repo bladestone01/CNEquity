@@ -48,12 +48,12 @@
 | 项 | 值 |
 |------|-------|
 | 波次 | `daily_bars`（Wave 1，依赖 corporate_actions） |
-| 主源 | tdx_protocol（未复权） |
-| 备源 | eastmoney |
+| 主源 | tdx_protocol（未复权，SH/SZ） |
+| 备源 / 路由 | tip 缺口：eastmoney **clist**（分钟级）；多日窗口：eastmoney **kline**；BJ：sina |
 | 频率 | 每日增量；init 时全量回填 |
 | 主键 | (symbol, trade_date) |
 | 重拉 | 当日 `corporate_actions` 的除权日对应标的 |
-| 已知限制 | TDX 限速；建议 workers ≤ 8 |
+| 已知限制 | TDX 限速；建议 workers ≤ 8；clist 只有当日快照，须用 run 的 `trade_date` 打戳（ADR-0005 routing） |
 
 #### index_bars
 
@@ -173,7 +173,7 @@
 
 | 来源 | 协议 | MVP 用途 | 备源 | 降级策略 |
 |--------|----------|-----------|--------|---------|
-| tdx_protocol | TCP | bars、instruments、calendar | eastmoney | 仅 audit 告警 |
+| tdx_protocol | TCP | bars、instruments、calendar | eastmoney clist（tip 路由）/ kline（多日） | tip 缺口进 curated（ADR-0005）；snapshot 供 diff |
 | sina | HTTP | adj_factors（qfq/hfq） | — | 跳过该标的 + quality finding |
 | eastmoney | HTTP | 公司行为备源、资金面 | akshare | 跳过 + quality finding |
 | cninfo | HTTP | announcement_index | — | 仅按需 |

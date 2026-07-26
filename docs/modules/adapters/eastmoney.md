@@ -24,7 +24,7 @@
 | 文件 | 数据集 / 用途 |
 |------|----------------|
 | `instruments.py` | instruments `list_date`  enrichment |
-| `bars.py` | daily_bars **备源**（failover snapshot） |
+| `bars.py` | daily_bars tip **clist** gap-fill + 多日 **kline** 备源；snapshot 供 `source_diff` |
 | `corporate_actions.py` | corporate_actions **daily 主源** |
 | `capital.py` | fund_flow, margin_trading, northbound_*, dragon_tiger, block_trades |
 | `valuation.py` | valuation_metrics 当日快照 |

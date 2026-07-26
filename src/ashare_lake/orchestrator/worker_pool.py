@@ -46,6 +46,15 @@ def _window_backfill(start: date) -> bool:
     return start == BACKFILL_START
 
 
+def _empty_pool_result() -> dict[str, Any]:
+    return {
+        "rows_read": 0,
+        "rows_written": 0,
+        "had_error": False,
+        "failed_symbols": [],
+    }
+
+
 def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
     (
         symbols,
@@ -110,11 +119,18 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
                 rows_read=df.height,
                 rows_written=df.height,
             )
-        return {"rows_read": df.height, "rows_written": df.height, "batch_id": batch_id}
+        return {
+            "rows_read": df.height,
+            "rows_written": df.height,
+            "batch_id": batch_id,
+            "failed_symbols": [],
+        }
     except Exception as exc:
         if manifest:
             manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
-        if failover_enabled and dataset == "daily_bars":
+        # Tip windows: step-level clist gap-fill. Multi-day: kline snapshot only
+        # (staging gap-fill also happens at the step for failed_symbols).
+        if failover_enabled and dataset == "daily_bars" and start < end:
             from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_bars
             from ashare_lake.domain.schemas import with_provenance
             from ashare_lake.storage.source_snapshots import SnapshotStore
@@ -144,11 +160,15 @@ def fetch_daily_bars_parallel(
     *,
     batch_specs: list[BatchSpec] | None = None,
 ) -> dict[str, Any]:
-    """Fetch daily bars in symbol batches; each batch is recorded in manifest."""
+    """Fetch daily bars in symbol batches; each batch is recorded in manifest.
+
+    Returns ``had_error`` / ``failed_symbols`` instead of raising so callers can
+    route tip gaps through EastMoney clist (ADR-0005) before failing the step.
+    """
     if batch_specs:
         batches = batch_specs
     elif not symbols:
-        return {"rows_read": 0, "rows_written": 0}
+        return _empty_pool_result()
     else:
         batch_size = config.batch_size
         batches = [
@@ -157,13 +177,14 @@ def fetch_daily_bars_parallel(
         ]
 
     if not batches:
-        return {"rows_read": 0, "rows_written": 0}
+        return _empty_pool_result()
 
     staging_root = config.staging_root
     manifest_path = str(config.manifest_path)
     manifest = Manifest(config.manifest_path)
     total_read = 0
     total_written = 0
+    failed_symbols: list[str] = []
     rl = config.tdx_rate_limit_spec()
     rate_limit_tuple = (rl.state_dir, rl.source, rl.min_interval) if rl else None
     stale_seconds = config.batch_stale_seconds
@@ -210,7 +231,12 @@ def fetch_daily_bars_parallel(
                 rows_read=df.height,
                 rows_written=df.height,
             )
-            return {"rows_read": df.height, "rows_written": df.height, "batch_id": batch_id}
+            return {
+                "rows_read": df.height,
+                "rows_written": df.height,
+                "batch_id": batch_id,
+                "failed_symbols": [],
+            }
         except Exception as exc:
             manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
             if config.failover_enabled and dataset == "daily_bars":
@@ -224,6 +250,14 @@ def fetch_daily_bars_parallel(
                 )
             raise
 
+    def _outcome(had_error: bool) -> dict[str, Any]:
+        return {
+            "rows_read": total_read,
+            "rows_written": total_written,
+            "had_error": had_error,
+            "failed_symbols": list(dict.fromkeys(failed_symbols)),
+        }
+
     if config.workers <= 1 or len(batches) == 1:
         had_error = False
         for batch_id, batch_symbols, batch_start, batch_end in batches:
@@ -233,9 +267,8 @@ def fetch_daily_bars_parallel(
                 total_written += result["rows_written"]
             except Exception:
                 had_error = True
-        if had_error:
-            raise RuntimeError(f"{dataset}: one or more symbol batches failed")
-        return {"rows_read": total_read, "rows_written": total_written}
+                failed_symbols.extend(batch_symbols)
+        return _outcome(had_error)
 
     def _task_for(batch: tuple) -> tuple:
         batch_id, batch_symbols, batch_start, batch_end = batch
@@ -276,7 +309,9 @@ def fetch_daily_bars_parallel(
                     pending.pop(batch_id, None)
                 except TimeoutError:
                     had_error = True
-                    pending.pop(batch_id, None)
+                    batch = pending.pop(batch_id, None)
+                    if batch is not None:
+                        failed_symbols.extend(batch[1])
                     manifest.mark_batch_stale(
                         run_id, batch_id, f"worker result timeout after {stale_seconds}s"
                     )
@@ -295,7 +330,9 @@ def fetch_daily_bars_parallel(
                     raise
                 except Exception as exc:
                     had_error = True
-                    pending.pop(batch_id, None)
+                    batch = pending.pop(batch_id, None)
+                    if batch is not None:
+                        failed_symbols.extend(batch[1])
                     logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
     except BrokenProcessPool:
         # The pool died mid-run. Whatever is still pending never got a verdict —
@@ -315,8 +352,7 @@ def fetch_daily_bars_parallel(
                 pending.pop(batch_id, None)
             except Exception as exc:
                 had_error = True
+                failed_symbols.extend(batch[1])
                 logger.warning("%s batch %s failed on serial retry: %s", dataset, batch_id, exc)
 
-    if had_error:
-        raise RuntimeError(f"{dataset}: one or more symbol batches failed")
-    return {"rows_read": total_read, "rows_written": total_written}
+    return _outcome(had_error)

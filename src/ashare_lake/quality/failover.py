@@ -1,4 +1,4 @@
-"""Failover helpers — write backup snapshots without touching curated (ADR-0003)."""
+"""Failover helpers — backup snapshots + tip routing support (ADR-0003 / 0005)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from datetime import date
 import polars as pl
 
 from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_daily_bars
+from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars_clist
 from ashare_lake.adapters.eastmoney.corporate_actions import fetch_corporate_actions_eastmoney
 from ashare_lake.config import Config, FailoverDatasetSpec
 from ashare_lake.domain.schemas import with_provenance
@@ -56,6 +57,37 @@ def write_backup_snapshot(
         )
 
 
+def snapshot_daily_bars_clist(
+    config: Config,
+    *,
+    trade_date: date,
+    run_id: str,
+    batch_id: str = "em-clist-snapshot",
+    symbols: set[str] | list[str] | None = None,
+    df: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Write tip clist bars to source_snapshots for audit (not curated)."""
+    spec = failover_spec(config, "daily_bars")
+    if spec is None or not config.sources.get(spec.backup, True):
+        return pl.DataFrame() if df is None else df
+    if df is None:
+        config.rate_limit(spec.backup)
+        df = fetch_daily_bars_clist(trade_date, symbols=symbols, config=config)
+    if df.is_empty():
+        return df
+    stamped = with_provenance(df, source=spec.backup, data_version="v1")
+    write_backup_snapshot(
+        config,
+        "daily_bars",
+        stamped,
+        run_id=run_id,
+        batch_id=batch_id,
+        source=spec.backup,
+        trade_date=trade_date,
+    )
+    return stamped
+
+
 def snapshot_daily_bars_backup(
     config: Config,
     *,
@@ -65,8 +97,12 @@ def snapshot_daily_bars_backup(
     run_id: str,
     batch_id: str,
 ) -> None:
+    """Multi-day / history failover via per-symbol kline (slow — not for tip)."""
     spec = failover_spec(config, "daily_bars")
     if spec is None or not config.sources.get(spec.backup, True):
+        return
+    # Tip windows use clist once at the step level; avoid N×kline here.
+    if start == end:
         return
     config.rate_limit(spec.backup)
     df = fetch_em_daily_bars(symbols, start, end)

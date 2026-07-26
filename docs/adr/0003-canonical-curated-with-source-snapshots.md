@@ -18,6 +18,13 @@ data lands in `meta/source_snapshots/{dataset}/source=.../data_version=.../`.
 The `audit` step compares primary vs snapshots and emits `source_diffs`.
 **Source switching is never automatic** — a human decides.
 
+**Routing vs switching:** “Never automatic” means **switching** the preferred
+source for a primary key that already has a canonical row. It does **not**
+forbid **routing** disjoint key sets to different adapters in one run (e.g.
+BJ → sina, tip-day TDX gaps → EastMoney clist). See
+[ADR-0005](0005-source-routing-vs-switching.md). Backup snapshots remain for
+cross-audit even when routing stages missing tip keys into curated.
+
 **Per-dataset canonical source:** The canonical `source` column reflects whichever
 adapter owns that dataset for the given ingestion mode (e.g. `corporate_actions`
 uses `eastmoney` for daily ex-date scans and `tdx_protocol` for symbol backfill).

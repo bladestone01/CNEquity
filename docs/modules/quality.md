@@ -75,7 +75,7 @@
 - 价格类：`price_tolerance_bps`（默认 10bps）
 - 输出 `meta/quality/source_diffs/{run_id}.json`
 
-**不自动修正 curated**（ADR-0003）。
+**同 PK 不自动换源**（ADR-0003 **switching**）。**不相交 key 的路由**（BJ→sina、tip TDX 缺口→东财 clist）见 [ADR-0005](../adr/0005-source-routing-vs-switching.md)。
 
 ---
 
@@ -83,14 +83,15 @@
 
 配置驱动（`[failover.datasets]`）：
 
-1. 主源 batch 失败
-2. 调备源 adapter 拉取
-3. 写 snapshot（带 provenance）
-4. audit 阶段 diff
+1. 主源 batch 失败（或 tip 缺 key）
+2. **tip 日**：一次 push2 clist → 只把缺失 key 写入 staging（`source=eastmoney`），并写 snapshot
+3. **多日窗口**：对失败 symbol 走 per-symbol kline → staging + snapshot
+4. audit 阶段 `source_diff` 仍比对 primary vs snapshot
 
 ---
 
 ## 相关文档
 
 - [设计原则 — 防线在引擎侧](../architecture/design-principles.md)
+- [ADR-0005 routing vs switching](../adr/0005-source-routing-vs-switching.md)
 - [故障排查](../operations/troubleshooting.md)

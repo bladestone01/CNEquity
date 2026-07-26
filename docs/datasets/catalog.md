@@ -20,7 +20,7 @@
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | 东财备源快照（failover） |
+| daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | tip 缺口东财 clist 路由进 curated；多日 kline；BJ→sina；snapshot 仍留 audit |
 | index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
 | commodity_bars | trade_date | symbol, trade_date | by_date | ✓ | eastmoney+sina | 国内主连 + COMEX金 `GC0.CMX`；`asl backfill commodity_bars`；required=false |
 | adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`asl derive adj_factors` |

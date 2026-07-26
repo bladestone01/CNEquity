@@ -39,14 +39,30 @@ def _backfill_window(config: Config, trade_date: date) -> tuple[date, date]:
 def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     batch_specs = context.get("_retry_batch_specs")
     if batch_specs:
-        return fetch_daily_bars_parallel(
+        # Retry windows are encoded on each BatchSpec; tip/multi-day gap-fill
+        # still applies using the outer trade_date / per-spec window.
+        windows = {(s, e) for _, _, s, e in batch_specs}
+        start = min(s for s, _ in windows)
+        end = max(e for _, e in windows)
+        expected = [sym for _, syms, _, _ in batch_specs for sym in syms]
+        result = fetch_daily_bars_parallel(
             config,
             [],
-            trade_date,
-            trade_date,
+            start,
+            end,
             run_id,
             "daily_bars",
             batch_specs=batch_specs,
+        )
+        return _finish_daily_bars(
+            config,
+            trade_date,
+            run_id,
+            start=start,
+            end=end,
+            expected_tdx_symbols=list(dict.fromkeys(expected)),
+            tdx_result=result,
+            sina_result=None,
         )
 
     symbols = load_symbols(config)
@@ -63,6 +79,7 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
     # TDX has no Beijing exchange route at all — mootdx rejects the market id —
     # so BJ symbols must come from the fallback vendor or they silently never
     # arrive, which is exactly how the lake ended up with zero BJ coverage.
+    # Tip gaps after TDX are a second routing case (ADR-0005): EastMoney clist.
     tdx_symbols, fallback_symbols = split_by_quote_source(symbols)
     result = fetch_daily_bars_parallel(
         config,
@@ -72,18 +89,340 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         run_id,
         "daily_bars",
     )
+    sina_result = None
     if fallback_symbols:
-        fallback = fetch_bars_via_sina(
+        sina_result = fetch_bars_via_sina(
             config, fallback_symbols, start, end, run_id, batch_prefix="sina"
         )
-        result = {
-            "rows_read": result.get("rows_read", 0) + fallback.get("rows_read", 0),
-            "rows_written": result.get("rows_written", 0) + fallback.get("rows_written", 0),
-            **{k: v for k, v in fallback.items() if k not in ("rows_read", "rows_written")},
-        }
+    return _finish_daily_bars(
+        config,
+        trade_date,
+        run_id,
+        start=start,
+        end=end,
+        expected_tdx_symbols=tdx_symbols,
+        tdx_result=result,
+        sina_result=sina_result,
+    )
+
+
+def _finish_daily_bars(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    *,
+    start: date,
+    end: date,
+    expected_tdx_symbols: list[str],
+    tdx_result: dict,
+    sina_result: dict | None,
+) -> dict:
+    """Apply tip clist / multi-day kline gap-fill, then pre-open rejection."""
+    rows_read = int(tdx_result.get("rows_read", 0))
+    rows_written = int(tdx_result.get("rows_written", 0))
+    findings: list[dict] = []
+    had_error = bool(tdx_result.get("had_error"))
+    failed_symbols = list(tdx_result.get("failed_symbols") or [])
+
+    if sina_result:
+        rows_read += int(sina_result.get("rows_read", 0))
+        rows_written += int(sina_result.get("rows_written", 0))
+        sina_findings = (sina_result.get("context_updates") or {}).get("audit_findings") or []
+        findings.extend(sina_findings)
+
+    tip = start == end
+    if tip:
+        gap = _gapfill_tip_via_clist(
+            config, trade_date, run_id, expected_symbols=expected_tdx_symbols
+        )
+        rows_read += int(gap.get("rows_read", 0))
+        rows_written += int(gap.get("rows_written", 0))
+        findings.extend(gap.get("audit_findings") or [])
+    elif failed_symbols:
+        gap = _gapfill_multiday_via_kline(
+            config, run_id, symbols=failed_symbols, start=start, end=end
+        )
+        rows_read += int(gap.get("rows_read", 0))
+        rows_written += int(gap.get("rows_written", 0))
+        findings.extend(gap.get("audit_findings") or [])
+        if gap.get("filled"):
+            had_error = False
 
     _reject_preopen_placeholder(config, run_id, trade_date)
+
+    if tip:
+        staged = _staged_daily_bar_symbols(config, run_id, trade_date)
+        if expected_tdx_symbols and not staged:
+            raise RuntimeError(
+                f"daily_bars {trade_date}: TDX failed and EastMoney clist gap-fill "
+                "produced no staged tip rows"
+            )
+        # Tip with any staged rows is usable; leftover holes stay as findings.
+        had_error = False
+    elif had_error:
+        raise RuntimeError("daily_bars: one or more symbol batches failed")
+
+    result: dict = {"rows_read": rows_read, "rows_written": rows_written}
+    if findings:
+        result["context_updates"] = {"audit_findings": findings}
     return result
+
+
+def _staged_daily_bar_symbols(
+    config: Config, run_id: str, trade_date: date | None
+) -> set[str]:
+    import polars as pl
+
+    from ashare_lake.storage import StagingWriter
+
+    files = StagingWriter(config.staging_root).list_run_files("daily_bars", run_id)
+    if not files:
+        return set()
+    lf = pl.scan_parquet([str(f) for f in files]).select("symbol", "trade_date")
+    if trade_date is not None:
+        lf = lf.filter(pl.col("trade_date") == trade_date)
+    return set(lf.select("symbol").unique().collect()["symbol"].to_list())
+
+
+def _gapfill_tip_via_clist(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    *,
+    expected_symbols: list[str],
+) -> dict:
+    """Route missing tip keys through one EastMoney clist snapshot (ADR-0005)."""
+    import polars as pl
+
+    from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars_clist
+    from ashare_lake.domain.schemas import with_provenance
+    from ashare_lake.orchestrator.manifest import Manifest
+    from ashare_lake.quality.failover import failover_spec, snapshot_daily_bars_clist
+    from ashare_lake.storage import StagingWriter
+
+    if not expected_symbols:
+        return {"rows_read": 0, "rows_written": 0, "filled": False}
+    staged = _staged_daily_bar_symbols(config, run_id, trade_date)
+    missing = [s for s in expected_symbols if s not in staged]
+    if not missing:
+        return {"rows_read": 0, "rows_written": 0, "filled": False}
+
+    spec = failover_spec(config, "daily_bars")
+    if spec is None or not config.sources.get(spec.backup, True):
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "filled": False,
+            "audit_findings": [
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_clist_gapfill",
+                    "message": (
+                        f"{len(missing)} tip key(s) missing after TDX but eastmoney "
+                        "backup is disabled; curated tip stays sparse"
+                    ),
+                }
+            ],
+        }
+
+    config.rate_limit(spec.backup)
+    # One full clist pull, then keep only missing keys so compact cannot
+    # overwrite successful TDX rows for the same PK (keep=last by fetched_at).
+    full = fetch_daily_bars_clist(trade_date, config=config)
+    if full.is_empty():
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "filled": False,
+            "audit_findings": [
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_clist_gapfill",
+                    "message": (
+                        f"{len(missing)} tip key(s) missing after TDX; "
+                        "EastMoney clist returned no rows"
+                    ),
+                }
+            ],
+        }
+
+    snapshot_daily_bars_clist(
+        config,
+        trade_date=trade_date,
+        run_id=run_id,
+        batch_id="em-clist-snapshot",
+        df=full,
+    )
+    missing_set = set(missing)
+    gap_df = full.filter(pl.col("symbol").is_in(list(missing_set)))
+    if gap_df.is_empty():
+        return {
+            "rows_read": full.height,
+            "rows_written": 0,
+            "filled": False,
+            "audit_findings": [
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_clist_gapfill",
+                    "message": (
+                        f"clist had {full.height} rows but none of the "
+                        f"{len(missing)} missing tip key(s)"
+                    ),
+                }
+            ],
+        }
+
+    gap_df = with_provenance(gap_df, source=spec.backup, data_version="v1")
+    batch_id = "em-clist-gapfill"
+    filled_syms = sorted(set(gap_df["symbol"].to_list()))
+    manifest = Manifest(config.manifest_path)
+    manifest.start_batch(
+        run_id,
+        batch_id,
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=filled_syms,
+        window_start=trade_date.isoformat(),
+        window_end=trade_date.isoformat(),
+    )
+    StagingWriter(config.staging_root).write_batch("daily_bars", run_id, batch_id, gap_df)
+    manifest.finish_batch(
+        run_id,
+        batch_id,
+        "success",
+        rows_read=gap_df.height,
+        rows_written=gap_df.height,
+    )
+    logger.warning(
+        "daily_bars tip gap-fill: staged %s EastMoney clist row(s) for %s missing key(s)",
+        gap_df.height,
+        len(missing),
+    )
+    return {
+        "rows_read": gap_df.height,
+        "rows_written": gap_df.height,
+        "filled": True,
+        "audit_findings": [
+            {
+                "dataset": "daily_bars",
+                "severity": "warning",
+                "check": "daily_bars_clist_gapfill",
+                "message": (
+                    f"routed {gap_df.height} tip key(s) through EastMoney clist "
+                    f"after TDX left {len(missing)} missing (ADR-0005 routing)"
+                ),
+                "missing_requested": len(missing),
+                "rows_written": gap_df.height,
+            }
+        ],
+    }
+
+
+def _gapfill_multiday_via_kline(
+    config: Config,
+    run_id: str,
+    *,
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> dict:
+    """Stage EastMoney kline for symbols whose TDX multi-day batches failed."""
+    import polars as pl
+
+    from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_kline
+    from ashare_lake.domain.schemas import with_provenance
+    from ashare_lake.orchestrator.manifest import Manifest
+    from ashare_lake.quality.failover import failover_spec, write_backup_snapshot
+    from ashare_lake.storage import StagingWriter
+
+    spec = failover_spec(config, "daily_bars")
+    if spec is None or not config.sources.get(spec.backup, True) or not symbols:
+        return {"rows_read": 0, "rows_written": 0, "filled": False}
+
+    config.rate_limit(spec.backup)
+    df = fetch_em_kline(symbols, start, end)
+    if df.is_empty():
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "filled": False,
+            "audit_findings": [
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_kline_gapfill",
+                    "message": (
+                        f"TDX failed for {len(symbols)} symbol(s) over "
+                        f"{start}..{end}; EastMoney kline returned no rows"
+                    ),
+                }
+            ],
+        }
+
+    # Drop symbol×date pairs already staged so we never overwrite TDX rows.
+    files = StagingWriter(config.staging_root).list_run_files("daily_bars", run_id)
+    if files:
+        existing = (
+            pl.scan_parquet([str(f) for f in files])
+            .select("symbol", "trade_date")
+            .unique()
+            .collect()
+        )
+        gap_df = df.join(existing, on=["symbol", "trade_date"], how="anti")
+    else:
+        gap_df = df
+
+    if gap_df.is_empty():
+        return {"rows_read": df.height, "rows_written": 0, "filled": True}
+
+    gap_df = with_provenance(gap_df, source=spec.backup, data_version="v1")
+    write_backup_snapshot(
+        config,
+        "daily_bars",
+        gap_df,
+        run_id=run_id,
+        batch_id="em-kline-snapshot",
+        source=spec.backup,
+        trade_date=end,
+    )
+    batch_id = "em-kline-gapfill"
+    manifest = Manifest(config.manifest_path)
+    manifest.start_batch(
+        run_id,
+        batch_id,
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=sorted(set(gap_df["symbol"].to_list())),
+        window_start=start.isoformat(),
+        window_end=end.isoformat(),
+    )
+    StagingWriter(config.staging_root).write_batch("daily_bars", run_id, batch_id, gap_df)
+    manifest.finish_batch(
+        run_id,
+        batch_id,
+        "success",
+        rows_read=gap_df.height,
+        rows_written=gap_df.height,
+    )
+    return {
+        "rows_read": gap_df.height,
+        "rows_written": gap_df.height,
+        "filled": True,
+        "audit_findings": [
+            {
+                "dataset": "daily_bars",
+                "severity": "warning",
+                "check": "daily_bars_kline_gapfill",
+                "message": (
+                    f"routed {gap_df.height} row(s) through EastMoney kline for "
+                    f"{len(symbols)} TDX-failed symbol(s) ({start}..{end})"
+                ),
+            }
+        ],
+    }
 
 
 # A bar captured before the session opens is the previous close stamped on every

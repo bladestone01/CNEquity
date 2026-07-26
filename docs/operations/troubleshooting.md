@@ -69,6 +69,13 @@ uv run asl status --datasets   # valuation 不应再停在稀疏 tip
 4. 若 TDX 问题：`asl servers test`；换 `[tdx_protocol.hosts].standard`
 5. 若单数据集持续失败：`asl backfill <dataset>`（需支持 backfill）
 
+### daily_bars：TDX 批次失败但 tip 仍有数据
+
+- **现象**：日志 `daily_bars_clist_gapfill` / `routed … through EastMoney clist`；部分行 `source=eastmoney`。
+- **原因**：TDX 主源部分/全部失败时，tip 日对**缺失 key**走东财 push2 clist（~54 页，分钟级），不是 per-symbol kline（小时级）。这是 ADR-0005 **routing**，不是静默换主源。
+- **处理**：可接受则继续；要纯 TDX tip 时修好 TDX 后对当日 `asl run daily --group core --trade-date …` 重跑（compact `keep=last` 会用更新的主源行覆盖同 PK）。
+- **多日回填**失败仍走 kline gap-fill（慢）；clist **不能**伪造历史。
+
 ### 周末 / 漏跑后水位落后
 
 - **现象**：今天非交易日时 `asl run daily` → `skipped_non_trading_day`；`daily_bars`
