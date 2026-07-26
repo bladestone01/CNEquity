@@ -44,15 +44,20 @@ baostock 需匿名 `bs.login()`；`_session.py` 处理：
 
 ### 防黑名单限速（必开）
 
-全市场历史回填极易触发 baostock「黑名单用户」。配置见 `[sources.baostock]`：
+官方免费 API 限制（超限进入黑名单，`error_code=10001011`）：
+
+- **每日 API 请求不能超过 5 万次**
+- **不能并发连接访问**（单连接串行）
+
+全市场历史回填极易触发「黑名单用户」。配置见 `[sources.baostock]`：
 
 | 键 | 默认 | 说明 |
 |----|------|------|
 | `min_interval_seconds` | 1.0 | 每 symbol 前跨进程限速（`config.rate_limit("baostock")`） |
-| `batch_size` | 50 | 每完成 N 个 symbol 额外休息 |
-| `batch_rest_seconds` | 45 | 批次间冷却秒数 |
+| `batch_size` | 20 | 每完成 N 个 symbol 额外休息 |
+| `batch_rest_seconds` | 120 | 批次间冷却秒数 |
 
-时间可以慢：~5000 票 ×（1s + 批次休息）是**有意**的，换 IP 解封后务必用该配置 resume，勿开多进程并行扫 baostock。
+时间可以慢：~5000 票 ×（1s + 批次休息）是**有意**的，换 IP 解封后务必用该配置 resume，**勿开多进程/多连接并行扫 baostock**。
 
 ---
 

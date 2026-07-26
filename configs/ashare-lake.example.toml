@@ -62,13 +62,15 @@ min_interval_seconds = 1.0
 enabled = true
 min_interval_seconds = 0.3
 
-# Free TCP API. Full-market history must be slow or the IP gets blacklisted.
+# Free TCP API. Official limits: ≤50k API requests/day, no concurrent connections;
+# exceeding either puts the IP on the blacklist (error_code=10001011).
+# Full-market history must be slow or the IP gets blacklisted.
 # ~5000 symbols × (1s + batch rests) ≈ many hours to days — intentional.
 [sources.baostock]
 enabled = true
 min_interval_seconds = 1.0
-batch_size = 50
-batch_rest_seconds = 45
+batch_size = 20
+batch_rest_seconds = 120
 
 [adj_factors]
 source = "sina"

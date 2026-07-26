@@ -27,6 +27,10 @@ LOG_DIR="${ASL_LOG_DIR:-$REPO_ROOT/data/ashare-lake/logs}"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/daily-$(date +%Y%m%d).log"
 TRADE_DATE="${1:-${ASL_TRADE_DATE:-}}"
+# Expanded below as ${DATE_ARGS[@]+"${DATE_ARGS[@]}"}: macOS ships bash 3.2,
+# where "${arr[@]}" on an empty array is an unbound-variable error under `set -u`
+# (fixed in bash 4.4). Every scheduled run omits --trade-date, so the array is
+# empty and the plain form killed the pipeline at its first group.
 DATE_ARGS=()
 if [[ -n "$TRADE_DATE" ]]; then
   DATE_ARGS=(--trade-date "$TRADE_DATE")
@@ -60,7 +64,7 @@ summary_status=()
 
 for g in $GROUP_LIST; do
   log "--- group: $g ---"
-  if "$ASL" run daily --group "$g" --config "$CONFIG" "${DATE_ARGS[@]}" >>"$LOG" 2>&1; then
+  if "$ASL" run daily --group "$g" --config "$CONFIG" ${DATE_ARGS[@]+"${DATE_ARGS[@]}"} >>"$LOG" 2>&1; then
     log "group $g OK"
     summary_names+=("$g")
     summary_status+=("OK")

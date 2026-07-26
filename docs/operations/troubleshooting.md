@@ -8,7 +8,7 @@
 
 | 现象 | 原因 | 处理 |
 |------|------|------|
-| `baostock login failed: 黑名单用户` | IP/账号被免费 API 封禁（全市场扫太快） | **停扫**；换出口或等解封（常数小时～数天）。解封后用 `[sources.baostock]` 默认限速 resume，勿提高并发 |
+| `baostock login failed: 黑名单用户`（`10001011`） | IP 被免费 API 封禁：日请求 >5 万、或并发连接、或扫太快 | **停扫**；换出口或去 QQ 群求助解封。解封后用 `[sources.baostock]` 默认限速 resume，**勿并发** |
 | 东财 429 / Empty reply / 连接被掐 | 请求过密或海外出口 | 保持 `min_interval_seconds ≥ 1.0`；大陆出口或 `proxy`；见下文 sector_bars |
 | cninfo / akshare 间歇失败 | 同源风控 | 已按页/按调用 `rate_limit`；失败 fail-loud 后降频重试 |
 

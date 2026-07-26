@@ -24,11 +24,13 @@ _LOGIN_RETRIES = 5
 _LOGIN_BACKOFF_SECONDS = (2.0, 5.0, 10.0, 20.0, 30.0)
 _DEFAULT_MIN_INTERVAL = 1.0
 _DEFAULT_BATCH_SIZE = 20
-# Measured 2026-07: the free tier blocks ("黑名单用户") after roughly 43 queries
-# in a session, with a ~40 minute cooldown — the binding constraint is cumulative
-# volume, not request spacing. Batch 50 / rest 45s was what got blocked; batch 20
-# / rest 120s carried 1,658 symbols of valuation and 244 of delisted bars without
-# a single block.
+# Official free-API limits: ≤50k requests/day, no concurrent connections;
+# exceeding either blacklists the IP (error_code=10001011).
+# Measured 2026-07: the free tier also blocks ("黑名单用户") after roughly 43
+# queries in a session, with a ~40 minute cooldown — the binding constraint is
+# cumulative volume, not request spacing. Batch 50 / rest 45s was what got
+# blocked; batch 20 / rest 120s carried 1,658 symbols of valuation and 244 of
+# delisted bars without a single block.
 _DEFAULT_BATCH_REST = 120.0
 # Watchdog: baostock can trickle bytes forever at ~0 CPU; kill past this.
 _PER_SYMBOL_DEADLINE_SECONDS = 45.0

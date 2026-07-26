@@ -57,8 +57,8 @@ def test_example_config_validates():
     assert validate_config(cfg) == []
     # Free-source anti-blacklist defaults (time may be slow; bans are worse).
     assert cfg.source_intervals["baostock"] == 1.0
-    assert cfg.baostock_batch_size == 50
-    assert cfg.baostock_batch_rest_seconds == 45.0
+    assert cfg.baostock_batch_size == 20
+    assert cfg.baostock_batch_rest_seconds == 120.0
     # EastMoney pacing is a floor, not a fixed value: push2his bans bursty
     # overseas IPs, so the example config may raise it further. AKShare mostly
     # wraps EastMoney, so it must never be faster or the two share a ban.
