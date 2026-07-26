@@ -273,12 +273,21 @@ def load_config(path: str | Path) -> Config:
 
 
 def validate_config(cfg: Config) -> list[str]:
+    import sys
+
     import ashare_lake.steps  # noqa: F401 — register steps
     from ashare_lake.orchestrator.registry import STEP_REGISTRY
 
     errors: list[str] = []
     if cfg.workers < 1:
         errors.append("orchestrator.workers must be >= 1")
+    # mootdx is not fork-safe; ProcessPool on macOS is the OOM / BrokenProcessPool
+    # footgun that wiped notes under load. Refuse the unsafe combo loudly.
+    if sys.platform == "darwin" and cfg.workers > 1:
+        errors.append(
+            "orchestrator.workers must be 1 on macOS "
+            "(mootdx + ProcessPool fork is unsafe; use workers = 1)"
+        )
     if cfg.batch_size < 1:
         errors.append("orchestrator.batch_size must be >= 1")
     servers = cfg.tdx_servers.strip()

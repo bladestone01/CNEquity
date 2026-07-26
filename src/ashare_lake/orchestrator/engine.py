@@ -387,6 +387,10 @@ class JobEngine:
     def _retry_run(
         self, run_id: str, trade_date: date, *, auto_finalize: bool = True
     ) -> dict[str, Any]:
+        # Same as run_job entry: close peer zombies before we touch this run.
+        # retry used to skip reconcile (early-return before start_run), so
+        # crashed valuation/backfill runs sat until the next daily job.
+        self._reconcile_orphans()
         with run_lock(self.config.meta_root, run_id):
             return self._retry_run_locked(run_id, trade_date, auto_finalize=auto_finalize)
 

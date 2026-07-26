@@ -478,6 +478,16 @@ class Manifest:
             )
             return cur.fetchall()
 
+    def get_batch(self, run_id: str, batch_id: str) -> sqlite3.Row | None:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM ingestion_batches
+                WHERE run_id = ? AND batch_id = ?
+                """,
+                (run_id, batch_id),
+            ).fetchone()
+
     def get_run(self, run_id: str) -> sqlite3.Row | None:
         with self._connect() as conn:
             return conn.execute(

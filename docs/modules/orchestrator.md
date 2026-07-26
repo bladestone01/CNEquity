@@ -14,7 +14,7 @@
 | `registry.py` | `STEP_REGISTRY`, `@register_step`, `StepEntry` |
 | `deps.py` | Step 拓扑分层；finalize 始终最后 |
 | `manifest.py` | SQLite：`ingestion_runs`, `ingestion_batches` |
-| `worker_pool.py` | `daily_bars` 等 symbol-batch 并行 |
+| `worker_pool.py` | `daily_bars` 等 symbol-batch 并行；`BrokenProcessPool` 串行恢复且不降级已 success 的 batch |
 | `init_phases.py` | Init 阶段 → step 列表、backfill 标志 |
 | `compact_gate.py` | 有 incomplete batch 时跳过数据集 compact |
 | `run_lock.py` | 文件锁，防并发 run/retry |

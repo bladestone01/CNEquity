@@ -62,10 +62,17 @@ uv run asl status --datasets   # valuation 不应再停在稀疏 tip
 
 | 现象 | 原因 | 处理 |
 |------|------|------|
-| `asl status` 显示 `orphaned_running_runs > 0` | 进程被杀 / OOM，旧代码未在 `finally` 里 `finish_run`；status 从不自动 reconcile | **已修**：每次 `asl run` 入口心跳感知 reconcile；retry 全绿也会 `finish_run` |
+| `asl status` 显示 `orphaned_running_runs > 0` | 进程被杀 / OOM，旧代码未在 `finally` 里 `finish_run`；status 从不自动 reconcile | **已修**：每次 `asl run` / `asl retry` 入口心跳感知 reconcile；retry 全绿也会 `finish_run` |
 | 需要立刻清理 | — | `asl clean --reconcile-runs`（跳过仍持锁的 live run） |
 
 长任务（baostock 回填）靠 **batch heartbeat** 保活，不会仅因 `started_at` 超过 1h 被误杀。
+
+### BrokenProcessPool / worker 池被毒死
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| 日志 `worker pool broke (likely OOM under load); retrying … serially` | `ProcessPoolExecutor` 一子进程死后整池毒化 | **已修**：未完成 batch 串行重试；若子进程已 `finish_batch(success)` 则**跳过重拉**（避免 INSERT OR REPLACE 降级成功行） |
+| macOS 上频繁 OOM / 池崩溃 | mootdx 非 fork-safe + `workers>1` | `asl config validate` **拒绝** Darwin 上 `workers>1`；生产用 `workers = 1`（见 runbook / `daily_pipeline.sh`） |
 
 ---
 

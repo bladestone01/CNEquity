@@ -335,9 +335,11 @@ def fetch_daily_bars_parallel(
                         failed_symbols.extend(batch[1])
                     logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
     except BrokenProcessPool:
-        # The pool died mid-run. Whatever is still pending never got a verdict —
-        # retry it in-process, where there is no pool to break, rather than fail
-        # the run over a transient resource spike.
+        # The pool died mid-run. Whatever is still pending never got a parent
+        # verdict — retry in-process. A child may already have finish_batch(success)
+        # before the OS killed the pool; re-running start_batch would demote that
+        # success via INSERT OR REPLACE. Trust the manifest when it already says
+        # success and skip the re-fetch.
         logger.warning(
             "%s: worker pool broke (likely OOM under load); retrying %d batch(es) serially",
             dataset,
@@ -345,6 +347,17 @@ def fetch_daily_bars_parallel(
         )
         for batch in list(pending.values()):
             batch_id = batch[0]
+            existing = manifest.get_batch(run_id, batch_id)
+            if existing is not None and existing["status"] == "success":
+                total_read += int(existing["rows_read"] or 0)
+                total_written += int(existing["rows_written"] or 0)
+                pending.pop(batch_id, None)
+                logger.info(
+                    "%s batch %s already success in manifest; skipping serial re-fetch",
+                    dataset,
+                    batch_id,
+                )
+                continue
             try:
                 result = _run_batch(batch_id, batch[1], batch[2], batch[3])
                 total_read += result["rows_read"]

@@ -184,3 +184,27 @@ def test_run_job_reconciles_orphans_on_entry(tmp_path, monkeypatch):
     engine.run_job("daily:core", date(2024, 6, 28), waves=[])
 
     assert manifest.get_run(zombie)["status"] == "failed"
+
+
+def test_retry_reconciles_peer_orphans_on_entry(tmp_path):
+    """asl retry used to skip reconcile; peer zombies sat until the next daily."""
+    cfg = Config(data_root=tmp_path / "data", tdx_allow_mock=True, batch_stale_seconds=0)
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    zombie = manifest.start_run("valuation_2001", {})
+    manifest.start_batch(zombie, "batch-0", "valuation_metrics", "valuation_metrics")
+
+    target = manifest.start_run("daily:core", {"trade_date": "2024-06-28"})
+    manifest.start_batch(target, "batch-0", "instruments", "instruments")
+    manifest.finish_batch(target, "batch-0", "success", rows_written=1)
+    # Leave target running so retry's all-green path closes it.
+
+    engine = JobEngine(cfg)
+    engine.run_job(
+        "retry",
+        date(2024, 6, 28),
+        run_id=target,
+        retry_failed_only=True,
+    )
+    assert manifest.get_run(zombie)["status"] == "failed"
+    assert manifest.get_run(target)["status"] == "success"

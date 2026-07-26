@@ -109,3 +109,85 @@ def test_broken_pool_falls_back_to_serial(worker_config, monkeypatch):
     # Every symbol was recovered through the serial retry, not lost with the pool.
     assert set(serial) == {"600519.SH", "000001.SZ", "600000.SH"}
     assert result["rows_written"] == 3
+
+
+def test_broken_pool_skips_batches_already_success(worker_config, monkeypatch):
+    """Child finished success before the pool died — do not demote via re-fetch."""
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("test")
+    tip = date(2024, 6, 27)
+    done_id = f"{tip.isoformat()}_{tip.isoformat()}-batch-0"
+    # Simulate a worker that wrote staging + finish_batch before the pool broke.
+    manifest.start_batch(
+        run_id,
+        done_id,
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=["600519.SH"],
+        window_start=tip.isoformat(),
+        window_end=tip.isoformat(),
+    )
+    manifest.finish_batch(run_id, done_id, "success", rows_read=7, rows_written=7)
+
+    class _DeadPool:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def submit(self, fn, task):
+            class _F:
+                def result(self, timeout=None):
+                    raise BrokenProcessPool("A process in the process pool died")
+
+            return _F()
+
+    monkeypatch.setattr(
+        "ashare_lake.orchestrator.worker_pool.ProcessPoolExecutor",
+        lambda *a, **k: _DeadPool(),
+    )
+    monkeypatch.setattr(
+        "ashare_lake.orchestrator.worker_pool.as_completed", lambda futures: list(futures)
+    )
+
+    fetched: list[str] = []
+
+    def _fake_fetch(symbols, start, end, **kwargs):
+        import polars as pl
+
+        if kwargs.get("on_heartbeat"):
+            kwargs["on_heartbeat"]()
+        fetched.extend(symbols)
+        return pl.DataFrame(
+            {
+                "symbol": symbols,
+                "trade_date": [start] * len(symbols),
+                "open": [1.0] * len(symbols),
+                "high": [1.0] * len(symbols),
+                "low": [1.0] * len(symbols),
+                "close": [1.0] * len(symbols),
+                "volume": [100] * len(symbols),
+                "amount": [100.0] * len(symbols),
+            }
+        )
+
+    monkeypatch.setattr("ashare_lake.orchestrator.worker_pool.fetch_daily_bars", _fake_fetch)
+
+    result = fetch_daily_bars_parallel(
+        worker_config,
+        ["600519.SH", "000001.SZ"],
+        tip,
+        tip,
+        run_id,
+        "daily_bars",
+    )
+    # First batch already success — must not be re-fetched (would demote it).
+    assert "600519.SH" not in fetched
+    assert fetched == ["000001.SZ"]
+    assert manifest.get_batch(run_id, done_id)["status"] == "success"
+    assert result["rows_written"] == 7 + 1

@@ -2,6 +2,8 @@
 root = "./data/ashare-lake"
 
 [orchestrator]
+# macOS must use workers = 1 (mootdx is not fork-safe; ProcessPool → BrokenProcessPool).
+# Linux may use >1; keep batch_size modest under memory pressure.
 workers = 8
 batch_size = 100
 max_retries = 3

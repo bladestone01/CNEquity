@@ -193,7 +193,8 @@ asl init --config configs/ashare-lake.toml
 ```
 
 2016 起全量 init 大约 1.5–2.5 小时（TDX 分页 + Sina 复权；compact 内存尖峰约 2 GB）。
-macOS 上请将 `[orchestrator].workers = 1`（mootdx 与 `ProcessPoolExecutor` 不兼容）。
+macOS 上必须 `[orchestrator].workers = 1`（mootdx 与 `ProcessPoolExecutor` 不兼容；
+`asl config validate` 在 Darwin 上会拒绝 `workers>1`）。
 单实例、收盘后运行。
 
 ---
