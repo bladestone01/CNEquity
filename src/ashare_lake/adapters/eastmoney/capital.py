@@ -29,9 +29,11 @@ _NORTH_HOLD_REPORT = "RPT_MUTUAL_HOLDSTOCKNORTH_STA"
 _NORTH_HOLD_COLUMNS = (
     "SECUCODE,TRADE_DATE,MUTUAL_TYPE,HOLD_SHARES,HOLD_MARKET_CAP,HOLD_SHARES_RATIO"
 )
+_DRAGON_REPORT = "RPT_DAILYBILLBOARD_DETAILS"
 _DRAGON_COLUMNS = (
     "SECURITY_CODE,TRADE_DATE,EXPLANATION,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,BILLBOARD_NET_AMT"
 )
+_BLOCK_REPORT = "RPT_BLOCKTRADE_STA"
 _BLOCK_COLUMNS = "SECURITY_CODE,TRADE_DATE,VOLUME,DEAL_AMT,AVERAGE_PRICE,PREMIUM_RATIO"
 _FFLOW_KLINE_URL = (
     "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
@@ -284,7 +286,7 @@ def fetch_dragon_tiger(trade_date: date, *, client: EastMoneyClient | None = Non
     ds = trade_date.isoformat()
     raw = fetch_datacenter(
         client,
-        "RPT_DAILYBILLBOARD_DETAILS",
+        _DRAGON_REPORT,
         _DRAGON_COLUMNS,
         filter_expr=f"(TRADE_DATE='{ds}')",
     )
@@ -317,7 +319,7 @@ def fetch_block_trades(trade_date: date, *, client: EastMoneyClient | None = Non
     ds = trade_date.isoformat()
     raw = fetch_datacenter(
         client,
-        "RPT_BLOCKTRADE_STA",
+        _BLOCK_REPORT,
         _BLOCK_COLUMNS,
         filter_expr=f"(TRADE_DATE='{ds}')",
     )

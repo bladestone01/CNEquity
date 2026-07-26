@@ -27,6 +27,9 @@ _INDEX_CODE_MAP = {
     "399006": "399006.SZ",
 }
 
+_REPORT = "RPT_INDEX_CONSTITUENT"
+_COLUMNS = "INDEX_CODE,SECURITY_CODE,TRADE_DATE"
+
 
 def _index_symbol(index_code: str) -> str:
     code = str(index_code).zfill(6)
@@ -49,8 +52,8 @@ def fetch_index_constituents(
         index_code = index_sym.split(".")[0]
         raw = fetch_datacenter(
             client,
-            "RPT_INDEX_CONSTITUENT",
-            "INDEX_CODE,SECURITY_CODE,TRADE_DATE",
+            _REPORT,
+            _COLUMNS,
             filter_expr=f'(INDEX_CODE="{index_code}")',
             page_size=5000,
         )

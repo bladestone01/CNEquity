@@ -43,7 +43,10 @@ def test_fetch_datacenter_treats_empty_result_as_no_rows():
 
 def test_fetch_datacenter_raises_on_api_rejection():
     client = FakeClient([{"success": False, "message": "TRADE_DATE列不存在", "code": 9501}])
-    with pytest.raises(EastMoneyDatacenterError, match="TRADE_DATE列不存在"):
+    with pytest.raises(
+        EastMoneyDatacenterError,
+        match=r"RPT_TEST rejected schema: TRADE_DATE列不存在 \(code=9501\)",
+    ):
         fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
 
 

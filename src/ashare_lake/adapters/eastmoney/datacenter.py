@@ -100,8 +100,10 @@ def fetch_datacenter(
             msg = str(payload.get("message") or "")
             if msg not in _EMPTY_RESULT_MESSAGES:
                 code = payload.get("code")
+                # Column renames land here as code=9501 ("X列不存在"). Name the
+                # report so ops can jump to datacenter_contracts / the adapter.
                 raise EastMoneyDatacenterError(
-                    f"EastMoney datacenter {report} page {page} rejected: {msg}"
+                    f"EastMoney datacenter {report} rejected schema: {msg}"
                     + (f" (code={code})" if code is not None else "")
                 )
             break

@@ -22,10 +22,10 @@ tests/
 ```bash
 pip install -e ".[dev]"
 
-pytest                      # 全量，~10s 级
+pytest                      # 全量离线（默认 -m 'not network'）
 pytest tests/unit -q        # 快速反馈
 pytest tests/integration    # 较慢
-pytest -m "not network"     # 排除网络测试
+pytest -m network           # 仅外网探针（东财 datacenter 列契约等）
 ```
 
 配置（`pyproject.toml`）：
@@ -33,6 +33,9 @@ pytest -m "not network"     # 排除网络测试
 - `timeout = 120`
 - `timeout_method = thread`
 - markers: `integration`, `network`
+- 默认 `addopts` 排除 `network`；东财 schema 直播探针：
+
+  `pytest -m network tests/unit/test_datacenter_live_contracts.py`
 
 ---
 
@@ -45,6 +48,7 @@ pytest -m "not network"     # 排除网络测试
 | compact / 水位 | `test_compact_gate.py`, `test_state.py`, `test_instruments_compact.py` |
 | Steps / adapters | `test_m3_steps.py`, `test_m3_adapters.py`, `test_bars_pagination.py` |
 | Schema / 注册表 | `test_dataset_registry.py`, `test_schema_validation.py` |
+| EM datacenter 列契约 | `test_datacenter_contracts.py`, `test_datacenter_live_contracts.py` (`-m network`) |
 | 质量 | `test_audit_datasets.py`, `test_cross_checks.py`, `test_adj_factor_reconciliation.py` |
 | 消费层 | `test_reader.py` |
 | CLI | `test_cli_init.py` |

@@ -86,7 +86,8 @@ known-first-party = ["ashare_lake"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# Network probes (EastMoney schema contracts, etc.) run only with `-m network`.
+addopts = "-ra -m 'not network'"
 # Fail loud on a hung test instead of blocking the whole suite and leaving an
 # orphaned process behind. The full suite runs in ~10s; 120s is generous slack.
 # `thread` method dumps a traceback pinpointing where the hang occurred.

@@ -11,11 +11,22 @@
 | 文件 | 职责 |
 |------|------|
 | `em_auth.py` | `EastMoneyClient`、NID cookie、请求头 |
-| `datacenter.py` | 通用 datacenter API 封装 |
+| `datacenter.py` | 通用 datacenter API 封装（`code=9501` 列不存在 → fail-loud） |
+| `datacenter_contracts.py` | report→columns 契约清单（CI + 直播探针共用） |
 | `clist.py` | 分页 clist（全市场列表类接口） |
 | `common.py` | EM 代码 ↔ `symbol` 互转 |
 
 限速：`[sources.eastmoney].min_interval_seconds`（跨进程文件锁）。
+
+### datacenter 列契约
+
+EM 改列名会整报 `code=9501`。适配器里的 `_REPORT` / `_COLUMNS` 是运行时真源；
+[`datacenter_contracts.py`](../../../src/ashare_lake/adapters/eastmoney/datacenter_contracts.py)
+只做清单导入，供离线测试与直播探针迭代。改列后：
+
+1. 更新对应 adapter 常量  
+2. `uv run pytest tests/unit/test_datacenter_contracts.py -q`  
+3. `uv run pytest -m network tests/unit/test_datacenter_live_contracts.py -q`
 
 ---
 
@@ -75,7 +86,7 @@
 
 ## 主备角色（Failover）
 
-- `daily_bars`：**备源**（主源 TDX 失败时写入 source_snapshots）
+- `daily_bars`：TDX 主源；tip 缺口东财 **clist** 路由进 curated（ADR-0005）；snapshot 供 diff
 - `corporate_actions`：**日更主源**
 
 ---

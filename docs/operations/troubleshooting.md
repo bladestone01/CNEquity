@@ -4,6 +4,25 @@
 
 ---
 
+## 症状：EastMoney datacenter `code=9501` / `列不存在`
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| `EastMoney datacenter RPT_… rejected schema: XXX列不存在 (code=9501)` | 东财改了报表列名；旧列整报拒绝 | 在对应 adapter 的 `_COLUMNS` 换成新名；契约清单自动跟随 |
+| 日更整组失败、错误带 report 名 | 同上（fail-loud，不静默空表） | 修列后重跑；用直播探针确认 |
+
+```bash
+# 离线：契约清单完整 + 9501 文案
+uv run pytest tests/unit/test_datacenter_contracts.py -q
+# 外网：每个 required 报表 pageSize=1，键 ⊇ 契约列
+uv run pytest -m network tests/unit/test_datacenter_live_contracts.py -q
+```
+
+清单入口：`src/ashare_lake/adapters/eastmoney/datacenter_contracts.py`。
+已退役报表（如 `RPT_ECONOMICCALENDAR`）标 `required=False`，不进直播探针。
+
+---
+
 ## 症状：baostock / 免费源「黑名单」或频繁失败
 
 | 现象 | 原因 | 处理 |
