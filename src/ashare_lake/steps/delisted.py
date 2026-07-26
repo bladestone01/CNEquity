@@ -258,7 +258,9 @@ def delisted_symbols_in_window(config: Config, start: date) -> list[str]:
     return sorted(s for s, last in catalog.items() if last >= start and s not in already)
 
 
-def _instruments_rows(config: Config, spans: dict[str, tuple[date, date]]) -> pl.DataFrame:
+def _instruments_rows(
+    config: Config, spans: dict[str, tuple[date | None, date]]
+) -> pl.DataFrame:
     """instruments rows for the recovered names, unioned with the live snapshot.
 
     The union matters: ``compact_instruments`` treats symbols missing from the
@@ -292,11 +294,177 @@ def _instruments_rows(config: Config, spans: dict[str, tuple[date, date]]) -> pl
     if not live_path.exists():
         return recovered
     live = pl.read_parquet(live_path).drop(["source", "data_version", "fetched_at"], strict=False)
+    live = _strip_subscription_placeholders(live)
+    # Fill null list/delist dates on live rows from the recovery spans before
+    # the unique — otherwise a prior repair that wrote delist_date with a null
+    # list_date (no bars yet) permanently shadows the bar-derived list_date
+    # from a later backfill (keep="first" would keep the hollow live row).
+    if not live.is_empty() and not recovered.is_empty():
+        fill = recovered.select(
+            [
+                "symbol",
+                pl.col("list_date").alias("_rec_list_date"),
+                pl.col("delist_date").alias("_rec_delist_date"),
+            ]
+        )
+        live = (
+            live.join(fill, on="symbol", how="left")
+            .with_columns(
+                pl.coalesce(pl.col("list_date"), pl.col("_rec_list_date")).alias("list_date"),
+                pl.coalesce(pl.col("delist_date"), pl.col("_rec_delist_date")).alias(
+                    "delist_date"
+                ),
+            )
+            .drop("_rec_list_date", "_rec_delist_date")
+        )
     # keep="first" so a live row always wins over a recovered one for the same
-    # code — a code reissued after a delisting must stay listed.
+    # code — a code reissued after a delisting must stay listed. Catalogued
+    # recoveries are absent from the live snapshot (that is the gap), so they
+    # append cleanly; subscription stubs are stripped above so they cannot
+    # re-enter via the union.
     return pl.concat([live, recovered], how="diagonal_relaxed").unique(
         subset=["symbol"], keep="first"
     )
+
+
+def _bar_spans(config: Config, symbols: list[str]) -> dict[str, tuple[date, date]]:
+    """``symbol -> (first_bar, last_bar)`` for symbols that already have daily_bars."""
+    if not symbols:
+        return {}
+    root = config.curated_root / "daily_bars"
+    if not root.exists() or not any(root.rglob("*.parquet")):
+        return {}
+    frame = (
+        pl.scan_parquet(str(root / "**" / "*.parquet"))
+        .filter(pl.col("symbol").is_in(symbols))
+        .group_by("symbol")
+        .agg(
+            pl.col("trade_date").min().alias("first"),
+            pl.col("trade_date").max().alias("last"),
+        )
+        .collect()
+    )
+    return {r["symbol"]: (r["first"], r["last"]) for r in frame.iter_rows(named=True)}
+
+
+def _strip_subscription_placeholders(df: pl.DataFrame) -> pl.DataFrame:
+    from ashare_lake.domain.symbols import is_subscription_placeholder
+
+    if df.is_empty() or "name" not in df.columns:
+        return df
+    keep = [not is_subscription_placeholder(n) for n in df["name"].to_list()]
+    return df.filter(pl.Series(keep))
+
+
+def purge_subscription_placeholders(config: Config) -> int:
+    """Remove ``认购款`` stubs from curated instruments. Returns rows dropped."""
+    from ashare_lake.storage.atomic import write_parquet_atomic
+
+    path = config.curated_root / "instruments" / "part-merged.parquet"
+    if not path.exists():
+        return 0
+    existing = pl.read_parquet(path)
+    cleaned = _strip_subscription_placeholders(existing)
+    dropped = existing.height - cleaned.height
+    if dropped:
+        write_parquet_atomic(path, cleaned, compression="zstd")
+        logger.info("purged %d subscription-placeholder instrument row(s)", dropped)
+    return dropped
+
+
+def repair_delisted_instruments(
+    config: Config,
+    run_id: str,
+    *,
+    start: date | None = None,
+) -> dict:
+    """Wire catalogued delistings into ``instruments`` from bars already in the lake.
+
+    The baostock bars backfill closed the survivorship gap in ``daily_bars`` but
+    never wrote matching ``instruments`` rows, so ``universe="all_a"`` kept
+    selecting dead names forever (audit: ``retired_symbol_missing_delist_date``).
+    Re-fetching those bars would be pure cost — derive ``list_date`` /
+    ``delist_date`` from the spans that are already on disk, stage the union with
+    the live snapshot, and mark the catalogued symbols ingested so
+    ``asl delisted backfill`` only fetches the true gaps.
+    """
+    from ashare_lake.quality.cross_checks import RETIRED_GAP_DAYS
+    from ashare_lake.query.parquet_scan import list_partitions
+    from ashare_lake.steps.http_common import write_fetched
+
+    catalog = load_delisted_catalog(config)
+    if start is not None:
+        catalog = {s: last for s, last in catalog.items() if last >= start}
+
+    # Orphan bars: series that ended well before the lake's last session but
+    # carry no delist_date (or no instruments row at all). Same structural
+    # tell the survivorship audit uses.
+    retired_orphans: list[str] = []
+    bars_root = config.curated_root / "daily_bars"
+    parts = list_partitions(bars_root, "trade_date") if bars_root.exists() else []
+    if parts:
+        lake_last = parts[-1].end
+        cutoff = lake_last - timedelta(days=RETIRED_GAP_DAYS)
+        last_bars = (
+            pl.scan_parquet(str(bars_root / "**" / "*.parquet"))
+            .group_by("symbol")
+            .agg(pl.col("trade_date").max().alias("last_bar"))
+            .filter(pl.col("last_bar") < cutoff)
+            .collect()
+        )
+        inst_path = config.curated_root / "instruments" / "part-merged.parquet"
+        marked: set[str] = set()
+        if inst_path.exists():
+            inst = pl.read_parquet(inst_path)
+            marked = set(
+                inst.filter(pl.col("delist_date").is_not_null())["symbol"].to_list()
+            )
+        retired_orphans = [s for s in last_bars["symbol"].to_list() if s not in marked]
+
+    targets = sorted(set(catalog) | set(retired_orphans))
+    # Only stocks/CDRs — ETF-prefix orphans are noise for the equity universe.
+    targets = [s for s in targets if _asset_type(s) in ("stock", "cdr")]
+    spans = _bar_spans(config, targets)
+
+    instrument_spans: dict[str, tuple[date, date]] = {}
+    for symbol in targets:
+        if symbol in spans:
+            first, last = spans[symbol]
+            # Prefer the later of catalog last / bar last so a consolidation
+            # tail past the Sina probe date is not cut off.
+            delist = max(catalog[symbol], last) if symbol in catalog else last
+            instrument_spans[symbol] = (first, delist)
+        elif symbol in catalog:
+            # No bars yet — still record the delisting so all_a stops selecting
+            # it; list_date stays unknown until a backfill lands.
+            instrument_spans[symbol] = (None, catalog[symbol])
+
+    instruments = _instruments_rows(config, instrument_spans)
+    instruments = _strip_subscription_placeholders(instruments)
+    rows_written = 0
+    if not instruments.is_empty():
+        out = write_fetched(config, run_id, "instruments", instruments, source="sina")
+        rows_written = int(out.get("rows_written", 0))
+
+    # Symbols whose bars are already in the lake need no sina re-fetch.
+    already_haved = sorted(s for s in catalog if s in spans)
+    if already_haved:
+        _mark_ingested(config, already_haved)
+
+    purged = purge_subscription_placeholders(config)
+
+    return {
+        "rows_read": rows_written,
+        "rows_written": rows_written,
+        "targets": len(targets),
+        "from_catalog": len(catalog),
+        "from_orphan_bars": len(retired_orphans),
+        "with_bars": len(spans),
+        "instruments_spans": len(instrument_spans),
+        "marked_ingested": len(already_haved),
+        "purged_placeholders": purged,
+        "still_need_bars": sorted(s for s in catalog if s not in spans),
+    }
 
 
 def backfill_delisted_bars(

@@ -5,7 +5,9 @@ from dataclasses import dataclass
 PREFIX_WHITELIST = {
     "SH": ("60", "68"),
     "SZ": ("00", "30"),
-    "BJ": ("92",),
+    # 92 = BSE today; 43/83/87 = pre-transfer NEEQ codes that delisted (or still
+    # quote) under the old numbering — needed so recovered names enter all_a.
+    "BJ": ("92", "43", "83", "87"),
 }
 
 EXCLUDED_PREFIXES = tuple(f"{p}" for p in range(81, 90))
@@ -23,6 +25,12 @@ ETF_PREFIXES = {
     "SZ": ("15", "16"),
 }
 
+# Temporary ETF subscription / allotment placeholders that TDX lists as if they
+# were securities. They are not tradable equities: a daily instruments compact
+# that sees them vanish invents a delist_date, and they inflate the "delisted"
+# count with noise like ``认购款``. Drop at ingest; purge from curated.
+SUBSCRIPTION_PLACEHOLDER_NAMES = frozenset({"认购款", "申购款"})
+
 # Numeric bands the exchanges have actually issued equity codes from, as
 # ``(exchange, first, last_exclusive)``. Narrower than PREFIX_WHITELIST, which
 # admits e.g. all of 60xxxx — enumerating every prefix would mean 50,000 codes
@@ -38,8 +46,14 @@ ISSUED_CODE_BANDS: tuple[tuple[str, int, int], ...] = (
     ("SH", 600000, 606000),  # main board: 600/601/603/605
     ("SH", 688000, 689000),  # STAR (689xxx CDRs excluded from all_a)
     ("SZ", 1, 5000),  # main board 000/001, SME 002, 003
-    ("SZ", 300000, 302000),  # ChiNext
-    ("BJ", 920000, 921000),  # BSE (legacy 430/830 codes are outside the whitelist)
+    ("SZ", 300000, 302000),  # ChiNext (300) + registration-based (301)
+    ("BJ", 920000, 921000),  # BSE current numbering
+    # Legacy NEEQ → BSE numbering. Most survivors were renumbered into 92xxxx;
+    # the codes that *didn't* transfer are exactly the delisted set the SH/SZ
+    # bands miss. ~21k probes, one-time, resumable.
+    ("BJ", 430000, 431000),
+    ("BJ", 830000, 840000),
+    ("BJ", 870000, 880000),
 )
 
 
@@ -102,9 +116,12 @@ def format_symbol(code: str, exchange: str) -> str:
 
 
 def is_all_a_symbol(code: str, exchange: str) -> bool:
-    if any(code.startswith(p) for p in EXCLUDED_PREFIXES):
+    exchange = exchange.upper()
+    # 81–89 is a SH/SZ reservation (bonds etc.); BJ's legacy 83xxxx NEEQ
+    # band must not be caught by the same digit check.
+    if exchange in ("SH", "SZ") and any(code.startswith(p) for p in EXCLUDED_PREFIXES):
         return False
-    prefixes = PREFIX_WHITELIST.get(exchange.upper(), ())
+    prefixes = PREFIX_WHITELIST.get(exchange, ())
     return any(code.startswith(p) for p in prefixes)
 
 
@@ -117,6 +134,16 @@ def is_etf_symbol(code: str, exchange: str) -> bool:
     """Whether *code* is an exchange-traded fund / LOF on SH/SZ."""
     prefixes = ETF_PREFIXES.get(exchange.upper(), ())
     return any(code.startswith(p) for p in prefixes)
+
+
+def is_subscription_placeholder(name: str | None) -> bool:
+    """TDX allotment / subscription stubs (``认购款``), not tradable securities."""
+    if not name:
+        return False
+    stripped = name.strip()
+    if stripped in SUBSCRIPTION_PLACEHOLDER_NAMES:
+        return True
+    return any(stripped.endswith(marker) for marker in SUBSCRIPTION_PLACEHOLDER_NAMES)
 
 
 def normalize_market_code(code: str, market: str) -> tuple[str, str]:

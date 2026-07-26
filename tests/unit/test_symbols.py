@@ -24,6 +24,11 @@ def test_universe_filter():
     # ETFs are not all_a (PREFIX_WHITELIST omits 51/15/…)
     assert not is_all_a_symbol("510300", "SH")
     assert not is_all_a_symbol("159915", "SZ")
+    # BSE current + legacy NEEQ numbering (83xxxx must not hit the SH/SZ 81–89 ban).
+    assert is_all_a_symbol("920001", "BJ")
+    assert is_all_a_symbol("430001", "BJ")
+    assert is_all_a_symbol("830001", "BJ")
+    assert is_all_a_symbol("870001", "BJ")
 
 
 def test_cdr_symbol():

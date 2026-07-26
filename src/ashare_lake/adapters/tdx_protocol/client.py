@@ -217,6 +217,8 @@ def _asset_type_for(code: str, exch: str) -> str:
 
 
 def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
+    from ashare_lake.domain.symbols import is_subscription_placeholder
+
     code_col = "code" if "code" in pdf.columns else pdf.columns[0]
     name_col = "name" if "name" in pdf.columns else pdf.columns[1]
     codes = pdf[code_col].cast(pl.Utf8).str.zfill(6)
@@ -242,15 +244,30 @@ def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
     rows = []
     for row in filtered.iter_rows(named=True):
         code = str(row[code_col]).zfill(6)
+        name = str(row[name_col])
+        if is_subscription_placeholder(name):
+            continue
         rows.append(
             {
                 "symbol": format_symbol(code, exch),
-                "name": str(row[name_col]),
+                "name": name,
                 "exchange": exch,
                 "asset_type": _asset_type_for(code, exch),
                 "list_date": None,
                 "delist_date": None,
                 "prev_symbol": None,
+            }
+        )
+    if not rows:
+        return pl.DataFrame(
+            schema={
+                "symbol": pl.Utf8,
+                "name": pl.Utf8,
+                "exchange": pl.Utf8,
+                "asset_type": pl.Utf8,
+                "list_date": pl.Date,
+                "delist_date": pl.Date,
+                "prev_symbol": pl.Utf8,
             }
         )
     return pl.DataFrame(rows)

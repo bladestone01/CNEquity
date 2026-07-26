@@ -133,7 +133,7 @@
 | commodity.py | commodity_bars |
 | research.py | institutional_holdings, analyst_consensus, sentiment_scores |
 | rotation.py | hot_rank, sector_bars, sector_fund_flow, news_headlines |
-| delisted.py | 退市股发现 / 回填 → daily_bars, instruments, delisting_events |
+| delisted.py | 退市股发现 / repair（已有 bars → instruments） / 回填 → daily_bars, instruments, delisting_events |
 | finalize.py | compact, derive_adj_factors, audit |
 
 ---

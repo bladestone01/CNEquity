@@ -79,6 +79,28 @@ asl backfill sector_bars --config configs/ashare-lake.toml --retry-failed
 
 ---
 
+## asl delisted
+
+重建退市宇宙（幸存者偏差修复）。
+
+| 子命令 | 说明 |
+|--------|------|
+| `discover [--limit N]` | 扫 issued code space，分类为曾上市 / 从未发行（可续跑） |
+| `status [--since]` | 目录摘要：数量、年份、尚未 ingest |
+| `repair [--since]` | **不重新拉行情**：用已有 `daily_bars` 跨度写 `instruments.delist_date`，并清掉 `认购款` 占位 |
+| `backfill [--since]` | 对目录中尚未有行情的退市股拉 Sina 历史并 compact |
+
+推荐顺序：`discover` → `repair`（bars 已在湖里时）→ `backfill`（补缺口）。
+
+```bash
+asl delisted status
+asl delisted repair
+asl delisted backfill --since 2016-01-01
+asl delisted discover --limit 500   # 扩大 band 后的续扫
+```
+
+---
+
 ## asl repartition [dataset]
 
 | 选项 | 说明 |

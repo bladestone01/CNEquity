@@ -51,6 +51,8 @@ def test_code_space_covers_every_band_without_duplicates():
     assert "600519.SH" in space and "000001.SZ" in space and "300750.SZ" in space
     # Zero-padded to six digits, else the symbol will not match instruments.
     assert "000001.SZ" in space and "1.SZ" not in space
+    # Legacy NEEQ numbering — the pool that grows the catalogue toward ~2k.
+    assert "430001.BJ" in space and "830001.BJ" in space and "870001.BJ" in space
 
 
 def test_pending_excludes_symbols_that_are_listed_today(tmp_path):

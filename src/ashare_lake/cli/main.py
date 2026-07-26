@@ -1033,6 +1033,44 @@ def delisted_status(config_path: str, since: str, sample: int):
     )
 
 
+@delisted_grp.command("repair")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--since",
+    default=None,
+    help="Only catalogued delistings on/after this date (default: all genuine).",
+)
+def delisted_repair(config_path: str, since: str | None):
+    """Wire catalogued / orphan-bar delistings into instruments without re-fetching.
+
+    Use this when daily_bars already holds the recovered series (e.g. from
+    baostock) but instruments still has no delist_date — the gap that leaves
+    ``universe=all_a`` selecting dead names. Also drops ``认购款`` stubs.
+    """
+    import logging
+
+    from ashare_lake.steps.delisted import repair_delisted_instruments
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True)
+    cfg = _cfg(config_path)
+    start = date.fromisoformat(since) if since else None
+    engine = JobEngine(cfg)
+    meta = {"since": since} if since else {}
+    run_id = engine.manifest.start_run("delisted_repair", meta)
+    result = repair_delisted_instruments(cfg, run_id, start=start)
+    compact_out = engine.run_step("compact", date.today(), run_id)
+    # Compact can re-introduce nothing for placeholders; purge once more after
+    # the merge in case an older curated copy still carried them.
+    from ashare_lake.steps.delisted import purge_subscription_placeholders
+
+    result["purged_placeholders_after_compact"] = purge_subscription_placeholders(cfg)
+    engine.manifest.finish_run(run_id, "success", rows_written=result.get("rows_written", 0))
+    ensure_duckdb_views(cfg)
+    click.echo(
+        json.dumps({"run_id": run_id, **result, "compact": compact_out}, indent=2, default=str)
+    )
+
+
 @delisted_grp.command("backfill")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option("--since", default="2016-01-01", show_default=True, help="Lake window start.")

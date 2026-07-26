@@ -145,9 +145,9 @@ AkShare / efinance 解决「怎么拉数」；本仓库解决拉完之后：多�
 
 ## 已知限制
 
-- **幸存者偏差**：`instruments` / `daily_bars` 的历史是按*当前*上市名单回填的，退市股不在湖里
-  （audit 检查 `universe_survivorship_absent` 会报错）。A 股退市前普遍已跌 80%+，缺了它们的
-  回测收益会系统性偏高，且偏差集中在小盘 / 低估值这些因子最爱买的桶里。补齐前所有收益序列都要打折看。
+- **幸存者偏差**：日线已能通过 baostock / `asl delisted backfill` 收回退市股，但必须再跑
+  `asl delisted repair` 把 `delist_date` 写进 `instruments`，否则 `universe="all_a"` 仍会一直选中它们。
+  扩大覆盖：`asl delisted discover`（含新三板旧号段 43/83/87）。补齐前所有收益序列都要打折看。
 - `universe="all_a"` 的 ST / 停牌过滤只在 `trading_status` 有覆盖的日期生效——日更只抓当天，更早的历史窗口不会按历史 ST 剔除（可用 `asl backfill` 补历史）。
 - 北交所行情走 Sina 而非 TDX（TDX 协议不提供北交所）；BJ 行的 `amount` 为 null，
   新上市的 BJ 票需 `asl delisted discover` 扫到后才进 `instruments`。
