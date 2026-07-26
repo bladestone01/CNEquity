@@ -77,11 +77,18 @@ def _has_successful_step(manifest: Manifest, run_id: str, step: str) -> bool:
 
 
 def run_ready_for_staging_cleanup(manifest: Manifest, run_id: str) -> bool:
-    """True when run succeeded, all batches OK, and compact finished."""
+    """True when staging is redundant after a recorded compact.
+
+    Terminal runs (success / warning / failed) with no incomplete batches and a
+    successful compact batch have already merged drained datasets into curated.
+    Requiring status==success alone stranded large failed-but-compacted runs.
+    Incomplete batches still block cleanup — compact may have skipped those
+    datasets, leaving the only copy in staging.
+    """
     run = manifest.get_run(run_id)
     if run is None:
         return False
-    if run["status"] != "success":
+    if run["status"] not in ("success", "warning", "failed"):
         return False
     if manifest.incomplete_batch_count(run_id) > 0:
         return False

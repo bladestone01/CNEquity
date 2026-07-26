@@ -164,11 +164,13 @@ asl repartition trading_calendar  # 单个数据集
 
 ## asl clean
 
+删除已 compact 的终态 run staging，以及超龄 orphan。终态含 `success` / `warning` / `failed`（需 incomplete=0 且有成功 compact batch）。
+
 | 选项 | 说明 |
 |------|------|
 | `--dry-run` | 仅报告可删 staging |
 | `--orphan-retention-days` | 无 manifest 的 orphan 保留天数（默认 7） |
-| `--force` | 也删 failed run 的 staging（retry 将全量重抓） |
+| `--force` | 也删尚未 cleanup-ready 的 staging（incomplete / 未 compact）；成功 fetch batch 会被 demote，`asl retry` 全量重抓。**不要**对 success-without-compact 用 force——先 `asl compact --run-id` |
 
 ---
 

@@ -173,6 +173,53 @@ def test_clean_removes_orphan_staging_without_manifest(tmp_path):
     assert run_id not in list_staging_run_ids(cfg.staging_root)
 
 
+def test_clean_removes_failed_run_when_compacted_and_settled(tmp_path):
+    """Failed/warning terminal runs with compact + no incomplete batches are ready."""
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("valuation_2001", {})
+    manifest.start_batch(run_id, "batch-0", "valuation_metrics", "valuation_metrics")
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+    manifest.start_batch(run_id, "compact-0", "compact", "compact")
+    manifest.finish_batch(run_id, "compact-0", "success", rows_written=1)
+    # All batches success but run marked failed (e.g. orphan reconcile).
+    manifest.finish_run(run_id, "failed")
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_bar_row("000001.SZ", date(2024, 6, 28))]),
+    )
+
+    assert run_ready_for_staging_cleanup(manifest, run_id) is True
+    result = clean_staging(cfg)
+    assert run_id in result.removed_run_ids
+    assert run_id not in list_staging_run_ids(cfg.staging_root)
+
+
+def test_clean_skips_warning_run_without_compact(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("backfill", {})
+    manifest.start_batch(run_id, "batch-0", "margin_trading", "margin_trading")
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+    manifest.finish_run(run_id, "warning")
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_bar_row("000001.SZ", date(2024, 6, 28))]),
+    )
+
+    assert run_ready_for_staging_cleanup(manifest, run_id) is False
+    result = clean_staging(cfg, orphan_retention_days=999)
+    assert run_id in result.skipped_run_ids
+
+
 def test_engine_run_step_records_a_compact_batch(tmp_path):
     """`asl backfill` / `asl compact` route through the engine so cleanup can fire.
 
@@ -193,3 +240,73 @@ def test_engine_run_step_records_a_compact_batch(tmp_path):
     batches = engine.manifest.get_batches_for_run(run_id)
     assert [(b["dataset"], b["status"]) for b in batches] == [("compact", "success")]
     assert run_ready_for_staging_cleanup(engine.manifest, run_id) is True
+
+
+def test_backfill_finishes_run_only_after_compact(tmp_path, monkeypatch):
+    """Backfill must not mark the run terminal before compact is recorded."""
+    import ashare_lake.steps  # noqa: F401 — register steps
+    from click.testing import CliRunner
+
+    from ashare_lake.cli.main import cli
+    from ashare_lake.orchestrator import registry
+    from ashare_lake.orchestrator.engine import JobEngine
+
+    cfg_path = tmp_path / "ashare-lake.toml"
+    cfg_path.write_text(
+        f"""
+[data]
+root = "{tmp_path / "data"}"
+
+[orchestrator]
+workers = 1
+"""
+    )
+
+    order: list[str] = []
+    real_run_job = JobEngine.run_job
+    real_run_step = JobEngine.run_step
+    real_finish = Manifest.finish_run
+
+    def tracking_run_job(self, *args, **kwargs):
+        assert kwargs.get("finalize_run") is False
+        order.append("run_job")
+        out = real_run_job(self, *args, **kwargs)
+        order.append(f"run_job_status={out['status']}")
+        # Run must still be non-terminal until backfill finishes after compact.
+        assert self.manifest.get_run(out["run_id"])["status"] == "running"
+        return out
+
+    def tracking_run_step(self, name, trade_date, run_id, context=None):
+        order.append(f"run_step:{name}")
+        assert self.manifest.get_run(run_id)["status"] == "running"
+        return real_run_step(self, name, trade_date, run_id, context)
+
+    def tracking_finish(self, run_id, status, **kwargs):
+        order.append(f"finish_run:{status}")
+        assert any(b["dataset"] == "compact" for b in self.get_batches_for_run(run_id))
+        return real_finish(self, run_id, status, **kwargs)
+
+    monkeypatch.setattr(JobEngine, "run_job", tracking_run_job)
+    monkeypatch.setattr(JobEngine, "run_step", tracking_run_step)
+    monkeypatch.setattr(Manifest, "finish_run", tracking_finish)
+
+    # Avoid network: stub the registered step to a no-op success.
+    step = registry.get_step("trading_calendar")
+
+    def _noop(config, trade_date, run_id, context):
+        return {"rows_read": 0, "rows_written": 0}
+
+    monkeypatch.setattr(step, "fn", _noop)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["backfill", "trading_calendar", "--config", str(cfg_path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert order == [
+        "run_job",
+        "run_job_status=success",
+        "run_step:compact",
+        "finish_run:success",
+    ]

@@ -466,7 +466,13 @@ def backfill(
         cfg._backfill_end = date.fromisoformat(end_str)
     cfg._backfill_workers = workers
     engine = JobEngine(cfg)
-    result = engine.run_job("backfill", steps=[dataset], backfill=True)
+    # Do not finish_run until after compact — otherwise a kill between the two
+    # leaves status=success with no compact batch, and `asl clean` cannot reclaim
+    # staging that never reached curated (same ordering as delisted CLI).
+    result = engine.run_job(
+        "backfill", steps=[dataset], backfill=True, finalize_run=False
+    )
+    run_id = result["run_id"]
     # Compact partial sweeps too. `compact` only ever drains the *current* run's
     # staging, so skipping it on a warning would strand every row the sweep did
     # fetch — while its resume checkpoint already counts those boards as done,
@@ -474,8 +480,15 @@ def backfill(
     if result["status"] in ("success", "warning"):
         # Through the engine, not step_compact directly: the recorded compact
         # batch is what later lets `asl clean` release this run's staging.
-        compact_out = engine.run_step("compact", date.today(), result["run_id"])
+        compact_out = engine.run_step("compact", date.today(), run_id)
         result["compact"] = compact_out
+    engine.manifest.finish_run(
+        run_id,
+        result["status"],
+        rows_read=result.get("rows_read", 0),
+        rows_written=result.get("rows_written", 0),
+        error_message="one or more steps failed" if result["status"] == "failed" else None,
+    )
     click.echo(json.dumps(result, indent=2, default=str))
     if result["status"] != "success":
         raise SystemExit(1)
@@ -765,9 +778,11 @@ def retry(config_path: str, run_id: str):
     "--force",
     is_flag=True,
     help=(
-        "Also delete staging of failed/incomplete runs. Their success batches "
-        "are demoted to failed so `asl retry` refetches them (data is refetched, "
-        "not lost, but the retry becomes a full re-run)."
+        "Also delete staging that is not yet cleanup-ready (incomplete batches "
+        "and/or no compact). Success fetch batches are demoted to failed so "
+        "`asl retry` refetches them (data is refetched, not lost, but the retry "
+        "becomes a full re-run). Do not use on success-without-compact runs — "
+        "run `asl compact --run-id` first."
     ),
 )
 @click.option(
@@ -791,10 +806,12 @@ def clean(
     reconcile_runs: bool,
     reconcile_after_seconds: float | None,
 ):
-    """Remove staging for successful compacted runs and aged orphans.
+    """Remove staging for compacted terminal runs and aged orphans.
 
-    Failed/incomplete runs keep their staging (it is resumable state) unless
-    --force is given. Also prunes aged ``meta/source_snapshots`` run_id dirs.
+    Ready means: run is terminal (success/warning/failed), all batches settled,
+    and a successful compact batch was recorded. Incomplete or never-compacted
+    staging is kept for retry unless --force is given. Also prunes aged
+    ``meta/source_snapshots`` run_id dirs.
     """
     cfg = _cfg(config_path)
     reconciled: dict[str, int] | None = None

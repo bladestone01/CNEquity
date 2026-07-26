@@ -80,7 +80,7 @@ uv run asl status --datasets   # valuation 不应再停在稀疏 tip
 
 | 可能原因 | 检查 | 处理 |
 |----------|------|------|
-| 数据仍在 staging | `ls staging/*/run_id=*` | `asl compact --run-id <id>` 或 `asl retry` |
+| 数据仍在 staging | `ls staging/*/run_id=*` | `asl compact --run-id <id>` 或 `asl retry`；success 但无 compact batch 时**先 compact 再** `asl clean`（勿 `--force`，否则 demote 后只能重抓） |
 | 分组 run 未 compact | 组 steps 是否含 `compact` | 配置修正后重跑组 |
 | compact 被 gate 跳过 | `asl status` 看 failed batch | `asl retry --run-id <id>` |
 | 路径错误 | `config.data_root` | 核对 `configs/ashare-lake.toml` |
@@ -222,11 +222,13 @@ meta/locks/
 
 ---
 
-## 症状：磁盘不足
+## 症状：磁盘不足 / staging 膨胀
 
-1. `asl clean` 清理已 compact 的 staging
-2. 压缩或归档旧 `meta/source_snapshots/`（长期会膨胀）
-3. curated 勿删；用 backfill 重采而非部分删除
+1. 找出 stranded success（有 staging、incomplete=0、无 compact batch）→ 逐个 `asl compact --run-id <id>`
+2. `asl clean --dry-run` → `asl clean`（终态 + 已 compact 即可删，含 failed/warning）
+3. incomplete / 未 compact 的失败 run 默认保留供 `asl retry`；只有确认可丢弃时才 `--force`
+4. 压缩或归档旧 `meta/source_snapshots/`（长期会膨胀）
+5. curated 勿删；用 backfill 重采而非部分删除
 
 ---
 

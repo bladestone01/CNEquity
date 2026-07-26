@@ -95,9 +95,9 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, meta/locks/
 
 | 条件 | 行为 |
 |------|------|
-| run 已成功 compact | 删除其 staging |
+| run 已终态（success / warning / failed）且无 incomplete batch，并已记录成功的 compact | 删除其 staging（compact 后 staging 已冗余） |
 | 无 manifest 记录的 orphan staging | 超过 retention 天删除 |
-| failed run | 默认保留；`--force` 删除并 demote batch |
+| incomplete 或尚未 compact 的 run | 默认保留（可 `asl retry`）；`--force` 删除并 demote 成功 batch |
 
 ---
 
