@@ -23,6 +23,7 @@ env/
 .env
 configs/*.local.toml
 configs/ashare-lake.toml
+configs/ashare-lake.demo.toml
 
 # Data lake artifacts (never commit generated data)
 data/

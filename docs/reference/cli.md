@@ -6,6 +6,22 @@
 
 ---
 
+## asl demo
+
+一分钟真源小样（涨星 / 上手用）。拉少量流动性股票的近期日线，**不是**全市场 `asl init`。
+
+| 选项 | 说明 |
+|------|------|
+| `--symbols` | 逗号分隔标的（默认茅台/平安银行/五粮液/宁德/中国平安） |
+| `--days` | 约多少个交易日的 `daily_bars`（默认 30） |
+| `--data-root` | 独立湖根目录（默认 `data/ashare-lake-demo`） |
+| `--trade-date` | 截至日 YYYY-MM-DD（默认今天 / 最近交易日） |
+| `--config-out` | 写出供后续 `asl query` 使用的小配置（默认 `configs/ashare-lake.demo.toml`） |
+
+流程：建目录 → 探测 TDX → 拉 instruments 并裁成 demo 宇宙 → 交易日历 → `daily_bars` + compact → 打印样例表。终端有分阶段进度与 INFO 日志。需要能访问 TDX；`allow_mock` 不会打开。
+
+---
+
 ## asl init
 
 初始化数据湖并执行 init phases。

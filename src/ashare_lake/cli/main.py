@@ -53,6 +53,69 @@ def cli():
     """ashare-lake — A-share data ingestion CLI."""
 
 
+@cli.command("demo")
+@click.option(
+    "--symbols",
+    default=",".join(
+        (
+            "600519.SH",
+            "000001.SZ",
+            "000858.SZ",
+            "300750.SZ",
+            "601318.SH",
+        )
+    ),
+    show_default=True,
+    help="Comma-separated symbols to fetch (kept small on purpose).",
+)
+@click.option(
+    "--days",
+    default=30,
+    show_default=True,
+    help="Approx. number of recent trading days of daily_bars.",
+)
+@click.option(
+    "--data-root",
+    default="data/ashare-lake-demo",
+    show_default=True,
+    help="Separate demo lake root (do not reuse for full-market init).",
+)
+@click.option(
+    "--trade-date",
+    "trade_date_str",
+    default=None,
+    help="As-of date YYYY-MM-DD (default: today / last trading day).",
+)
+@click.option(
+    "--config-out",
+    default="configs/ashare-lake.demo.toml",
+    show_default=True,
+    help="Where to write the tiny demo config for follow-up `asl query`.",
+)
+def demo_cmd(
+    symbols: str,
+    days: int,
+    data_root: str,
+    trade_date_str: str | None,
+    config_out: str,
+):
+    """Fetch a tiny real-source lake so you can see progress and results quickly.
+
+    Not a full-market backfill — use `asl init` for that. Requires network access
+    to TDX hosts (mainland egress is more reliable overseas).
+    """
+    from ashare_lake.cli.demo import run_demo
+
+    td = date.fromisoformat(trade_date_str) if trade_date_str else None
+    run_demo(
+        symbols=[s.strip() for s in symbols.split(",") if s.strip()],
+        days=days,
+        data_root=Path(data_root),
+        trade_date=td,
+        config_out=Path(config_out),
+    )
+
+
 @cli.command()
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(
