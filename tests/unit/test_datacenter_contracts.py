@@ -90,9 +90,7 @@ def test_no_duplicate_required_name_or_report_columns_pair():
 
 
 def test_schema_rejection_names_report_in_error():
-    client = FakeClient(
-        [{"success": False, "message": "EX_DIV_DATE列不存在", "code": 9501}]
-    )
+    client = FakeClient([{"success": False, "message": "EX_DIV_DATE列不存在", "code": 9501}])
     with pytest.raises(
         EastMoneyDatacenterError,
         match=r"RPT_SHAREBONUS_DET rejected schema: EX_DIV_DATE列不存在 \(code=9501\)",

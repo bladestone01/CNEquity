@@ -133,9 +133,7 @@ def test_reconcile_skips_a_run_whose_lock_is_held(tmp_path):
     run_id = manifest.start_run("daily:core", {})
     manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars")
     with run_lock(cfg.meta_root, run_id):
-        out = manifest.reconcile_orphaned_runs(
-            stale_after_seconds=0, locks_root=cfg.meta_root
-        )
+        out = manifest.reconcile_orphaned_runs(stale_after_seconds=0, locks_root=cfg.meta_root)
     assert out["runs_closed"] == 0
     assert out["skipped_locked"] == 1
     assert manifest.get_run(run_id)["status"] == "running"

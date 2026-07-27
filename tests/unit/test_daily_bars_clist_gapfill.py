@@ -146,14 +146,8 @@ def test_tip_gapfill_writes_only_missing_keys(tmp_path, monkeypatch):
     staged = _staged_daily_bar_symbols(cfg, run_id, tip)
     assert staged == {"600519.SH", "000001.SZ", "600000.SH"}
     # Gap-fill batch must not re-stage the TDX key.
-    gap_files = list(
-        (cfg.staging_root / "daily_bars" / f"run_id={run_id}").rglob("*.parquet")
-    )
-    gap_only = [
-        f
-        for f in gap_files
-        if "em-clist-gapfill" in str(f)
-    ]
+    gap_files = list((cfg.staging_root / "daily_bars" / f"run_id={run_id}").rglob("*.parquet"))
+    gap_only = [f for f in gap_files if "em-clist-gapfill" in str(f)]
     assert gap_only
     gap_df = pl.read_parquet(gap_only[0])
     assert set(gap_df["symbol"].to_list()) == {"000001.SZ", "600000.SH"}
@@ -227,12 +221,8 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
             }
         )
 
-    monkeypatch.setattr(
-        "ashare_lake.adapters.eastmoney.bars.fetch_daily_bars_clist", _clist
-    )
-    monkeypatch.setattr(
-        "ashare_lake.adapters.eastmoney.bars.fetch_daily_bars", _kline
-    )
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.bars.fetch_daily_bars_clist", _clist)
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.bars.fetch_daily_bars", _kline)
 
     result = _finish_daily_bars(
         cfg,
@@ -274,8 +264,6 @@ def test_preopen_placeholder_still_rejects_clist_flat_zeros(tmp_path):
         source="eastmoney",
         data_version="v1",
     )
-    StagingWriter(cfg.staging_root).write_batch(
-        "daily_bars", run_id, "em-clist-gapfill", flat
-    )
+    StagingWriter(cfg.staging_root).write_batch("daily_bars", run_id, "em-clist-gapfill", flat)
     with pytest.raises(RuntimeError, match="pre-open placeholders"):
         _reject_preopen_placeholder(cfg, run_id, tip)

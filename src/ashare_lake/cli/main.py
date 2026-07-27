@@ -469,9 +469,7 @@ def backfill(
     # Do not finish_run until after compact — otherwise a kill between the two
     # leaves status=success with no compact batch, and `asl clean` cannot reclaim
     # staging that never reached curated (same ordering as delisted CLI).
-    result = engine.run_job(
-        "backfill", steps=[dataset], backfill=True, finalize_run=False
-    )
+    result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
     run_id = result["run_id"]
     # Compact partial sweeps too. `compact` only ever drains the *current* run's
     # staging, so skipping it on a warning would strand every row the sweep did

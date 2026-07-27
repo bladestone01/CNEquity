@@ -168,9 +168,7 @@ def _finish_daily_bars(
     return result
 
 
-def _staged_daily_bar_symbols(
-    config: Config, run_id: str, trade_date: date | None
-) -> set[str]:
+def _staged_daily_bar_symbols(config: Config, run_id: str, trade_date: date | None) -> set[str]:
     import polars as pl
 
     from ashare_lake.storage import StagingWriter

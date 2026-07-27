@@ -28,9 +28,7 @@ def _all_a_symbol_expr(symbol_col: str = "symbol") -> pl.Expr:
     excluded = pl.lit(False)
     # 81–89 is a SH/SZ reservation; do not apply it to BJ (legacy 83xxxx).
     for prefix in EXCLUDED_PREFIXES:
-        excluded = excluded | (
-            exchange.is_in(["SH", "SZ"]) & code.str.starts_with(prefix)
-        )
+        excluded = excluded | (exchange.is_in(["SH", "SZ"]) & code.str.starts_with(prefix))
     # CDRs (SH 689xxx) are depositary receipts, not common stock; they stay in
     # the lake but are not part of the all_a selection universe.
     for prefix in CDR_PREFIXES:

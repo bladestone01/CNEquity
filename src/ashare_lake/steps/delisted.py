@@ -258,9 +258,7 @@ def delisted_symbols_in_window(config: Config, start: date) -> list[str]:
     return sorted(s for s, last in catalog.items() if last >= start and s not in already)
 
 
-def _instruments_rows(
-    config: Config, spans: dict[str, tuple[date | None, date]]
-) -> pl.DataFrame:
+def _instruments_rows(config: Config, spans: dict[str, tuple[date | None, date]]) -> pl.DataFrame:
     """instruments rows for the recovered names, unioned with the live snapshot.
 
     The union matters: ``compact_instruments`` treats symbols missing from the
@@ -311,9 +309,7 @@ def _instruments_rows(
             live.join(fill, on="symbol", how="left")
             .with_columns(
                 pl.coalesce(pl.col("list_date"), pl.col("_rec_list_date")).alias("list_date"),
-                pl.coalesce(pl.col("delist_date"), pl.col("_rec_delist_date")).alias(
-                    "delist_date"
-                ),
+                pl.coalesce(pl.col("delist_date"), pl.col("_rec_delist_date")).alias("delist_date"),
             )
             .drop("_rec_list_date", "_rec_delist_date")
         )
@@ -416,9 +412,7 @@ def repair_delisted_instruments(
         marked: set[str] = set()
         if inst_path.exists():
             inst = pl.read_parquet(inst_path)
-            marked = set(
-                inst.filter(pl.col("delist_date").is_not_null())["symbol"].to_list()
-            )
+            marked = set(inst.filter(pl.col("delist_date").is_not_null())["symbol"].to_list())
         retired_orphans = [s for s in last_bars["symbol"].to_list() if s not in marked]
 
     targets = sorted(set(catalog) | set(retired_orphans))
