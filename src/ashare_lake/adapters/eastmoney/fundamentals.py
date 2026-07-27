@@ -290,9 +290,7 @@ def fetch_financial_statement_items(
         else:
             range_start = getattr(config, "_backfill_start", None) if config else None
             range_end = getattr(config, "_backfill_end", None) if config else None
-            for period in _report_period_dates(
-                trade_date, start=range_start, end=range_end
-            ):
+            for period in _report_period_dates(trade_date, start=range_start, end=range_end):
                 announce_raw = _fetch_report(
                     client,
                     _ANNOUNCE_SOURCE,

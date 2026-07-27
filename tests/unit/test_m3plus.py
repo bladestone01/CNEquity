@@ -119,9 +119,9 @@ def test_financial_statement_items_backfill_walk_honors_start_end():
     assert periods[0] == "2010-12-31"
     assert periods[-1] == "2010-03-31"
     assert all(p.startswith("2010-") for p in periods)
-    assert _report_period_dates(
-        date(2026, 7, 7), start=date(2027, 1, 1), end=date(2027, 6, 30)
-    ) == []
+    assert (
+        _report_period_dates(date(2026, 7, 7), start=date(2027, 1, 1), end=date(2027, 6, 30)) == []
+    )
 
 
 def test_index_constituents_schema():
