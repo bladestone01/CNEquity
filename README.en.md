@@ -1,4 +1,4 @@
-# ashare-lake
+# A-Share Data Lake
 
 [![CI](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg)](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/rootSunc/ashare-lake/graph/badge.svg)](https://codecov.io/gh/rootSunc/ashare-lake)
@@ -9,8 +9,9 @@
 
 [中文](README.md)
 
-**Self-hosted China A-share data lake**: multi-source ingest → daily jobs →
-curated Parquet with row-level provenance.  
+# A self-hosted, daily-refreshable, provenance-tagged financial research base
+
+Multi-source ingest → daily jobs → curated Parquet with row-level provenance.  
 Query with DuckDB / Polars / `load()` — no database server, no TDX desktop client.
 
 CLI: `asl` · package: `ashare_lake` · **data layer only** — backtests stay

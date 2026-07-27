@@ -1,4 +1,4 @@
-# ashare-lake
+# A股数据湖
 
 [![CI](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg)](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/rootSunc/ashare-lake/graph/badge.svg)](https://codecov.io/gh/rootSunc/ashare-lake)
@@ -9,8 +9,9 @@
 
 [English](README.en.md)
 
-**本地 A 股数据湖**：多源拉数 → 日更编排 → 带溯源的 curated Parquet。  
-DuckDB / Polars / `load()` 直接查，不用自建库，也不用通达信客户端。
+# 本地可日更、可溯源的金融数据研究底座
+
+多源拉数 → 日更编排 → 带溯源的 curated Parquet；DuckDB / Polars / `load()` 直接查，不用自建库，也不用通达信客户端。
 
 CLI：`asl` · 包名：`ashare_lake` · **只做数据层**，回测和信号留给下游。
 
@@ -170,7 +171,7 @@ asl query --sql "
 
 ## 项目状态
 
-[0.2.0](CHANGELOG.md) — 已发布 [PyPI](https://pypi.org/project/ashare-lake/)；作者自用数据层公开版，日常挂 cron。1.0 前 schema / `load()` 可能有破坏性调整，见 [CHANGELOG](CHANGELOG.md)。
+[0.2.0](CHANGELOG.md) — 已发布 [PyPI](https://pypi.org/project/ashare-lake/)；作者自用数据层公开版，日常挂 cron。
 
 个人项目：issue / PR 欢迎，响应尽力而为。[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)。文档中文为主；[CHANGELOG](CHANGELOG.md) 与 [ADR](docs/adr/) 为英文。
 

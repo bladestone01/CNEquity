@@ -1,6 +1,8 @@
-# ashare-lake
+# A股数据湖
 
-本地 **A 股数据湖**：多源拉数 → 日更编排 → 带溯源的 curated Parquet。  
+# 本地可日更、可溯源的金融数据研究底座
+
+多源拉数 → 日更编排 → 带溯源的 curated Parquet。  
 DuckDB / Polars / Python `load()` 直接查，不用自建库，也不用通达信客户端。
 
 CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号留给下游）。
