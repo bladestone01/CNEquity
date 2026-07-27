@@ -13,11 +13,7 @@ DEFAULT_USER_CONFIG = Path("configs/ashare-lake.toml")
 
 def example_toml_text() -> str:
     """Return the packaged example config (works from PyPI wheels and editable installs)."""
-    return (
-        files("ashare_lake.config.templates")
-        .joinpath(TEMPLATE_NAME)
-        .read_text(encoding="utf-8")
-    )
+    return files("ashare_lake.config.templates").joinpath(TEMPLATE_NAME).read_text(encoding="utf-8")
 
 
 def _toml_escape(value: str) -> str:
@@ -64,9 +60,7 @@ def write_user_config(
     """
     path = Path(path)
     if path.exists() and not force:
-        raise FileExistsError(
-            f"Config already exists: {path}. Re-run with --force to overwrite."
-        )
+        raise FileExistsError(f"Config already exists: {path}. Re-run with --force to overwrite.")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         render_example_toml(data_root=data_root, platform=platform),
