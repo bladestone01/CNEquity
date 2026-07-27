@@ -44,7 +44,7 @@
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区 |
+| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区；`asl backfill` 默认自 2001 起（`--start`/`--end` 分块）；baostock 不用于 FSI |
 | valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 回填：baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
 

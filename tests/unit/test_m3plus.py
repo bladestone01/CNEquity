@@ -101,10 +101,27 @@ def test_financial_statement_items_backfill_walks_report_periods():
     from ashare_lake.adapters.eastmoney.fundamentals import _report_period_dates
 
     periods = _report_period_dates(date(2026, 7, 7))
+    assert "2001-03-31" in periods
     assert "2016-03-31" in periods
     assert "2026-03-31" in periods
     assert "2026-09-30" not in periods  # future quarter excluded
     assert periods == sorted(periods, reverse=True)
+
+
+def test_financial_statement_items_backfill_walk_honors_start_end():
+    from ashare_lake.adapters.eastmoney.fundamentals import _report_period_dates
+
+    periods = _report_period_dates(
+        date(2026, 7, 7),
+        start=date(2010, 1, 1),
+        end=date(2010, 12, 31),
+    )
+    assert periods[0] == "2010-12-31"
+    assert periods[-1] == "2010-03-31"
+    assert all(p.startswith("2010-") for p in periods)
+    assert _report_period_dates(
+        date(2026, 7, 7), start=date(2027, 1, 1), end=date(2027, 6, 30)
+    ) == []
 
 
 def test_index_constituents_schema():

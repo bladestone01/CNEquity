@@ -39,7 +39,7 @@ EM 改列名会整报 `code=9501`。适配器里的 `_REPORT` / `_COLUMNS` 是�
 | `corporate_actions.py` | corporate_actions **daily 主源** |
 | `capital.py` | fund_flow, margin_trading, northbound_*, dragon_tiger, block_trades |
 | `valuation.py` | valuation_metrics 当日快照 |
-| `fundamentals.py` | financial_statement_items |
+| `fundamentals.py` | financial_statement_items（日更 NOTICE_DATE；backfill 报告期自 2001，CLI 可裁剪） |
 | `sectors.py` | sector_members |
 | `industry.py` | industry_members |
 | `index_constituents.py` | index_constituents |

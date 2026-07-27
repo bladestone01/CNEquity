@@ -242,7 +242,8 @@ def step_financial_statement_items(
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("financial_statement_items: eastmoney source disabled in config")
     # Quarterly data: daily runs pick up same-day announcements; backfill walks
-    # every report period 2016+ (NOTICE_DATE incremental cannot reach history).
+    # every report period from 2001 (CLI --start/--end clips the walk;
+    # NOTICE_DATE incremental cannot reach history).
     backfill = getattr(config, "_backfill", False)
     df = fetch_financial_statement_items(trade_date, backfill=backfill, config=config)
     if df.is_empty():

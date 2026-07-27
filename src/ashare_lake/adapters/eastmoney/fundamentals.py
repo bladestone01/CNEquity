@@ -45,7 +45,8 @@ from ashare_lake.config import Config
 
 logger = logging.getLogger(__name__)
 
-_BACKFILL_START_YEAR = 2016
+# Align with daily_bars research window; CLI --start/--end can clip further.
+_BACKFILL_START_YEAR = 2001
 _QUARTER_END_MMDD = (("03", "31"), ("06", "30"), ("09", "30"), ("12", "31"))
 
 # Mirrors PRIMARY_KEYS["financial_statement_items"]: announce_date is part of the
@@ -143,13 +144,32 @@ _REPORTS: tuple[_Report, ...] = (
 _ANNOUNCE_SOURCE = next(r for r in _REPORTS if r.authoritative_announce_date)
 
 
-def _report_period_dates(trade_date: date) -> list[str]:
-    """Quarter-end report dates from 2016 through *trade_date* (descending)."""
+def _report_period_dates(
+    trade_date: date,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
+    """Quarter-end report dates from the backfill floor through *trade_date*.
+
+    Optional *start* / *end* clip the walk (CLI ``asl backfill … --start/--end``)
+    so ops can chunk multi-year sweeps. Bounds are inclusive on the period date.
+    """
+    lower = date(_BACKFILL_START_YEAR, 1, 1)
+    if start is not None:
+        lower = max(lower, start)
+    upper = trade_date
+    if end is not None:
+        upper = min(upper, end)
+    if lower > upper:
+        return []
+
     out: list[str] = []
-    for year in range(_BACKFILL_START_YEAR, trade_date.year + 1):
+    for year in range(lower.year, upper.year + 1):
         for mm, dd in _QUARTER_END_MMDD:
             ds = f"{year}-{mm}-{dd}"
-            if date.fromisoformat(ds) <= trade_date:
+            period = date.fromisoformat(ds)
+            if lower <= period <= upper:
                 out.append(ds)
     return sorted(out, reverse=True)
 
@@ -249,8 +269,9 @@ def fetch_financial_statement_items(
     newly announced reports *and* restatements republished today, both of which
     genuinely became knowable on that date.
 
-    ``backfill=True``: every A-share report for each quarter-end period from 2016
-    through *trade_date*. announce_date is resolved from ``RPT_LICO_FN_CPD``
+    ``backfill=True``: every A-share report for each quarter-end period from
+    2001 (or ``config._backfill_start``) through *trade_date* (or
+    ``config._backfill_end``). announce_date is resolved from ``RPT_LICO_FN_CPD``
     (see module docstring — the statement reports' own NOTICE_DATE is a
     republication timestamp and lands 1-2 years late).
     """
@@ -267,7 +288,11 @@ def fetch_financial_statement_items(
                 parsed, _ = _parse_rows(raw, report, default_notice=ds)
                 rows.extend(parsed)
         else:
-            for period in _report_period_dates(trade_date):
+            range_start = getattr(config, "_backfill_start", None) if config else None
+            range_end = getattr(config, "_backfill_end", None) if config else None
+            for period in _report_period_dates(
+                trade_date, start=range_start, end=range_end
+            ):
                 announce_raw = _fetch_report(
                     client,
                     _ANNOUNCE_SOURCE,

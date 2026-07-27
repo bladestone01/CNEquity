@@ -202,6 +202,8 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
   但配的是首次披露日（statement 报表自带的 `NOTICE_DATE` 是「最后一次重述日」，
   往往晚 1–2 年，直接用会让基本面在 PIT 查询里整体迟到）。因此存在小幅前视：
   修订后的数字在首次披露日其实还不知道。只有日更逐日累积的版本才是严格 PIT。
+- **历史深度**：`asl backfill financial_statement_items` 默认走东财报告期自 **2001** 起
+  （可用 `--start` / `--end` 分块）；不走 baostock。盘上实际起点见 `list_datasets().coverage_start`。
 
 #### fund_flow
 

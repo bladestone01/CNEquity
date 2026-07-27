@@ -131,6 +131,7 @@ load(
 
 注意：只有日更逐日累积的版本是严格 PIT；回填拿到的是东财*当前*版本配首发日，
 早期期间只有一版（见 [schema](schema.md#financial_statement_items)）。
+回填默认自 2001 起（东财）；`list_datasets()` 的 `coverage_start` 为盘上实际起点。
 
 ---
 
