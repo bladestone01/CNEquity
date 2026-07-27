@@ -41,10 +41,7 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**，回测和信号�
 不用全市场回填。装好后一条命令拉 **5 只流动性股票 × 约 30 个交易日** 的真实行情：
 
 ```bash
-git clone https://github.com/rootSunc/ashare-lake.git
-cd ashare-lake
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[tdx]"
+pip install "ashare-lake[tdx]"
 asl demo
 ```
 
@@ -72,17 +69,20 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 
 ## 定位：与同类差异
 
-AkShare / efinance 解决「怎么拉数」；本仓库解决拉完之后：多源进同一套主键 / 分区 / `load()` 契约，落成可日更续跑、带溯源的本地 curated Parquet。细节见 [comparison](docs/comparison.md)。
+AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」；Qlib / vn.py 解决「研究/交易平台」。  
+**ashare-lake** 专做中间那一层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖。细节见 [comparison](docs/comparison.md)。
 
-| | ashare-lake | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
-|--|-------------|-------------------|-------------|-------------------|--------------|
-| 定位 | 自建数据湖 + 日更编排 | 拉数函数库 | 云端积分 API | 单源会话/协议 | 研究/交易平台 |
-| 交付 | curated Parquet + `load()` | 内存 DataFrame | 远端表 | DataFrame | 平台内数据 |
-| 编排 / 水位 / 重试 | 有 | 无 | 无 | 无 | 各平台自有 |
-| Schema / 溯源 | 写前校验 + provenance | 通常无 | 平台字段 | 无湖契约 | 视模块 |
-| 多源 | 主源进 curated；备源仅 snapshot | 单源调用 | 单平台 | 单源 | 视配置 |
+| 你在意什么 | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
+|--|--|--|--|--|--|
+| 本地可续跑的数据底座 | **湖 + 日更编排**（水位 / 重试 / audit） | 只拉到内存，编排自管 | 云端积分，非自建湖 | 会话拉数，无湖 | 绑在平台数据子系统里 |
+| 数据从哪来、能否复查 | **行级溯源** + 写前 schema 校验 | 通常无统一契约 | 平台字段 | 无湖契约 | 视模块 |
+| 多源交叉核验 | **主源 curated + 备源 snapshot**，可 diff，不静默顶替 | 单次单源调用 | 单平台 | 单源 | 视配置 |
+| 研究口径是否稳定 | **`load()` 契约**：复权组合 / universe / PIT `as_of` | 自己拼 | 自己拼 | 自己拼 | 平台口径 |
+| 源挂了会怎样 | **fail batch**，暴露问题，可按批 retry | 看调用方 | 看平台 | 看调用方 | 视模块 |
+| 能否单独当研究数据底座 | **能**（湖 + 日更 + `load()`） | 否，还需自建落盘/编排 | 云端表，非自建湖 | 否，会话拉数 | 能，但绑平台 |
 
-**设计取舍（摘要）**：源失败 fail batch（不静默假数）· 日线未复权、因子另存 · 备源不自动顶替 curated · 财报带 `announce_date` 做 PIT。完整取舍见 [comparison](docs/comparison.md)。
+一句话：**别人帮你取数；这边帮你把数管成可复现的研究底座。**  
+设计取舍（未复权存盘、备源不自动顶替等）见 [comparison](docs/comparison.md)。
 
 ## 有什么数据
 
@@ -102,10 +102,15 @@ AkShare / efinance 解决「怎么拉数」；本仓库解决拉完之后：多�
 
 ## 安装与日更
 
-暂未发布 PyPI。装好环境后（与上面 demo 相同）：
+```bash
+pip install "ashare-lake[tdx]"
+asl demo                          # 一分钟样例；会写出 configs/ashare-lake.demo.toml
+```
+
+全量日更需一份本地配置（从仓库拷贝示例即可）：
 
 ```bash
-pip install -e ".[tdx]"          # 开发另加 [dev]；也可用 uv sync --extra tdx
+git clone https://github.com/rootSunc/ashare-lake.git && cd ashare-lake
 cp configs/ashare-lake.example.toml configs/ashare-lake.toml
 asl init   --config configs/ashare-lake.toml    # 建目录/manifest/视图 + 首次回填
 asl run daily --config configs/ashare-lake.toml # 每日增量
@@ -157,13 +162,13 @@ asl query --sql "
 
 - **幸存者偏差**：退市股需 `asl delisted backfill` + `repair`；未补齐前收益序列要打折看
 - **海外网络**：部分 HTTP / 板块回填依赖大陆出口；行情 demo 需 TDX 可达
-- **未上 PyPI**：目前仅源码安装
+- **示例配置**：全量 `asl init` 需要仓库里的 `configs/ashare-lake.example.toml`（或自行写 toml）
 
 更多（ST 历史过滤、北交所、分区陷阱）见 [runbook](docs/operations/runbook.md) 与 [legal](docs/legal-and-data-sources.md)。
 
 ## 项目状态
 
-[0.1.0](CHANGELOG.md) — 作者自用数据层的首个公开版，日常挂 cron。1.0 前 schema / `load()` 可能有破坏性调整，见 [CHANGELOG](CHANGELOG.md)。
+[0.1.1](CHANGELOG.md) — 已发布 [PyPI](https://pypi.org/project/ashare-lake/)；作者自用数据层公开版，日常挂 cron。1.0 前 schema / `load()` 可能有破坏性调整，见 [CHANGELOG](CHANGELOG.md)。
 
 个人项目：issue / PR 欢迎，响应尽力而为。[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)。文档中文为主；[CHANGELOG](CHANGELOG.md) 与 [ADR](docs/adr/) 为英文。
 

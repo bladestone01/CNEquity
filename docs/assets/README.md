@@ -1,6 +1,10 @@
 # README screenshots
 
-Terminal-style PNGs embedded in `README.md` / `README.en.md`:
+Terminal-style PNGs embedded in `README.md` / `README.en.md` (relative paths).
+PyPI uses the short `README.pypi.md`, which points at absolute
+`raw.githubusercontent.com` URLs for the one demo screenshot it embeds.
+
+Files:
 
 | File | Shows |
 |------|--------|

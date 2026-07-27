@@ -44,10 +44,7 @@ Skip the full-market backfill. One command fetches **5 liquid names × ~30
 trading days** of real bars:
 
 ```bash
-git clone https://github.com/rootSunc/ashare-lake.git
-cd ashare-lake
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[tdx]"
+pip install "ashare-lake[tdx]"
 asl demo
 ```
 
@@ -78,22 +75,24 @@ to TDX quote hosts (mainland egress is more reliable). On failure, try
 
 ## Positioning: peers
 
-AkShare / efinance solve fetching; this repo solves what comes after: many
-adapters into one primary-key / partition / `load()` contract, as resumable,
-provenance-tagged curated Parquet. Details: [comparison](docs/comparison.md)
-(Chinese).
+AkShare / efinance answer “how do I fetch?”; Tushare answers “cloud wide tables”;
+Qlib / vn.py answer “research / trading platform”.
+**ashare-lake** owns the middle layer: many sources into one contract, as a
+resumable, provenance-tagged, auditable local Parquet lake.
+Details: [comparison](docs/comparison.md) (Chinese).
 
-| | ashare-lake | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
-|--|-------------|-------------------|-------------|-------------------|--------------|
-| Role | Self-hosted lake + daily jobs | Fetch helpers | Cloud API (credits) | Single-source API/protocol | Research / trading platform |
-| Deliverable | Curated Parquet + `load()` | In-memory DataFrame | Remote tables | DataFrame | In-platform data |
-| Orchestration / watermarks / retry | Yes | No | No | No | Platform-specific |
-| Schema / provenance | Write-time checks + provenance cols | Usually none | Platform fields | No lake contract | Varies |
-| Multi-source | Primary → curated; backup → snapshot only | Single call | Single vendor | Single source | Varies |
+| What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
+|--|--|--|--|--|--|
+| Local, resumable data base | **Lake + daily jobs** (watermarks / retry / audit) | In-memory fetch; you own orchestration | Cloud credits, not a self-hosted lake | Session fetch, no lake | Tied to platform data subsystem |
+| Provenance / auditability | **Row-level provenance** + write-time schema checks | Usually no shared contract | Platform fields | No lake contract | Varies |
+| Cross-source validation | **Primary curated + backup snapshots**, diffable, never silent replace | One call, one source | One vendor | One source | Varies |
+| Stable research semantics | **`load()` contract**: adjust / universe / PIT `as_of` | DIY | DIY | DIY | Platform semantics |
+| When a source fails | **Fail the batch**, surface it, retry by batch | Up to caller | Up to vendor | Up to caller | Varies |
+| Standalone research data base? | **Yes** (lake + daily jobs + `load()`) | No — you still build landing/orchestration | Cloud tables, not self-hosted | No — session fetch | Yes, but platform-tied |
 
-**Trade-offs (short):** fail the batch on source errors · store unadjusted bars
-+ separate factors · never auto-replace curated with backups · financials carry
-`announce_date` for PIT. Full list in [comparison](docs/comparison.md).
+One line: **others fetch frames; this ships a reproducible research base.**
+Trade-offs (unadjusted storage, no auto-failover, …):
+[comparison](docs/comparison.md).
 
 ## Datasets
 
@@ -115,10 +114,15 @@ Dataset names are the first argument to `load()`. Columns:
 
 ## Install & daily ops
 
-Not on PyPI yet. After the same env setup as the demo:
+```bash
+pip install "ashare-lake[tdx]"
+asl demo                          # writes configs/ashare-lake.demo.toml under cwd
+```
+
+Full-market daily ops need a local config (copy the example from the repo):
 
 ```bash
-pip install -e ".[tdx]"          # add [dev] for development; or: uv sync --extra tdx
+git clone https://github.com/rootSunc/ashare-lake.git && cd ashare-lake
 cp configs/ashare-lake.example.toml configs/ashare-lake.toml
 asl init   --config configs/ashare-lake.toml    # dirs / manifest / views + first backfill
 asl run daily --config configs/ashare-lake.toml # daily incremental
@@ -175,16 +179,17 @@ day-partitioned datasets. For year/month partitions (e.g. `index_bars`), prefer
 - **Survivorship bias:** delisted names need `asl delisted backfill` + `repair`
   before trusting return series
 - **Network:** some HTTP / sector backfills need mainland egress; demo needs TDX
-- **No PyPI yet:** source install only
+- **Config for full init:** copy `configs/ashare-lake.example.toml` from the repo
+  (or write your own); `asl demo` writes its own tiny config
 
 More (historical ST filters, BSE/BJ, partition pitfalls):
 [runbook](docs/operations/runbook.md) · [legal](docs/legal-and-data-sources.md).
 
 ## Project status
 
-[0.1.0](CHANGELOG.md) — first public release of a data layer the author runs on
-a personal daily cron. Schema / `load()` may change before 1.0; see
-[CHANGELOG](CHANGELOG.md).
+[0.1.1](CHANGELOG.md) — published on [PyPI](https://pypi.org/project/ashare-lake/);
+first public data-layer release the author runs on a personal daily cron.
+Schema / `load()` may change before 1.0; see [CHANGELOG](CHANGELOG.md).
 
 Personal project: issues and PRs welcome, responses best-effort.
 [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md). Docs are

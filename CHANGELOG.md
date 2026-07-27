@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] — 2026-07-27
+
+### Fixed
+
+- PyPI project page: ship a short `README.pypi.md` with absolute GitHub links
+  (full `README.md` relative paths break on pypi.org)
+
+### Changed
+
+- Document `pip install "ashare-lake[tdx]"` as the primary install path
+- `pyproject.toml` `readme` points at `README.pypi.md` instead of `README.md`
+
 ## [0.1.0] — 2026-07-19
 
 First public release of the self-hosted A-share Parquet data layer.
@@ -30,4 +42,5 @@ First public release of the self-hosted A-share Parquet data layer.
 - TLS verify on by default for HTTP clients
 - Project URLs point at `rootSunc/ashare-lake`
 
+[0.1.1]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.1.1
 [0.1.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.1.0

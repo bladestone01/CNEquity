@@ -9,16 +9,26 @@
 | 磁盘 | 全量 init（2016 起）约需数十 GB，视数据集范围而定 |
 | 网络 | 采集需访问 TDX 行情服务器与各 HTTP 数据源 |
 
-## 基础安装
+## 从 PyPI 安装（推荐）
+
+```bash
+pip install "ashare-lake[tdx]"
+asl demo    # 一分钟真数样例，不需要先 clone 仓库
+```
+
+`[tdx]` extra 安装 `mootdx`，用于通达信协议行情（日线、指数、除权、证券列表等）。不装 `[tdx]` 时 P0 行情类数据集无法采集。
+
+全量 `asl init` 需要一份本地 toml：可从仓库拷贝 `configs/ashare-lake.example.toml`，或按 [configuration](configuration.md) 自写。
+
+## 从源码安装（开发）
 
 ```bash
 git clone https://github.com/rootSunc/ashare-lake.git
 cd ashare-lake
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[tdx]"
+# 或：uv sync --extra tdx
 ```
-
-`[tdx]` extra 安装 `mootdx`，用于通达信协议行情（日线、指数、除权、证券列表等）。不装 `[tdx]` 时 P0 行情类数据集无法采集。
 
 ## 可选依赖
 
@@ -32,6 +42,10 @@ pip install -e ".[tdx]"
 | `dev` | pytest, ruff, pytest-cov, pytest-timeout | 开发与测试 |
 
 ```bash
+# PyPI
+pip install "ashare-lake[tdx,valuation,macro,nlp,structure]"
+
+# 源码可编辑
 pip install -e ".[tdx,valuation,macro,nlp,structure,dev]"
 ```
 
@@ -41,6 +55,7 @@ pip install -e ".[tdx,valuation,macro,nlp,structure,dev]"
 ## 配置初始化
 
 ```bash
+# 在已 clone 的仓库内：
 cp configs/ashare-lake.example.toml configs/ashare-lake.toml
 # 编辑 data.root — 生产环境建议使用绝对路径
 ```
@@ -50,9 +65,12 @@ cp configs/ashare-lake.example.toml configs/ashare-lake.toml
 ## 验证安装
 
 ```bash
+asl --help
+asl demo
+# 全量配置就绪后：
 asl config validate --config configs/ashare-lake.toml
 asl servers test --config configs/ashare-lake.toml   # 需 [tdx]
-pytest tests/unit -q                               # 需 [dev]，离线可跑
+pytest tests/unit -q                               # 需源码 + [dev]，离线可跑
 ```
 
 ## 与 httpx 版本
