@@ -29,6 +29,69 @@ backtesting and signal research stay downstream.
   Python load() API      DuckDB views / SQL    Polars scan_parquet
 ```
 
+## Positioning: peers and trade-offs
+
+AkShare / efinance solve fetching; this repo solves what comes after: many
+adapters into one primary-key / partition / `load()` contract, as resumable,
+provenance-tagged curated Parquet on disk. Details:
+[comparison](docs/comparison.md) (Chinese).
+
+| | ashare-lake | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
+|--|-------------|-------------------|-------------|-------------------|--------------|
+| Role | Self-hosted lake + daily jobs | Fetch helpers | Cloud API (credits) | Single-source API/protocol | Research / trading platform |
+| Deliverable | Curated Parquet + `load()` | In-memory DataFrame | Remote tables | DataFrame | In-platform data |
+| Orchestration / watermarks / retry | Yes | No | No | No | Platform-specific |
+| Schema / provenance | Write-time checks + provenance cols | Usually none | Platform fields | No lake contract | Varies |
+| Multi-source | Primary → curated; backup → snapshot only | Single call | Single vendor | Single source | Varies |
+
+| Trade-off | Choice |
+|-----------|--------|
+| Source failure | Fail the batch — no silent fake data; `allow_mock` tests must tag `source="mock"` |
+| Provenance | Every row: `source` / `data_version` / `fetched_at` |
+| Adjustment | Store unadjusted bars; factors separate; compose `qfq` / `hfq` at query time |
+| Failover | One curated row per PK; backups stay in snapshots; audit diffs; never auto-replace |
+| Lookahead | Financials carry `announce_date`; use `load(..., as_of=)` for PIT |
+
+## One-minute demo
+
+Skip the full-market backfill. After install, one command fetches **5 liquid
+names × ~30 trading days** of real TDX bars, prints phased progress, and shows
+a sample table:
+
+```bash
+git clone https://github.com/rootSunc/ashare-lake.git
+cd ashare-lake
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[tdx]"
+asl demo
+```
+
+<p align="center">
+  <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
+</p>
+
+Data lands in a separate `data/ashare-lake-demo/` root (safe beside a later full
+`asl init`). Then:
+
+```bash
+asl query --config configs/ashare-lake.demo.toml --sql "
+  SELECT symbol, trade_date, close, volume, source
+  FROM daily_bars
+  WHERE symbol = '600519.SH'
+  ORDER BY trade_date DESC
+  LIMIT 10
+"
+```
+
+<p align="center">
+  <img src="docs/assets/asl-query.png" alt="asl query: DuckDB SQL with provenance source column" width="720" />
+</p>
+
+Optional: `asl demo --symbols 600519.SH,000001.SZ --days 10`. Needs reachability
+to TDX quote hosts (mainland egress is more reliable). On failure, try
+`asl servers test`. Full-market daily ops still use Install / Quick start →
+`asl init` below.
+
 ## Datasets
 
 Dataset names are the first argument to `load()`. Columns and primary keys:
@@ -100,6 +163,10 @@ bars = load(
 roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 ```
 
+<p align="center">
+  <img src="docs/assets/asl-load.png" alt="Python load(): read daily bars from local curated Parquet" width="720" />
+</p>
+
 DuckDB:
 
 ```bash
@@ -140,29 +207,6 @@ Lake layout:
   meta/      manifest, quality findings, watermarks, on-demand cache
   duckdb/    ashare-lake.duckdb
 ```
-
-## Positioning: peers and trade-offs
-
-AkShare / efinance solve fetching; this repo solves what comes after: many
-adapters into one primary-key / partition / `load()` contract, as resumable,
-provenance-tagged curated Parquet on disk. Details:
-[comparison](docs/comparison.md) (Chinese).
-
-| | ashare-lake | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
-|--|-------------|-------------------|-------------|-------------------|--------------|
-| Role | Self-hosted lake + daily jobs | Fetch helpers | Cloud API (credits) | Single-source API/protocol | Research / trading platform |
-| Deliverable | Curated Parquet + `load()` | In-memory DataFrame | Remote tables | DataFrame | In-platform data |
-| Orchestration / watermarks / retry | Yes | No | No | No | Platform-specific |
-| Schema / provenance | Write-time checks + provenance cols | Usually none | Platform fields | No lake contract | Varies |
-| Multi-source | Primary → curated; backup → snapshot only | Single call | Single vendor | Single source | Varies |
-
-| Trade-off | Choice |
-|-----------|--------|
-| Source failure | Fail the batch — no silent fake data; `allow_mock` tests must tag `source="mock"` |
-| Provenance | Every row: `source` / `data_version` / `fetched_at` |
-| Adjustment | Store unadjusted bars; factors separate; compose `qfq` / `hfq` at query time |
-| Failover | One curated row per PK; backups stay in snapshots; audit diffs; never auto-replace |
-| Lookahead | Financials carry `announce_date`; use `load(..., as_of=)` for PIT |
 
 ## Known limitations
 

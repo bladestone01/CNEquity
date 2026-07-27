@@ -26,6 +26,61 @@ CLI 叫 `asl`，包名 `ashare_lake`。仓库只做数据，回测和信号留�
   Python load() API      DuckDB 视图 / SQL     Polars 直读 Parquet
 ```
 
+## 定位：与同类差异与设计取舍
+
+AkShare / efinance 解决「怎么拉数」；本仓库解决拉完之后：多源进同一套主键 / 分区 / `load()` 契约，落成可日更续跑、带溯源的本地 curated Parquet。逐项说明见 [comparison](docs/comparison.md)。
+
+| | ashare-lake | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
+|--|-------------|-------------------|-------------|-------------------|--------------|
+| 定位 | 自建数据湖 + 日更编排 | 拉数函数库 | 云端积分 API | 单源会话/协议 | 研究/交易平台 |
+| 交付 | curated Parquet + `load()` | 内存 DataFrame | 远端表 | DataFrame | 平台内数据 |
+| 编排 / 水位 / 重试 | 有 | 无 | 无 | 无 | 各平台自有 |
+| Schema / 溯源 | 写前校验 + provenance | 通常无 | 平台字段 | 无湖契约 | 视模块 |
+| 多源 | 主源进 curated；备源仅 snapshot | 单源调用 | 单平台 | 单源 | 视配置 |
+
+| 取舍 | 选择 |
+|------|------|
+| 源失败 | fail batch，不静默塞假数；测试 `allow_mock` 须标 `source="mock"` |
+| 溯源 | 每行 `source` / `data_version` / `fetched_at` |
+| 复权 | 日线存未复权；因子单独存；`qfq` / `hfq` 查询时组合 |
+| 主备 | curated 每主键一行；备源进 snapshot，audit 出 diff，不自动顶替 |
+| 前视 | 财报等带 `announce_date`，`load(..., as_of=)` 做 PIT |
+
+## 一分钟体验
+
+不用全市场回填。装好后一条命令拉 **5 只流动性股票 × 约 30 个交易日** 的真实行情（TDX），终端分阶段打进度，最后打印样例表：
+
+```bash
+git clone https://github.com/rootSunc/ashare-lake.git
+cd ashare-lake
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[tdx]"
+asl demo
+```
+
+<p align="center">
+  <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
+</p>
+
+数据写在独立目录 `data/ashare-lake-demo/`（不会污染之后的全量 `asl init`）。成功后可再查：
+
+```bash
+asl query --config configs/ashare-lake.demo.toml --sql "
+  SELECT symbol, trade_date, close, volume, source
+  FROM daily_bars
+  WHERE symbol = '600519.SH'
+  ORDER BY trade_date DESC
+  LIMIT 10
+"
+```
+
+<p align="center">
+  <img src="docs/assets/asl-query.png" alt="asl query：DuckDB SQL 查出带 source 溯源列的日线" width="720" />
+</p>
+
+可选：`asl demo --symbols 600519.SH,000001.SZ --days 10`。需要能访问 TDX 行情主机（大陆出口更稳）；失败时先看 `asl servers test`。  
+全市场日更仍走下面的「安装 / 快速开始」→ `asl init`。
+
 ## 有什么数据
 
 数据集名即 `load()` 的第一个参数。字段与主键见 [schema](docs/datasets/schema.md)，编排元数据速查见 [catalog](docs/datasets/catalog.md)。
@@ -93,6 +148,10 @@ bars = load(
 roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 ```
 
+<p align="center">
+  <img src="docs/assets/asl-load.png" alt="Python load()：从本地 curated Parquet 读日线" width="720" />
+</p>
+
 DuckDB：
 
 ```bash
@@ -125,26 +184,6 @@ df = bars.filter(pl.col("symbol") == "600519.SH").collect()
   meta/      manifest、quality findings、水位、on-demand 缓存
   duckdb/    ashare-lake.duckdb
 ```
-
-## 定位：与同类差异与设计取舍
-
-AkShare / efinance 解决「怎么拉数」；本仓库解决拉完之后：多源进同一套主键 / 分区 / `load()` 契约，落成可日更续跑、带溯源的本地 curated Parquet。逐项说明见 [comparison](docs/comparison.md)。
-
-| | ashare-lake | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
-|--|-------------|-------------------|-------------|-------------------|--------------|
-| 定位 | 自建数据湖 + 日更编排 | 拉数函数库 | 云端积分 API | 单源会话/协议 | 研究/交易平台 |
-| 交付 | curated Parquet + `load()` | 内存 DataFrame | 远端表 | DataFrame | 平台内数据 |
-| 编排 / 水位 / 重试 | 有 | 无 | 无 | 无 | 各平台自有 |
-| Schema / 溯源 | 写前校验 + provenance | 通常无 | 平台字段 | 无湖契约 | 视模块 |
-| 多源 | 主源进 curated；备源仅 snapshot | 单源调用 | 单平台 | 单源 | 视配置 |
-
-| 取舍 | 选择 |
-|------|------|
-| 源失败 | fail batch，不静默塞假数；测试 `allow_mock` 须标 `source="mock"` |
-| 溯源 | 每行 `source` / `data_version` / `fetched_at` |
-| 复权 | 日线存未复权；因子单独存；`qfq` / `hfq` 查询时组合 |
-| 主备 | curated 每主键一行；备源进 snapshot，audit 出 diff，不自动顶替 |
-| 前视 | 财报等带 `announce_date`，`load(..., as_of=)` 做 PIT |
 
 ## 已知限制
 
