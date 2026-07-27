@@ -244,9 +244,9 @@ def test_engine_run_step_records_a_compact_batch(tmp_path):
 
 def test_backfill_finishes_run_only_after_compact(tmp_path, monkeypatch):
     """Backfill must not mark the run terminal before compact is recorded."""
-    import ashare_lake.steps  # noqa: F401 — register steps
     from click.testing import CliRunner
 
+    import ashare_lake.steps  # noqa: F401 — register steps
     from ashare_lake.cli.main import cli
     from ashare_lake.orchestrator import registry
     from ashare_lake.orchestrator.engine import JobEngine

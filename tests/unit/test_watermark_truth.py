@@ -69,7 +69,7 @@ def test_reconcile_pulls_back_a_watermark_that_claims_missing_data(tmp_path):
 
     assert state.get_date("valuation_metrics") == date(2026, 7, 20)
     assert len(findings) == 1
-    assert findings[0]["check"] == "watermark_ahead_of_data"
+    assert findings[0]["check"] == "valuation_watermark_coverage_gate"
     assert findings[0]["claimed"] == "2026-07-21"
     assert findings[0]["actual"] == "2026-07-20"
 
