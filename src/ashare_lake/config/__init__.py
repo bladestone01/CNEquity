@@ -1,3 +1,9 @@
+from ashare_lake.config.bootstrap import (
+    DEFAULT_USER_CONFIG,
+    example_toml_text,
+    render_example_toml,
+    write_user_config,
+)
 from ashare_lake.config.loader import (
     Config,
     FailoverDatasetSpec,
@@ -9,9 +15,13 @@ from ashare_lake.config.loader import (
 
 __all__ = [
     "Config",
+    "DEFAULT_USER_CONFIG",
     "FailoverDatasetSpec",
     "ScheduleGroup",
     "WaveConfig",
+    "example_toml_text",
     "load_config",
+    "render_example_toml",
     "validate_config",
+    "write_user_config",
 ]

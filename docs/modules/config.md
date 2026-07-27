@@ -11,7 +11,9 @@
 | 文件 | 职责 |
 |------|------|
 | `loader.py` | `load_config()`, `validate_config()`, `Config` dataclass |
-| `__init__.py` | 导出 `Config`, `load_config`, `validate_config` |
+| `bootstrap.py` | `asl config init`：从包内模板写出用户 toml |
+| `templates/ashare-lake.example.toml` | 随包装的示例配置（与仓库 `configs/` 副本同步） |
+| `__init__.py` | 导出 `Config`, `load_config`, `validate_config`, `write_user_config` |
 
 ---
 

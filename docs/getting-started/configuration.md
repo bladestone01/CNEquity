@@ -1,10 +1,14 @@
 # 配置参考
 
-配置文件格式：TOML。模板：`configs/ashare-lake.example.toml`。加载与校验：`ashare_lake.config.loader`。
+配置文件格式：TOML。模板随包装在 `ashare_lake.config.templates`；仓库内副本为 `configs/ashare-lake.example.toml`。
 
 ```bash
+asl config init                              # 推荐：写出 configs/ashare-lake.toml
+asl config init --data-root /data/ashare-lake
 asl config validate --config configs/ashare-lake.toml
 ```
+
+加载与校验：`ashare_lake.config.loader`。
 
 ---
 

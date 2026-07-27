@@ -18,7 +18,13 @@ asl demo    # 一分钟真数样例，不需要先 clone 仓库
 
 `[tdx]` extra 安装 `mootdx`，用于通达信协议行情（日线、指数、除权、证券列表等）。不装 `[tdx]` 时 P0 行情类数据集无法采集。
 
-全量 `asl init` 需要一份本地 toml：可从仓库拷贝 `configs/ashare-lake.example.toml`，或按 [configuration](configuration.md) 自写。
+全量 `asl init` 前先写出配置（不必 clone 仓库）：
+
+```bash
+asl config init                   # → configs/ashare-lake.toml；macOS 自动 workers=1
+asl config init --data-root /path/to/lake   # 可选：直接写 data.root
+asl config validate
+```
 
 ## 从源码安装（开发）
 
@@ -55,8 +61,9 @@ pip install -e ".[tdx,valuation,macro,nlp,structure,dev]"
 ## 配置初始化
 
 ```bash
-# 在已 clone 的仓库内：
-cp configs/ashare-lake.example.toml configs/ashare-lake.toml
+asl config init
+# 等价于从包内模板写出 configs/ashare-lake.toml
+# 仓库开发也可：cp configs/ashare-lake.example.toml configs/ashare-lake.toml
 # 编辑 data.root — 生产环境建议使用绝对路径
 ```
 

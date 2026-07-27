@@ -312,8 +312,8 @@ Python:
   from ashare_lake.query import load
   bars = load("daily_bars", symbols=["{sample_symbol}"], data_root="{cfg.data_root}")
 
-Full-market backfill (hours/days) is separate: copy configs/ashare-lake.example.toml
-and run `asl init`. Do not reuse this demo data_root for production.
+Full-market backfill (hours/days) is separate: `asl config init` then `asl init`.
+Do not reuse this demo data_root for production.
 """
     )
     return {

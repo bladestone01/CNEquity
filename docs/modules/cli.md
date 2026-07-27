@@ -8,7 +8,7 @@ Click 命令组 `asl` 的唯一实现。入口：`pyproject.toml` `[project.scri
 
 ## 全局行为
 
-- 默认配置：`configs/ashare-lake.toml`；不存在时提示复制 example
+- 默认配置：`configs/ashare-lake.toml`；不存在时提示运行 `asl config init`
 - 启动时 `import ashare_lake.steps` 注册全部 step
 - 失败命令多数 `raise SystemExit(1)`，供 launchd/cron 检测
 
@@ -28,8 +28,9 @@ Click 命令组 `asl` 的唯一实现。入口：`pyproject.toml` `[project.scri
 
 ```
 asl
+├── demo
 ├── init
-├── config validate
+├── config {validate|init} [--force] [--data-root]
 ├── run daily [--group] [--backfill]
 ├── backfill <dataset>
 ├── compact [--run-id]
@@ -51,7 +52,10 @@ asl
 
 | 命令 | 核心调用 |
 |------|----------|
+| demo | `cli.demo.run_demo`（独立小湖 + 真源 TDX） |
 | init | `init_data_layout` + `JobEngine.run_init_phases` |
+| config init | `config.bootstrap.write_user_config` |
+| config validate | `validate_config` |
 | run daily | `JobEngine.run_job` |
 | backfill | `run_job("backfill")` + `step_compact` |
 | compact | `step_compact` |
@@ -68,7 +72,7 @@ asl
 
 ## resolve_config_path
 
-统一配置路径解析与友好错误信息。
+统一配置路径解析与友好错误信息（缺省文件时引导 `asl config init`）。
 
 ---
 

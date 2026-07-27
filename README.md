@@ -107,11 +107,11 @@ pip install "ashare-lake[tdx]"
 asl demo                          # 一分钟样例；会写出 configs/ashare-lake.demo.toml
 ```
 
-全量日更需一份本地配置（从仓库拷贝示例即可）：
+全量日更：
 
 ```bash
-git clone https://github.com/rootSunc/ashare-lake.git && cd ashare-lake
-cp configs/ashare-lake.example.toml configs/ashare-lake.toml
+asl config init                   # 写出 configs/ashare-lake.toml（macOS 自动 workers=1）
+# 按需编辑 data.root
 asl init   --config configs/ashare-lake.toml    # 建目录/manifest/视图 + 首次回填
 asl run daily --config configs/ashare-lake.toml # 每日增量
 asl status --config configs/ashare-lake.toml
@@ -162,13 +162,13 @@ asl query --sql "
 
 - **幸存者偏差**：退市股需 `asl delisted backfill` + `repair`；未补齐前收益序列要打折看
 - **海外网络**：部分 HTTP / 板块回填依赖大陆出口；行情 demo 需 TDX 可达
-- **示例配置**：全量 `asl init` 需要仓库里的 `configs/ashare-lake.example.toml`（或自行写 toml）
+- **示例配置**：全量 `asl init` 前先 `asl config init`（或自写 toml）
 
-更多（ST 历史过滤、北交所、分区陷阱）见 [runbook](docs/operations/runbook.md) 与 [legal](docs/legal-and-data-sources.md)。
+更多（ST 历史过滤、北交所、分区陷阱）见 [runbook](docs/operations/runbook.md)、[排障](docs/operations/troubleshooting.md) 与 [legal](docs/legal-and-data-sources.md)。
 
 ## 项目状态
 
-[0.1.1](CHANGELOG.md) — 已发布 [PyPI](https://pypi.org/project/ashare-lake/)；作者自用数据层公开版，日常挂 cron。1.0 前 schema / `load()` 可能有破坏性调整，见 [CHANGELOG](CHANGELOG.md)。
+[0.2.0](CHANGELOG.md) — 已发布 [PyPI](https://pypi.org/project/ashare-lake/)；作者自用数据层公开版，日常挂 cron。1.0 前 schema / `load()` 可能有破坏性调整，见 [CHANGELOG](CHANGELOG.md)。
 
 个人项目：issue / PR 欢迎，响应尽力而为。[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)。文档中文为主；[CHANGELOG](CHANGELOG.md) 与 [ADR](docs/adr/) 为英文。
 

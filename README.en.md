@@ -119,11 +119,11 @@ pip install "ashare-lake[tdx]"
 asl demo                          # writes configs/ashare-lake.demo.toml under cwd
 ```
 
-Full-market daily ops need a local config (copy the example from the repo):
+Full-market daily ops:
 
 ```bash
-git clone https://github.com/rootSunc/ashare-lake.git && cd ashare-lake
-cp configs/ashare-lake.example.toml configs/ashare-lake.toml
+asl config init                   # writes configs/ashare-lake.toml (workers=1 on macOS)
+# edit data.root if needed
 asl init   --config configs/ashare-lake.toml    # dirs / manifest / views + first backfill
 asl run daily --config configs/ashare-lake.toml # daily incremental
 asl status --config configs/ashare-lake.toml
@@ -179,15 +179,20 @@ day-partitioned datasets. For year/month partitions (e.g. `index_bars`), prefer
 - **Survivorship bias:** delisted names need `asl delisted backfill` + `repair`
   before trusting return series
 - **Network:** some HTTP / sector backfills need mainland egress; demo needs TDX
-- **Config for full init:** copy `configs/ashare-lake.example.toml` from the repo
-  (or write your own); `asl demo` writes its own tiny config
+- **Config for full init:** run `asl config init` (or write your own toml);
+  `asl demo` writes its own tiny config
 
 More (historical ST filters, BSE/BJ, partition pitfalls):
-[runbook](docs/operations/runbook.md) · [legal](docs/legal-and-data-sources.md).
+[runbook](docs/operations/runbook.md) ·
+[troubleshooting](docs/operations/troubleshooting.md) ·
+[legal](docs/legal-and-data-sources.md).
+
+> Detailed getting-started docs are Chinese-first; this English README is the
+> short path. See [docs/](docs/README.md) for the full index.
 
 ## Project status
 
-[0.1.1](CHANGELOG.md) — published on [PyPI](https://pypi.org/project/ashare-lake/);
+[0.2.0](CHANGELOG.md) — published on [PyPI](https://pypi.org/project/ashare-lake/);
 first public data-layer release the author runs on a personal daily cron.
 Schema / `load()` may change before 1.0; see [CHANGELOG](CHANGELOG.md).
 

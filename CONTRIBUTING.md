@@ -1,5 +1,8 @@
 # 贡献指南
 
+**只用数据的用户**：`pip install "ashare-lake[tdx]"` → 见 [快速开始](docs/getting-started/quickstart.md)。  
+本文面向向仓库提交代码的贡献者。
+
 安全问题请走 [SECURITY.md](SECURITY.md)，不要开公开 issue。
 
 提较大功能前，请先看 [定位与差异](docs/comparison.md)（本仓库只做数据层）和

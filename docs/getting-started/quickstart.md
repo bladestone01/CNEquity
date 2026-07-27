@@ -1,16 +1,49 @@
 # 快速开始
 
-本指南覆盖从零到可读数据的完整路径。详细选项见 [CLI 参考](../reference/cli.md)。
+本指南覆盖两条路径：
 
-## 1. 准备
+1. **一分钟试玩**（推荐新手）：`asl demo`，小宇宙、独立目录，几分钟出真数  
+2. **全量数据湖**：`asl config init` → `asl init` → `asl run daily`（耗时长、占磁盘）
 
-完成 [安装](installation.md) 后确认：
+详细选项见 [CLI 参考](../reference/cli.md)。安装见 [installation](installation.md)。
+
+## 0. 一分钟试玩（可选）
+
+不必 clone 仓库：
 
 ```bash
-source .venv/bin/activate
-cp configs/ashare-lake.example.toml configs/ashare-lake.toml
+pip install "ashare-lake[tdx]"
+asl demo
+```
+
+会写入独立的 `data/ashare-lake-demo/` 与 `configs/ashare-lake.demo.toml`。  
+**不要**把 demo 的 `data_root` 拿去跑全量 `asl init`。
+
+接着可查：
+
+```bash
+asl query --config configs/ashare-lake.demo.toml --sql "
+  SELECT symbol, trade_date, close, volume, source
+  FROM daily_bars
+  ORDER BY trade_date DESC
+  LIMIT 10
+"
+```
+
+下面从第 1 步起是全量湖路径。
+
+## 1. 准备全量配置
+
+```bash
+pip install "ashare-lake[tdx]"   # 若尚未安装
+asl config init                 # → configs/ashare-lake.toml；macOS 自动 workers=1
+# 可选：asl config init --data-root /abs/path/to/lake
 asl config validate
 ```
+
+按需编辑 `configs/ashare-lake.toml` 里的 `data.root`（生产建议绝对路径）。
+
+> 源码开发：也可 `cp configs/ashare-lake.example.toml configs/ashare-lake.toml`，与 `asl config init` 等价。
 
 ## 2. 初始化数据湖
 
@@ -20,8 +53,8 @@ asl init --config configs/ashare-lake.toml
 
 `init` 会：
 
-1. 创建 `{data.root}` 下 staging / curated / derived / meta / duckdb 目录
-2. 初始化 `meta/manifest.db`（SQLite WAL）与 DuckDB 视图
+1. 创建 `{data.root}` 下 staging / curated / derived / meta / duckdb 目录  
+2. 初始化 `meta/manifest.db`（SQLite WAL）与 DuckDB 视图  
 3. 按 `[job.init.phases]` 执行分阶段全量回填（默认自 2016 年起）
 
 **仅建目录、不跑回填：**
@@ -40,15 +73,21 @@ asl retry --run-id <run_id> --config configs/ashare-lake.toml
 
 init 耗时较长（全市场日线分页回填），建议在稳定网络下运行。阶段定义见 [数据流 — Init](../architecture/data-flow.md#init-全量回填)。
 
-## 3. 回填验收（推荐）
+## 3. 回填验收（推荐，需仓库脚本）
+
+验收脚本在 GitHub 仓库的 `scripts/`，**不随 PyPI 包安装**。有 checkout 时：
 
 ```bash
-.venv/bin/python scripts/accept_backfill.py snapshot --out /tmp/curated-counts.json
+git clone https://github.com/rootSunc/ashare-lake.git
+cd ashare-lake
+python scripts/accept_backfill.py snapshot --out /tmp/curated-counts.json
 # 同窗口重跑 daily 后对比
-.venv/bin/python scripts/accept_backfill.py check --compare /tmp/curated-counts.json
+python scripts/accept_backfill.py check --compare /tmp/curated-counts.json
 ```
 
 验收项：幂等性、覆盖起点、消费层可读。详见 [回填完成验收](../operations/runbook.md#回填完成验收)。
+
+纯 PyPI 用户可先用 `asl status --datasets` / `asl catalog` 做粗检。
 
 ## 4. 每日增量
 
@@ -129,9 +168,10 @@ asl retry --run-id <run_id> --config configs/ashare-lake.toml
 
 retry 只重跑失败 batch；全部成功后自动 compact → derive_adj_factors → audit。
 
-## 8. 生产调度（可选）
+## 8. 生产调度（可选，需仓库脚本）
 
 ```bash
+# 需 clone 仓库后：
 scripts/install_scheduler.sh   # macOS launchd，每天 16:05
 ```
 
@@ -145,3 +185,7 @@ scripts/install_scheduler.sh   # macOS launchd，每天 16:05
 | `universe="all_a"` 未剔历史 ST | `trading_status` 仅覆盖日更起点之后；2016→上线日回测需注意 |
 | init 中途失败 | 勿重新 `init`，用 `--resume` 或 `retry` |
 | TDX 连接失败 | `asl servers test`；检查 `[tdx_protocol.hosts]` 与网络 |
+| 缺配置报错 | 先跑 `asl config init` |
+| demo 与全量混用 | demo 用独立 `data/ashare-lake-demo/`，全量另配 `data.root` |
+
+更多排障：[troubleshooting](../operations/troubleshooting.md) · [runbook](../operations/runbook.md)。

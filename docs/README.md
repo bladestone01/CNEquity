@@ -2,9 +2,9 @@
 
 本地部署的 A 股选股数据层：多源采集、编排、标准化，交付带溯源、列契约稳定的 Parquet 湖。
 
-CLI 是 `asl`，Python 包是 `ashare_lake`。默认从 `configs/ashare-lake.example.toml` 复制出本地 `ashare-lake.toml`；数据湖根目录默认 `./data/ashare-lake`。
+CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install "ashare-lake[tdx]"` → `asl demo` 试玩，或 `asl config init` 写出 `configs/ashare-lake.toml` 再跑全量。数据湖根目录默认 `./data/ashare-lake`。
 
-开源读者建议顺序：[与同类项目差异](comparison.md) → [许可与数据合规](legal-and-data-sources.md) → [安装](getting-started/installation.md)。
+开源读者建议顺序：[与同类项目差异](comparison.md) → [许可与数据合规](legal-and-data-sources.md) → [安装](getting-started/installation.md) → [快速开始](getting-started/quickstart.md)。卡在网络 / TDX / workers 时看 [排障](operations/troubleshooting.md)。
 
 面向使用者的文档以中文为准；[CHANGELOG](../CHANGELOG.md) 与 [ADR](adr/) 保持英文（技术决策与版本记录）。英文简介见 [README.en.md](../README.en.md)。
 

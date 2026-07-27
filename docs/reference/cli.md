@@ -39,6 +39,20 @@
 
 ---
 
+## asl config init
+
+从包内模板写出用户配置（PyPI 安装后无需 clone 仓库）。
+
+| 选项 | 说明 |
+|------|------|
+| `--config` | 输出路径（默认 `configs/ashare-lake.toml`） |
+| `--data-root` | 写入 `[data].root` |
+| `--force` | 覆盖已存在文件 |
+
+macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致）。模板源：`ashare_lake.config.templates`（与仓库 `configs/ashare-lake.example.toml` 保持同步）。
+
+---
+
 ## asl config validate
 
 校验 TOML 与 step 引用。有错退出 1。

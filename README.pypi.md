@@ -39,6 +39,17 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 "
 ```
 
+全量日更（仍不必 clone；在含配置的工作目录执行）：
+
+```bash
+asl config init                              # → configs/ashare-lake.toml
+# 按需编辑 data.root，例如：
+# asl config init --data-root /data/ashare-lake --force
+asl config validate --config configs/ashare-lake.toml
+asl init --config configs/ashare-lake.toml
+asl run daily --config configs/ashare-lake.toml
+```
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/rootSunc/ashare-lake/main/docs/assets/asl-demo.png" alt="asl demo" width="820" />
 </p>

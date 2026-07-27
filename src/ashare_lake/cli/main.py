@@ -8,7 +8,7 @@ import click
 import polars as pl
 
 import ashare_lake.steps  # noqa: F401 — register steps
-from ashare_lake.config import WaveConfig, load_config, validate_config
+from ashare_lake.config import WaveConfig, load_config, validate_config, write_user_config
 from ashare_lake.derive.adj_factors import compute_adj_factors
 from ashare_lake.domain.datasets import fetch_semantics, get_dataset
 from ashare_lake.orchestrator.engine import JobEngine
@@ -32,12 +32,11 @@ DEFAULT_CONFIG = USER_CONFIG
 def resolve_config_path(config_path: str) -> Path:
     path = Path(config_path)
     if config_path == USER_CONFIG and not path.exists():
-        example = Path(EXAMPLE_CONFIG)
-        if example.exists():
-            raise click.ClickException(
-                f"Config not found: {USER_CONFIG}. "
-                f"Copy {EXAMPLE_CONFIG} to {USER_CONFIG} and edit data.root."
-            )
+        raise click.ClickException(
+            f"Config not found: {USER_CONFIG}. "
+            "Run `asl config init` to write one from the packaged example "
+            f"(or copy {EXAMPLE_CONFIG} if you have the repo checkout)."
+        )
     if not path.exists():
         raise click.ClickException(f"Config not found: {path}")
     return path
@@ -184,10 +183,35 @@ def init(
 
 
 @cli.command("config")
-@click.argument("action", type=click.Choice(["validate"]))
+@click.argument("action", type=click.Choice(["validate", "init"]))
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-def config_cmd(action: str, config_path: str):
-    """Validate configuration."""
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Overwrite an existing config when action=init.",
+)
+@click.option(
+    "--data-root",
+    default=None,
+    help="Set [data].root when action=init (default: template value).",
+)
+def config_cmd(action: str, config_path: str, force: bool, data_root: str | None):
+    """Validate or bootstrap configuration.
+
+    ``asl config init`` writes the packaged example TOML (no repo checkout needed).
+    On macOS it also forces ``orchestrator.workers = 1``.
+    ``asl config validate`` checks an existing file.
+    """
+    if action == "init":
+        out = Path(config_path)
+        try:
+            write_user_config(out, data_root=data_root, force=force)
+        except FileExistsError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Wrote {out}")
+        click.echo("Edit data.root if needed, then: asl config validate && asl init")
+        return
+
     cfg = _cfg(config_path)
     errors = validate_config(cfg)
     if errors:
