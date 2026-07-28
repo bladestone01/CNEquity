@@ -54,7 +54,7 @@ asl config validate --config configs/ashare-lake.toml
 
 | 键 | 说明 |
 |----|------|
-| `standard` | `servers="auto"` 时优先并行探测的 A 股标准行情主机列表；为空则用 mootdx 内置列表 |
+| `standard` | `servers="auto"` 时优先并行探测的 A 股标准行情主机列表；为空则用内置兜底列表（`adapters/tdx_protocol/hosts.py`） |
 
 ---
 

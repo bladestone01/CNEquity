@@ -16,7 +16,7 @@
 | 项 | 值 |
 |------|-------|
 | 波次 | `instruments`（Wave 0） |
-| 主源 | tdx_protocol（mootdx security_list） |
+| 主源 | tdx_protocol（内置 security_list） |
 | 备源 | akshare |
 | 频率 | 每日 |
 | 主键 | symbol |

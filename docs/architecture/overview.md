@@ -79,7 +79,7 @@ Job (daily / init / backfill / retry)
 | 查询 | DuckDB（视图层） |
 | 编排元数据 | SQLite WAL (`manifest.db`) |
 | CLI | Click |
-| TDX | mootdx（可选 extra） |
+| TDX | 内置线协议客户端（`adapters/tdx_protocol/_wire`） |
 
 ---
 

@@ -47,7 +47,7 @@ Skip the full-market backfill. One command fetches **5 liquid names × ~30
 trading days** of real bars:
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo
 ```
 
@@ -118,7 +118,7 @@ Dataset names are the first argument to `load()`. Columns:
 ## Install & daily ops
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo                          # writes configs/ashare-lake.demo.toml under cwd
 ```
 

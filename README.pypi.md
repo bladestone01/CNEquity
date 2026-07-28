@@ -25,7 +25,7 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 ## 安装与一分钟体验
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo
 ```
 

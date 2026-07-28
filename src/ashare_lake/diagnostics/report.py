@@ -108,11 +108,10 @@ def _check_racer(findings: list[Finding]) -> None:
     providers = racer_providers()
     if len(providers) > 1:
         findings.append(
-            # WARN, not ERROR: [all] installs both on purpose (a full daily
-            # pipeline needs tdx and macro), and every akshare endpoint this
-            # project calls lives in a module that never evals JS. Failing the
-            # command on the documented install would just train people to
-            # ignore doctor.
+            # WARN, not ERROR: nothing this project installs can produce the
+            # collision any more, and every akshare endpoint it calls lives in a
+            # module that never evals JS. Whoever still sees this brought
+            # py-mini-racer in themselves or upgraded from an older release.
             Finding(
                 severity=Severity.WARN,
                 title=f"py_mini_racer 包名冲突: {' + '.join(providers)}",
@@ -122,8 +121,8 @@ def _check_racer(findings: list[Finding]) -> None:
                     "（dlsym: symbol not found）。\n"
                     "  本项目采集不受影响：用到的 akshare 接口都不做 JS 求值。"
                     "若你直接调用 akshare 的 cninfo / sina 系列接口，那些会失败。\n"
-                    "  mootdx 只在 utils/holiday.py 用到 py-mini-racer，且 mootdx 内部"
-                    "无人 import 该模块，卸掉不影响行情采集。"
+                    "  py-mini-racer 来自 mootdx，而本项目已不再依赖它——多半是从旧版本"
+                    "升级后的残留，或你自行安装的。卸掉不影响行情采集。"
                 ),
                 # Rendered as separate argv lines rather than a `&&` chain: that
                 # operator is a syntax error in Windows PowerShell 5.1.

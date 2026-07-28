@@ -87,7 +87,7 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a")
 ### 交易所覆盖
 
 `all_a` 含沪深北三所。但**北交所曾长期为空**——TDX 协议不提供北交所
-（`mootdx` 直接报「市场代码错误, 目前只支持沪深市场」），而 `PREFIX_WHITELIST`
+（TDX 协议直接报「市场代码错误, 目前只支持沪深市场」），而 `PREFIX_WHITELIST`
 认 `92` 前缀，于是 `all_a` 名义三所、实际两所，任何"全 A 股"回测跑的都是沪深。
 
 现在 BJ 行情走 Sina（`domain/symbols.py::split_by_quote_source` 分流），

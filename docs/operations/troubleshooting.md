@@ -72,7 +72,7 @@ uv run asl status --datasets   # valuation 不应再停在稀疏 tip
 | 现象 | 原因 | 处理 |
 |------|------|------|
 | 日志 `worker pool broke (likely OOM under load); retrying … serially` | `ProcessPoolExecutor` 一子进程死后整池毒化 | **已修**：未完成 batch 串行重试；若子进程已 `finish_batch(success)` 则**跳过重拉**（避免 INSERT OR REPLACE 降级成功行） |
-| macOS 上频繁 OOM / 池崩溃 | mootdx 非 fork-safe + `workers>1` | `asl config validate` **拒绝** Darwin 上 `workers>1`；生产用 `workers = 1`（见 runbook / `daily_pipeline.sh`） |
+| macOS 上频繁 OOM / 池崩溃 | TDX 客户端非 fork-safe + `workers>1` | `asl config validate` **拒绝** Darwin 上 `workers>1`；生产用 `workers = 1`（见 runbook / `daily_pipeline.sh`） |
 
 ---
 

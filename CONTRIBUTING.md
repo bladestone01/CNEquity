@@ -1,6 +1,6 @@
 # 贡献指南
 
-**只用数据的用户**：`pip install "ashare-lake[tdx]"` → 见 [快速开始](docs/getting-started/quickstart.md)。  
+**只用数据的用户**：`pip install ashare-lake` → 见 [快速开始](docs/getting-started/quickstart.md)。  
 本文面向向仓库提交代码的贡献者。
 
 安全问题请走 [SECURITY.md](SECURITY.md)，不要开公开 issue。
@@ -12,7 +12,7 @@
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[tdx,dev]"
+pip install -e ".[dev]"
 # 可选 extras：valuation / macro / nlp / structure
 # 见 docs/getting-started/installation.md
 ```

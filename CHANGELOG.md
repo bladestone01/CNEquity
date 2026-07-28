@@ -4,6 +4,43 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- TDX quotes now use a vendored wire client (`adapters/tdx_protocol/_wire`,
+  derived from tdxpy, MIT) instead of `mootdx`. Both `mootdx` and `tdxpy` were
+  last released in 2024 and are unmaintained. Verified byte-identical to the
+  previous implementation against live servers, including the full 51478-row
+  security list.
+- `httpx` is no longer capped at `<0.26`; that ceiling came from `mootdx`.
+  Installs now resolve to 0.28.x, with or without extras.
+- The bundled fallback TDX host list is now maintained in-tree
+  (`adapters/tdx_protocol/hosts.py`). A probe of all 49 known hosts found every
+  one of mootdx's 38 dead; the four that serve real bars are ordered first.
+  Server selection went from failing across 16 probes to resolving in ~3s.
+
+### Fixed
+
+- `bars()` now honours the market derived from the exchange suffix. `mootdx`
+  had no such parameter, so the value this project computed was silently
+  discarded and re-derived from the code prefix.
+
+### Added
+
+- `asl doctor` — reports optional dependencies that are enabled in config but
+  missing, per-group impact, and the `py_mini_racer` distribution collision;
+  `--fix` repairs the latter cross-platform.
+- `all` extra installs every runtime source in one go.
+- Guards (`tests/unit/test_tdx_decoupling.py`) that fail the build if `mootdx`,
+  `tdxpy` or the racer packages are imported or re-declared as dependencies.
+
+### Deprecated
+
+- The `tdx` extra is now empty and unnecessary — TDX needs no third-party
+  package. It is kept so existing `pip install "ashare-lake[tdx]"` commands
+  keep working, and will be removed in a later minor release.
+
 ## [0.2.0] — 2026-07-27
 
 ### Added

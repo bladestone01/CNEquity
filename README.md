@@ -44,7 +44,7 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**，回测和信号�
 不用全市场回填。装好后一条命令拉 **5 只流动性股票 × 约 30 个交易日** 的真实行情：
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo
 ```
 
@@ -106,7 +106,7 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 ## 安装与日更
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo                          # 一分钟样例；会写出 configs/ashare-lake.demo.toml
 ```
 
