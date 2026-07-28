@@ -7,7 +7,7 @@
 root = "./data/ashare-lake"
 
 [orchestrator]
-# macOS must use workers = 1 (mootdx is not fork-safe; ProcessPool → BrokenProcessPool).
+# macOS must use workers = 1 (the TDX client is not fork-safe; ProcessPool → BrokenProcessPool).
 # Linux may use >1; keep batch_size modest under memory pressure.
 workers = 8
 batch_size = 100
@@ -26,7 +26,7 @@ connect_timeout_sec = 10
 allow_mock = false
 
 # Preferred standard-market host pool. When servers="auto", these are probed
-# in parallel (first that returns real data wins) before the mootdx bundled
+# in parallel (first that returns real data wins) before the bundled
 # list. Fill with hosts known-good for your network; leave empty to rely on
 # the bundled list. Extended (HK/futures) hosts do not serve A-share bars.
 [tdx_protocol.hosts]

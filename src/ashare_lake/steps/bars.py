@@ -76,7 +76,7 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         start = incremental_window(config, "daily_bars", trade_date)
         end = trade_date
 
-    # TDX has no Beijing exchange route at all — mootdx rejects the market id —
+    # TDX has no Beijing exchange route at all — the protocol rejects the market id —
     # so BJ symbols must come from the fallback vendor or they silently never
     # arrive, which is exactly how the lake ended up with zero BJ coverage.
     # Tip gaps after TDX are a second routing case (ADR-0005): EastMoney clist.

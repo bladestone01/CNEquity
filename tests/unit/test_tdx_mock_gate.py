@@ -17,7 +17,7 @@ END = date(2024, 6, 28)
 
 
 @pytest.fixture(autouse=True)
-def _no_mootdx(monkeypatch):
+def _no_tdx_client(monkeypatch):
     def _boom(_config=None):
         raise RuntimeError("simulated TDX outage")
 

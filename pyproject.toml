@@ -24,9 +24,9 @@ classifiers = [
 dependencies = [
   "click>=8.1",
   "duckdb>=1.0",
-  # Lower bound kept at 0.25 (only basic Client(timeout/headers/follow_redirects)
-  # features are used) so the optional [tdx] extra's mootdx (httpx>=0.25,<0.26)
-  # can co-resolve; without [tdx], uv still picks the newest httpx.
+  # The 0.25 floor existed only so mootdx (httpx>=0.25,<0.26) could co-resolve.
+  # mootdx is gone — the TDX client is vendored — so nothing caps httpx now and
+  # the floor just marks the oldest release with the Client() options we use.
   "httpx>=0.25",
   # Chrome TLS impersonation for push2his (plain httpx often gets Empty reply overseas).
   "curl_cffi>=0.7",
@@ -35,7 +35,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tdx = ["mootdx>=0.11"]
+# Kept as an empty extra so `pip install "ashare-lake[tdx]"` — printed in older
+# docs, READMEs and pinned requirement files — keeps resolving instead of
+# erroring. The TDX wire client is vendored now (adapters/tdx_protocol/_wire),
+# so quotes need no third-party package at all.
+tdx = []
 macro = ["akshare>=1.14"]
 nlp = ["snownlp>=0.12"]
 valuation = ["baostock>=0.8"]
@@ -79,12 +83,18 @@ ashare_lake = [
     "adapters/calendar/seeds/*.csv",
     "adapters/ths/seeds/*.json",
     "config/templates/*.toml",
+    # MIT requires the notice to travel with every copy of the vendored code.
+    "adapters/tdx_protocol/_wire/LICENSE.tdxpy",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# Vendored upstream code (tdxpy, MIT). Kept byte-close to its source so it can be
+# re-synced or diffed against upstream; reformatting it to our rules would only
+# make that harder, and the style is not ours to own.
+extend-exclude = ["src/ashare_lake/adapters/tdx_protocol/_wire"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]

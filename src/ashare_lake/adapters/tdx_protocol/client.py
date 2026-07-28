@@ -49,12 +49,12 @@ class TdxSourceError(RuntimeError):
 
     Fabricated data is only allowed behind an explicit `allow_mock=True`
     (config `[tdx_protocol].allow_mock`), which skips the network entirely —
-    the mootdx bestip scan can block indefinitely offline — and returns rows
+    an upstream bestip scan can block indefinitely offline — and returns rows
     labeled `source="mock"` so audit can reject them.
     """
 
 
-# A validated (host, port) reused across fetches in this process. mootdx's
+# A validated (host, port) reused across fetches in this process. An upstream
 # bestip scan is slow (~75s) and intermittently selects a server that then
 # fails the actual fetch. Worse, some bundled hosts are TCP-reachable but
 # return zero rows for every symbol (dead data feed), so we validate a
@@ -92,32 +92,25 @@ def _serves_data(host: str, port: int, timeout: int) -> bool:
 
     Uses ``heartbeat=False`` so the throwaway probe leaves no lingering thread.
     """
-    from mootdx.quotes import Quotes
+    from ashare_lake.adapters.tdx_protocol.quotes import Quotes
 
     client = None
     try:
-        client = Quotes.factory(
-            market="std", server=(host, int(port)), timeout=timeout, heartbeat=False
-        )
-        df = client.bars(symbol=_TDX_PROBE_SYMBOL, frequency=9, market=1, start=0, offset=1)
-        return df is not None and len(df) > 0
+        client = Quotes.factory(server=(host, int(port)), timeout=timeout, heartbeat=False)
+        rows = client.bars(_TDX_PROBE_SYMBOL, market=1, start=0, offset=1)
+        return bool(rows)
     except Exception:
         return False
     finally:
-        client_obj = getattr(client, "client", None)
-        close = getattr(client_obj, "close", None) or getattr(client, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
+        if client is not None:
+            client.close()
 
 
 def _candidate_servers(config: Config | None) -> list[tuple[str, int]]:
-    """Configured host pool first (in order), then mootdx bundled hosts."""
+    """Configured host pool first (in order), then the bundled fallback hosts."""
     import random
 
-    from mootdx.consts import HQ_HOSTS
+    from ashare_lake.adapters.tdx_protocol.hosts import HQ_HOSTS
 
     ordered: list[tuple[str, int]] = []
     if config is not None and config.tdx_host_pool:
@@ -126,7 +119,7 @@ def _candidate_servers(config: Config | None) -> list[tuple[str, int]]:
             if host and port.isdigit():
                 ordered.append((host, int(port)))
 
-    bundled = [(host, int(port)) for _name, host, port in HQ_HOSTS]
+    bundled = [(host, int(port)) for host, port in HQ_HOSTS]
     random.shuffle(bundled)  # spread load across the fallback list
     ordered.extend(bundled)
 
@@ -171,12 +164,12 @@ def _pick_reachable_server(config: Config | None = None, timeout: int = 10) -> t
 
 
 def _quotes_client(config: Config | None = None):
-    """Build a mootdx client bound to a reachable, cached TDX server.
+    """Build a TDX client bound to a reachable, cached server.
 
     Isolated so tests can monkeypatch it.
     """
     global _TDX_SERVER_CACHE
-    from mootdx.quotes import Quotes
+    from ashare_lake.adapters.tdx_protocol.quotes import Quotes
 
     timeout = config.tdx_connect_timeout_sec if config else 10
     servers = (config.tdx_servers if config else "auto").strip()
@@ -196,7 +189,7 @@ def _quotes_client(config: Config | None = None):
                 f"invalid [tdx_protocol].servers {servers!r}; use 'auto' or host:port"
             )
         kwargs["server"] = (host.strip(), int(port.strip()))
-    return Quotes.factory(market="std", **kwargs)
+    return Quotes.factory(**kwargs)
 
 
 def quotes_client_factory(config: Config | None = None):
@@ -204,7 +197,7 @@ def quotes_client_factory(config: Config | None = None):
     return lambda: _quotes_client(config)
 
 
-# mootdx market ids: 0=Shenzhen, 1=Shanghai (not "SH"/"SZ" strings).
+# TDX market ids: 0=Shenzhen, 1=Shanghai (not "SH"/"SZ" strings).
 _TDX_STOCK_MARKETS = ((1, "SH"), (0, "SZ"))
 
 
@@ -377,7 +370,7 @@ def fetch_instruments(
                 return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
             return pl.concat(frames, how="diagonal_relaxed")
     except ImportError:
-        reason = "mootdx not installed"
+        reason = "TDX wire client unavailable"
     except Exception as exc:
         # Drop the cached server so the next attempt (batch retry) re-probes
         # for a live one instead of hammering the same dead host.
@@ -449,7 +442,7 @@ def fetch_daily_bars(
                 return pl.DataFrame(rows)
             reason = "TDX returned no bars"
     except ImportError:
-        reason = "mootdx not installed"
+        reason = "TDX wire client unavailable"
     except Exception as exc:
         # Drop the cached server so the next attempt (batch retry) re-probes
         # for a live one instead of hammering the same dead host.
@@ -540,7 +533,7 @@ def fetch_index_bars(
         if last_exc is not None:
             reason = f"TDX fetch failed: {last_exc}"
     except ImportError:
-        reason = "mootdx not installed"
+        reason = "TDX wire client unavailable"
     except Exception as exc:
         reset_tdx_server_cache()
         reason = f"TDX fetch failed: {exc}"
@@ -591,7 +584,7 @@ def fetch_corporate_actions(
             if tdx_df.height:
                 frames.append(tdx_df.with_columns(pl.lit("tdx_protocol").alias("source")))
     except ImportError:
-        logger.debug("mootdx not installed for corporate_actions")
+        logger.debug("TDX wire client unavailable for corporate_actions")
     except Exception as exc:
         logger.warning("TDX corporate_actions failed: %s", exc)
 

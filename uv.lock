@@ -64,7 +64,7 @@ wheels = [
 
 [[package]]
 name = "ashare-lake"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -76,6 +76,15 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "akshare" },
+    { name = "baostock" },
+    { name = "mootdx" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "snownlp" },
+    { name = "xlrd" },
+]
 dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -103,6 +112,7 @@ valuation = [
 [package.metadata]
 requires-dist = [
     { name = "akshare", marker = "extra == 'macro'", specifier = ">=1.14" },
+    { name = "ashare-lake", extras = ["tdx", "macro", "nlp", "valuation", "structure"], marker = "extra == 'all'" },
     { name = "baostock", marker = "extra == 'valuation'", specifier = ">=0.8" },
     { name = "click", specifier = ">=8.1" },
     { name = "curl-cffi", specifier = ">=0.7" },
@@ -120,7 +130,7 @@ requires-dist = [
     { name = "snownlp", marker = "extra == 'nlp'", specifier = ">=0.12" },
     { name = "xlrd", marker = "extra == 'structure'", specifier = ">=2.0" },
 ]
-provides-extras = ["tdx", "macro", "nlp", "valuation", "structure", "dev"]
+provides-extras = ["tdx", "macro", "nlp", "valuation", "structure", "all", "dev"]
 
 [[package]]
 name = "baostock"

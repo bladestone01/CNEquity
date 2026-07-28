@@ -45,7 +45,7 @@ def _staged(cfg, run_id) -> pl.DataFrame:
 
 def test_only_sh_and_sz_are_tdx_servable():
     assert is_tdx_servable("600519.SH") and is_tdx_servable("000001.SZ")
-    assert not is_tdx_servable("920000.BJ"), "mootdx rejects the Beijing market id"
+    assert not is_tdx_servable("920000.BJ"), "TDX has no Beijing market id"
     assert not is_tdx_servable("garbage")
 
 

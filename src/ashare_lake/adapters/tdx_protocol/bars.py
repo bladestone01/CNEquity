@@ -83,7 +83,7 @@ def fetch_bars_paginated(
 ) -> list[dict]:
     """Fetch daily bars for *sym* in [start, end], paging through TDX history.
 
-    Indices must use mootdx's ``index()`` method — ``bars()`` with a stock
+    Indices must use the ``index()`` call — ``bars()`` with a stock
     market id returns corrupt datetimes for index codes (e.g. 399001.SZ).
     """
     code, exch = sym.split(".")

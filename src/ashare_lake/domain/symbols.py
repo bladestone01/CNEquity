@@ -57,7 +57,7 @@ ISSUED_CODE_BANDS: tuple[tuple[str, int, int], ...] = (
 )
 
 
-# Exchanges the TDX protocol serves. mootdx rejects anything else outright
+# Exchanges the TDX protocol serves. It rejects anything else outright
 # ("市场代码错误, 目前只支持沪深市场"), so the Beijing exchange has no TDX route
 # at all — which is why the lake carried zero BJ instruments despite
 # PREFIX_WHITELIST admitting the prefix, and why `universe="all_a"` silently

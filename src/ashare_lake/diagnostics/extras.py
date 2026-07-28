@@ -60,20 +60,6 @@ class Extra:
 
 EXTRAS: tuple[Extra, ...] = (
     Extra(
-        name="tdx",
-        modules=("mootdx",),
-        summary="TDX protocol quotes — the primary bars and reference source",
-        uses=(
-            Use("instruments", Impact.BLOCKS, Scope.DAILY),
-            Use("trading_calendar", Impact.BLOCKS, Scope.DAILY),
-            Use("trading_status", Impact.BLOCKS, Scope.DAILY),
-            Use("corporate_actions", Impact.BLOCKS, Scope.DAILY),
-            Use("daily_bars", Impact.BLOCKS, Scope.DAILY),
-            Use("index_bars", Impact.BLOCKS, Scope.DAILY),
-            Use("daily_bars_history", Impact.BLOCKS, Scope.BACKFILL),
-        ),
-    ),
-    Extra(
         name="macro",
         modules=("akshare",),
         summary="AkShare macro series and ST labels — supplements EastMoney",
@@ -184,10 +170,14 @@ def daily_impacts(statuses: list[ExtraStatus]) -> dict[str, list[tuple[ExtraStat
 
 # --- py_mini_racer collision -------------------------------------------------
 #
-# `akshare` depends on `mini-racer`, `mootdx` on `py-mini-racer`. Two different
-# distributions, one shared import package: both write into `py_mini_racer/`.
-# Installers do not guard against that, so the last one wins and the surviving
-# loader may dlsym symbols the surviving binary does not export.
+# `akshare` depends on `mini-racer`; `mootdx` depended on `py-mini-racer`. Two
+# distributions, one shared import package: both write into `py_mini_racer/`,
+# installers do not guard against it, and the last one wins.
+#
+# Dropping mootdx for the vendored wire client removed this project's only route
+# to py-mini-racer, so a clean install can no longer hit the collision. The check
+# stays because an environment upgraded from an older release still carries the
+# old package, and because a user may install mootdx for their own reasons.
 
 RACER_PACKAGE = "py_mini_racer"
 
