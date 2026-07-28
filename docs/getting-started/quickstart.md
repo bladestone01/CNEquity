@@ -12,7 +12,7 @@
 不必 clone 仓库：
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo
 ```
 
@@ -35,7 +35,7 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 ## 1. 准备全量配置
 
 ```bash
-pip install "ashare-lake[tdx]"   # 若尚未安装
+pip install ashare-lake   # 若尚未安装
 asl config init                 # → configs/ashare-lake.toml；macOS 自动 workers=1
 # 可选：asl config init --data-root /abs/path/to/lake
 asl config validate

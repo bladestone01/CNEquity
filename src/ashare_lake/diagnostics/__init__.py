@@ -1,13 +1,10 @@
 """Environment and dependency diagnostics behind `asl doctor`."""
 
-from ashare_lake.diagnostics.extras import (
-    EXTRAS,
-    Extra,
-    ExtraStatus,
-    Impact,
-    Scope,
-    Use,
-    probe_extras,
+from ashare_lake.diagnostics.packages import (
+    REQUIRED_PACKAGES,
+    PackageStatus,
+    RequiredPackage,
+    probe_packages,
 )
 from ashare_lake.diagnostics.report import (
     Finding,
@@ -17,15 +14,12 @@ from ashare_lake.diagnostics.report import (
 )
 
 __all__ = [
-    "EXTRAS",
-    "Extra",
-    "ExtraStatus",
+    "REQUIRED_PACKAGES",
     "Finding",
-    "Impact",
+    "PackageStatus",
     "Report",
-    "Scope",
+    "RequiredPackage",
     "Severity",
-    "Use",
     "build_report",
-    "probe_extras",
+    "probe_packages",
 ]

@@ -4,6 +4,72 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-07-29
+
+### Upgrading from 0.2.x
+
+Neither pip nor uv removes a package that merely stopped being a dependency, so
+an upgraded environment keeps `mootdx` and its `py-mini-racer`. The latter then
+shares the `py_mini_racer` import package with the `mini-racer` that AkShare
+brings in, and one silently overwrites the other. Nothing this project fetches
+is affected — none of the AkShare endpoints it calls evaluate JS — but AkShare's
+own cninfo and sina APIs would break if you call them directly.
+
+    asl doctor        # reports it
+    asl doctor --fix  # resolves it
+
+`mootdx` itself is left behind as dead weight and can be uninstalled. A fresh
+environment has none of this.
+
+### Changed
+
+- `pip install ashare-lake` is the whole install. Every runtime source — AkShare,
+  Baostock, SnowNLP, and the pandas/openpyxl/xlrd trio that parses the Shenwan
+  and CNI constituent spreadsheets — is a hard dependency, so no daily or
+  backfill step can silently lose a source because an extra was forgotten. Costs
+  roughly 217MB over the previous minimal install.
+- TDX quotes now use a vendored wire client (`adapters/tdx_protocol/_wire`,
+  derived from tdxpy, MIT) instead of `mootdx`. Both `mootdx` and `tdxpy` were
+  last released in 2024 and are unmaintained. Verified byte-identical to the
+  previous implementation against live servers, including the full 51478-row
+  security list.
+- `httpx` is no longer capped at `<0.26`; that ceiling came from `mootdx`.
+  Installs now resolve to 0.28.x.
+- The bundled fallback TDX host list is now maintained in-tree
+  (`adapters/tdx_protocol/hosts.py`). A probe of all 49 known hosts found every
+  one of mootdx's 38 dead; the four that serve real bars are ordered first.
+  Server selection went from failing across 16 probes to resolving in ~3s.
+
+### Added
+
+- `asl doctor` — checks what `asl config validate` deliberately cannot, since
+  that command is environment-blind: whether `data.root` is absolute, present and
+  writable, and whether every declared dependency actually imports. `--fix`
+  repairs the `py_mini_racer` distribution collision cross-platform.
+- Guards (`tests/unit/test_tdx_decoupling.py`) that fail the build if `mootdx`,
+  `tdxpy` or the racer packages are imported or re-declared as dependencies.
+
+### Fixed
+
+- `bars()` now honours the market derived from the exchange suffix. `mootdx`
+  had no such parameter, so the value this project computed was silently
+  discarded and re-derived from the code prefix.
+- `asl demo` no longer appears to hang. It left its probe client open, and the
+  heartbeat thread is not a daemon, so the interpreter stayed alive after all
+  six steps had already printed. The client is closed now.
+- The vendored client grew back `do_heartbeat`, which the trim to five methods
+  had dropped. `HeartBeatThread` calls it by name every 10s, so every keepalive
+  raised AttributeError — invisible to any test short enough not to reach the
+  first interval.
+
+### Removed
+
+- All extras (`tdx`, `macro`, `nlp`, `valuation`, `structure`, `all`).
+  `pip install "ashare-lake[tdx]"` from an older doc still installs correctly:
+  pip warns that the extra is not provided and continues, uv says nothing.
+- Contributor tooling moved from the `dev` extra to a PEP 735 dependency group:
+  `pip install -e . --group dev` (pip >= 25.1) or `uv sync`.
+
 ## [0.2.0] — 2026-07-27
 
 ### Added
@@ -51,5 +117,6 @@ First public release of the self-hosted A-share Parquet data layer.
 - TLS verify on by default for HTTP clients
 - Project URLs point at `rootSunc/ashare-lake`
 
+[0.3.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.0
 [0.2.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.2.0
 [0.1.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.1.0

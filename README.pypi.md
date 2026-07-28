@@ -25,7 +25,7 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 ## 安装与一分钟体验
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo
 ```
 
@@ -81,7 +81,7 @@ bars = load("daily_bars", start="2020-01-01", end="2025-12-31", adjust="hfq")
 roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 ```
 
-可选 extras：`tdx`、`valuation`、`macro`、`nlp`、`structure`、`dev`。
+无 extras —— `pip install ashare-lake` 即装齐所有数据源。
 
 ## 完整文档
 

@@ -151,3 +151,27 @@ def test_demo_help_lists_command():
     assert result.exit_code == 0
     assert "--symbols" in result.output
     assert "--days" in result.output
+
+
+def test_probe_tdx_closes_its_client():
+    """An unclosed client keeps the non-daemon heartbeat thread alive.
+
+    The demo then prints all six steps and never exits, which reads as a hang
+    even though the work finished seconds earlier.
+    """
+    from unittest.mock import patch
+
+    from ashare_lake.cli import demo as demo_mod
+
+    client = object()
+    with (
+        patch.object(demo_mod, "_quotes_client", create=True),
+        patch(
+            "ashare_lake.adapters.tdx_protocol.client._quotes_client",
+            return_value=client,
+        ),
+        patch("ashare_lake.adapters.tdx_protocol.session.close_quotes_client") as closer,
+    ):
+        demo_mod._probe_tdx(object())
+
+    closer.assert_called_once_with(client)

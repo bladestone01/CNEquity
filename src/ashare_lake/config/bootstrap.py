@@ -40,7 +40,7 @@ def render_example_toml(
 
     plat = platform if platform is not None else sys.platform
     if plat == "darwin":
-        # mootdx + ProcessPool is not fork-safe on macOS; match validate_config.
+        # The TDX client + ProcessPool is not fork-safe on macOS; match validate_config.
         text = re.sub(r"(?m)^(workers\s*=\s*)\d+", r"\g<1>1", text, count=1)
 
     return text

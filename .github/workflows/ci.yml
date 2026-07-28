@@ -21,7 +21,11 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev]"
+        # setup-python ships the pip bundled with each interpreter (24.0 on 3.11,
+        # 25.0.1 on 3.12); PEP 735 `--group` needs 25.1+.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
 
       - name: Lint
         run: |
@@ -43,9 +47,12 @@ jobs:
           cache: pip
 
       - name: Install
-        # structure/macro cover pandas+akshare used by unit tests; skip [tdx]
-        # (mootdx pins httpx<0.26 and conflicts with the default resolver).
-        run: pip install -e ".[dev,structure,macro,nlp,valuation]"
+        # No extras: every runtime source is a hard dependency now. The pip
+        # upgrade is required — PEP 735 `--group` needs 25.1+, and the bundled
+        # pip is 24.0 on 3.11 and 25.0.1 on 3.12.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
 
       - name: Test
         run: pytest --cov=ashare_lake --cov-report=term-missing --cov-report=xml

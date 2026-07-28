@@ -585,7 +585,8 @@ class EastMoneyClient:
                 self._proxy = config.eastmoney_proxy
             timeout = float(getattr(config, "eastmoney_timeout_sec", 15.0) or 15.0)
         self._timeout = timeout
-        # httpx>=0.28 removed ``proxies``; mootdx-pinned httpx<0.28 still needs it.
+        # httpx>=0.28 removed ``proxies``; older httpx still needs it. The mootdx
+        # pin that forced <0.26 is gone, but the floor is still 0.25.
         client_kwargs: dict = {"timeout": timeout, "follow_redirects": True}
         if self._proxy is not None:
             client_kwargs["proxy"] = self._proxy

@@ -7,7 +7,7 @@
 ```
 adapters/
 ├── throttle.py           跨源限速调度
-├── tdx_protocol/         通达信协议（mootdx）
+├── tdx_protocol/         通达信协议（内置客户端）
 ├── eastmoney/            东方财富 HTTP API
 ├── sina/                 新浪（复权因子）
 ├── baostock/             证券宝（估值/ST 历史回填）

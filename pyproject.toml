@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ashare-lake"
-version = "0.2.0"
+version = "0.3.0"
 description = "Self-hosted A-share Parquet data lake with multi-source ingest and daily orchestration"
 # Short PyPI page (absolute links only). GitHub keeps README.md / README.en.md.
 readme = "README.pypi.md"
@@ -21,36 +21,43 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Office/Business :: Financial :: Investment",
 ]
+# One install, no extras: `pip install ashare-lake` brings every runtime source
+# the daily pipeline and the backfill paths need. Splitting these out again would
+# bring back the failure mode that motivated folding them in — a source enabled
+# in config with no package behind it, degrading silently on a scheduled run.
 dependencies = [
   "click>=8.1",
   "duckdb>=1.0",
-  # Lower bound kept at 0.25 (only basic Client(timeout/headers/follow_redirects)
-  # features are used) so the optional [tdx] extra's mootdx (httpx>=0.25,<0.26)
-  # can co-resolve; without [tdx], uv still picks the newest httpx.
+  # The 0.25 floor existed only so mootdx (httpx>=0.25,<0.26) could co-resolve.
+  # mootdx is gone — the TDX client is vendored — so nothing caps httpx now and
+  # the floor just marks the oldest release with the Client() options we use.
   "httpx>=0.25",
   # Chrome TLS impersonation for push2his (plain httpx often gets Empty reply overseas).
   "curl_cffi>=0.7",
   "polars>=1.0",
   "pyarrow>=15.0",
+  # AkShare: macro series EastMoney does not return, plus an ST-label cross-check.
+  "akshare>=1.14",
+  # Baostock: valuation / ST / delisted-bar history for `asl init` and backfills.
+  "baostock>=0.8",
+  # SnowNLP: on-demand stock_news sentiment ([sentiment] use_snownlp).
+  "snownlp>=0.12",
+  # Shenwan / CNI publish constituent history as XLS and XLSX only; polars cannot
+  # read either, so pandas is here as a parser, not as a dataframe layer.
+  "pandas>=2.0",
+  "openpyxl>=3.0",
+  "xlrd>=2.0",
 ]
 
-[project.optional-dependencies]
-tdx = ["mootdx>=0.11"]
-macro = ["akshare>=1.14"]
-nlp = ["snownlp>=0.12"]
-valuation = ["baostock>=0.8"]
-structure = ["pandas>=2.0", "openpyxl>=3.0", "xlrd>=2.0"]
-# Every runtime source in one install — what a full daily pipeline needs.
-# Self-referential so the members stay defined in exactly one place.
-#
-# Caveat this cannot express: akshare pulls `mini-racer`, mootdx pulls
-# `py-mini-racer`, and both distributions install into the same `py_mini_racer`
-# import package. Installers do not detect that, so the last one wins and the
-# survivor can be a loader mismatched to its binary. It does not affect the
-# endpoints this project calls (all in akshare modules that never eval JS), but
-# it can break akshare's own cninfo/sina APIs if called directly. `asl doctor`
-# reports it. mootdx pins py-mini-racer<0.7, so there is no version to resolve to.
-all = ["ashare-lake[tdx,macro,nlp,valuation,structure]"]
+# No [project.optional-dependencies]. Everything is a hard dependency.
+# `pip install "ashare-lake[tdx]"` from an older doc still installs correctly —
+# pip prints "does not provide the extra 'tdx'" and carries on, uv is silent —
+# so declaring empty extras would only advertise things that no longer exist.
+
+# Contributor tooling lives in a PEP 735 dependency group, not an extra: it is
+# never part of what a user installs. `pip install --group dev` (pip >= 25.1) or
+# `uv sync`.
+[dependency-groups]
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
@@ -79,12 +86,18 @@ ashare_lake = [
     "adapters/calendar/seeds/*.csv",
     "adapters/ths/seeds/*.json",
     "config/templates/*.toml",
+    # MIT requires the notice to travel with every copy of the vendored code.
+    "adapters/tdx_protocol/_wire/LICENSE.tdxpy",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# Vendored upstream code (tdxpy, MIT). Kept byte-close to its source so it can be
+# re-synced or diffed against upstream; reformatting it to our rules would only
+# make that harder, and the style is not ours to own.
+extend-exclude = ["src/ashare_lake/adapters/tdx_protocol/_wire"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
@@ -114,6 +127,9 @@ markers = [
 [tool.coverage.run]
 source = ["ashare_lake"]
 branch = true
+# Vendored upstream (tdxpy, MIT). Same boundary as ruff extend-exclude: we own
+# the facade around it, not every struct.unpack line inside.
+omit = ["*/adapters/tdx_protocol/_wire/*", "*/adapters/tdx_protocol/_wire/**"]
 
 [tool.coverage.report]
 show_missing = true

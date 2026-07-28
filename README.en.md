@@ -47,7 +47,7 @@ Skip the full-market backfill. One command fetches **5 liquid names × ~30
 trading days** of real bars:
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo
 ```
 
@@ -118,7 +118,7 @@ Dataset names are the first argument to `load()`. Columns:
 ## Install & daily ops
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo                          # writes configs/ashare-lake.demo.toml under cwd
 ```
 
@@ -132,7 +132,7 @@ asl run daily --config configs/ashare-lake.toml # daily incremental
 asl status --config configs/ashare-lake.toml
 ```
 
-Optional extras (`valuation` / `macro` / `nlp` / `structure`):
+No extras — one command installs every source. Dependency breakdown in
 [installation](docs/getting-started/installation.md).  
 After the initial backfill, run the [acceptance checks](docs/operations/runbook.md)
 before wiring cron.
@@ -195,7 +195,7 @@ More (historical ST filters, BSE/BJ, partition pitfalls):
 
 ## Project status
 
-[0.2.0](CHANGELOG.md) — published on [PyPI](https://pypi.org/project/ashare-lake/);
+[0.3.0](CHANGELOG.md) — published on [PyPI](https://pypi.org/project/ashare-lake/);
 first public data-layer release the author runs on a personal daily cron.
 Schema / `load()` may change before 1.0; see [CHANGELOG](CHANGELOG.md).
 

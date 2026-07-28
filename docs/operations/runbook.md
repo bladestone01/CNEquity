@@ -65,7 +65,7 @@ core → capital → signals → fundamentals → macro_risk → research
 - 默认 `ASL_SOFT_FAIL_OK=1`：gate OK 时 soft 失败 **warn-only、exit 0**（海外 Mac 预期东财滞后）；
   国内全组日更可设 `ASL_SOFT_FAIL_OK=0` 让 soft 失败仍 exit 1
 - 东财超时/连接失败不重试（`[sources.eastmoney] timeout_sec`，默认 15s）
-- 生产 `daily_pipeline.sh` 常设 `workers=1`（mootdx 与多进程兼容性）
+- 生产 `daily_pipeline.sh` 常设 `workers=1`（TDX 客户端与多进程兼容性）
 
 组与 step 映射见 [配置 — 调度组](../getting-started/configuration.md#调度组)。
 
@@ -193,7 +193,7 @@ asl init --config configs/ashare-lake.toml
 ```
 
 2016 起全量 init 大约 1.5–2.5 小时（TDX 分页 + Sina 复权；compact 内存尖峰约 2 GB）。
-macOS 上必须 `[orchestrator].workers = 1`（mootdx 与 `ProcessPoolExecutor` 不兼容；
+macOS 上必须 `[orchestrator].workers = 1`（TDX 客户端与 `ProcessPoolExecutor` 不兼容；
 `asl config validate` 在 Darwin 上会拒绝 `workers>1`）。
 单实例、收盘后运行。
 

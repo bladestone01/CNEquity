@@ -57,7 +57,7 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
 def _merge_untdxable_instruments(config: Config, df: pl.DataFrame) -> pl.DataFrame:
     """Add listed symbols the TDX security list structurally cannot contain.
 
-    mootdx serves Shanghai and Shenzhen only, so the Beijing exchange never
+    TDX serves Shanghai and Shenzhen only, so the Beijing exchange never
     appeared in the snapshot and the lake carried zero BJ instruments — meaning
     ``universe="all_a"`` quietly resolved to two exchanges out of three. The
     code-space sweep is what discovers them (``asl delisted discover``); this

@@ -44,7 +44,7 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**，回测和信号�
 不用全市场回填。装好后一条命令拉 **5 只流动性股票 × 约 30 个交易日** 的真实行情：
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo
 ```
 
@@ -106,7 +106,7 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 ## 安装与日更
 
 ```bash
-pip install "ashare-lake[tdx]"
+pip install ashare-lake
 asl demo                          # 一分钟样例；会写出 configs/ashare-lake.demo.toml
 ```
 
@@ -120,7 +120,7 @@ asl run daily --config configs/ashare-lake.toml # 每日增量
 asl status --config configs/ashare-lake.toml
 ```
 
-可选 extras（`valuation` / `macro` / `nlp` / `structure`）见 [installation](docs/getting-started/installation.md)。  
+无 extras —— 一条命令装齐所有数据源，依赖构成见 [installation](docs/getting-started/installation.md)。  
 全量回填后建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 再挂 cron。
 
 ## 读数据
@@ -171,7 +171,7 @@ asl query --sql "
 
 ## 项目状态
 
-[0.2.0](CHANGELOG.md) — 已发布 [PyPI](https://pypi.org/project/ashare-lake/)；作者自用数据层公开版，日常挂 cron。
+[0.3.0](CHANGELOG.md) — 已发布 [PyPI](https://pypi.org/project/ashare-lake/)；作者自用数据层公开版，日常挂 cron。
 
 个人项目：issue / PR 欢迎，响应尽力而为。[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)。文档中文为主；[CHANGELOG](CHANGELOG.md) 与 [ADR](docs/adr/) 为英文。
 

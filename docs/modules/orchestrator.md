@@ -105,10 +105,10 @@ Batch 状态：`pending` → `running` → `success` | `failed` | `stale`
 
 1. 从 instruments 取 symbol 列表，按 `batch_size` 切分
 2. 每 batch 在子进程执行 adapter 拉取 → staging
-3. 子进程独立 mootdx 连接（主进程不可 fork 共享连接）
+3. 子进程独立 TDX 连接（主进程不可 fork 共享连接）
 4. manifest 记录每 batch 状态，支持 `asl retry` 粒度
 
-分页：突破 mootdx 800 条限制，增量模式早停于水位之后。
+分页：突破 TDX 单次 800 条限制，增量模式早停于水位之后。
 
 ---
 

@@ -68,3 +68,32 @@ def test_fuzzy_unique_routes_t3():
     assert row["ohlc_source"] == OHLC_TDX
     assert row["routing_tier"] == "T3"
     assert row["match_type"] == "fuzzy"
+
+
+def test_fetch_tdx_indices_live_filters_88xxxx(monkeypatch):
+    from ashare_lake.derive import sector_routing as sr
+
+    class _Client:
+        def __init__(self):
+            self.closed = False
+
+        def stocks(self, market):
+            if market == 0:
+                return [{"code": "880001", "name": "板块A"}, {"code": "000001", "name": "平安"}]
+            return [{"code": "881423", "name": "物业"}, {"code": "600519", "name": "茅台"}]
+
+        def close(self):
+            self.closed = True
+
+    client = _Client()
+    # Imported inside the function from client — patch the source module.
+    monkeypatch.setattr(
+        "ashare_lake.adapters.tdx_protocol.client._quotes_client",
+        lambda _config=None: client,
+    )
+    rows = sr._fetch_tdx_indices_live()
+    assert {(r["tdx_code"], r["name"]) for r in rows} == {
+        ("880001", "板块A"),
+        ("881423", "物业"),
+    }
+    assert client.closed

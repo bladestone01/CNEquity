@@ -233,7 +233,7 @@ JSON 列出 curated 各数据集文件数与行数。
 
 ## asl servers test
 
-测试 TDX 连接。无 mootdx 时提示安装 `[tdx]`。
+测试 TDX 连接（并行探测主机池，返回首个能出数的服务器）。
 
 ---
 

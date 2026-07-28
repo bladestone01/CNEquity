@@ -215,14 +215,25 @@ def _fetch_em_boards_live() -> list[dict]:
 
 
 def _fetch_tdx_indices_live() -> list[dict]:
-    from mootdx.quotes import Quotes
+    """TDX sector pseudo-indices (88xxxx), read straight off the security list."""
+    import re
 
-    tdx = Quotes.factory(market="std").stock_all()
-    mask = tdx["code"].astype(str).str.match(r"^88[0-9]{4}$")
-    subset = tdx[mask].copy()
+    from ashare_lake.adapters.tdx_protocol.client import _quotes_client
+    from ashare_lake.adapters.tdx_protocol.quotes import MARKET_SH, MARKET_SZ
+
+    pattern = re.compile(r"^88\d{4}$")
+    client = _quotes_client(None)
+    try:
+        rows: list[dict] = []
+        for market in (MARKET_SZ, MARKET_SH):
+            rows.extend(client.stocks(market))
+    finally:
+        client.close()
+
     return [
-        {"tdx_code": str(r["code"]).strip(), "name": str(r["name"]).strip()}
-        for _, r in subset.iterrows()
+        {"tdx_code": str(r["code"]).strip(), "name": str(r.get("name", "")).strip()}
+        for r in rows
+        if pattern.match(str(r.get("code", "")).strip())
     ]
 
 

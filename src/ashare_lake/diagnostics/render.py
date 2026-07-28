@@ -24,15 +24,11 @@ def render_text(report: Report) -> list[str]:
         lines.append(f"  {key.ljust(width)}  {value}")
 
     lines.append("")
-    lines.append("可选依赖")
-    for status in report.extras:
-        if status.installed:
-            mark, color = _MARK[Severity.OK]
-            note = "已安装"
-        else:
-            mark, color = _MARK[Severity.WARN]
-            note = f"缺 {', '.join(status.missing)}"
-        lines.append(f"  {_style(mark, color)}  [{status.extra.name}] {note}")
+    lines.append("依赖")
+    for status in report.packages:
+        mark, color = _MARK[Severity.OK if status.importable else Severity.ERROR]
+        note = "OK" if status.importable else "无法导入"
+        lines.append(f"  {_style(mark, color)}  {status.package.module} — {note}")
 
     if report.findings:
         lines.append("")
@@ -63,23 +59,13 @@ def render_text(report: Report) -> list[str]:
 def to_dict(report: Report) -> dict:
     return {
         "environment": report.environment,
-        "extras": [
+        "packages": [
             {
-                "name": s.extra.name,
-                "installed": s.installed,
-                "missing": list(s.missing),
-                "summary": s.extra.summary,
-                "uses": [
-                    {
-                        "step": u.step,
-                        "impact": u.impact.value,
-                        "scope": u.scope.value,
-                        "note": u.note,
-                    }
-                    for u in s.extra.uses
-                ],
+                "module": s.package.module,
+                "importable": s.importable,
+                "purpose": s.package.purpose,
             }
-            for s in report.extras
+            for s in report.packages
         ],
         "findings": [
             {

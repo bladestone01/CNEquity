@@ -1067,7 +1067,7 @@ def servers(action: str, config_path: str):
         _ = client
         click.echo("TDX connection OK")
     except ImportError:
-        click.echo("mootdx not installed — install with: pip install -e '.[tdx]'")
+        click.echo("TDX wire client unavailable — this is a bug, please report it")
     except Exception as exc:
         click.echo(f"TDX connection failed: {exc}", err=True)
         raise SystemExit(1) from exc

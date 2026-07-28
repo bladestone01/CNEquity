@@ -69,7 +69,7 @@ pytest -m network           # 仅外网探针（东财 datacenter 列契约等�
 
 1. 单元测试放 `tests/unit/test_<topic>.py`
 2. 文件名与测试函数以 `test_` 开头
-3. 不断网：patch `httpx`、mootdx client 或 adapter 入口
+3. 不断网：patch `httpx`、TDX quotes 门面或 adapter 入口
 4. 覆盖至少：正常路径 + 一个边界/失败 case
 
 ---

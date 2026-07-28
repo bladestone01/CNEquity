@@ -46,7 +46,7 @@ class Config:
     tdx_servers: str = "auto"
     tdx_connect_timeout_sec: int = 10
     # Preferred standard-market host pool ("ip:port"). When set and servers=auto,
-    # these are probed (in parallel) before the mootdx bundled list.
+    # these are probed (in parallel) before the bundled fallback list.
     tdx_host_pool: list[str] = field(default_factory=list)
     # Test/demo escape hatch only: lets TDX adapters return fabricated rows
     # (labeled source="mock") instead of failing the batch.
@@ -281,12 +281,12 @@ def validate_config(cfg: Config) -> list[str]:
     errors: list[str] = []
     if cfg.workers < 1:
         errors.append("orchestrator.workers must be >= 1")
-    # mootdx is not fork-safe; ProcessPool on macOS is the OOM / BrokenProcessPool
+    # The TDX client is not fork-safe; ProcessPool on macOS is the OOM / BrokenProcessPool
     # footgun that wiped notes under load. Refuse the unsafe combo loudly.
     if sys.platform == "darwin" and cfg.workers > 1:
         errors.append(
             "orchestrator.workers must be 1 on macOS "
-            "(mootdx + ProcessPool fork is unsafe; use workers = 1)"
+            "(TDX client + ProcessPool fork is unsafe; use workers = 1)"
         )
     if cfg.batch_size < 1:
         errors.append("orchestrator.batch_size must be >= 1")
