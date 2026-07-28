@@ -221,6 +221,41 @@ def config_cmd(action: str, config_path: str, force: bool, data_root: str | None
     click.echo("Configuration OK")
 
 
+@cli.command()
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def doctor(config_path: str, as_json: bool):
+    """Check environment, optional dependencies, and config for silent breakage.
+
+    Runs without a config (fresh install) and without network. Exits non-zero
+    when something will actually lose data — notably a source that is enabled in
+    config but has no package behind it, which no other command surfaces.
+    """
+    from ashare_lake.diagnostics.render import render_text, to_dict
+    from ashare_lake.diagnostics.report import build_report
+
+    cfg = None
+    resolved: Path | None = None
+    path = Path(config_path)
+    if path.exists():
+        try:
+            cfg = load_config(path)
+            resolved = path
+        except Exception as exc:  # config errors must not hide the dependency report
+            click.echo(f"WARN: 配置解析失败 {path}: {exc}", err=True)
+
+    report = build_report(config=cfg, config_path=resolved)
+
+    if as_json:
+        click.echo(json.dumps(to_dict(report), indent=2, default=str))
+    else:
+        for line in render_text(report):
+            click.echo(line)
+
+    if not report.ok:
+        raise SystemExit(1)
+
+
 @cli.group()
 def run():
     """Run scheduled jobs."""
