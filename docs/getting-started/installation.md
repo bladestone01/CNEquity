@@ -16,7 +16,7 @@ pip install ashare-lake
 asl demo    # 一分钟真数样例，不需要先 clone 仓库
 ```
 
-通达信协议行情（日线、指数、除权、证券列表）由内置客户端提供，**不需要任何额外依赖**。历史文档里的 `pip install "ashare-lake[tdx]"` 仍然可用——`tdx` 保留为空 extra——但已无必要。
+**没有 extras**。一条命令装齐所有数据源——通达信协议（内置客户端）、东方财富、新浪、巨潮、AkShare、Baostock、SnowNLP，以及申万/国证成分表所需的 XLS 解析。历史文档里的 `pip install "ashare-lake[tdx]"` 之类仍然可用（这些 extra 保留为空），但已无必要。
 
 全量 `asl init` 前先写出配置（不必 clone 仓库）：
 
@@ -32,34 +32,29 @@ asl config validate
 git clone https://github.com/rootSunc/ashare-lake.git
 cd ashare-lake
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-# 或：uv sync --extra dev
+pip install -e . --group dev    # 需 pip >= 25.1
+# 或：uv sync
 ```
 
-## 可选依赖
+## 依赖构成
 
-| Extra | 包 | 用途 |
-|-------|-----|------|
-| `valuation` | baostock ≥ 0.8 | `valuation_metrics` 历史回填；`trading_status` ST 历史回填 |
-| `macro` | akshare ≥ 1.14 | 补充 PMI、M2、社融等月度宏观指标 |
-| `nlp` | snownlp ≥ 0.12 | `sentiment_scores` / `stock_news` NLP 增强 |
-| `structure` | pandas、openpyxl、xlrd | 申万行业分类历史 XLS（`industry_members` 回填路径） |
-| `all` | 以上全部（不含 `dev`） | 全量日更所需的运行时依赖一次装齐 |
-| `dev` | pytest, ruff, pytest-cov, pytest-timeout | 开发与测试 |
-| ~~`tdx`~~ | 空 | 已废弃：TDX 客户端已内置，保留仅为兼容旧安装命令 |
+所有运行时依赖都是硬依赖，装完即可跑通日更与回填全流程：
 
-```bash
-# PyPI —— 全量日更推荐
-pip install "ashare-lake[all]"
+| 包 | 用途 |
+|----|------|
+| polars、pyarrow、duckdb | 湖存储与查询 |
+| httpx、curl_cffi | HTTP 源（东财 / 新浪 / 巨潮） |
+| click | CLI |
+| akshare | 东财未覆盖的宏观序列，ST 标签交叉校验 |
+| baostock | 估值 / ST / 退市行情的历史回填 |
+| snownlp | on-demand `stock_news` 情绪（`[sentiment] use_snownlp`） |
+| pandas、openpyxl、xlrd | 申万 / 国证成分历史的 XLS·XLSX 解析 |
 
-# 或按需挑选
-pip install "ashare-lake[valuation,macro,nlp,structure]"
+通达信协议客户端内置于 `adapters/tdx_protocol/_wire`，只用标准库，不引入任何包。
 
-# 源码可编辑
-pip install -e ".[all,dev]"
-```
+> 曾经的 `tdx` / `macro` / `nlp` / `valuation` / `structure` / `all` extras 现已全部为空并废弃，仅为兼容旧安装命令保留，将在后续 minor 版本移除。
 
-装完建议跑一次体检——它会报出「配置启用了某个源但包没装」这类静默失效：
+装完建议跑一次体检——它会报出配置与环境不一致（如某个源的包导入失败、`data.root` 写成相对路径）这类静默问题：
 
 ```bash
 asl doctor
@@ -99,7 +94,6 @@ pytest tests/unit -q                               # 需源码 + [dev]，离线�
 | 安装方式 | httpx |
 |----------|-------|
 | `pip install ashare-lake` | 0.28.x |
-| `pip install "ashare-lake[all]"` | 0.28.x |
 
 `pyproject.toml` 里 `httpx>=0.25` 的下界现在只标记「我们用到的 `Client()` 选项最早出现在哪个版本」，不再是为了迁就别人。
 

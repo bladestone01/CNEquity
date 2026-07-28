@@ -1,4 +1,4 @@
-"""Assemble the `asl doctor` report from environment, extras, and config."""
+"""Assemble the `asl doctor` report from environment, source packages, and config."""
 
 from __future__ import annotations
 
@@ -144,7 +144,7 @@ def _check_racer(findings: list[Finding]) -> None:
                     "多半是没有对应 wheel、从 sdist 构建后只落了其他平台的二进制。"
                     "import 能过，首次求值才 RuntimeError。当前没有源用到 JS 求值，暂不影响。"
                 ),
-                fix="需要 JS 求值时改用有本平台 wheel 的 mini-racer（随 [macro] 安装）",
+                fix="需要 JS 求值时改用有本平台 wheel 的 mini-racer（akshare 会带上）",
             )
         )
 
@@ -167,7 +167,7 @@ def _check_extras(statuses: list[ExtraStatus], findings: list[Finding]) -> None:
         findings.append(
             Finding(
                 severity=worst,
-                title=f"[{status.extra.name}] 未安装 — 缺 {', '.join(status.missing)}",
+                title=f"[{status.extra.name}] 导入失败 — 缺 {', '.join(status.missing)}",
                 detail=status.extra.summary + "\n" + "\n".join(lines),
                 fix=status.install_hint,
             )
@@ -229,9 +229,13 @@ def _check_sources(config, statuses: list[ExtraStatus], findings: list[Finding])
         findings.append(
             Finding(
                 severity=worst,
-                title=f"[sources.{source}] enabled = true，但 {source} 未安装",
-                detail="配置声明启用了这个源，实际调用时它不会参与——" + extra.summary,
-                fix=f'pip install "ashare-lake[{extra_name}]"  # 或在配置里关掉该源',
+                title=f"[sources.{source}] enabled = true，但 {source} 导入失败",
+                detail=(
+                    "配置声明启用了这个源，实际调用时它不会参与——"
+                    + extra.summary
+                    + "\n  该包是硬依赖，缺失说明安装不完整，不是少装了 extra。"
+                ),
+                fix="pip install --force-reinstall ashare-lake",
             )
         )
 
@@ -262,7 +266,7 @@ def _check_groups(config, statuses: list[ExtraStatus], findings: list[Finding]) 
                 severity=worst,
                 title=f"日更组 {group_name}: {len(hits)} 个 step 依赖未安装的 extra",
                 detail="\n".join(lines),
-                fix="pip install " + " ".join(f'"ashare-lake[{n}]"' for n in sorted(extras_needed)),
+                fix="pip install --force-reinstall ashare-lake",
             )
         )
 

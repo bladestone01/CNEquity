@@ -1,15 +1,17 @@
-"""Optional-dependency inventory and import probes.
+"""Source-package inventory and import probes.
 
-Package metadata says which extras *exist*; this module answers what `pip show`
-cannot: whether an extra is importable here, and what a configured run actually
-loses without it.
+These packages used to be optional extras; they are hard dependencies now, so a
+missing one means a broken or partially-uninstalled environment rather than a
+forgotten install flag. The probes stay because the failure is still silent:
+every adapter below imports its package lazily inside a function, so a broken
+install surfaces as thin data at 3am, not as an ImportError at startup.
 
 The useful distinction is not installed/missing but what the adapter does when
 the import fails. A step that raises is loud — the batch fails and the manifest
 records it. A step that falls back to a narrower source keeps succeeding while
 writing less, and nothing in `asl status` says so. Every entry below was checked
-against its adapter call site, because most optional imports are function-local
-and a module-level grep cannot tell a sole source from a supplement.
+against its adapter call site, because those imports are function-local and a
+module-level grep cannot tell a sole source from a supplement.
 """
 
 from __future__ import annotations
@@ -115,7 +117,7 @@ EXTRAS: tuple[Extra, ...] = (
 
 EXTRAS_BY_NAME: dict[str, Extra] = {e.name: e for e in EXTRAS}
 
-# Config [sources.*] toggles whose package is optional.
+# Config [sources.*] toggles backed by a package that can fail to import.
 SOURCE_REQUIREMENTS: dict[str, str] = {
     "akshare": "macro",
     "baostock": "valuation",
@@ -133,7 +135,8 @@ class ExtraStatus:
 
     @property
     def install_hint(self) -> str:
-        return f'pip install "ashare-lake[{self.extra.name}]"'
+        # No extras any more — a missing package means the install is damaged.
+        return "pip install --force-reinstall ashare-lake"
 
 
 def _importable(module: str) -> bool:

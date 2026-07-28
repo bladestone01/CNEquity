@@ -132,7 +132,7 @@ asl run daily --config configs/ashare-lake.toml # daily incremental
 asl status --config configs/ashare-lake.toml
 ```
 
-Optional extras (`valuation` / `macro` / `nlp` / `structure`):
+No extras — one command installs every source. Dependency breakdown in
 [installation](docs/getting-started/installation.md).  
 After the initial backfill, run the [acceptance checks](docs/operations/runbook.md)
 before wiring cron.

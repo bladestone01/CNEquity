@@ -21,7 +21,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e . --group dev
 
       - name: Lint
         run: |
@@ -43,9 +43,9 @@ jobs:
           cache: pip
 
       - name: Install
-        # structure/macro cover pandas+akshare used by unit tests. The TDX wire
-        # client is vendored (no [tdx] extra); leave optional extras for the rest.
-        run: pip install -e ".[dev,structure,macro,nlp,valuation]"
+        # No extras: every runtime source is a hard dependency now. `--group dev`
+        # is PEP 735 and needs pip >= 25.1, which setup-python ships.
+        run: pip install -e . --group dev
 
       - name: Test
         run: pytest --cov=ashare_lake --cov-report=term-missing --cov-report=xml

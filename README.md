@@ -120,7 +120,7 @@ asl run daily --config configs/ashare-lake.toml # 每日增量
 asl status --config configs/ashare-lake.toml
 ```
 
-可选 extras（`valuation` / `macro` / `nlp` / `structure`）见 [installation](docs/getting-started/installation.md)。  
+无 extras —— 一条命令装齐所有数据源，依赖构成见 [installation](docs/getting-started/installation.md)。  
 全量回填后建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 再挂 cron。
 
 ## 读数据

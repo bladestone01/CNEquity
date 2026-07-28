@@ -12,8 +12,8 @@
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-# 可选 extras：valuation / macro / nlp / structure
+pip install -e . --group dev   # 需 pip >= 25.1；或 uv sync
+# 无 extras：运行时依赖全部随包安装
 # 见 docs/getting-started/installation.md
 ```
 

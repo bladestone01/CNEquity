@@ -35,11 +35,19 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - Guards (`tests/unit/test_tdx_decoupling.py`) that fail the build if `mootdx`,
   `tdxpy` or the racer packages are imported or re-declared as dependencies.
 
+- `pip install ashare-lake` is now the whole install. Every runtime source —
+  AkShare, Baostock, SnowNLP, and the pandas/openpyxl/xlrd trio that parses the
+  Shenwan and CNI constituent spreadsheets — is a hard dependency, so no daily
+  or backfill step can silently lose a source because an extra was forgotten.
+  Costs ~217MB over the previous minimal install.
+
 ### Deprecated
 
-- The `tdx` extra is now empty and unnecessary — TDX needs no third-party
-  package. It is kept so existing `pip install "ashare-lake[tdx]"` commands
-  keep working, and will be removed in a later minor release.
+- All extras (`tdx`, `macro`, `nlp`, `valuation`, `structure`, `all`) are now
+  empty. They stay declared so existing `pip install "ashare-lake[...]"`
+  commands keep resolving, and will be removed in a later minor release.
+- Contributor tooling moved from the `dev` extra to a PEP 735 dependency group:
+  `pip install -e . --group dev` (pip >= 25.1) or `uv sync`.
 
 ## [0.2.0] — 2026-07-27
 
