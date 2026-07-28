@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import IO
+
+from ashare_lake.file_lock import exclusive_lock
 
 
 class StateStore:
@@ -25,15 +26,8 @@ class StateStore:
     def _lock_path(self, dataset: str) -> Path:
         return self.root / f"{dataset}.lock"
 
-    @contextlib.contextmanager
-    def _dataset_lock(self, dataset: str) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True)
-        with open(self._lock_path(dataset), "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+    def _dataset_lock(self, dataset: str) -> AbstractContextManager[IO]:
+        return exclusive_lock(self._lock_path(dataset))
 
     def _read_payload(self, path: Path) -> dict:
         if not path.exists():

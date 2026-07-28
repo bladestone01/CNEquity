@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from ashare_lake.file_lock import exclusive_lock
 
 
 @dataclass(frozen=True)
@@ -32,25 +33,23 @@ class RateLimiter:
         lock_path = self.state_dir / f"{self.name}.lock"
         state_path = self.state_dir / f"{self.name}.json"
 
-        with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
-            try:
-                last = 0.0
-                if state_path.exists():
-                    try:
-                        last = float(json.loads(state_path.read_text()).get("last", 0.0))
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        last = 0.0
+        with exclusive_lock(lock_path):
+            last = 0.0
+            if state_path.exists():
+                try:
+                    last = float(
+                        json.loads(state_path.read_text(encoding="utf-8")).get("last", 0.0)
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    last = 0.0
 
+            now = time.time()
+            elapsed = now - last
+            if elapsed < self.min_interval:
+                time.sleep(self.min_interval - elapsed)
                 now = time.time()
-                elapsed = now - last
-                if elapsed < self.min_interval:
-                    time.sleep(self.min_interval - elapsed)
-                    now = time.time()
 
-                state_path.write_text(json.dumps({"last": now}))
-            finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+            state_path.write_text(json.dumps({"last": now}), encoding="utf-8")
 
 
 def wait_source(state_dir: Path | str, source: str, min_interval: float) -> None:

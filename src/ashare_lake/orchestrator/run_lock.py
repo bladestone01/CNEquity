@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 from collections.abc import Iterator
 from pathlib import Path
+
+from ashare_lake.file_lock import LockUnavailable, exclusive_lock, is_locked
 
 
 class RunLockError(RuntimeError):
@@ -18,16 +19,7 @@ def lock_path(meta_root: Path, run_id: str) -> Path:
 
 def is_run_locked(meta_root: Path, run_id: str) -> bool:
     """True when another process currently holds ``run_lock`` for *run_id*."""
-    path = lock_path(meta_root, run_id)
-    if not path.exists():
-        return False
-    with open(path, "a") as lock_f:
-        try:
-            fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True
-        fcntl.flock(lock_f, fcntl.LOCK_UN)
-        return False
+    return is_locked(lock_path(meta_root, run_id))
 
 
 @contextlib.contextmanager
@@ -39,16 +31,11 @@ def run_lock(meta_root: Path, run_id: str, *, blocking: bool = False) -> Iterato
     their compact step.
     """
     path = lock_path(meta_root, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as lock_f:
-        flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with contextlib.ExitStack() as stack:
         try:
-            fcntl.flock(lock_f, flags)
-        except BlockingIOError as exc:
+            stack.enter_context(exclusive_lock(path, blocking=blocking))
+        except LockUnavailable as exc:
             raise RunLockError(
                 f"Run {run_id} is locked by another process; wait for it to finish before retrying."
             ) from exc
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+        yield
