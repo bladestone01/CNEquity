@@ -33,6 +33,20 @@ def test_render_patches_data_root_and_darwin_workers():
     assert "workers = 8" not in text
 
 
+def test_render_patches_windows_workers():
+    text = render_example_toml(data_root="C:/lake", platform="win32")
+    assert 'root = "C:/lake"' in text
+    assert "workers = 1" in text
+    assert "workers = 8" not in text
+
+
+def test_render_escapes_windows_backslashes_in_data_root():
+    # PowerShell users often paste `C:\Users\…\lake`; TOML needs `\\`.
+    text = render_example_toml(data_root=r"C:\Users\测试\lake", platform="win32")
+    assert r'root = "C:\\Users\\测试\\lake"' in text
+    assert "workers = 1" in text
+
+
 def test_render_keeps_linux_workers():
     text = render_example_toml(platform="linux")
     assert "workers = 8" in text
@@ -45,7 +59,11 @@ def test_write_user_config_refuses_overwrite(tmp_path):
     with pytest.raises(FileExistsError):
         write_user_config(out, platform="linux")
     write_user_config(out, force=True, data_root=str(tmp_path / "data"), platform="linux")
-    assert f'root = "{tmp_path / "data"}"' in out.read_text(encoding="utf-8")
+    # Parse rather than substring-match: Windows paths are TOML-escaped (`\\`).
+    import tomllib
+
+    payload = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert Path(payload["data"]["root"]).resolve() == (tmp_path / "data").resolve()
 
 
 def test_cli_config_init_and_validate(tmp_path):

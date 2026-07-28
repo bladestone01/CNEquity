@@ -41,6 +41,9 @@ def _empty_view_sql(name: str) -> str:
 
 
 def _view_glob(data_root: str, spec: DatasetSpec) -> tuple[str, bool]:
+    # *data_root* is always POSIX-form (see ensure_duckdb_views): DuckDB's
+    # read_parquet glob accepts `/` on every platform, and backslashes would
+    # either escape the SQL string or fail to match files on Windows.
     layer_dir = "derived" if spec.layer == "derived" else "curated"
     if spec.partition_col is None:
         return f"{data_root}/{layer_dir}/{spec.name}/*.parquet", False
@@ -64,7 +67,9 @@ def _glob_has_files(pattern: str) -> bool:
 def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
     db_path = config.duckdb_path or (config.data_root / "duckdb" / "ashare-lake.duckdb")
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    root = str(config.data_root).replace("'", "''")
+    # as_posix() keeps Windows drive letters (`C:/…`) while turning `\` into
+    # `/`, which is what the SQL literals below and DuckDB's glob both want.
+    root = config.data_root.resolve().as_posix().replace("'", "''")
 
     con = duckdb.connect(str(db_path))
     con.execute(f"SET memory_limit='{config.duckdb_memory_limit}'")

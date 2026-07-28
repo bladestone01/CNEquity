@@ -102,3 +102,15 @@ def test_validate_config_allows_multiprocess_on_linux(tmp_path, monkeypatch):
         daily_waves=[WaveConfig(name="core", parallel=True, steps=["instruments"])],
     )
     assert validate_config(cfg) == []
+
+
+def test_validate_config_allows_multiprocess_on_windows(tmp_path, monkeypatch):
+    # Windows uses spawn, not fork — so the macOS hard reject does not apply.
+    # `asl config init` still defaults workers=1; users may raise it later.
+    monkeypatch.setattr(sys, "platform", "win32")
+    cfg = Config(
+        data_root=tmp_path / "data",
+        workers=4,
+        daily_waves=[WaveConfig(name="core", parallel=True, steps=["instruments"])],
+    )
+    assert validate_config(cfg) == []

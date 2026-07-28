@@ -124,16 +124,19 @@ def test_missing_data_root_only_warns(tmp_path):
     assert report.ok
 
 
-def test_unwritable_data_root_is_an_error(tmp_path):
+def test_unwritable_data_root_is_an_error(tmp_path, monkeypatch):
+    # Real chmod(0o500) does not deny writes on Windows ACLs, so probe via the
+    # helper the doctor actually uses.
     root = tmp_path / "lake"
     root.mkdir()
-    root.chmod(0o500)
-    try:
-        report = build_report(config=_config(tmp_path, data_root=root))
-        finding = next(f for f in report.findings if "不可写" in f.title)
-        assert finding.severity is Severity.ERROR
-    finally:
-        root.chmod(0o700)
+    monkeypatch.setattr(
+        "ashare_lake.diagnostics.report._data_root_writable",
+        lambda _path: False,
+    )
+    report = build_report(config=_config(tmp_path, data_root=root))
+    finding = next(f for f in report.findings if "不可写" in f.title)
+    assert finding.severity is Severity.ERROR
+    assert "chmod" in finding.fix or "修改" in finding.fix
 
 
 # --- no-config mode ----------------------------------------------------------

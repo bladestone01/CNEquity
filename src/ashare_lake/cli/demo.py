@@ -42,11 +42,15 @@ def _banner(step: str, title: str) -> None:
 
 def _write_demo_toml(path: Path, data_root: Path) -> None:
     """Persist a tiny config so follow-up ``asl query --config …`` works."""
+    from ashare_lake.config.bootstrap import _toml_escape
+
     path.parent.mkdir(parents=True, exist_ok=True)
+    # POSIX form + TOML escape: bare ``C:\Users\…`` is invalid TOML (``\U`` etc.).
+    root = _toml_escape(data_root.resolve().as_posix())
     path.write_text(
         f"""# Auto-written by `asl demo`. Safe to delete with the demo data_root.
 [data]
-root = "{data_root.resolve()}"
+root = "{root}"
 
 [orchestrator]
 workers = 1
