@@ -7,7 +7,7 @@ import ashare_lake.steps  # noqa: F401
 from ashare_lake.adapters.cninfo.regulatory import fetch_regulatory_events
 from ashare_lake.adapters.eastmoney.share_unlock import fetch_share_unlock_schedule
 from ashare_lake.adapters.macro.indicators import fetch_macro_indicators
-from ashare_lake.config import Config, load_config, validate_config
+from ashare_lake.config import Config
 from ashare_lake.derive.market_breadth import compute_market_breadth
 from ashare_lake.domain.schemas import validate_dataframe
 from ashare_lake.orchestrator.registry import get_step
@@ -72,13 +72,6 @@ def test_v11_steps_registered():
         "regulatory_events",
     ):
         assert get_step(name).fn is not None
-
-
-def test_example_config_validates_macro_risk_group():
-    from pathlib import Path
-
-    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "ashare-lake.example.toml")
-    assert validate_config(cfg) == []
 
 
 def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):

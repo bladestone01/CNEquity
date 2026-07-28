@@ -7,7 +7,7 @@ import ashare_lake.steps  # noqa: F401
 from ashare_lake.adapters.eastmoney.consensus import fetch_analyst_consensus
 from ashare_lake.adapters.eastmoney.institutional import fetch_institutional_holdings
 from ashare_lake.adapters.macro.indicators import _akshare_rows
-from ashare_lake.config import Config, load_config, validate_config
+from ashare_lake.config import Config
 from ashare_lake.derive.sentiment_scores import compute_sentiment_scores
 from ashare_lake.domain.schemas import validate_dataframe
 from ashare_lake.orchestrator.registry import get_step
@@ -41,13 +41,6 @@ class FakeDatacenterClient:
 def test_p2_steps_registered():
     for name in ("institutional_holdings", "analyst_consensus", "sentiment_scores"):
         assert get_step(name).fn is not None
-
-
-def test_example_config_validates_research_group():
-    from pathlib import Path
-
-    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "ashare-lake.example.toml")
-    assert validate_config(cfg) == []
 
 
 def test_institutional_holdings_parses():

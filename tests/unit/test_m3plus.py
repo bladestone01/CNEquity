@@ -7,7 +7,7 @@ import ashare_lake.steps  # noqa: F401
 from ashare_lake.adapters.eastmoney.fundamentals import fetch_financial_statement_items
 from ashare_lake.adapters.eastmoney.index_constituents import fetch_index_constituents
 from ashare_lake.adapters.eastmoney.industry import fetch_industry_members
-from ashare_lake.config import Config, load_config, validate_config
+from ashare_lake.config import Config
 from ashare_lake.domain.schemas import validate_dataframe
 from ashare_lake.orchestrator.registry import get_step
 from ashare_lake.query import load
@@ -40,13 +40,6 @@ class FakeDatacenterClient:
 def test_m3plus_steps_registered():
     for name in ("financial_statement_items", "index_constituents", "industry_members"):
         assert get_step(name).fn is not None
-
-
-def test_example_config_validates_fundamentals_group():
-    from pathlib import Path
-
-    cfg = load_config(Path(__file__).resolve().parents[2] / "configs" / "ashare-lake.example.toml")
-    assert validate_config(cfg) == []
 
 
 def test_financial_statement_items_parses_notice_date():

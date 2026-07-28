@@ -70,6 +70,17 @@ def test_example_config_validates(monkeypatch):
     assert cfg.source_intervals["eastmoney"] >= 1.0
     assert cfg.source_intervals["akshare"] <= cfg.source_intervals["eastmoney"]
     assert cfg.tdx_min_interval_ms == 100
+    # Every schedule group we ship must be defined and pass validation. This
+    # replaced four per-group tests that each re-asserted validate_config == []
+    # without pinning the platform, so all four failed on macOS.
+    assert set(cfg.schedule_groups) == {
+        "core",
+        "capital",
+        "signals",
+        "fundamentals",
+        "macro_risk",
+        "research",
+    }
 
 
 def test_validate_config_rejects_multiprocess_on_darwin(tmp_path, monkeypatch):

@@ -16,9 +16,13 @@ from ashare_lake.config.bootstrap import (
 
 
 def test_packaged_example_matches_repo_checkout():
-    repo_example = Path("configs/ashare-lake.example.toml")
-    if not repo_example.is_file():
-        pytest.skip("repo example.toml not present")
+    """A wheel install and a repo checkout must offer the same example config.
+
+    Resolved from this file rather than the CWD: the old relative lookup made
+    the test skip itself whenever pytest ran from anywhere but the repo root,
+    which is exactly when drift would go unnoticed.
+    """
+    repo_example = Path(__file__).resolve().parents[2] / "configs" / "ashare-lake.example.toml"
     assert example_toml_text() == repo_example.read_text(encoding="utf-8")
 
 
