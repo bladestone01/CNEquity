@@ -47,6 +47,24 @@ def test_render_escapes_windows_backslashes_in_data_root():
     assert "workers = 1" in text
 
 
+def test_path_for_toml_makes_windows_tmp_paths_parseable():
+    """Regression for windows-latest CI: bare ``C:\\Users\\…`` is invalid TOML."""
+    import tomllib
+
+    from ashare_lake.config.bootstrap import _toml_escape, path_for_toml
+
+    # Simulate the GitHub Actions runner layout without requiring Windows.
+    raw = Path(r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\test_cli0\data")
+    # as_posix + escape is what path_for_toml does before resolve(); assert the
+    # TOML grammar alone (resolve() on Unix would prefix the cwd).
+    text = f'[data]\nroot = "{_toml_escape(raw.as_posix())}"\n'
+    payload = tomllib.loads(text)
+    assert "Users" in payload["data"]["root"]
+    assert path_for_toml(Path("/tmp/lake")).startswith("/")
+    with pytest.raises(tomllib.TOMLDecodeError):
+        tomllib.loads(f'[data]\nroot = "{raw}"\n')
+
+
 def test_render_keeps_linux_workers():
     text = render_example_toml(platform="linux")
     assert "workers = 8" in text

@@ -1,6 +1,7 @@
 import pytest
 
 from ashare_lake.config import load_config
+from ashare_lake.config.bootstrap import path_for_toml
 
 
 @pytest.fixture
@@ -10,7 +11,7 @@ def config(tmp_path):
     cfg_path.write_text(
         f"""
 [data]
-root = "{tmp_path / "data"}"
+root = "{path_for_toml(tmp_path / "data")}"
 
 [orchestrator]
 workers = 1
@@ -31,6 +32,7 @@ steps = ["daily_bars", "compact", "derive_adj_factors", "audit"]
 
 [job.init.phases]
 names = ["phase1_reference"]
-"""
+""",
+        encoding="utf-8",
     )
     return load_config(cfg_path)

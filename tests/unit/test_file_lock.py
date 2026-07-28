@@ -246,3 +246,14 @@ def test_selected_backend_matches_platform():
     else:
         assert file_lock._acquire is file_lock._acquire_posix
         assert file_lock._release is file_lock._release_posix
+
+
+def test_is_locked_treats_open_oserror_as_held(tmp_path, monkeypatch):
+    path = tmp_path / "run.lock"
+    path.write_text("", encoding="utf-8")
+
+    def boom(*_a, **_k):
+        raise OSError(errno.EACCES, "sharing violation")
+
+    monkeypatch.setattr(file_lock, "exclusive_lock", boom)
+    assert is_locked(path) is True

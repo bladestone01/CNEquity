@@ -15,6 +15,7 @@ from datetime import date
 import pytest
 
 from ashare_lake.config import load_config
+from ashare_lake.config.bootstrap import path_for_toml
 from ashare_lake.orchestrator.manifest import Manifest
 from ashare_lake.orchestrator.worker_pool import fetch_daily_bars_parallel
 from ashare_lake.storage.layout import init_data_layout
@@ -26,7 +27,7 @@ def worker_config(tmp_path):
     cfg_path.write_text(
         f"""
 [data]
-root = "{tmp_path / "data"}"
+root = "{path_for_toml(tmp_path / "data")}"
 
 [orchestrator]
 workers = 4

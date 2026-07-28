@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from ashare_lake.config import load_config
+from ashare_lake.config.bootstrap import path_for_toml
 
 
 def test_load_init_phases_reads_job_init_phases_names(tmp_path):
@@ -8,7 +9,7 @@ def test_load_init_phases_reads_job_init_phases_names(tmp_path):
     cfg_path.write_text(
         f"""
 [data]
-root = "{tmp_path / "data"}"
+root = "{path_for_toml(tmp_path / "data")}"
 
 [[job.daily.waves]]
 name = "core"

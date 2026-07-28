@@ -20,6 +20,15 @@ def _toml_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def path_for_toml(path: Path | str) -> str:
+    """Render *path* safe for a TOML basic string.
+
+    Uses POSIX form so Windows ``C:\\Users\\…`` never injects ``\\U`` hex
+    escapes, then applies the usual backslash/quote escaping.
+    """
+    return _toml_escape(Path(path).resolve().as_posix())
+
+
 def render_example_toml(
     *,
     data_root: str | None = None,

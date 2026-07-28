@@ -34,6 +34,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   DuckDB / Explorer still holds the destination).
 - TDX heartbeat thread is daemon and is joined on disconnect, so spawn workers
   do not linger after close.
+- Test helpers embed `data.root` via `path_for_toml()` so Windows CI no longer
+  dies on `TOMLDecodeError: Invalid hex value` from unescaped `C:\Users\…`.
 
 ## [0.3.0] — 2026-07-29
 

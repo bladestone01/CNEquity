@@ -3,6 +3,7 @@ from datetime import UTC, date, datetime, timedelta
 import polars as pl
 
 from ashare_lake.config import Config
+from ashare_lake.config.bootstrap import path_for_toml
 from ashare_lake.orchestrator.manifest import Manifest
 from ashare_lake.storage import StagingWriter
 from ashare_lake.storage.staging_cleanup import (
@@ -255,7 +256,7 @@ def test_backfill_finishes_run_only_after_compact(tmp_path, monkeypatch):
     cfg_path.write_text(
         f"""
 [data]
-root = "{tmp_path / "data"}"
+root = "{path_for_toml(tmp_path / "data")}"
 
 [orchestrator]
 workers = 1

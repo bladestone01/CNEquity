@@ -3,6 +3,7 @@ from pathlib import Path
 
 import ashare_lake.steps  # noqa: F401 — register steps
 from ashare_lake.config import Config, ScheduleGroup, WaveConfig, load_config, validate_config
+from ashare_lake.config.bootstrap import path_for_toml
 
 
 def test_validate_config_rejects_unknown_group_step(tmp_path):
@@ -22,7 +23,7 @@ def test_validate_config_rejects_invalid_tdx_servers(tmp_path):
     cfg_path.write_text(
         f"""
 [data]
-root = "{tmp_path / "data"}"
+root = "{path_for_toml(tmp_path / "data")}"
 
 [[job.daily.waves]]
 name = "core"
