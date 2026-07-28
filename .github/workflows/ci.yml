@@ -43,8 +43,8 @@ jobs:
           cache: pip
 
       - name: Install
-        # structure/macro cover pandas+akshare used by unit tests; skip [tdx]
-        # (mootdx pins httpx<0.26 and conflicts with the default resolver).
+        # structure/macro cover pandas+akshare used by unit tests. The TDX wire
+        # client is vendored (no [tdx] extra); leave optional extras for the rest.
         run: pip install -e ".[dev,structure,macro,nlp,valuation]"
 
       - name: Test

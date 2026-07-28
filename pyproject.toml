@@ -124,6 +124,9 @@ markers = [
 [tool.coverage.run]
 source = ["ashare_lake"]
 branch = true
+# Vendored upstream (tdxpy, MIT). Same boundary as ruff extend-exclude: we own
+# the facade around it, not every struct.unpack line inside.
+omit = ["*/adapters/tdx_protocol/_wire/*", "*/adapters/tdx_protocol/_wire/**"]
 
 [tool.coverage.report]
 show_missing = true

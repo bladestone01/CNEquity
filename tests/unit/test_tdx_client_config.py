@@ -110,3 +110,49 @@ def test_pick_reachable_server_raises_when_none_live(monkeypatch):
     monkeypatch.setattr(tdx, "_candidate_servers", lambda config: [("9.9.9.9", 7709)])
     with pytest.raises(tdx.TdxSourceError, match="no TDX server responded"):
         tdx._pick_reachable_server(None)
+
+
+def test_serves_data_true_when_bars_return(monkeypatch):
+    class _Client:
+        def bars(self, *args, **kwargs):
+            return [{"close": 1.0}]
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        "ashare_lake.adapters.tdx_protocol.quotes.Quotes.factory",
+        staticmethod(lambda **kwargs: _Client()),
+    )
+    assert tdx._serves_data("1.2.3.4", 7709, timeout=5) is True
+
+
+def test_serves_data_false_on_empty_or_error(monkeypatch):
+    class _Empty:
+        def bars(self, *args, **kwargs):
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "ashare_lake.adapters.tdx_protocol.quotes.Quotes.factory",
+        staticmethod(lambda **kwargs: _Empty()),
+    )
+    assert tdx._serves_data("1.2.3.4", 7709, timeout=5) is False
+
+    def _boom(**kwargs):
+        raise OSError("down")
+
+    monkeypatch.setattr(
+        "ashare_lake.adapters.tdx_protocol.quotes.Quotes.factory",
+        staticmethod(_boom),
+    )
+    assert tdx._serves_data("1.2.3.4", 7709, timeout=5) is False
+
+
+def test_bundled_hosts_start_with_verified_live_set():
+    from ashare_lake.adapters.tdx_protocol.hosts import HQ_HOSTS, VERIFIED_HOSTS
+
+    assert HQ_HOSTS[: len(VERIFIED_HOSTS)] == VERIFIED_HOSTS
+    assert len(HQ_HOSTS) > len(VERIFIED_HOSTS)
