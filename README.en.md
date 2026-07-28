@@ -41,22 +41,32 @@ downstream.
   Python load() API      DuckDB views / SQL    Polars scan_parquet
 ```
 
-## One-minute demo
+## Shortest path to data
 
-Skip the full-market backfill. One command fetches **5 liquid names × ~30
-trading days** of real bars:
+Pick one lane. The `pip` / `asl` commands below work the same on
+**macOS / Linux / Windows** (PowerShell or cmd). Venv activation and schedulers
+differ by OS — see [installation](docs/getting-started/installation.md) /
+[runbook](docs/operations/runbook.md).
+
+### A. Try it (minutes, tiny universe)
+
+Five liquid names × ~30 trading days of real bars. Separate data root —
+**not** a full-market lake.
 
 ```bash
 pip install ashare-lake
 asl demo
 ```
 
-<p align="center">
-  <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
-</p>
+```python
+from ashare_lake.query import load
 
-Data lands in `data/ashare-lake-demo/` (safe beside a later full `asl init`).
-Then:
+bars = load(
+    "daily_bars",
+    data_root="data/ashare-lake-demo",
+    adjust="hfq",
+)
+```
 
 ```bash
 asl query --config configs/ashare-lake.demo.toml --sql "
@@ -68,13 +78,45 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 "
 ```
 
+### B. Self-hosted daily lake (research / production)
+
+First `asl init` backfills (slow, multi-GB). After that: incremental + read.
+
+```bash
+pip install ashare-lake
+asl config init --data-root /abs/path/to/lake   # Windows e.g. D:/lake; workers=1 on macOS/Windows
+asl init   --config configs/ashare-lake.toml    # layout + first backfill
+asl run daily --config configs/ashare-lake.toml # every trading day afterwards
+```
+
+```python
+from ashare_lake.query import load
+
+bars = load(
+    "daily_bars",
+    start="2020-01-01", end="2025-12-31",
+    adjust="hfq",              # None | "qfq" | "hfq"
+    universe="all_a",
+)
+roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
+```
+
+> Path A writes `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`.  
+> Path B uses the config from `asl config init`. They do not overwrite each other.
+
+## One-minute demo
+
+Terminal look of path A (optional: `asl demo --symbols 600519.SH,000001.SZ --days 10`).
+Needs reachability to TDX quote hosts (mainland egress is more reliable). On
+failure, try `asl servers test`.
+
+<p align="center">
+  <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
+</p>
+
 <p align="center">
   <img src="docs/assets/asl-query.png" alt="asl query: DuckDB SQL with provenance source column" width="720" />
 </p>
-
-Optional: `asl demo --symbols 600519.SH,000001.SZ --days 10`. Needs reachability
-to TDX quote hosts (mainland egress is more reliable). On failure, try
-`asl servers test`.
 
 ## Positioning: peers
 
@@ -115,41 +157,24 @@ Dataset names are the first argument to `load()`. Columns:
 | Sentiment / rotation | `sentiment_scores` · `hot_rank` · `sector_bars` · `sector_fund_flow` · `news_headlines` |
 | Risk | `share_unlock_schedule` · `regulatory_events` |
 
-## Install & daily ops
+## Install, daily ops, and ops extras
+
+Fetch commands are in **Shortest path to data** above. Extras:
 
 ```bash
-pip install ashare-lake
-asl demo                          # writes configs/ashare-lake.demo.toml under cwd
-```
-
-Full-market daily ops:
-
-```bash
-asl config init                   # writes configs/ashare-lake.toml (workers=1 on macOS / Windows)
-# edit data.root if needed
-asl init   --config configs/ashare-lake.toml    # dirs / manifest / views + first backfill
-asl run daily --config configs/ashare-lake.toml # daily incremental
 asl status --config configs/ashare-lake.toml
+asl doctor                         # env / data.root / dependency check
 ```
 
-No extras — one command installs every source. Dependency breakdown in
+No extras — `pip install ashare-lake` brings every runtime source. Breakdown:
 [installation](docs/getting-started/installation.md).  
 After the initial backfill, run the [acceptance checks](docs/operations/runbook.md)
-before wiring cron.
+before wiring cron / Task Scheduler.
 
 ## Reading data
 
-```python
-from ashare_lake.query import load
-
-bars = load(
-    "daily_bars",
-    start="2020-01-01", end="2025-12-31",
-    adjust="hfq",              # None | "qfq" | "hfq"
-    universe="all_a",
-)
-roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
-```
+After path A or B lands data, prefer `load()` (adjust / universe / PIT contract);
+use `asl query` or open DuckDB for SQL.
 
 <p align="center">
   <img src="docs/assets/asl-load.png" alt="Python load(): read daily bars from local curated Parquet" width="720" />

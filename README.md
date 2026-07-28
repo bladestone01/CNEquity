@@ -39,20 +39,29 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**，回测和信号�
   Python load() API      DuckDB 视图 / SQL     Polars 直读 Parquet
 ```
 
-## 一分钟体验
+## 最短取数流程
 
-不用全市场回填。装好后一条命令拉 **5 只流动性股票 × 约 30 个交易日** 的真实行情：
+只想尽快把数落到本机、用 Python / SQL 读——选一条车道即可。  
+下列 `pip` / `asl` 命令在 **macOS / Linux / Windows**（PowerShell、cmd）上通用；venv 激活与任务调度见 [installation](docs/getting-started/installation.md) / [runbook](docs/operations/runbook.md)。
+
+### A. 试用（几分钟，小宇宙）
+
+5 只流动性股票 × 约 30 个交易日的真实行情；独立目录，**不会**变成全市场湖。
 
 ```bash
 pip install ashare-lake
 asl demo
 ```
 
-<p align="center">
-  <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
-</p>
+```python
+from ashare_lake.query import load
 
-数据在独立目录 `data/ashare-lake-demo/`（不会污染之后的全量 `asl init`）。接着查：
+bars = load(
+    "daily_bars",
+    data_root="data/ashare-lake-demo",
+    adjust="hfq",
+)
+```
 
 ```bash
 asl query --config configs/ashare-lake.demo.toml --sql "
@@ -64,11 +73,44 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 "
 ```
 
+### B. 自建日更湖（研究 / 生产）
+
+首次 `asl init` 会回填（耗时长、占磁盘）；之后日常只需增量 + 读取。
+
+```bash
+pip install ashare-lake
+asl config init --data-root /abs/path/to/lake   # Windows 例：D:/lake；macOS/Windows 默认 workers=1
+asl init   --config configs/ashare-lake.toml    # 建目录 + 首次回填
+asl run daily --config configs/ashare-lake.toml # 之后每个交易日
+```
+
+```python
+from ashare_lake.query import load
+
+bars = load(
+    "daily_bars",
+    start="2020-01-01", end="2025-12-31",
+    adjust="hfq",              # None | "qfq" | "hfq"
+    universe="all_a",
+)
+roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
+```
+
+> demo（A）写的是 `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`；  
+> 全量湖（B）用 `asl config init` 写出的配置。两条线互不覆盖。
+
+## 一分钟体验
+
+路径 A 的终端观感（可选参数：`asl demo --symbols 600519.SH,000001.SZ --days 10`）。  
+需要能访问 TDX 行情主机（大陆出口更稳）；失败先看 `asl servers test`。
+
+<p align="center">
+  <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
+</p>
+
 <p align="center">
   <img src="docs/assets/asl-query.png" alt="asl query：带 source 溯源列的日线" width="720" />
 </p>
-
-可选：`asl demo --symbols 600519.SH,000001.SZ --days 10`。需要能访问 TDX 行情主机（大陆出口更稳）；失败先看 `asl servers test`。
 
 ## 定位：与同类差异
 
@@ -103,39 +145,21 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 | 舆情 / 轮动 | `sentiment_scores` · `hot_rank` · `sector_bars` · `sector_fund_flow` · `news_headlines` |
 | 风险 | `share_unlock_schedule` · `regulatory_events` |
 
-## 安装与日更
+## 安装、日更与运维
+
+取数命令见上文 **最短取数流程**。补充：
 
 ```bash
-pip install ashare-lake
-asl demo                          # 一分钟样例；会写出 configs/ashare-lake.demo.toml
-```
-
-全量日更：
-
-```bash
-asl config init                   # 写出 configs/ashare-lake.toml（macOS / Windows 自动 workers=1）
-# 按需编辑 data.root
-asl init   --config configs/ashare-lake.toml    # 建目录/manifest/视图 + 首次回填
-asl run daily --config configs/ashare-lake.toml # 每日增量
 asl status --config configs/ashare-lake.toml
+asl doctor                         # 环境 / data.root / 依赖体检
 ```
 
-无 extras —— 一条命令装齐所有数据源，依赖构成见 [installation](docs/getting-started/installation.md)。  
-全量回填后建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 再挂 cron。
+无 extras —— `pip install ashare-lake` 装齐所有运行时数据源，构成见 [installation](docs/getting-started/installation.md)。  
+全量回填后建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 再挂 cron / 任务计划。
 
 ## 读数据
 
-```python
-from ashare_lake.query import load
-
-bars = load(
-    "daily_bars",
-    start="2020-01-01", end="2025-12-31",
-    adjust="hfq",              # None | "qfq" | "hfq"
-    universe="all_a",
-)
-roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
-```
+路径 A / B 落盘后，优先用 `load()`（契约：复权 / universe / PIT）；SQL 用 `asl query` 或直连 DuckDB。
 
 <p align="center">
   <img src="docs/assets/asl-load.png" alt="Python load()：从本地 curated Parquet 读日线" width="720" />
@@ -149,7 +173,7 @@ asl query --sql "
 " --config configs/ashare-lake.toml
 ```
 
-也可直连 `{data_root}/duckdb/ashare-lake.duckdb`，或对按日分区的数据集用 Polars `scan_parquet`。  
+也可打开 `{data_root}/duckdb/ashare-lake.duckdb`，或对按日分区的数据集用 Polars `scan_parquet`。  
 年/月分区（如 `index_bars`）请优先 `asl query` / `load()`，避免 hive 分区标签撞真日期——见 [lake-layout](docs/architecture/lake-layout.md)。
 
 ```
