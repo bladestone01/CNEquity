@@ -115,8 +115,11 @@ def test_retired_packages_are_not_declared_as_dependencies(package):
     )
     project = pyproject["project"]
     declared = list(project.get("dependencies", []))
+    # Extras are gone, but keep reading them so a reintroduced one is still caught.
     for extra_reqs in project.get("optional-dependencies", {}).values():
         declared.extend(extra_reqs)
+    for group_reqs in pyproject.get("dependency-groups", {}).values():
+        declared.extend(r for r in group_reqs if isinstance(r, str))
 
     needle = package.replace("_", "-")
     offenders = [req for req in declared if needle in req.replace("_", "-")]

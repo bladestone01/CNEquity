@@ -16,7 +16,9 @@ pip install ashare-lake
 asl demo    # 一分钟真数样例，不需要先 clone 仓库
 ```
 
-**没有 extras**。一条命令装齐所有数据源——通达信协议（内置客户端）、东方财富、新浪、巨潮、AkShare、Baostock、SnowNLP，以及申万/国证成分表所需的 XLS 解析。历史文档里的 `pip install "ashare-lake[tdx]"` 之类仍然可用（这些 extra 保留为空），但已无必要。
+**没有 extras**。一条命令装齐所有数据源——通达信协议（内置客户端）、东方财富、新浪、巨潮、AkShare、Baostock、SnowNLP，以及申万/国证成分表所需的 XLS 解析。
+
+旧文档里的 `pip install "ashare-lake[tdx]"` 之类仍然可用，装出来的结果完全一致——pip 会提示一句 `does not provide the extra 'tdx'` 然后照常安装，uv 则不作声。
 
 全量 `asl init` 前先写出配置（不必 clone 仓库）：
 
@@ -52,7 +54,7 @@ pip install -e . --group dev    # 需 pip >= 25.1
 
 通达信协议客户端内置于 `adapters/tdx_protocol/_wire`，只用标准库，不引入任何包。
 
-> 曾经的 `tdx` / `macro` / `nlp` / `valuation` / `structure` / `all` extras 现已全部为空并废弃，仅为兼容旧安装命令保留，将在后续 minor 版本移除。
+> 曾经的 `tdx` / `macro` / `nlp` / `valuation` / `structure` / `all` extras 已全部移除。带上它们的旧命令不会失败，安装器只会忽略未知 extra（pip 附带一句警告）。
 
 装完建议跑一次体检——它会报出配置与环境不一致（如某个源的包导入失败、`data.root` 写成相对路径）这类静默问题：
 

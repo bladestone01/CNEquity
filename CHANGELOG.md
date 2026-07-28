@@ -8,17 +8,31 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `pip install ashare-lake` is the whole install. Every runtime source — AkShare,
+  Baostock, SnowNLP, and the pandas/openpyxl/xlrd trio that parses the Shenwan
+  and CNI constituent spreadsheets — is a hard dependency, so no daily or
+  backfill step can silently lose a source because an extra was forgotten. Costs
+  roughly 217MB over the previous minimal install.
 - TDX quotes now use a vendored wire client (`adapters/tdx_protocol/_wire`,
   derived from tdxpy, MIT) instead of `mootdx`. Both `mootdx` and `tdxpy` were
   last released in 2024 and are unmaintained. Verified byte-identical to the
   previous implementation against live servers, including the full 51478-row
   security list.
 - `httpx` is no longer capped at `<0.26`; that ceiling came from `mootdx`.
-  Installs now resolve to 0.28.x, with or without extras.
+  Installs now resolve to 0.28.x.
 - The bundled fallback TDX host list is now maintained in-tree
   (`adapters/tdx_protocol/hosts.py`). A probe of all 49 known hosts found every
   one of mootdx's 38 dead; the four that serve real bars are ordered first.
   Server selection went from failing across 16 probes to resolving in ~3s.
+
+### Added
+
+- `asl doctor` — checks what `asl config validate` deliberately cannot, since
+  that command is environment-blind: whether `data.root` is absolute, present and
+  writable, and whether every declared dependency actually imports. `--fix`
+  repairs the `py_mini_racer` distribution collision cross-platform.
+- Guards (`tests/unit/test_tdx_decoupling.py`) that fail the build if `mootdx`,
+  `tdxpy` or the racer packages are imported or re-declared as dependencies.
 
 ### Fixed
 
@@ -26,26 +40,11 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   had no such parameter, so the value this project computed was silently
   discarded and re-derived from the code prefix.
 
-### Added
+### Removed
 
-- `asl doctor` — reports optional dependencies that are enabled in config but
-  missing, per-group impact, and the `py_mini_racer` distribution collision;
-  `--fix` repairs the latter cross-platform.
-- `all` extra installs every runtime source in one go.
-- Guards (`tests/unit/test_tdx_decoupling.py`) that fail the build if `mootdx`,
-  `tdxpy` or the racer packages are imported or re-declared as dependencies.
-
-- `pip install ashare-lake` is now the whole install. Every runtime source —
-  AkShare, Baostock, SnowNLP, and the pandas/openpyxl/xlrd trio that parses the
-  Shenwan and CNI constituent spreadsheets — is a hard dependency, so no daily
-  or backfill step can silently lose a source because an extra was forgotten.
-  Costs ~217MB over the previous minimal install.
-
-### Deprecated
-
-- All extras (`tdx`, `macro`, `nlp`, `valuation`, `structure`, `all`) are now
-  empty. They stay declared so existing `pip install "ashare-lake[...]"`
-  commands keep resolving, and will be removed in a later minor release.
+- All extras (`tdx`, `macro`, `nlp`, `valuation`, `structure`, `all`).
+  `pip install "ashare-lake[tdx]"` from an older doc still installs correctly:
+  pip warns that the extra is not provided and continues, uv says nothing.
 - Contributor tooling moved from the `dev` extra to a PEP 735 dependency group:
   `pip install -e . --group dev` (pip >= 25.1) or `uv sync`.
 

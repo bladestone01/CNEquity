@@ -23,8 +23,8 @@ classifiers = [
 ]
 # One install, no extras: `pip install ashare-lake` brings every runtime source
 # the daily pipeline and the backfill paths need. Splitting these out again would
-# reintroduce the failure mode `asl doctor` exists to catch — a source enabled in
-# config with no package behind it, degrading silently at 3am.
+# bring back the failure mode that motivated folding them in — a source enabled
+# in config with no package behind it, degrading silently on a scheduled run.
 dependencies = [
   "click>=8.1",
   "duckdb>=1.0",
@@ -49,18 +49,10 @@ dependencies = [
   "xlrd>=2.0",
 ]
 
-[project.optional-dependencies]
-# All of these are empty and deprecated. Everything they used to install is a
-# hard dependency now, so `pip install ashare-lake` is the whole story. They stay
-# declared because the published 0.2.0 page documents them and requirement files
-# in the wild may pin them — an unknown extra is only a warning, but a known
-# empty one is silent. Remove in a later minor.
-tdx = []
-macro = []
-nlp = []
-valuation = []
-structure = []
-all = []
+# No [project.optional-dependencies]. Everything is a hard dependency.
+# `pip install "ashare-lake[tdx]"` from an older doc still installs correctly —
+# pip prints "does not provide the extra 'tdx'" and carries on, uv is silent —
+# so declaring empty extras would only advertise things that no longer exist.
 
 # Contributor tooling lives in a PEP 735 dependency group, not an extra: it is
 # never part of what a user installs. `pip install --group dev` (pip >= 25.1) or

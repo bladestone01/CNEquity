@@ -12,7 +12,7 @@ import shlex
 import subprocess
 from collections.abc import Callable
 
-from ashare_lake.diagnostics.extras import racer_providers, racer_repair_commands
+from ashare_lake.diagnostics.packages import racer_providers, racer_repair_commands
 
 
 def repair_racer_conflict(echo: Callable[[str], None] = print) -> bool:
