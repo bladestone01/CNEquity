@@ -124,3 +124,35 @@ def test_retired_packages_are_not_declared_as_dependencies(package):
     needle = package.replace("_", "-")
     offenders = [req for req in declared if needle in req.replace("_", "-")]
     assert not offenders, f"{package} reappeared as a dependency: {offenders}"
+
+
+def test_vendored_client_satisfies_every_callback_the_wire_expects():
+    """The trimmed client must still answer everything vendored code calls by name.
+
+    `TdxWireClient` keeps 5 of tdxpy's 22 methods. Anything the vendored modules
+    reach for on the client — `HeartBeatThread` calls `api.do_heartbeat()` on a
+    timer — is invisible to both imports and unit tests unless something asserts
+    it, and only surfaces as a background thread throwing every interval.
+    """
+    import ast
+
+    from ashare_lake.adapters.tdx_protocol._wire import TdxWireClient
+
+    expected: set[str] = set()
+    for path in VENDORED.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            # `self.api.<name>` — how the vendored helpers reach the client.
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "api"
+            ):
+                expected.add(node.attr)
+
+    assert expected, "no api.* callbacks found — the scan stopped working"
+    # An instance, not the class: the socket layer sets `last_ack_time` in
+    # __init__. Constructing does not connect, so this stays offline.
+    client = TdxWireClient()
+    missing = sorted(n for n in expected if not hasattr(client, n))
+    assert not missing, f"vendored code calls these, but the client lacks them: {missing}"

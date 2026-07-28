@@ -39,6 +39,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - `bars()` now honours the market derived from the exchange suffix. `mootdx`
   had no such parameter, so the value this project computed was silently
   discarded and re-derived from the code prefix.
+- `asl demo` no longer appears to hang. It left its probe client open, and the
+  heartbeat thread is not a daemon, so the interpreter stayed alive after all
+  six steps had already printed. The client is closed now.
+- The vendored client grew back `do_heartbeat`, which the trim to five methods
+  had dropped. `HeartBeatThread` calls it by name every 10s, so every keepalive
+  raised AttributeError — invisible to any test short enough not to reach the
+  first interval.
 
 ### Removed
 

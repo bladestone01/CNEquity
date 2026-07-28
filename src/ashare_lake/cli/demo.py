@@ -107,13 +107,19 @@ def _configure_logging() -> None:
 
 def _probe_tdx(cfg: Config) -> None:
     from ashare_lake.adapters.tdx_protocol.client import _quotes_client
+    from ashare_lake.adapters.tdx_protocol.session import close_quotes_client
 
     t0 = time.perf_counter()
     click.echo("Probing TDX hosts (first successful server wins)…")
     sys.stdout.flush()
     client = _quotes_client(cfg)
-    _ = client
-    click.echo(f"TDX connection OK ({time.perf_counter() - t0:.1f}s)")
+    try:
+        click.echo(f"TDX connection OK ({time.perf_counter() - t0:.1f}s)")
+    finally:
+        # The heartbeat thread is not a daemon, so an unclosed client keeps the
+        # interpreter alive after the demo has printed everything — the run looks
+        # like it hangs when in fact all six steps already finished.
+        close_quotes_client(client)
 
 
 def _write_demo_instruments(cfg: Config, symbols: list[str]) -> list[str]:

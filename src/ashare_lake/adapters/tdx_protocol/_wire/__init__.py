@@ -46,6 +46,10 @@ __all__ = [
     "ValidationException",
 ]
 
+# TDX market ids: 0 = Shenzhen, 1 = Shanghai.
+MARKET_SZ = 0
+MARKET_SH = 1
+
 # Daily K-line. TDX category ids are positional, not an enum in the protocol.
 CATEGORY_DAILY = 9
 
@@ -90,6 +94,14 @@ class TdxWireClient(BaseSocketClient):
         cmd = GetXdXrInfo(self.client, lock=self.lock)
         cmd.setParams(market, code)
         return cmd.call_api()
+
+    def do_heartbeat(self):
+        """Keepalive packet. Required by HeartBeatThread, which calls it by name.
+
+        A security-count request is the cheapest round trip the protocol has.
+        Upstream passed ``secrets.randbelow(1)``, which is always 0 — Shenzhen.
+        """
+        return self.get_security_count(MARKET_SZ)
 
     def to_df(self, v):  # pragma: no cover - kept off the hot path deliberately
         raise NotImplementedError("the lake builds polars frames directly from these dicts")
