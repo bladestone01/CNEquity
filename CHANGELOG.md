@@ -36,6 +36,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   do not linger after close.
 - Test helpers embed `data.root` via `path_for_toml()` so Windows CI no longer
   dies on `TOMLDecodeError: Invalid hex value` from unescaped `C:\Users\…`.
+- Offline unit coverage expanded across EastMoney / cninfo / failover /
+  sentiment / sector helpers so project branch coverage sits above 80%.
 
 ## [0.3.0] — 2026-07-29
 

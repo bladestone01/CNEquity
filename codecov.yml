@@ -2,3 +2,14 @@
 # not line-exercised — same rationale as ruff's extend-exclude for this tree.
 ignore:
   - "src/ashare_lake/adapters/tdx_protocol/_wire/**/*"
+
+coverage:
+  status:
+    project:
+      default:
+        # Branch-mode project coverage (matches pytest-cov branch=true in CI).
+        target: 80%
+        threshold: 0.5%
+    patch:
+      default:
+        target: 75%
