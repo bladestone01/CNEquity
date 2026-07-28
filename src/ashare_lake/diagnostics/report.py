@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shlex
 import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -21,6 +22,7 @@ from ashare_lake.diagnostics.extras import (
     racer_native_lib,
     racer_package_dir,
     racer_providers,
+    racer_repair_commands,
 )
 
 
@@ -93,19 +95,39 @@ def _environment() -> dict[str, str]:
     }
 
 
+def _racer_fix_text() -> str:
+    commands = racer_repair_commands()
+    if not commands:
+        return "当前环境既没有 pip 也找不到 uv；请用管理该环境的工具卸载 py-mini-racer 后强制重装 mini-racer"
+    return "`asl doctor --fix` 可自动执行，或手动依次运行：\n" + "\n".join(
+        "  " + shlex.join(cmd) for cmd in commands
+    )
+
+
 def _check_racer(findings: list[Finding]) -> None:
     providers = racer_providers()
     if len(providers) > 1:
         findings.append(
+            # WARN, not ERROR: [all] installs both on purpose (a full daily
+            # pipeline needs tdx and macro), and every akshare endpoint this
+            # project calls lives in a module that never evals JS. Failing the
+            # command on the documented install would just train people to
+            # ignore doctor.
             Finding(
-                severity=Severity.ERROR,
+                severity=Severity.WARN,
                 title=f"py_mini_racer 包名冲突: {' + '.join(providers)}",
                 detail=(
                     "这些发行包都往同一个 import 包 py_mini_racer/ 里写文件，"
-                    "安装器不会拦截，后装的覆盖先装的。结果是加载器与二进制不匹配"
-                    "（dlsym: symbol not found），依赖 JS 求值的源会失败。"
+                    "安装器不会拦截，后装的覆盖先装的，结果是加载器与二进制不匹配"
+                    "（dlsym: symbol not found）。\n"
+                    "  本项目采集不受影响：用到的 akshare 接口都不做 JS 求值。"
+                    "若你直接调用 akshare 的 cninfo / sina 系列接口，那些会失败。\n"
+                    "  mootdx 只在 utils/holiday.py 用到 py-mini-racer，且 mootdx 内部"
+                    "无人 import 该模块，卸掉不影响行情采集。"
                 ),
-                fix="把 tdx 与 macro 装进不同环境，或只保留其中一个",
+                # Rendered as separate argv lines rather than a `&&` chain: that
+                # operator is a syntax error in Windows PowerShell 5.1.
+                fix=_racer_fix_text(),
             )
         )
         return

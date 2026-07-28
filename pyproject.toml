@@ -40,6 +40,17 @@ macro = ["akshare>=1.14"]
 nlp = ["snownlp>=0.12"]
 valuation = ["baostock>=0.8"]
 structure = ["pandas>=2.0", "openpyxl>=3.0", "xlrd>=2.0"]
+# Every runtime source in one install — what a full daily pipeline needs.
+# Self-referential so the members stay defined in exactly one place.
+#
+# Caveat this cannot express: akshare pulls `mini-racer`, mootdx pulls
+# `py-mini-racer`, and both distributions install into the same `py_mini_racer`
+# import package. Installers do not detect that, so the last one wins and the
+# survivor can be a loader mismatched to its binary. It does not affect the
+# endpoints this project calls (all in akshare modules that never eval JS), but
+# it can break akshare's own cninfo/sina APIs if called directly. `asl doctor`
+# reports it. mootdx pins py-mini-racer<0.7, so there is no version to resolve to.
+all = ["ashare-lake[tdx,macro,nlp,valuation,structure]"]
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",

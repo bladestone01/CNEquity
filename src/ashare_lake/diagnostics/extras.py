@@ -14,6 +14,7 @@ and a module-level grep cannot tell a sole source from a supplement.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
@@ -220,6 +221,39 @@ def racer_package_dir() -> Path | None:
     if spec is None or not spec.submodule_search_locations:
         return None
     return Path(next(iter(spec.submodule_search_locations)))
+
+
+def racer_repair_commands() -> list[list[str]]:
+    """Argv lists that repair the collision, in order. Empty when no installer is usable.
+
+    Returned as argv rather than a shell string on purpose: ``&&`` is a syntax
+    error in Windows PowerShell 5.1, and a bare ``pip`` may not be on PATH or may
+    belong to a different environment. Both branches below pin the target to the
+    interpreter actually running this check, so the repair lands in the right
+    environment on macOS, Linux and Windows alike.
+
+    ``uv venv`` creates environments without pip, so ``-m pip`` cannot be assumed;
+    fall back to the uv CLI when it is what manages this environment.
+
+    Two steps, not one: the two distributions overlap on ``__init__.py``, so
+    removing py-mini-racer also strips files mini-racer needs. mootdx keeps
+    working without py-mini-racer — its only consumer is ``utils/holiday.py``,
+    which nothing inside mootdx imports.
+    """
+    if _importable("pip"):
+        return [
+            [sys.executable, "-m", "pip", "uninstall", "-y", "py-mini-racer"],
+            [sys.executable, "-m", "pip", "install", "--force-reinstall", "mini-racer"],
+        ]
+
+    uv = shutil.which("uv")
+    if uv:
+        return [
+            [uv, "pip", "uninstall", "--python", sys.executable, "py-mini-racer"],
+            [uv, "pip", "install", "--python", sys.executable, "--reinstall", "mini-racer"],
+        ]
+
+    return []
 
 
 def racer_native_lib(platform: str | None = None, pkg_dir: Path | None = None) -> Path | None:

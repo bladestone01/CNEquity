@@ -43,7 +43,11 @@ def render_text(report: Report) -> list[str]:
             for detail_line in finding.detail.splitlines():
                 lines.append(f"        {detail_line}")
             if finding.fix:
-                lines.append(f"        {_style('→', 'cyan')} {finding.fix}")
+                fix_lines = finding.fix.splitlines()
+                lines.append(f"        {_style('→', 'cyan')} {fix_lines[0]}")
+                # Repair steps arrive as one line per command; keep them aligned
+                # under the arrow so they stay copy-pasteable.
+                lines.extend(f"          {extra}" for extra in fix_lines[1:])
             lines.append("")
 
     errors, warnings = len(report.errors), len(report.warnings)

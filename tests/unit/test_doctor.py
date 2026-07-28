@@ -95,7 +95,11 @@ def test_native_lib_found_per_platform(tmp_path):
     assert racer_native_lib(platform="linux", pkg_dir=tmp_path) is None
 
 
-def test_two_providers_is_an_error(monkeypatch, tmp_path):
+def test_two_providers_warns_without_failing(monkeypatch, tmp_path):
+    """`[all]` installs both on purpose, and our own akshare calls never eval JS.
+
+    Exiting non-zero on the documented install would make doctor noise.
+    """
     monkeypatch.setattr(
         "ashare_lake.diagnostics.report.racer_providers",
         lambda: ["mini-racer", "py-mini-racer"],
@@ -103,8 +107,8 @@ def test_two_providers_is_an_error(monkeypatch, tmp_path):
     report = build_report(config=_config(tmp_path))
     conflict = [f for f in report.findings if "包名冲突" in f.title]
     assert len(conflict) == 1
-    assert conflict[0].severity is Severity.ERROR
-    assert not report.ok
+    assert conflict[0].severity is Severity.WARN
+    assert report.ok
 
 
 # --- config-aware checks -----------------------------------------------------
@@ -215,11 +219,125 @@ def test_doctor_cli_json_output(tmp_path):
 
 
 @pytest.mark.parametrize("flag", [[], ["--json"]])
-def test_doctor_exit_code_follows_errors(tmp_path, monkeypatch, flag):
+@pytest.mark.parametrize(
+    ("severity", "expected_exit"),
+    [(Severity.ERROR, 1), (Severity.WARN, 0)],
+)
+def test_doctor_exit_code_follows_report_errors(
+    tmp_path, monkeypatch, flag, severity, expected_exit
+):
+    """Only ERROR findings fail the command; warnings must stay exit 0."""
+    from ashare_lake.diagnostics.report import Finding, Report
+
     monkeypatch.setattr(
-        "ashare_lake.diagnostics.report.racer_providers",
-        lambda: ["mini-racer", "py-mini-racer"],
+        "ashare_lake.diagnostics.report.build_report",
+        lambda config=None, config_path=None: Report(
+            environment={"ashare-lake": "test"},
+            extras=[],
+            findings=[Finding(severity=severity, title="synthetic")],
+        ),
     )
     runner = CliRunner()
     result = runner.invoke(cli, ["doctor", "--config", str(tmp_path / "nope.toml"), *flag])
-    assert result.exit_code == 1
+    assert result.exit_code == expected_exit
+
+
+# --- repair ------------------------------------------------------------------
+
+
+def test_repair_commands_avoid_shell_chaining():
+    """Must work in Windows PowerShell 5.1, where `&&` is a syntax error."""
+    from ashare_lake.diagnostics.extras import racer_repair_commands
+
+    cmds = racer_repair_commands()
+    assert len(cmds) == 2, "uninstall then reinstall — the shared __init__.py needs both"
+    for cmd in cmds:
+        assert not any("&&" in part for part in cmd)
+    assert "py-mini-racer" in cmds[0]
+    assert "mini-racer" in cmds[1]
+
+
+def test_repair_commands_prefer_pip_and_target_this_interpreter(monkeypatch):
+    import sys as _sys
+
+    from ashare_lake.diagnostics import extras as ex
+
+    monkeypatch.setattr(ex, "_importable", lambda m: m == "pip")
+    cmds = ex.racer_repair_commands()
+    assert cmds[0][:3] == [_sys.executable, "-m", "pip"]
+    assert cmds[1][:3] == [_sys.executable, "-m", "pip"]
+
+
+def test_repair_commands_fall_back_to_uv_without_pip(monkeypatch):
+    """`uv venv` builds environments with no pip, so -m pip cannot be assumed."""
+    import sys as _sys
+
+    from ashare_lake.diagnostics import extras as ex
+
+    monkeypatch.setattr(ex, "_importable", lambda m: False)
+    monkeypatch.setattr(ex.shutil, "which", lambda name: "/usr/local/bin/uv")
+    cmds = ex.racer_repair_commands()
+    assert cmds[0][:2] == ["/usr/local/bin/uv", "pip"]
+    assert _sys.executable in cmds[0]
+    assert _sys.executable in cmds[1]
+
+
+def test_repair_commands_empty_when_no_installer(monkeypatch):
+    from ashare_lake.diagnostics import extras as ex
+
+    monkeypatch.setattr(ex, "_importable", lambda m: False)
+    monkeypatch.setattr(ex.shutil, "which", lambda name: None)
+    assert ex.racer_repair_commands() == []
+
+
+def test_repair_reports_when_no_installer_is_available(monkeypatch):
+    from ashare_lake.diagnostics import repair
+
+    monkeypatch.setattr(repair, "racer_providers", lambda: ["mini-racer", "py-mini-racer"])
+    monkeypatch.setattr(repair, "racer_repair_commands", lambda: [])
+    monkeypatch.setattr(repair.subprocess, "run", lambda *a, **k: pytest.fail("must not shell out"))
+    assert repair.repair_racer_conflict(echo=lambda _: None) is False
+
+
+def test_repair_is_a_noop_without_a_collision(monkeypatch):
+    from ashare_lake.diagnostics import repair
+
+    monkeypatch.setattr(repair, "racer_providers", lambda: ["mini-racer"])
+    monkeypatch.setattr(repair.subprocess, "run", lambda *a, **k: pytest.fail("must not shell out"))
+    assert repair.repair_racer_conflict(echo=lambda _: None) is True
+
+
+def test_repair_runs_both_commands_without_a_shell(monkeypatch):
+    from ashare_lake.diagnostics import repair
+
+    calls = []
+
+    class _Ok:
+        returncode = 0
+        stdout = stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _Ok()
+
+    monkeypatch.setattr(repair, "racer_providers", lambda: ["mini-racer", "py-mini-racer"])
+    monkeypatch.setattr(repair.subprocess, "run", _fake_run)
+
+    assert repair.repair_racer_conflict(echo=lambda _: None) is True
+    assert len(calls) == 2
+    for cmd, kwargs in calls:
+        assert isinstance(cmd, list), "argv list, never a shell string"
+        assert kwargs.get("shell") in (None, False)
+
+
+def test_repair_reports_failure(monkeypatch):
+    from ashare_lake.diagnostics import repair
+
+    class _Fail:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(repair, "racer_providers", lambda: ["mini-racer", "py-mini-racer"])
+    monkeypatch.setattr(repair.subprocess, "run", lambda *a, **k: _Fail())
+    assert repair.repair_racer_conflict(echo=lambda _: None) is False
