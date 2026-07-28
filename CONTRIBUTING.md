@@ -12,7 +12,8 @@
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e . --group dev   # 需 pip >= 25.1；或 uv sync
+python -m pip install --upgrade pip   # PEP 735 --group 需要 pip >= 25.1
+pip install -e . --group dev
 # 无 extras：运行时依赖全部随包安装
 # 见 docs/getting-started/installation.md
 ```

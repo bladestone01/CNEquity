@@ -4,7 +4,22 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] — 2026-07-29
+
+### Upgrading from 0.2.x
+
+Neither pip nor uv removes a package that merely stopped being a dependency, so
+an upgraded environment keeps `mootdx` and its `py-mini-racer`. The latter then
+shares the `py_mini_racer` import package with the `mini-racer` that AkShare
+brings in, and one silently overwrites the other. Nothing this project fetches
+is affected — none of the AkShare endpoints it calls evaluate JS — but AkShare's
+own cninfo and sina APIs would break if you call them directly.
+
+    asl doctor        # reports it
+    asl doctor --fix  # resolves it
+
+`mootdx` itself is left behind as dead weight and can be uninstalled. A fresh
+environment has none of this.
 
 ### Changed
 
@@ -102,5 +117,6 @@ First public release of the self-hosted A-share Parquet data layer.
 - TLS verify on by default for HTTP clients
 - Project URLs point at `rootSunc/ashare-lake`
 
+[0.3.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.0
 [0.2.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.2.0
 [0.1.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.1.0

@@ -195,7 +195,7 @@ More (historical ST filters, BSE/BJ, partition pitfalls):
 
 ## Project status
 
-[0.2.0](CHANGELOG.md) — published on [PyPI](https://pypi.org/project/ashare-lake/);
+[0.3.0](CHANGELOG.md) — published on [PyPI](https://pypi.org/project/ashare-lake/);
 first public data-layer release the author runs on a personal daily cron.
 Schema / `load()` may change before 1.0; see [CHANGELOG](CHANGELOG.md).
 

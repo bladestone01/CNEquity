@@ -34,7 +34,8 @@ asl config validate
 git clone https://github.com/rootSunc/ashare-lake.git
 cd ashare-lake
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e . --group dev    # 需 pip >= 25.1
+python -m pip install --upgrade pip   # PEP 735 --group 需要 pip >= 25.1
+pip install -e . --group dev
 # 或：uv sync
 ```
 
