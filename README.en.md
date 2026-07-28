@@ -125,7 +125,7 @@ asl demo                          # writes configs/ashare-lake.demo.toml under c
 Full-market daily ops:
 
 ```bash
-asl config init                   # writes configs/ashare-lake.toml (workers=1 on macOS)
+asl config init                   # writes configs/ashare-lake.toml (workers=1 on macOS / Windows)
 # edit data.root if needed
 asl init   --config configs/ashare-lake.toml    # dirs / manifest / views + first backfill
 asl run daily --config configs/ashare-lake.toml # daily incremental

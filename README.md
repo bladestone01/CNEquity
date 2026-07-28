@@ -113,7 +113,7 @@ asl demo                          # 一分钟样例；会写出 configs/ashare-l
 全量日更：
 
 ```bash
-asl config init                   # 写出 configs/ashare-lake.toml（macOS 自动 workers=1）
+asl config init                   # 写出 configs/ashare-lake.toml（macOS / Windows 自动 workers=1）
 # 按需编辑 data.root
 asl init   --config configs/ashare-lake.toml    # 建目录/manifest/视图 + 首次回填
 asl run daily --config configs/ashare-lake.toml # 每日增量

@@ -36,7 +36,7 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 
 ```bash
 pip install ashare-lake   # 若尚未安装
-asl config init                 # → configs/ashare-lake.toml；macOS 自动 workers=1
+asl config init                 # → configs/ashare-lake.toml；macOS / Windows 自动 workers=1
 # 可选：asl config init --data-root /abs/path/to/lake
 asl config validate
 ```

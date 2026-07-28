@@ -13,7 +13,7 @@
 | `layout.py` | `init_data_layout()` — 建目录、manifest、DuckDB |
 | `parquet.py` | `StagingWriter`, `CuratedWriter`, `compact_dataset()` |
 | `instruments.py` | instruments 合并 compact，保留退市股 |
-| `state.py` | `StateStore` — `meta/state/{dataset}.json` 水位 |
+| `state.py` | `StateStore` — `meta/state/{dataset}.json` 水位（跨平台文件锁） |
 | `atomic.py` | 写临时文件 → rename |
 | `source_snapshots.py` | `SnapshotStore` — failover 备源落地 |
 | `staging_cleanup.py` | `clean_staging()` — `asl clean` |
