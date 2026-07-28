@@ -14,16 +14,16 @@
     <string>__REPO_ROOT__/scripts/daily_pipeline.sh</string>
   </array>
 
-  <!-- Fire at 16:05 local time every day; non-trading days are cheap no-ops. -->
+  <!-- Fire at 15:00 local time every day; non-trading days are cheap no-ops. -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
-    <integer>16</integer>
+    <integer>15</integer>
     <key>Minute</key>
-    <integer>5</integer>
+    <integer>0</integer>
   </dict>
 
-  <!-- If the Mac was asleep at 16:05, run once on wake. -->
+  <!-- If the Mac was asleep at 15:00, run once on wake. -->
   <key>RunAtLoad</key>
   <false/>
 

@@ -32,7 +32,7 @@ launchctl load "$DEST"
 
 echo "install_scheduler: loaded $LABEL"
 echo "  plist:    $DEST"
-echo "  schedule: daily 16:05 local"
+echo "  schedule: daily 15:00 local"
 echo "  logs:     $REPO_ROOT/data/ashare-lake/logs/"
 echo "  verify:   launchctl list | grep asharelake"
 echo "  test now: launchctl start $LABEL"
