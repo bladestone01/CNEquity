@@ -6,6 +6,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-07-29
+
 ### Changed
 
 - Lowered the supported Python floor from 3.11 to **3.10** (`requires-python = ">=3.10"`).
@@ -15,6 +17,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - README architecture diagram is a single bilingual JPG
   (`docs/assets/architecture-overview.jpg`); the Pillow renderer and separate
   zh/en PNGs are gone.
+
+### Fixed
+
 - `asl config init` always writes an **absolute** `data.root` (resolving the
   template's `./data/ashare-lake` against the current working directory) so
   `asl doctor` is green on the default first-run path.
@@ -182,6 +187,7 @@ First public release of the self-hosted A-share Parquet data layer.
 - TLS verify on by default for HTTP clients
 - Project URLs point at `rootSunc/ashare-lake`
 
+[0.3.1]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.1
 [0.3.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.0
 [0.2.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.2.0
 [0.1.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.1.0
