@@ -8,12 +8,7 @@ PyPI uses the short `README.pypi.md`, which points at absolute
 
 | File | Shows |
 |------|--------|
-| `architecture-overview.zh.png` | Layered sources (primary + supplement) → orchestration → lake → consumers (zh) |
-| `architecture-overview.en.png` | Same diagram with English labels |
-
-```bash
-.venv/bin/python scripts/render_readme_architecture.py
-```
+| `architecture-overview.jpg` | Four-layer overview: sources → ASL Daily Pipeline → lake → consumers (bilingual) |
 
 ## Terminal screenshots
 

@@ -23,7 +23,7 @@ CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay down
 - One `load()` contract (adjust / universe / PIT)
 
 <p align="center">
-  <img src="docs/assets/architecture-overview.en.png" alt="ashare-lake architecture: sources → asl run daily → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+  <img src="docs/assets/architecture-overview.jpg" alt="ashare-lake architecture: sources → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
 </p>
 
 ## Shortest path to data

@@ -21,7 +21,7 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号�
 
 ## 整体架构
 <p align="center">
-  <img src="docs/assets/architecture-overview.zh.png" alt="ashare-lake 架构：多源 → asl run daily → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+  <img src="docs/assets/architecture-overview.jpg" alt="ashare-lake 架构：数据源 → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
 </p>
 
 ## 最短取数流程
