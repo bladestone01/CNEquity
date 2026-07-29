@@ -155,7 +155,7 @@ Qlib / vn.py answer “research / trading platform”.
 resumable, provenance-tagged, auditable local Parquet lake.
 Trade-offs: [comparison](docs/comparison.md) (Chinese).
 
-| What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
+| What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
 |--|--|--|--|--|--|
 | Local, resumable data base | **Lake + daily jobs** (watermarks / retry / audit) | In-memory fetch; you own orchestration | Cloud credits, not a self-hosted lake | Session fetch, no lake | Tied to platform data subsystem |
 | Provenance / auditability | **Row-level provenance** + write-time schema checks | Usually no shared contract | Platform fields | No lake contract | Varies |
@@ -193,15 +193,12 @@ Chinese-first; [CHANGELOG](CHANGELOG.md) and [ADRs](docs/adr/) stay in English.
 
 ## Docs
 
-[docs/README.md](docs/README.md) · [comparison](docs/comparison.md) ·
+Full index: [docs/README.md](docs/README.md). Common entry points:
 [installation](docs/getting-started/installation.md) ·
 [quickstart](docs/getting-started/quickstart.md) ·
-[configuration](docs/getting-started/configuration.md) ·
-[architecture](docs/architecture/overview.md) ·
-[catalog](docs/datasets/catalog.md) · [schema](docs/datasets/schema.md) ·
-[query guide](docs/datasets/query-guide.md) ·
-[runbook](docs/operations/runbook.md) · [CLI](docs/reference/cli.md) ·
-[Python API](docs/reference/python-api.md)
+[catalog](docs/datasets/catalog.md) ·
+[runbook](docs/operations/runbook.md) ·
+[CLI](docs/reference/cli.md).
 
 ## License
 

@@ -2,11 +2,13 @@
 
 本地可日更、可溯源的金融数据研究底座：多源采集、编排、标准化，交付带溯源、列契约稳定的 Parquet 湖。
 
-CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install ashare-lake` → `asl demo` 试玩，或 `asl config init` 写出 `configs/ashare-lake.toml` 再跑全量。数据湖根目录默认 `./data/ashare-lake`。
+CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install ashare-lake` → `asl demo` 试玩，或 `asl config init` 写出配置再跑全量。数据湖根目录默认 `./data/ashare-lake`。
 
-开源读者建议顺序：[与同类项目差异](comparison.md) → [许可与数据合规](legal-and-data-sources.md) → [安装](getting-started/installation.md) → [快速开始](getting-started/quickstart.md)。卡在网络 / TDX / workers 时看 [排障](operations/troubleshooting.md)。
+**建议顺序**： [安装](getting-started/installation.md) → [快速开始](getting-started/quickstart.md) → [配置](getting-started/configuration.md)。卡在网络 / TDX / workers 时看 [排障](operations/troubleshooting.md)。
 
-面向使用者的文档以中文为准；[CHANGELOG](../CHANGELOG.md) 与 [ADR](adr/) 保持英文（技术决策与版本记录）。英文简介见 [README.en.md](../README.en.md)。
+定位与合规（开源读者可先看）：[与同类项目差异](comparison.md) · [许可与数据合规](legal-and-data-sources.md)。
+
+面向使用者的文档以中文为准；[CHANGELOG](../CHANGELOG.md) 与 [ADR](adr/) 保持英文。英文简介见 [README.en.md](../README.en.md)。
 
 ### 术语约定
 
@@ -22,39 +24,39 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install ashare-lake`
 | 按需 | on-demand | 不进日更主路径、按 symbol 拉取并缓存 |
 | 备份 | backup（脚本/目录） | 元数据归档；与「备源」不同 |
 
-## 定位与合规
-
-- [与同类项目差异](comparison.md)
-- [许可与数据合规](legal-and-data-sources.md)
-- [安全策略](../SECURITY.md)（漏洞私下报告）
-
 ## 入门
 
 - [安装](getting-started/installation.md)
 - [快速开始](getting-started/quickstart.md)
 - [配置参考](getting-started/configuration.md)
 
+## 数据集与查询
+
+- [数据集目录](datasets/catalog.md) · [Schema](datasets/schema.md)
+- [查询指南](datasets/query-guide.md) · [逐源限制](datasets/sources.md)
+- [CLI](reference/cli.md) · [Python API](reference/python-api.md)
+
+## 运维
+
+- [Runbook](operations/runbook.md) · [脚本说明](operations/scripts.md) · [故障排查](operations/troubleshooting.md)
+
 ## 架构
 
 - [架构总览](architecture/overview.md) · [数据流](architecture/data-flow.md) · [数据湖布局](architecture/lake-layout.md)
-- [设计原则](architecture/design-principles.md) · [架构设计（完整版）](architecture.md)
-- [ADR](adr/)（英文）
+- [设计原则](architecture/design-principles.md) · [ADR](adr/)（英文）
 
-## 模块与数据集
+## 模块地图（贡献者）
 
-模块说明按源码包拆在 [modules/](modules/README.md)（config / domain / adapters / orchestrator / steps / storage / derive / quality / query / cli）。
+源码包拆分说明：[modules/](modules/README.md)（config / domain / adapters / orchestrator / steps / storage / derive / quality / query / cli）。
 
-数据集：
+开发：[开发约定](development/conventions.md) · [测试](development/testing.md) · [新增数据集](development/adding-dataset.md) · [贡献指南](../CONTRIBUTING.md)
 
-- [总览](datasets/README.md) · [目录](datasets/catalog.md) · [Schema](datasets/schema.md)
-- [查询指南](datasets/query-guide.md) · [逐源限制](datasets/sources.md)
+## 定位与合规
 
-## 运维与开发
+- [与同类项目差异](comparison.md)
+- [许可与数据合规](legal-and-data-sources.md)
+- [安全策略](../SECURITY.md)
 
-- [Runbook](operations/runbook.md) · [脚本说明](operations/scripts.md) · [故障排查](operations/troubleshooting.md)
-- [开发约定](development/conventions.md) · [测试](development/testing.md) · [新增数据集](development/adding-dataset.md)
-- [贡献指南](../CONTRIBUTING.md)
+## 版本
 
-## 参考
-
-- [CLI](reference/cli.md) · [Python API](reference/python-api.md) · [CHANGELOG](../CHANGELOG.md)
+- [CHANGELOG](../CHANGELOG.md)

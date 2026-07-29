@@ -8,7 +8,7 @@ PyPI uses the short `README.pypi.md`, which points at absolute
 
 | File | Shows |
 |------|--------|
-| `architecture-overview.zh.png` | Layered sources → orchestration → lake → consumers (zh) |
+| `architecture-overview.zh.png` | Layered sources (primary + supplement) → orchestration → lake → consumers (zh) |
 | `architecture-overview.en.png` | Same diagram with English labels |
 
 ```bash

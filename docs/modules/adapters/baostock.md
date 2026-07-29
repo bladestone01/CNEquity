@@ -4,7 +4,7 @@
 
 [Baostock](http://baostock.com) 开源证券数据接口。用于 **历史回填** 场景，非日更主源。
 
-**依赖**：`pip install -e ".[valuation]"`（extra 名 `valuation`）
+**依赖**：随 `pip install ashare-lake` / 可编辑安装一并提供，无需额外 extras。
 
 ---
 

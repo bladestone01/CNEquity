@@ -94,7 +94,7 @@ asl config validate --config configs/ashare-lake.toml
 
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `use_snownlp` | false | on-demand `stock_news` 可选 SnowNLP（需 `[nlp]`）；日更 batch 用关键词 |
+| `use_snownlp` | false | on-demand `stock_news` 可选 SnowNLP（包已随安装提供）；日更 batch 用关键词 |
 | `news_symbol_limit` | 50 | HTTP `stock_news` 回退抓取 symbol 上限（主通道为 curated `news_headlines`） |
 
 ---
@@ -204,13 +204,13 @@ names = [
 
 ---
 
-## 环境变量（脚本层）
+## 环境变量（仅 `scripts/*.sh`）
 
-运维脚本读取，非 TOML 内置：
+下列变量由 [运维脚本](../operations/scripts.md) 读取；**`asl` CLI 不读**（配置路径仍用 `--config` 或默认 `configs/ashare-lake.toml`）。
 
 | 变量 | 默认 | 作用 |
 |------|------|------|
-| `ASL_CONFIG` | `configs/ashare-lake.toml` | 配置路径 |
+| `ASL_CONFIG` | `configs/ashare-lake.toml` | 脚本传入 `asl --config` 的路径 |
 | `ASL_LOG_DIR` | `{data.root}/logs` | 日志目录 |
 | `ASL_GROUPS` | 全部 6 组 | 覆盖 pipeline 要跑的组 |
 | `ASL_NOTIFY` | `1` | `0` 关闭 macOS 通知 |

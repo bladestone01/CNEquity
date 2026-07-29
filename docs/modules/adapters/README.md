@@ -9,10 +9,13 @@ adapters/
 ├── throttle.py           跨源限速调度
 ├── tdx_protocol/         通达信协议（内置客户端）
 ├── eastmoney/            东方财富 HTTP API
-├── sina/                 新浪（复权因子）
-├── baostock/             证券宝（估值/ST 历史回填）
+├── sina/                 新浪（复权因子 / BJ / 外盘窄集）
 ├── cninfo/               巨潮资讯
+├── baostock/             证券宝（估值 / ST / 退市回填）
 ├── akshare/              AKShare 补充
+├── ths/                  同花顺（板块 K 线等回填）
+├── sw/                   申万行业分类历史
+├── cni/                  国证指数成分历史
 ├── macro/                宏观指标
 └── calendar/             交易日历种子
 ```
@@ -34,12 +37,13 @@ adapters/
 |----|------|------------|
 | tdx_protocol | [tdx-protocol.md](tdx-protocol.md) | daily_bars, index_bars, instruments, corporate_actions |
 | eastmoney | [eastmoney.md](eastmoney.md) | 资金面、估值、结构、新闻等 |
-| sina | [sina.md](sina.md) | adj_factors |
-| baostock | [baostock.md](baostock.md) | valuation 回填, ST 历史 |
+| sina | [sina.md](sina.md) | adj_factors；BJ / 部分外盘 |
+| baostock | [baostock.md](baostock.md) | valuation 回填, ST 历史, 退市股 |
 | cninfo | [cninfo.md](cninfo.md) | announcement_index, regulatory_events |
 | akshare | [akshare.md](akshare.md) | trading_status 补充, macro |
 | macro | [macro.md](macro.md) | macro_indicators |
-| calendar | [calendar.md](calendar.md) | trading_calendar |
+| calendar | [calendar.md](calendar.md) | trading_calendar 种子 |
+| ths / sw / cni | （无独立页）见 [逐源限制](../../datasets/sources.md) | sector_bars / industry_members / index_constituents 回填 |
 
 ---
 

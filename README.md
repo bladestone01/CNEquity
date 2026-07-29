@@ -143,7 +143,7 @@ asl query --sql "
 AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」；Qlib / vn.py 解决「研究/交易平台」。  
 **ashare-lake** 专做中间层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖。设计取舍详见 [comparison](docs/comparison.md)。
 
-| 你在意什么 | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
+| 你在意什么 | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
 |--|--|--|--|--|--|
 | 本地可续跑的数据底座 | **湖 + 日更编排**（水位 / 重试 / audit） | 只拉到内存，编排自管 | 云端积分，非自建湖 | 会话拉数，无湖 | 绑在平台数据子系统里 |
 | 数据从哪来、能否复查 | **行级溯源** + 写前 schema 校验 | 通常无统一契约 | 平台字段 | 无湖契约 | 视模块 |
@@ -169,7 +169,7 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 
 ## 文档
 
-[docs/README.md](docs/README.md) · [定位对照](docs/comparison.md) · [安装](docs/getting-started/installation.md) · [快速开始](docs/getting-started/quickstart.md) · [配置](docs/getting-started/configuration.md) · [架构](docs/architecture/overview.md) · [数据集](docs/datasets/catalog.md) · [Schema](docs/datasets/schema.md) · [查询](docs/datasets/query-guide.md) · [Runbook](docs/operations/runbook.md) · [CLI](docs/reference/cli.md) · [Python API](docs/reference/python-api.md)
+完整索引：[docs/README.md](docs/README.md)。常用入口：[安装](docs/getting-started/installation.md) · [快速开始](docs/getting-started/quickstart.md) · [数据集目录](docs/datasets/catalog.md) · [Runbook](docs/operations/runbook.md) · [CLI](docs/reference/cli.md)。
 
 ## 许可
 

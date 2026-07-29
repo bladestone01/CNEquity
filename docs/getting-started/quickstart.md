@@ -71,7 +71,7 @@ asl init --resume --config configs/ashare-lake.toml
 asl retry --run-id <run_id> --config configs/ashare-lake.toml
 ```
 
-init 耗时较长（全市场日线分页回填），建议在稳定网络下运行。阶段定义见 [数据流 — Init](../architecture/data-flow.md#init-全量回填)。
+init 耗时较长（全市场日线分页回填），建议在稳定网络下运行。阶段定义见 [数据流 — Init](../architecture/data-flow.md#init全量回填)。
 
 ## 3. 回填验收（推荐，需仓库脚本）
 

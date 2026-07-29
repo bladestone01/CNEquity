@@ -20,7 +20,7 @@ tests/
 ## 运行
 
 ```bash
-pip install -e ".[dev]"
+pip install -e . --group dev
 
 pytest                      # 全量离线（默认 -m 'not network'）
 pytest tests/unit -q        # 快速反馈

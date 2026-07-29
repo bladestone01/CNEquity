@@ -163,11 +163,13 @@ asl run daily --group core   # 增量续采
 
 ---
 
-## 环境变量
+## 环境变量（仅 `scripts/*.sh`）
+
+下列变量由 [scripts.md](scripts.md) 中的 shell 脚本读取；**`asl` CLI 本身不读**（请用 `--config`）。
 
 | 变量 | 默认 | 作用 |
 |------|------|------|
-| `ASL_CONFIG` | `configs/ashare-lake.toml` | 配置 |
+| `ASL_CONFIG` | `configs/ashare-lake.toml` | 脚本传给 `asl --config` 的路径 |
 | `ASL_LOG_DIR` | `{data.root}/logs` | 日志 |
 | `ASL_GROUPS` | 全部 6 组 | 覆盖 pipeline 组列表 |
 | `ASL_NOTIFY` | `1` | `0` 关闭通知 |

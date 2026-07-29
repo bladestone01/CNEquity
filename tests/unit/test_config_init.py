@@ -49,6 +49,8 @@ def test_render_escapes_windows_backslashes_in_data_root():
 
 def test_path_for_toml_makes_windows_tmp_paths_parseable():
     """Regression for windows-latest CI: bare ``C:\\Users\\…`` is invalid TOML."""
+    import re
+    import sys
     import tomllib
 
     from ashare_lake.config.bootstrap import _toml_escape, path_for_toml
@@ -60,7 +62,12 @@ def test_path_for_toml_makes_windows_tmp_paths_parseable():
     text = f'[data]\nroot = "{_toml_escape(raw.as_posix())}"\n'
     payload = tomllib.loads(text)
     assert "Users" in payload["data"]["root"]
-    assert path_for_toml(Path("/tmp/lake")).startswith("/")
+    rendered = path_for_toml(Path("/tmp/lake"))
+    if sys.platform == "win32":
+        # resolve() on Windows yields a drive-letter POSIX form (e.g. D:/tmp/lake).
+        assert re.match(r"^[A-Za-z]:/", rendered), rendered
+    else:
+        assert rendered.startswith("/")
     with pytest.raises(tomllib.TOMLDecodeError):
         tomllib.loads(f'[data]\nroot = "{raw}"\n')
 

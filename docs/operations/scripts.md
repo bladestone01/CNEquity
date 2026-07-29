@@ -25,7 +25,7 @@ health_notify.sh
 backup_meta.sh
 ```
 
-**环境变量**：`ASL_CONFIG`, `ASL_LOG_DIR`, `ASL_GROUPS`,
+**环境变量**（仅本脚本读取；`asl` CLI 不读）：`ASL_CONFIG`, `ASL_LOG_DIR`, `ASL_GROUPS`,
 `ASL_GATE_GROUPS`（默认 `core`，失败标为 gate；其余组标 soft）、
 `ASL_SOFT_FAIL_OK`（默认 `1`：gate OK 时 soft 失败 exit 0；`0`=仍 exit 1）、
 `ASL_TRADE_DATE`。

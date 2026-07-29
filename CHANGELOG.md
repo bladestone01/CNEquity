@@ -23,8 +23,20 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   drops the one-line peer punchline under the comparison table.
 - README screenshots re-rendered without the retired `mootdx` probe line;
   banner copy tracks current `asl demo`.
+- Docs hub reordered (install/quickstart first); `architecture.md` and
+  `datasets/README.md` folded into overview/catalog stubs; module
+  cli/query/config pages reduced to source maps.
+- Architecture PNGs list primary + supplement adapters (`ths` / `sw` / `cni` /
+  `macro`, plus calendar seeds note).
 
 ### Fixed
+
+- Windows CI: `path_for_toml(Path("/tmp/…"))` assertion accepts drive-letter
+  POSIX forms (`D:/tmp/…`) on `win32`.
+- Stale docs: removed retired pip extras (`[macro]` / `[valuation]` / …);
+  clarified `ASL_*` env vars are script-only (`asl` CLI does not read them);
+  fixed eastmoney adapter CLI relative link and quickstart Init anchor.
+
 
 - DuckDB view globs now use POSIX paths (`as_posix()`), so Windows backslashes
   no longer break `read_parquet(...)` SQL literals.

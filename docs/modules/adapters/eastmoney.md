@@ -65,7 +65,7 @@ EM 改列名会整报 `code=9501`。适配器里的 `_REPORT` / `_COLUMNS` 是�
 - **日更**：板块 clist（概念 + 行业），当日快照。
 - **历史回填**：`push2his` 板块 kline（`secid=90.BKxxxx`），`backfill_source="eastmoney_kline"`。
 - clist 只有当日截面；动量/RRG 需在国内网络跑一次 `asl backfill sector_bars`（~991 板 × 400 日历日）。
-- push2his 在海外 IP 常不可用；clist 日更一般仍可用。Checkpoint：`meta/state/sector_bars_backfill.json`；`--retry-failed` / `--force` 见 [CLI](../reference/cli.md)。
+- push2his 在海外 IP 常不可用；clist 日更一般仍可用。Checkpoint：`meta/state/sector_bars_backfill.json`；`--retry-failed` / `--force` 见 [CLI](../../reference/cli.md)。
 - **代理**：`[sources.eastmoney] proxy = "http://127.0.0.1:7890"`（写入 `EastMoneyClient`）；未配置时仍可读 `HTTPS_PROXY` / `HTTP_PROXY`。
 - 板块指数无公司行为，`fqt=0`。
 - **防 Empty reply**：海外裸 `httpx`/`curl` 常 TLS 后被掐；`EastMoneyClient.get` 对

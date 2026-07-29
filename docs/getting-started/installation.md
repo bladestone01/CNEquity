@@ -118,7 +118,7 @@ asl demo
 # 全量配置就绪后：
 asl config validate --config configs/ashare-lake.toml
 asl servers test --config configs/ashare-lake.toml   # 探测 TDX 行情主机
-pytest tests/unit -q                               # 需源码 + [dev]，离线可跑
+pytest tests/unit -q                               # 需源码 + --group dev，离线可跑
 ```
 
 ## 依赖版本注意事项
