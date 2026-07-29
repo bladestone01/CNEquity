@@ -1,11 +1,9 @@
-# A股数据湖
-
 # 自托管 A 股研究数据湖
 
 日线 / 复权 / 基本面 / 资金面 / 行业结构 / 宏观舆情等到同一契约，日更编排落盘为带行级溯源的 curated Parquet。  
 相对拉数库多水位·重试·审计，相对云端宽表可本地续跑；DuckDB / Polars / `load()` 直接查，无需自建库或通达信客户端。
 
-CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号留给下游）。
+CLI：`asl` · 包名：`ashare_lake` · **Python ≥ 3.10** · **只做数据层**（回测和信号留给下游）。
 
 ## 为什么用它
 
@@ -23,6 +21,8 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 一条命令跑通真数 demo：
 
 ## 安装与一分钟体验
+
+需要 **Python 3.10+**（macOS / Linux / Windows）。
 
 ```bash
 pip install ashare-lake
@@ -44,8 +44,8 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 全量日更（仍不必 clone；在含配置的工作目录执行）：
 
 ```bash
-asl config init                              # → configs/ashare-lake.toml
-# 按需编辑 data.root，例如：
+asl config init                              # → configs/ashare-lake.toml（data.root 写为绝对路径）
+# 或显式指定：
 # asl config init --data-root /data/ashare-lake --force
 asl config validate --config configs/ashare-lake.toml
 asl init --config configs/ashare-lake.toml

@@ -10,7 +10,20 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 - Lowered the supported Python floor from 3.11 to **3.10** (`requires-python = ">=3.10"`).
   EastMoney compact `YYYYMMDD` kline dates now parse via `strptime` (3.10
-  `date.fromisoformat` only accepts dashed ISO forms).
+  `date.fromisoformat` only accepts dashed ISO forms). CI / classifiers cover
+  **3.10–3.13**.
+- README architecture diagram is a single bilingual JPG
+  (`docs/assets/architecture-overview.jpg`); the Pillow renderer and separate
+  zh/en PNGs are gone.
+- `asl config init` always writes an **absolute** `data.root` (resolving the
+  template's `./data/ashare-lake` against the current working directory) so
+  `asl doctor` is green on the default first-run path.
+- Default `[on_demand].datasets` is only `stock_news` and `research_reports`.
+  `announcement_body` / `financial_reports` raise `NotImplementedError` instead
+  of caching empty placeholder JSON. Failed research_reports fetches are not
+  cached either.
+- ImportError hints for baostock / pandas no longer recommend removed extras
+  (`[valuation]` / `[structure]`); they point at reinstalling `ashare-lake`.
 
 ## [0.3.0] — 2026-07-29
 
