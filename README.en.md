@@ -69,7 +69,12 @@ First `asl init` backfills (slow, multi-GB). Afterwards: incremental + read.
 
 ```bash
 pip install ashare-lake
-asl config init --data-root /abs/path/to/lake   # Windows e.g. D:/lake; workers=1 on macOS/Windows
+# macOS / Linux:
+asl config init --data-root /Users/you/ashare-lake
+# Windows (forward or back slashes):
+# asl config init --data-root D:/ashare-lake
+# asl config init --data-root "D:\ashare-lake"
+# macOS / Windows default workers=1; Linux example template uses 8
 asl init   --config configs/ashare-lake.toml      # layout + first backfill
 asl run daily --config configs/ashare-lake.toml   # every trading day afterwards
 asl status --config configs/ashare-lake.toml

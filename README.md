@@ -65,7 +65,12 @@ TDX 不可达时先跑 `asl servers test`。可选：`asl demo --symbols 600519.
 
 ```bash
 pip install ashare-lake
-asl config init --data-root /abs/path/to/lake   # Windows 例：D:/lake；macOS/Windows 默认 workers=1
+# macOS / Linux：
+asl config init --data-root /Users/you/ashare-lake
+# Windows（正斜杠或反斜杠均可）：
+# asl config init --data-root D:/ashare-lake
+# asl config init --data-root "D:\ashare-lake"
+# macOS / Windows 会把 workers 默认写成 1；Linux 示例模板为 8
 asl init   --config configs/ashare-lake.toml      # 建目录 + 首次回填
 asl run daily --config configs/ashare-lake.toml   # 之后每个交易日
 asl status --config configs/ashare-lake.toml
