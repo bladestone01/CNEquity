@@ -140,7 +140,7 @@
 |------|-------|
 | 主源 | cninfo |
 | 主键 | announcement_id |
-| 说明 | 全文走 on-demand `announcement_body` |
+| 说明 | 正文 on-demand（`announcement_body`）尚未实现；批量路径仅索引 |
 
 ---
 
@@ -150,10 +150,10 @@
 
 | 数据集 | 来源 | 触发 |
 |---------|--------|---------|
-| announcement_body | cninfo | `asl query --dataset announcement_body --symbol` |
-| stock_news | eastmoney / akshare | 按标的 |
+| stock_news | eastmoney / akshare | `asl query --dataset stock_news --symbol` |
 | research_reports | eastmoney reportapi | 按标的 |
-| financial_reports | sina / gpcw | 按标的 |
+| announcement_body | cninfo | **未实现**（勿写入 `[on_demand].datasets`） |
+| financial_reports | sina / gpcw | **未实现**（勿写入 `[on_demand].datasets`） |
 
 ---
 

@@ -32,7 +32,7 @@ ashare-lake 交付 **28 个注册数据集**（27 curated + 1 derived `adj_facto
 |------|------|------|
 | **batch** | 日更/周更，走 staging → compact → curated | daily_bars, fund_flow |
 | **derived** | 由 curated 计算，可 `asl derive` 重算 | adj_factors |
-| **on-demand** | 按 symbol 抓取，缓存于 meta | stock_news, announcement_body |
+| **on-demand** | 按 symbol 抓取，缓存于 meta | stock_news, research_reports |
 
 ### 拉取语义（fetch_semantics）
 
@@ -67,7 +67,7 @@ ashare-lake 交付 **28 个注册数据集**（27 curated + 1 derived `adj_facto
 
 带 `announce_date` 的 PIT 数据集（`load(..., as_of=)`）：`financial_statement_items`、`announcement_index`。
 
-按需数据集（`[on_demand].datasets`）：`announcement_body`、`stock_news`、`research_reports`、`financial_reports`。访问：`asl query --dataset <name> --symbol <code>.SH`。
+按需数据集（`[on_demand].datasets`）：默认 `stock_news`、`research_reports`（已实现）。`announcement_body` / `financial_reports` 尚未实现。访问：`asl query --dataset <name> --symbol <code>.SH`。
 
 注册表源码：`domain/datasets.py`（`DatasetSpec`）、`domain/schemas.py`（Polars dtype / `PRIMARY_KEYS`）；`test_dataset_registry.py` 断言同步。
 

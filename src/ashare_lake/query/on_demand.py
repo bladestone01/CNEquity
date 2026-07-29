@@ -11,6 +11,10 @@ from ashare_lake.config import Config
 
 logger = logging.getLogger(__name__)
 
+# Datasets with a real fetch path. Stubs stay callable only so old configs get a
+# clear NotImplementedError instead of an empty JSON that poisons the cache.
+_IMPLEMENTED = frozenset({"stock_news", "research_reports"})
+
 
 class OnDemandService:
     """Fetch high-churn per-symbol data on first query and cache locally."""
@@ -34,21 +38,34 @@ class OnDemandService:
                 return json.load(f)
 
         payload = self._fetch_remote(dataset, symbol, **kwargs)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        if self._should_cache(payload):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
         return payload
 
+    @staticmethod
+    def _should_cache(payload: dict) -> bool:
+        if payload.get("status") == "not_implemented":
+            return False
+        if "error" in payload:
+            return False
+        return True
+
     def _fetch_remote(self, dataset: str, symbol: str, **kwargs) -> dict:
-        if dataset == "announcement_body":
-            return self._fetch_announcement_body(symbol)
         if dataset == "stock_news":
             return self._fetch_stock_news(symbol, **kwargs)
         if dataset == "research_reports":
             return self._fetch_research_reports(symbol)
-        if dataset == "financial_reports":
-            return {"symbol": symbol, "statements": [], "source": "placeholder"}
-        return {"dataset": dataset, "symbol": symbol, "status": "not_implemented"}
+        if dataset in {"announcement_body", "financial_reports"}:
+            raise NotImplementedError(
+                f"{dataset} is not implemented yet; remove it from "
+                "[on_demand].datasets (implemented: " + ", ".join(sorted(_IMPLEMENTED)) + ")."
+            )
+        raise NotImplementedError(
+            f"on-demand dataset {dataset!r} is not implemented "
+            f"(implemented: {', '.join(sorted(_IMPLEMENTED))})."
+        )
 
     def _fetch_stock_news(self, symbol: str, **kwargs) -> dict:
         if not self.config.sources.get("eastmoney", True):
@@ -71,16 +88,11 @@ class OnDemandService:
         payload["fetched_at"] = datetime.now(timezone.utc).isoformat()
         return payload
 
-    def _fetch_announcement_body(self, symbol: str) -> dict:
-        # TODO: implement cninfo fetch via https://www.cninfo.com.cn/new/hisAnnouncement/query
-        code = symbol.split(".")[0]
-        logger.info("On-demand announcement_body for %s (cninfo)", symbol)
-        return {"symbol": symbol, "code": code, "items": [], "source": "cninfo"}
-
     def _fetch_research_reports(self, symbol: str) -> dict:
         code = symbol.split(".")[0]
         url = f"https://reportapi.eastmoney.com/report/list?code={code}&pageSize=10"
         try:
+            self.config.rate_limit("eastmoney")
             with EastMoneyClient(
                 min_interval=self.config.source_intervals.get("eastmoney", 1.0)
             ) as client:

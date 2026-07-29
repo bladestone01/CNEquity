@@ -20,7 +20,7 @@
 
 - 公告元数据：标题、类型、`announce_date`、`report_period` 等
 - PIT 数据集：`load(..., as_of=)` 按公告日过滤
-- 正文：`announcement_body` 走 on-demand（非本 adapter 批量路径）
+- 正文：`announcement_body` on-demand **尚未实现**（勿写入默认 `[on_demand].datasets`）
 
 ---
 

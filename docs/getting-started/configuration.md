@@ -188,9 +188,9 @@ names = [
 | 键 | 说明 |
 |----|------|
 | `enabled` | OnDemandService 开关 |
-| `datasets` | 按需抓取的数据集名列表 |
+| `datasets` | 按需抓取的数据集名列表。默认仅 `stock_news`、`research_reports`；`announcement_body` / `financial_reports` 尚未实现 |
 
-缓存路径：`meta/on_demand/{dataset}/{symbol}.json`。通过 `asl query --dataset X --symbol Y` 访问。
+缓存路径：`meta/on_demand/{dataset}/{symbol}.json`。通过 `asl query --dataset X --symbol Y` 访问。失败或未实现的结果不会写入缓存。
 
 ---
 

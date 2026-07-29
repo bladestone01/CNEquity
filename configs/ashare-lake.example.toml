@@ -201,7 +201,7 @@ names = [
 
 [on_demand]
 enabled = true
-datasets = ["announcement_body", "stock_news", "research_reports", "financial_reports"]
+datasets = ["stock_news", "research_reports"]
 
 [duckdb]
 path = "{data.root}/duckdb/ashare-lake.duckdb"
