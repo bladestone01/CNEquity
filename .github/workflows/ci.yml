@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +67,7 @@ jobs:
 
   # Windows is a first-class runtime target (file locks, path forms, wheels).
   # One Python version is enough to catch platform regressions; Ubuntu already
-  # covers the 3.10/3.11/3.12 matrix. Network tests stay deselected via addopts.
+  # covers the 3.10–3.13 matrix. Network tests stay deselected via addopts.
   test-windows:
     runs-on: windows-latest
     env:
