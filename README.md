@@ -71,9 +71,10 @@ asl config init --data-root /Users/you/ashare-lake
 # asl config init --data-root D:/ashare-lake
 # asl config init --data-root "D:\ashare-lake"
 # macOS / Windows 会把 workers 默认写成 1；Linux 示例模板为 8
-asl init   --config configs/ashare-lake.toml      # 建目录 + 首次回填
-asl run daily --config configs/ashare-lake.toml   # 之后每个交易日
-asl status --config configs/ashare-lake.toml
+# 默认读取 cwd 下 configs/ashare-lake.toml，一般不必再写 --config
+asl init          # 建目录 + 首次回填
+asl run daily     # 之后每个交易日
+asl status
 ```
 
 ```python
@@ -97,11 +98,12 @@ asl query --sql "
   SELECT symbol, trade_date, adj_close
   FROM daily_bars_adj
   WHERE trade_date >= '2025-01-01'
-" --config configs/ashare-lake.toml
+"
 ```
 
-> A 使用 `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`；  
-> B 使用 `asl config init` 写出的配置。两条线互不覆盖。
+> A 使用 `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`（查数时要带  
+> `--config configs/ashare-lake.demo.toml`）；  
+> B 使用 `asl config init` 写出的默认 `configs/ashare-lake.toml`。两条线互不覆盖。
 
 无 extras：`pip install ashare-lake` 装齐运行时数据源。全量回填后建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 再挂调度。
 

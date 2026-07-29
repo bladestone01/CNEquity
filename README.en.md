@@ -75,9 +75,10 @@ asl config init --data-root /Users/you/ashare-lake
 # asl config init --data-root D:/ashare-lake
 # asl config init --data-root "D:\ashare-lake"
 # macOS / Windows default workers=1; Linux example template uses 8
-asl init   --config configs/ashare-lake.toml      # layout + first backfill
-asl run daily --config configs/ashare-lake.toml   # every trading day afterwards
-asl status --config configs/ashare-lake.toml
+# Defaults to configs/ashare-lake.toml under cwd — --config usually omitted
+asl init          # layout + first backfill
+asl run daily     # every trading day afterwards
+asl status
 ```
 
 ```python
@@ -101,11 +102,13 @@ asl query --sql "
   SELECT symbol, trade_date, adj_close
   FROM daily_bars_adj
   WHERE trade_date >= '2025-01-01'
-" --config configs/ashare-lake.toml
+"
 ```
 
-> Path A uses `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`.  
-> Path B uses the config from `asl config init`. They do not overwrite each other.
+> Path A uses `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml` (pass  
+> `--config configs/ashare-lake.demo.toml` when querying).  
+> Path B uses the default `configs/ashare-lake.toml` from `asl config init`.  
+> The two lanes do not overwrite each other.
 
 No extras: `pip install ashare-lake` brings every runtime source. After the
 initial backfill, run the [acceptance checks](docs/operations/runbook.md)
