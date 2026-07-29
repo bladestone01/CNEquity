@@ -16,8 +16,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   workers later is allowed — Windows uses spawn, not the unsafe macOS fork path.
 - Installation docs cover PowerShell / cmd, path forms, and the supported
   Windows scope (x86-64; 32-bit / ARM64 deferred).
-- README (zh/en) adds a **shortest path to data** with two lanes: demo try-out
-  vs self-hosted daily lake, each ending in `load()` / `asl query`.
+- README (zh/en) leads with a **shortest path to data** (demo vs daily lake),
+  then datasets and the peer comparison table — less duplicate install/read
+  sections for first-time readers.
 
 ### Fixed
 
