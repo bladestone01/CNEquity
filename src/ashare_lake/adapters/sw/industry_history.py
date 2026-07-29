@@ -55,7 +55,8 @@ def fetch_sw_industry_intervals(*, client: httpx.Client | None = None) -> pl.Dat
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "pandas is required to parse Shenwan industry XLS; "
-            "install with `pip install -e '.[structure]'`"
+            "reinstall with `pip install --force-reinstall ashare-lake` "
+            "(or `pip install -e .` from a source checkout)."
         ) from exc
 
     owns = client is None

@@ -40,11 +40,12 @@ _SOCKET_TIMEOUT_SECONDS = 30.0
 
 def import_baostock():
     try:
-        import baostock as bs  # noqa: PLC0415 — optional dependency, imported lazily
-    except ImportError as exc:  # pragma: no cover - optional dep
+        import baostock as bs  # noqa: PLC0415 — hard dep; lazy so import-time stays light
+    except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "baostock is not installed; historical backfill requires it. "
-            "Install with `pip install -e '.[valuation]'`."
+            "Reinstall with `pip install --force-reinstall ashare-lake` "
+            "(or `pip install -e .` from a source checkout)."
         ) from exc
     return bs
 

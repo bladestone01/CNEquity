@@ -58,7 +58,8 @@ def fetch_cni_index_adjustments(
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "pandas is required to parse CNI adjustment XLSX; "
-            "install with `pip install -e '.[structure]'`"
+            "reinstall with `pip install --force-reinstall ashare-lake` "
+            "(or `pip install -e .` from a source checkout)."
         ) from exc
 
     owns = client is None
