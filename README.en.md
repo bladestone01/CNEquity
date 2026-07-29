@@ -9,9 +9,11 @@
 
 [中文](README.md)
 
-A self-hosted, daily-refreshable, provenance-tagged financial research base:
-multi-source ingest → orchestration → curated Parquet.  
-Query with DuckDB / Polars / `load()` — no database server, no TDX desktop client.
+A self-hosted A-share research lake: daily bars, adjust factors, fundamentals,
+fund flow, sector structure, macro & sentiment — one contract, daily orchestration,
+row-level provenance on curated Parquet.  
+More than a fetch wrapper (watermarks / retry / audit); local vs cloud wide tables;
+query with DuckDB / Polars / `load()` — no DB server, no TDX desktop client.
 
 CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay downstream).
 

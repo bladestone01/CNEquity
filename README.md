@@ -9,8 +9,8 @@
 
 [English](README.en.md)
 
-本地可日更、可溯源的金融数据研究底座：多源拉数 → 编排落盘 → curated Parquet。  
-用 DuckDB / Polars / `load()` 直接查，不用自建库，也不用通达信客户端。
+**自托管 A 股研究数据湖**:  构建覆盖行情、复权、基本面、资金流、行业结构、宏观及舆情等多维数据的本地数据湖，支持行级数据追溯与多源交叉校验。
+
 
 CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号留给下游）。
 
@@ -19,6 +19,7 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号�
 - 行级溯源：`source` / `data_version` / `fetched_at`
 - 统一 `load()` 契约（复权 / universe / PIT）
 
+## 整体架构
 <p align="center">
   <img src="docs/assets/architecture-overview.zh.png" alt="ashare-lake 架构：多源 → asl run daily → staging/curated/derived → load()/DuckDB/Polars" width="900" />
 </p>
