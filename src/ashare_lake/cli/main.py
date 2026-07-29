@@ -193,7 +193,7 @@ def init(
 @click.option(
     "--data-root",
     default=None,
-    help="Set [data].root when action=init (default: template value).",
+    help="Set [data].root when action=init (default: resolve ./data/ashare-lake to an absolute path).",
 )
 def config_cmd(action: str, config_path: str, force: bool, data_root: str | None):
     """Validate or bootstrap configuration.
@@ -209,7 +209,7 @@ def config_cmd(action: str, config_path: str, force: bool, data_root: str | None
         except FileExistsError as exc:
             raise click.ClickException(str(exc)) from exc
         click.echo(f"Wrote {out}")
-        click.echo("Edit data.root if needed, then: asl config validate && asl init")
+        click.echo("data.root is absolute; edit if needed, then: asl config validate && asl init")
         return
 
     cfg = _cfg(config_path)

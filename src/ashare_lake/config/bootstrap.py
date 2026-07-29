@@ -74,15 +74,22 @@ def write_user_config(
 ) -> Path:
     """Write a user config file from the packaged example.
 
+    When *data_root* is omitted, the template's ``./data/ashare-lake`` is
+    resolved to an absolute path so ``asl doctor`` is green on first run
+    (relative roots break under launchd/cron CWDs).
+
     Raises:
         FileExistsError: when ``path`` exists and ``force`` is false.
     """
     path = Path(path)
     if path.exists() and not force:
         raise FileExistsError(f"Config already exists: {path}. Re-run with --force to overwrite.")
+    root = Path(data_root) if data_root is not None else Path("./data/ashare-lake")
+    # resolve + as_posix; render_example_toml still applies TOML escaping.
+    absolute_root = root.expanduser().resolve().as_posix()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        render_example_toml(data_root=data_root, platform=platform),
+        render_example_toml(data_root=absolute_root, platform=platform),
         encoding="utf-8",
     )
     return path

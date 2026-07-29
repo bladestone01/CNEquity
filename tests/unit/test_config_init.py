@@ -81,6 +81,22 @@ def test_render_keeps_linux_workers():
     assert "workers = 8" in text
 
 
+def test_write_user_config_defaults_to_absolute_data_root(tmp_path, monkeypatch):
+    """Bare ``asl config init`` must not leave ``./data/...`` for doctor to reject."""
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "configs" / "ashare-lake.toml"
+    write_user_config(out, platform="linux")
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+
+    payload = tomllib.loads(out.read_text(encoding="utf-8"))
+    root = Path(payload["data"]["root"])
+    assert root.is_absolute()
+    assert root == (tmp_path / "data" / "ashare-lake").resolve()
+
+
 def test_write_user_config_refuses_overwrite(tmp_path):
     out = tmp_path / "configs" / "ashare-lake.toml"
     write_user_config(out, platform="linux")

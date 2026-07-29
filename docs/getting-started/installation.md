@@ -30,8 +30,8 @@ asl demo    # 一分钟真数样例，不需要先 clone 仓库
 全量 `asl init` 前先写出配置（不必 clone 仓库）：
 
 ```bash
-asl config init                   # → configs/ashare-lake.toml；macOS / Windows 自动 workers=1
-asl config init --data-root /path/to/lake   # 可选：直接写 data.root
+asl config init                   # → configs/ashare-lake.toml；data.root 写为绝对路径；macOS / Windows 自动 workers=1
+asl config init --data-root /path/to/lake   # 可选：直接指定 data.root（同样会 resolve 为绝对路径）
 asl config validate
 ```
 
