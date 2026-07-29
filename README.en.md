@@ -20,6 +20,21 @@ CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay down
 - Row-level provenance: `source` / `data_version` / `fetched_at`
 - One `load()` contract (adjust / universe / PIT)
 
+```
+   tdx_protocol    eastmoney    sina    cninfo    baostock / akshare …
+        │              │          │        │              │
+        ▼              ▼          ▼        ▼              ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │   asl run daily  ·  orchestrate / watermarks / retry / audit │
+  └────────────────────────────────────────────────────────────┘
+                              │
+       staging ──▶ curated ──▶ derived        Parquet with row-level
+                              │               source / data_version / fetched_at
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+  Python load() API      DuckDB views / SQL     Polars on Parquet
+```
+
 ## Shortest path to data
 
 The `pip` / `asl` commands below work on **macOS / Linux / Windows** (PowerShell
@@ -160,7 +175,6 @@ Trade-offs: [comparison](docs/comparison.md) (Chinese).
 | When a source fails | **Fail the batch**, surface it, retry by batch | Up to caller | Up to vendor | Up to caller | Varies |
 | Standalone research data base? | **Yes** (lake + daily jobs + `load()`) | No — you still build landing/orchestration | Cloud tables, not self-hosted | No — session fetch | Yes, but platform-tied |
 
-One line: **others fetch frames; this ships a reproducible research base.**
 
 ## Known limitations
 
@@ -204,4 +218,4 @@ Chinese-first; [CHANGELOG](CHANGELOG.md) and [ADRs](docs/adr/) stay in English.
 
 Code is [MIT](LICENSE). Market data and announcements you land locally remain
 subject to upstream terms; this repo ships no data and grants no redistribution
-rights — see [legal](docs/legal-and-data-sources.md).
+rights [legal](docs/legal-and-data-sources.md).

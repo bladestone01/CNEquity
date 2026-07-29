@@ -19,6 +19,21 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号�
 - 行级溯源：`source` / `data_version` / `fetched_at`
 - 统一 `load()` 契约（复权 / universe / PIT）
 
+```
+   tdx_protocol    eastmoney    sina    cninfo    baostock / akshare …
+        │              │          │        │              │
+        ▼              ▼          ▼        ▼              ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │   asl run daily  ·  编排 / 水位 / 失败重试 / 质量审计          │
+  └────────────────────────────────────────────────────────────┘
+                              │
+       staging ──▶ curated ──▶ derived        Parquet，行级带
+                              │               source / data_version / fetched_at
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+  Python load() API      DuckDB 视图 / SQL     Polars 直读 Parquet
+```
+
 ## 最短取数流程
 
 下列 `pip` / `asl` 在 **macOS / Linux / Windows**（PowerShell、cmd）上通用。  
@@ -148,7 +163,6 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 | 源挂了会怎样 | **fail batch**，暴露问题，可按批 retry | 看调用方 | 看平台 | 看调用方 | 视模块 |
 | 能否单独当研究数据底座 | **能**（湖 + 日更 + `load()`） | 否，还需自建落盘/编排 | 云端表，非自建湖 | 否，会话拉数 | 能，但绑平台 |
 
-一句话：**别人帮你取数；这边帮你把数管成可复现的研究底座。**
 
 ## 已知限制
 
@@ -170,4 +184,4 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 
 ## 许可
 
-代码 [MIT](LICENSE)。落盘行情 / 公告仍受上游条款约束；仓库不附带数据湖，也不授予再分发权——见 [legal](docs/legal-and-data-sources.md)。
+代码 [MIT](LICENSE)。落盘行情 / 公告仍受上游条款约束；仓库不附带数据湖，也不授予再分发权 [legal](docs/legal-and-data-sources.md)。
