@@ -29,9 +29,9 @@ body:
     id: version
     attributes:
       label: 版本 / commit
-      placeholder: "0.2.0 或 git SHA"
+      placeholder: "0.3.0 或 git SHA"
   - type: textarea
     id: env
     attributes:
       label: 环境
-      placeholder: "Python 3.12, macOS, extras=[tdx,valuation]"
+      placeholder: "Python 3.12, macOS / Linux / Windows"

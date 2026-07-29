@@ -9,7 +9,7 @@
 ```
 tests/
 ├── conftest.py           # 共享 fixture（tmp_path 配置、mock TDX）
-├── unit/                 # ~48 个单元测试文件，离线可跑
+├── unit/                 # ~120 个单元测试文件，离线可跑
 └── integration/          # 全链路测试
     ├── test_engine.py
     └── test_engine_validation.py

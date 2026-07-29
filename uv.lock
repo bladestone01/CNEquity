@@ -64,68 +64,54 @@ wheels = [
 
 [[package]]
 name = "ashare-lake"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
+    { name = "akshare" },
+    { name = "baostock" },
     { name = "click" },
     { name = "curl-cffi" },
     { name = "duckdb" },
     { name = "httpx" },
-    { name = "polars" },
-    { name = "pyarrow" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "akshare" },
-    { name = "baostock" },
     { name = "openpyxl" },
     { name = "pandas" },
+    { name = "polars" },
+    { name = "pyarrow" },
     { name = "snownlp" },
     { name = "xlrd" },
 ]
+
+[package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
     { name = "ruff" },
 ]
-macro = [
-    { name = "akshare" },
-]
-nlp = [
-    { name = "snownlp" },
-]
-structure = [
-    { name = "openpyxl" },
-    { name = "pandas" },
-    { name = "xlrd" },
-]
-valuation = [
-    { name = "baostock" },
-]
 
 [package.metadata]
 requires-dist = [
-    { name = "akshare", marker = "extra == 'macro'", specifier = ">=1.14" },
-    { name = "ashare-lake", extras = ["tdx", "macro", "nlp", "valuation", "structure"], marker = "extra == 'all'" },
-    { name = "baostock", marker = "extra == 'valuation'", specifier = ">=0.8" },
+    { name = "akshare", specifier = ">=1.14" },
+    { name = "baostock", specifier = ">=0.8" },
     { name = "click", specifier = ">=8.1" },
     { name = "curl-cffi", specifier = ">=0.7" },
     { name = "duckdb", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.25" },
-    { name = "openpyxl", marker = "extra == 'structure'", specifier = ">=3.0" },
-    { name = "pandas", marker = "extra == 'structure'", specifier = ">=2.0" },
+    { name = "openpyxl", specifier = ">=3.0" },
+    { name = "pandas", specifier = ">=2.0" },
     { name = "polars", specifier = ">=1.0" },
     { name = "pyarrow", specifier = ">=15.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
-    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15,<0.16" },
-    { name = "snownlp", marker = "extra == 'nlp'", specifier = ">=0.12" },
-    { name = "xlrd", marker = "extra == 'structure'", specifier = ">=2.0" },
+    { name = "snownlp", specifier = ">=0.12" },
+    { name = "xlrd", specifier = ">=2.0" },
 ]
-provides-extras = ["tdx", "macro", "nlp", "valuation", "structure", "all", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-cov", specifier = ">=5.0" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
+    { name = "ruff", specifier = ">=0.15,<0.16" },
+]
 
 [[package]]
 name = "baostock"
