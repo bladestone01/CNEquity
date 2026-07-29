@@ -9,42 +9,31 @@
 
 [中文](README.md)
 
-# A self-hosted, daily-refreshable, provenance-tagged financial research base
-
-Multi-source ingest → daily jobs → curated Parquet with row-level provenance.  
+A self-hosted, daily-refreshable, provenance-tagged financial research base:
+multi-source ingest → orchestration → curated Parquet.  
 Query with DuckDB / Polars / `load()` — no database server, no TDX desktop client.
 
-CLI: `asl` · package: `ashare_lake` · **data layer only** — backtests stay
-downstream.
+CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay downstream).
 
-### Why this repo
+- Real-data demo, not a toy mock
+- Watermarks / retry / quality audit — cron-ready
+- Row-level provenance: `source` / `data_version` / `fetched_at`
+- One `load()` contract (adjust / universe / PIT)
 
-- ✅ **Real data in one minute**: `asl demo` pulls live TDX bars — not a toy mock
-- ✅ **Resumable daily jobs**: watermarks / retry / quality audit — cron-ready
-- ✅ **Row-level provenance**: every row has `source` / `data_version` / `fetched_at`
-- ✅ **One contract**: many adapters → one PK / partition / `load()` API
-- ✅ **Zero-friction query**: Python `load()` · DuckDB SQL · Polars on Parquet
-- ✅ **Not a backtester**: fills the gap *after* AkShare / efinance fetch
+<p align="center">
+  <img src="docs/assets/architecture-overview.en.png" alt="ashare-lake architecture: sources → asl run daily → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+</p>
 
-```
-   tdx_protocol    eastmoney    sina    cninfo    baostock / akshare …
-        │              │          │        │              │
-        ▼              ▼          ▼        ▼              ▼
-  ┌────────────────────────────────────────────────────────────┐
-  │  asl run daily · orchestration / watermarks / retry / audit │
-  └────────────────────────────────────────────────────────────┘
-                              │
-       staging ──▶ curated ──▶ derived        Parquet with per-row
-                              │               source / data_version / fetched_at
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-  Python load() API      DuckDB views / SQL    Polars scan_parquet
-```
+## Shortest path to data
 
-## One-minute demo
+The `pip` / `asl` commands below work on **macOS / Linux / Windows** (PowerShell
+or cmd). Venv activation and schedulers differ by OS — see
+[installation](docs/getting-started/installation.md) /
+[runbook](docs/operations/runbook.md).
 
-Skip the full-market backfill. One command fetches **5 liquid names × ~30
-trading days** of real bars:
+### A. Try it (minutes)
+
+Five liquid names × ~30 trading days. Separate data root — **not** a full-market lake.
 
 ```bash
 pip install ashare-lake
@@ -55,8 +44,11 @@ asl demo
   <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
 </p>
 
-Data lands in `data/ashare-lake-demo/` (safe beside a later full `asl init`).
-Then:
+```python
+from ashare_lake.query import load
+
+bars = load("daily_bars", data_root="data/ashare-lake-demo", adjust="hfq")
+```
 
 ```bash
 asl query --config configs/ashare-lake.demo.toml --sql "
@@ -72,72 +64,26 @@ asl query --config configs/ashare-lake.demo.toml --sql "
   <img src="docs/assets/asl-query.png" alt="asl query: DuckDB SQL with provenance source column" width="720" />
 </p>
 
-Optional: `asl demo --symbols 600519.SH,000001.SZ --days 10`. Needs reachability
-to TDX quote hosts (mainland egress is more reliable). On failure, try
-`asl servers test`.
+If TDX is unreachable, try `asl servers test`. Optional:
+`asl demo --symbols 600519.SH,000001.SZ --days 10`.
 
-## Positioning: peers
+### B. Self-hosted daily lake (research / production)
 
-AkShare / efinance answer “how do I fetch?”; Tushare answers “cloud wide tables”;
-Qlib / vn.py answer “research / trading platform”.
-**ashare-lake** owns the middle layer: many sources into one contract, as a
-resumable, provenance-tagged, auditable local Parquet lake.
-Details: [comparison](docs/comparison.md) (Chinese).
-
-| What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock / mootdx | Qlib / vn.py |
-|--|--|--|--|--|--|
-| Local, resumable data base | **Lake + daily jobs** (watermarks / retry / audit) | In-memory fetch; you own orchestration | Cloud credits, not a self-hosted lake | Session fetch, no lake | Tied to platform data subsystem |
-| Provenance / auditability | **Row-level provenance** + write-time schema checks | Usually no shared contract | Platform fields | No lake contract | Varies |
-| Cross-source validation | **Primary curated + backup snapshots**, diffable, never silent replace | One call, one source | One vendor | One source | Varies |
-| Stable research semantics | **`load()` contract**: adjust / universe / PIT `as_of` | DIY | DIY | DIY | Platform semantics |
-| When a source fails | **Fail the batch**, surface it, retry by batch | Up to caller | Up to vendor | Up to caller | Varies |
-| Standalone research data base? | **Yes** (lake + daily jobs + `load()`) | No — you still build landing/orchestration | Cloud tables, not self-hosted | No — session fetch | Yes, but platform-tied |
-
-One line: **others fetch frames; this ships a reproducible research base.**
-Trade-offs (unadjusted storage, no auto-failover, …):
-[comparison](docs/comparison.md).
-
-## Datasets
-
-Dataset names are the first argument to `load()`. Columns:
-[schema](docs/datasets/schema.md); orchestration metadata:
-[catalog](docs/datasets/catalog.md).
-
-| Category | Datasets |
-|----------|----------|
-| Reference | `instruments` · `trading_calendar` · `trading_status` (suspensions / ST) |
-| Market data | `daily_bars` (unadjusted) · `index_bars` · `adj_factors` |
-| Corporate events | `corporate_actions` · `announcement_index` · `earnings_disclosure_schedule` |
-| Fundamentals / valuation | `financial_statement_items` (PIT) · `valuation_metrics` · `analyst_consensus` |
-| Capital flow | `fund_flow` · `margin_trading` · `northbound_flows` / `northbound_holdings` · `dragon_tiger` · `block_trades` · `institutional_holdings` |
-| Structure / industry | `sector_members` · `index_constituents` · `industry_members` |
-| Macro | `macro_indicators` · `market_breadth` |
-| Sentiment / rotation | `sentiment_scores` · `hot_rank` · `sector_bars` · `sector_fund_flow` · `news_headlines` |
-| Risk | `share_unlock_schedule` · `regulatory_events` |
-
-## Install & daily ops
+First `asl init` backfills (slow, multi-GB). Afterwards: incremental + read.
 
 ```bash
 pip install ashare-lake
-asl demo                          # writes configs/ashare-lake.demo.toml under cwd
+# macOS / Linux:
+asl config init --data-root /Users/you/ashare-lake
+# Windows (forward or back slashes):
+# asl config init --data-root D:/ashare-lake
+# asl config init --data-root "D:\ashare-lake"
+# macOS / Windows default workers=1; Linux example template uses 8
+# Defaults to configs/ashare-lake.toml under cwd — --config usually omitted
+asl init          # layout + first backfill
+asl run daily     # every trading day afterwards
+asl status
 ```
-
-Full-market daily ops:
-
-```bash
-asl config init                   # writes configs/ashare-lake.toml (workers=1 on macOS)
-# edit data.root if needed
-asl init   --config configs/ashare-lake.toml    # dirs / manifest / views + first backfill
-asl run daily --config configs/ashare-lake.toml # daily incremental
-asl status --config configs/ashare-lake.toml
-```
-
-No extras — one command installs every source. Dependency breakdown in
-[installation](docs/getting-started/installation.md).  
-After the initial backfill, run the [acceptance checks](docs/operations/runbook.md)
-before wiring cron.
-
-## Reading data
 
 ```python
 from ashare_lake.query import load
@@ -160,13 +106,37 @@ asl query --sql "
   SELECT symbol, trade_date, adj_close
   FROM daily_bars_adj
   WHERE trade_date >= '2025-01-01'
-" --config configs/ashare-lake.toml
+"
 ```
 
-Or open `{data_root}/duckdb/ashare-lake.duckdb`, or Polars `scan_parquet` on
-day-partitioned datasets. For year/month partitions (e.g. `index_bars`), prefer
-`asl query` / `load()` so hive labels do not collide with real dates — see
-[lake-layout](docs/architecture/lake-layout.md).
+> Path A uses `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml` (pass  
+> `--config configs/ashare-lake.demo.toml` when querying).  
+> Path B uses the default `configs/ashare-lake.toml` from `asl config init`.  
+> The two lanes do not overwrite each other.
+
+No extras: `pip install ashare-lake` brings every runtime source. After the
+initial backfill, run the [acceptance checks](docs/operations/runbook.md)
+before wiring a scheduler.
+
+## Datasets
+
+Dataset names are the first argument to `load()`. Columns:
+[schema](docs/datasets/schema.md); orchestration metadata:
+[catalog](docs/datasets/catalog.md).
+
+| Category | Datasets |
+|----------|----------|
+| Reference | `instruments` · `trading_calendar` · `trading_status` (suspensions / ST) |
+| Market data | `daily_bars` (unadjusted) · `index_bars` · `adj_factors` |
+| Corporate events | `corporate_actions` · `announcement_index` · `earnings_disclosure_schedule` |
+| Fundamentals / valuation | `financial_statement_items` (PIT) · `valuation_metrics` · `analyst_consensus` |
+| Capital flow | `fund_flow` · `margin_trading` · `northbound_flows` / `northbound_holdings` · `dragon_tiger` · `block_trades` · `institutional_holdings` |
+| Structure / industry | `sector_members` · `index_constituents` · `industry_members` |
+| Macro | `macro_indicators` · `market_breadth` |
+| Sentiment / rotation | `sentiment_scores` · `hot_rank` · `sector_bars` · `sector_fund_flow` · `news_headlines` |
+| Risk | `share_unlock_schedule` · `regulatory_events` |
+
+On-disk layout under path B's `data.root`:
 
 ```
 {data_root}/
@@ -177,16 +147,34 @@ day-partitioned datasets. For year/month partitions (e.g. `index_bars`), prefer
   duckdb/    ashare-lake.duckdb
 ```
 
+## Positioning: peers
+
+AkShare / efinance answer “how do I fetch?”; Tushare answers “cloud wide tables”;
+Qlib / vn.py answer “research / trading platform”.
+**ashare-lake** owns the middle layer: many sources into one contract, as a
+resumable, provenance-tagged, auditable local Parquet lake.
+Trade-offs: [comparison](docs/comparison.md) (Chinese).
+
+| What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
+|--|--|--|--|--|--|
+| Local, resumable data base | **Lake + daily jobs** (watermarks / retry / audit) | In-memory fetch; you own orchestration | Cloud credits, not a self-hosted lake | Session fetch, no lake | Tied to platform data subsystem |
+| Provenance / auditability | **Row-level provenance** + write-time schema checks | Usually no shared contract | Platform fields | No lake contract | Varies |
+| Cross-source validation | **Primary curated + backup snapshots**, diffable, never silent replace | One call, one source | One vendor | One source | Varies |
+| Stable research semantics | **`load()` contract**: adjust / universe / PIT `as_of` | DIY | DIY | DIY | Platform semantics |
+| When a source fails | **Fail the batch**, surface it, retry by batch | Up to caller | Up to vendor | Up to caller | Varies |
+| Standalone research data base? | **Yes** (lake + daily jobs + `load()`) | No — you still build landing/orchestration | Cloud tables, not self-hosted | No — session fetch | Yes, but platform-tied |
+
+
 ## Known limitations
 
 - **Survivorship bias:** delisted names need `asl delisted backfill` + `repair`
   before trusting return series
 - **Network:** some HTTP / sector backfills need mainland egress; demo needs TDX
-- **Config for full init:** run `asl config init` (or write your own toml);
-  `asl demo` writes its own tiny config
+- **Year/month partitions** (e.g. `index_bars`): prefer `asl query` / `load()` so
+  hive labels do not collide with real dates — see
+  [lake-layout](docs/architecture/lake-layout.md)
 
-More (historical ST filters, BSE/BJ, partition pitfalls):
-[runbook](docs/operations/runbook.md) ·
+More: [runbook](docs/operations/runbook.md) ·
 [troubleshooting](docs/operations/troubleshooting.md) ·
 [legal](docs/legal-and-data-sources.md).
 
@@ -205,18 +193,15 @@ Chinese-first; [CHANGELOG](CHANGELOG.md) and [ADRs](docs/adr/) stay in English.
 
 ## Docs
 
-[docs/README.md](docs/README.md) · [comparison](docs/comparison.md) ·
+Full index: [docs/README.md](docs/README.md). Common entry points:
 [installation](docs/getting-started/installation.md) ·
 [quickstart](docs/getting-started/quickstart.md) ·
-[configuration](docs/getting-started/configuration.md) ·
-[architecture](docs/architecture/overview.md) ·
-[catalog](docs/datasets/catalog.md) · [schema](docs/datasets/schema.md) ·
-[query guide](docs/datasets/query-guide.md) ·
-[runbook](docs/operations/runbook.md) · [CLI](docs/reference/cli.md) ·
-[Python API](docs/reference/python-api.md)
+[catalog](docs/datasets/catalog.md) ·
+[runbook](docs/operations/runbook.md) ·
+[CLI](docs/reference/cli.md).
 
 ## License
 
 Code is [MIT](LICENSE). Market data and announcements you land locally remain
 subject to upstream terms; this repo ships no data and grants no redistribution
-rights — see [legal](docs/legal-and-data-sources.md).
+rights [legal](docs/legal-and-data-sources.md).

@@ -4,7 +4,7 @@
 
 [AKShare](https://github.com/akfamily/akshare) 开源财经数据接口，作 **补充源**。
 
-**依赖**：`pip install -e ".[macro]"`（宏观指标场景）
+**依赖**：随 `pip install ashare-lake` / 可编辑安装一并提供，无需额外 extras。
 
 ---
 

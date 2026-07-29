@@ -3,10 +3,13 @@ from datetime import UTC, date, datetime, timedelta
 import polars as pl
 
 from ashare_lake.config import Config
+from ashare_lake.config.bootstrap import path_for_toml
+from ashare_lake.file_lock import exclusive_lock
 from ashare_lake.orchestrator.manifest import Manifest
 from ashare_lake.storage import StagingWriter
 from ashare_lake.storage.staging_cleanup import (
     clean_staging,
+    clean_stale_lock_files,
     list_staging_run_ids,
     run_ready_for_staging_cleanup,
 )
@@ -220,6 +223,71 @@ def test_clean_skips_warning_run_without_compact(tmp_path):
     assert run_id in result.skipped_run_ids
 
 
+def test_clean_stale_lock_files_missing_dir_is_noop(tmp_path):
+    assert clean_stale_lock_files(tmp_path / "meta") == 0
+
+
+def test_clean_stale_lock_files_removes_old_unheld_lock(tmp_path):
+    import os
+
+    meta_root = tmp_path / "meta"
+    lock_dir = meta_root / "locks"
+    lock_dir.mkdir(parents=True)
+    lock_path = lock_dir / "run-old.lock"
+    lock_path.write_text("")
+    old = datetime.now(UTC) - timedelta(days=30)
+    os.utime(lock_path, (old.timestamp(), old.timestamp()))
+
+    removed = clean_stale_lock_files(meta_root, retention_days=7)
+    assert removed == 1
+    assert not lock_path.exists()
+
+
+def test_clean_stale_lock_files_skips_recent_lock(tmp_path):
+    meta_root = tmp_path / "meta"
+    lock_dir = meta_root / "locks"
+    lock_dir.mkdir(parents=True)
+    lock_path = lock_dir / "run-fresh.lock"
+    lock_path.write_text("")
+
+    removed = clean_stale_lock_files(meta_root, retention_days=7)
+    assert removed == 0
+    assert lock_path.exists()
+
+
+def test_clean_stale_lock_files_skips_held_lock(tmp_path):
+    import os
+
+    meta_root = tmp_path / "meta"
+    lock_dir = meta_root / "locks"
+    lock_dir.mkdir(parents=True)
+    lock_path = lock_dir / "run-held.lock"
+    lock_path.write_text("")
+    old = datetime.now(UTC) - timedelta(days=30)
+    os.utime(lock_path, (old.timestamp(), old.timestamp()))
+
+    with exclusive_lock(lock_path):
+        removed = clean_stale_lock_files(meta_root, retention_days=7)
+    assert removed == 0
+    assert lock_path.exists()
+
+
+def test_clean_stale_lock_files_dry_run_keeps_file(tmp_path):
+    import os
+
+    meta_root = tmp_path / "meta"
+    lock_dir = meta_root / "locks"
+    lock_dir.mkdir(parents=True)
+    lock_path = lock_dir / "run-old.lock"
+    lock_path.write_text("")
+    old = datetime.now(UTC) - timedelta(days=30)
+    os.utime(lock_path, (old.timestamp(), old.timestamp()))
+
+    removed = clean_stale_lock_files(meta_root, retention_days=7, dry_run=True)
+    assert removed == 1
+    assert lock_path.exists()
+
+
 def test_engine_run_step_records_a_compact_batch(tmp_path):
     """`asl backfill` / `asl compact` route through the engine so cleanup can fire.
 
@@ -255,7 +323,7 @@ def test_backfill_finishes_run_only_after_compact(tmp_path, monkeypatch):
     cfg_path.write_text(
         f"""
 [data]
-root = "{tmp_path / "data"}"
+root = "{path_for_toml(tmp_path / "data")}"
 
 [orchestrator]
 workers = 1

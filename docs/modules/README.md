@@ -6,6 +6,7 @@
 ashare_lake/
 ├── __init__.py
 ├── __main__.py          → cli()
+├── file_lock.py         跨平台文件锁（POSIX flock / Windows msvcrt）
 ├── config/              配置加载
 ├── domain/              Schema、数据集注册、符号、限速
 ├── adapters/            外部数据源 I/O

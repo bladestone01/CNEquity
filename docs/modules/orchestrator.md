@@ -17,7 +17,7 @@
 | `worker_pool.py` | `daily_bars` 等 symbol-batch 并行；`BrokenProcessPool` 串行恢复且不降级已 success 的 batch |
 | `init_phases.py` | Init 阶段 → step 列表、backfill 标志 |
 | `compact_gate.py` | 有 incomplete batch 时跳过数据集 compact |
-| `run_lock.py` | 文件锁，防并发 run/retry |
+| `run_lock.py` | 跨平台文件锁，防并发 run/retry |
 | `__init__.py` | 导出 `JobEngine` |
 
 ---
@@ -136,7 +136,7 @@ compact 前检查：若本 run 某数据集存在 `running`/`failed`/`stale` bat
 
 ## run_lock.py
 
-`RunLockError`：同一 `run_id` 或全局 compact 锁冲突时抛出。
+`RunLockError`：同一 `run_id` 或全局 compact 锁冲突时抛出。底层用包根 `file_lock`（POSIX `flock` / Windows `msvcrt`）。
 
 ---
 

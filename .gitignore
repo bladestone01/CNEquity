@@ -11,6 +11,8 @@ build/
 .ruff_cache/
 .mypy_cache/
 .coverage
+coverage.json
+coverage.xml
 htmlcov/
 
 # Virtual environments

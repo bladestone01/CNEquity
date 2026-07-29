@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from ashare_lake.cli.main import cli
+from ashare_lake.config.bootstrap import path_for_toml
 from ashare_lake.derive.adj_factors import AdjFactorsResult
 from ashare_lake.orchestrator.engine import JobEngine
 from ashare_lake.orchestrator.run_lock import RunLockError
@@ -24,7 +25,7 @@ def _write_config(tmp_path, *, extra: str = "") -> str:
     cfg_path.write_text(
         f"""
 [data]
-root = "{tmp_path / "data"}"
+root = "{path_for_toml(tmp_path / "data")}"
 
 [orchestrator]
 workers = 1
@@ -61,7 +62,7 @@ def test_config_validate_reports_errors(tmp_path):
     cfg_path.write_text(
         f"""
 [data]
-root = "{tmp_path / "data"}"
+root = "{path_for_toml(tmp_path / "data")}"
 
 [orchestrator]
 workers = 0

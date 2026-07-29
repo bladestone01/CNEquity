@@ -24,7 +24,7 @@ meta = list_datasets()  # 或 list_datasets(config=cfg)
 
 配置解析顺序：`config=` → `data_root=` → `configs/ashare-lake.toml`
 
-`list_datasets()` 是研究侧的**可用起点合同**：`history_mode` 区分 `by_date` / `snapshot_with_backfill` / `snapshot_only`；`coverage_start` 来自分区目录（含 `report_period=YYYYQn`）。详见 [datasets README](README.md#历史可用性history_mode)。
+`list_datasets()` 是研究侧的**可用起点合同**：`history_mode` 区分 `by_date` / `snapshot_with_backfill` / `snapshot_only`；`coverage_start` 来自分区目录（含 `report_period=YYYYQn`）。详见 [数据集目录 — 历史可用性](catalog.md#历史可用性history_mode)。
 
 ---
 

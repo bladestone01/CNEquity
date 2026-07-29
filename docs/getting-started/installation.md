@@ -5,9 +5,16 @@
 | 项 | 要求 |
 |----|------|
 | Python | ≥ 3.11 |
-| 操作系统 | macOS / Linux（Windows 未正式验证） |
+| 操作系统 | macOS / Linux / **Windows 10+（64-bit）** |
 | 磁盘 | 全量 init（2016 起）约需数十 GB，视数据集范围而定 |
 | 网络 | 采集需访问 TDX 行情服务器与各 HTTP 数据源 |
+
+Windows 说明：
+
+- 支持原生 Win10/11 + PowerShell / cmd；CI 有 `windows-latest` 单元测试。
+- 范围是 **64-bit x86-64**；32-bit 与 ARM64 Windows 未验证。
+- WSL 可作为过渡，但不是必需——原生 Windows 已可用。
+- 依赖（duckdb / polars / pyarrow / mini-racer 等）均有 `win_amd64` 轮子；若某包退化成从源码编，`asl doctor` 会报出。
 
 ## 从 PyPI 安装（推荐）
 
@@ -23,10 +30,25 @@ asl demo    # 一分钟真数样例，不需要先 clone 仓库
 全量 `asl init` 前先写出配置（不必 clone 仓库）：
 
 ```bash
-asl config init                   # → configs/ashare-lake.toml；macOS 自动 workers=1
+asl config init                   # → configs/ashare-lake.toml；macOS / Windows 自动 workers=1
 asl config init --data-root /path/to/lake   # 可选：直接写 data.root
 asl config validate
 ```
+
+### Windows（PowerShell / cmd）
+
+路径用正斜杠、反斜杠或盘符均可；`asl config init --data-root` 会把反斜杠正确转义进 TOML：
+
+```powershell
+pip install ashare-lake
+asl doctor
+asl config init --data-root D:/ashare-lake
+# 或：asl config init --data-root "D:\ashare-lake"
+asl demo
+asl query --config configs/ashare-lake.demo.toml --sql "SELECT count(*) FROM daily_bars"
+```
+
+> PowerShell 5.1 不支持 `&&`。请分行执行，或用 PowerShell 7+ / cmd。`asl doctor --fix` 已绕过 shell，直接以 argv 调安装器。
 
 ## 从源码安装（开发）
 
@@ -37,6 +59,17 @@ python3 -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip   # PEP 735 --group 需要 pip >= 25.1
 pip install -e . --group dev
 # 或：uv sync
+```
+
+Windows（PowerShell）：
+
+```powershell
+git clone https://github.com/rootSunc/ashare-lake.git
+cd ashare-lake
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e . --group dev
 ```
 
 ## 依赖构成
@@ -85,7 +118,7 @@ asl demo
 # 全量配置就绪后：
 asl config validate --config configs/ashare-lake.toml
 asl servers test --config configs/ashare-lake.toml   # 探测 TDX 行情主机
-pytest tests/unit -q                               # 需源码 + [dev]，离线可跑
+pytest tests/unit -q                               # 需源码 + --group dev，离线可跑
 ```
 
 ## 依赖版本注意事项

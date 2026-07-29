@@ -4,6 +4,7 @@ import pytest
 
 import ashare_lake.steps  # noqa: F401
 from ashare_lake.config import Config
+from ashare_lake.config.bootstrap import path_for_toml
 from ashare_lake.orchestrator.engine import JobEngine
 from ashare_lake.orchestrator.init_phases import (
     missing_steps,
@@ -121,7 +122,7 @@ def test_init_blocks_new_run_when_incomplete_exists(cfg, monkeypatch):
 
     cfg_path = cfg.data_root.parent / "ashare-lake.toml"
     cfg_path.write_text(
-        f'[data]\nroot = "{cfg.data_root}"\n[job.init.phases]\nnames = {json_phases()}'
+        f'[data]\nroot = "{path_for_toml(cfg.data_root)}"\n[job.init.phases]\nnames = {json_phases()}'
     )
 
     runner = CliRunner()

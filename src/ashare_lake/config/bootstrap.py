@@ -20,6 +20,15 @@ def _toml_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def path_for_toml(path: Path | str) -> str:
+    """Render *path* safe for a TOML basic string.
+
+    Uses POSIX form so Windows ``C:\\Users\\…`` never injects ``\\U`` hex
+    escapes, then applies the usual backslash/quote escaping.
+    """
+    return _toml_escape(Path(path).resolve().as_posix())
+
+
 def render_example_toml(
     *,
     data_root: str | None = None,
@@ -28,9 +37,16 @@ def render_example_toml(
     """Render the example template with optional local tweaks."""
     text = example_toml_text()
     if data_root is not None:
+        # Callable replacement: a string template would re-interpret every `\\`
+        # from `_toml_escape`, undoing the Windows-path escaping.
+        escaped = _toml_escape(data_root)
+
+        def _patch_root(match: re.Match[str]) -> str:
+            return f"{match.group(1)}{escaped}{match.group(2)}"
+
         replaced = re.sub(
             r'(?m)^(\[data\]\s*\nroot\s*=\s*")[^"]*(")',
-            rf"\1{_toml_escape(data_root)}\2",
+            _patch_root,
             text,
             count=1,
         )
@@ -39,8 +55,11 @@ def render_example_toml(
         text = replaced
 
     plat = platform if platform is not None else sys.platform
-    if plat == "darwin":
-        # The TDX client + ProcessPool is not fork-safe on macOS; match validate_config.
+    if plat in ("darwin", "win32"):
+        # macOS: TDX client + ProcessPool fork is unsafe (see validate_config).
+        # Windows: default to 1 as well — spawn works, but first-run memory and
+        # file-lock contention on a laptop are safer single-process; raise
+        # workers later after `asl doctor` is green.
         text = re.sub(r"(?m)^(workers\s*=\s*)\d+", r"\g<1>1", text, count=1)
 
     return text

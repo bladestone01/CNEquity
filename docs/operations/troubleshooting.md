@@ -73,6 +73,9 @@ uv run asl status --datasets   # valuation 不应再停在稀疏 tip
 |------|------|------|
 | 日志 `worker pool broke (likely OOM under load); retrying … serially` | `ProcessPoolExecutor` 一子进程死后整池毒化 | **已修**：未完成 batch 串行重试；若子进程已 `finish_batch(success)` 则**跳过重拉**（避免 INSERT OR REPLACE 降级成功行） |
 | macOS 上频繁 OOM / 池崩溃 | TDX 客户端非 fork-safe + `workers>1` | `asl config validate` **拒绝** Darwin 上 `workers>1`；生产用 `workers = 1`（见 runbook / `daily_pipeline.sh`） |
+| Windows 上 `import fcntl` / 文件锁失败 | 旧版用 Unix-only `fcntl.flock` | 升级到含 `ashare_lake.file_lock` 的版本；锁在 Win/POSIX 上语义一致 |
+| Windows 上 DuckDB 视图空 / 路径错 | 反斜杠进了 `read_parquet` SQL | 新版本用 `as_posix()`；确认 `data.root` 可读写后重跑 `asl init` / 刷新视图 |
+| Windows 上 PowerShell `&&` 语法错误 | PS 5.1 不支持 `&&` | 分行执行；`asl doctor --fix` 已不走 shell |
 
 ---
 

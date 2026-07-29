@@ -8,6 +8,7 @@ root = "./data/ashare-lake"
 
 [orchestrator]
 # macOS must use workers = 1 (the TDX client is not fork-safe; ProcessPool → BrokenProcessPool).
+# Windows defaults to 1 via `asl config init` (spawn is fine; raise after a clean doctor).
 # Linux may use >1; keep batch_size modest under memory pressure.
 workers = 8
 batch_size = 100

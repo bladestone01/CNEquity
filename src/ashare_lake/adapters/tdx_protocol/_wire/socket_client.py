@@ -218,6 +218,9 @@ class BaseSocketClient:
         # 停止心跳事件
         if self.heartbeat_thread and self.heartbeat_thread.is_alive():
             self.stop_event.set()
+            # Join briefly so Windows spawn workers do not linger on the
+            # wait() wake-up; ignore timeout — daemon=True is the backstop.
+            self.heartbeat_thread.join(timeout=1.0)
 
         if self.client:
             logger.debug("disconnecting")

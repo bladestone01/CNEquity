@@ -13,7 +13,7 @@
 | `schemas.py` | Polars schema、`PRIMARY_KEYS`、`validate_dataframe()`、`with_provenance()` |
 | `datasets.py` | `DatasetSpec` 注册表 `DATASETS` |
 | `symbols.py` | `parse_symbol()`, `is_all_a_symbol()`, CDR/ETF 分类 |
-| `rate_limit.py` | 文件锁 + JSON 时间戳的跨进程 `RateLimiter` |
+| `rate_limit.py` | 跨平台文件锁 + JSON 时间戳的跨进程 `RateLimiter` |
 | `sentiment.py` | 公告关键词 + 可选 SnowNLP 打分 |
 
 ---
@@ -95,7 +95,7 @@ Universe 过滤在 `query/universe.py` 使用本模块规则：`all_a` 排除 CD
 
 ## rate_limit.py
 
-跨进程限速：锁文件 + 上次请求时间 JSON。供 `adapters/throttle.py` 与 HTTP adapter 使用，防止多 worker 打爆源站。
+跨进程限速：锁文件 + 上次请求时间 JSON。供 `adapters/throttle.py` 与 HTTP adapter 使用，防止多 worker 打爆源站。锁通过包根 `file_lock.exclusive_lock`（POSIX `flock` / Windows `msvcrt.locking`）取得。
 
 ---
 

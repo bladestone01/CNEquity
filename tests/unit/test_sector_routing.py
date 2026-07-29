@@ -2,11 +2,17 @@
 
 from datetime import date
 
+import polars as pl
+import pytest
+
+from ashare_lake.config import Config
 from ashare_lake.derive.sector_routing import (
     OHLC_EM,
     OHLC_TDX,
     build_sector_routing,
+    derive_sector_routing,
     is_em_exclusive,
+    load_sector_routing,
     norm_sector_name,
 )
 
@@ -68,6 +74,132 @@ def test_fuzzy_unique_routes_t3():
     assert row["ohlc_source"] == OHLC_TDX
     assert row["routing_tier"] == "T3"
     assert row["match_type"] == "fuzzy"
+
+
+def test_fuzzy_ambiguous_stays_eastmoney():
+    em = [{"sector_code": "BK5555", "sector_name": "新能源汽车零部件", "board_type": "concept"}]
+    tdx = [
+        {"tdx_code": "880201", "name": "新能源汽车"},
+        {"tdx_code": "880202", "name": "新能源汽车零部件配套"},
+    ]
+    df, _ = build_sector_routing(em, tdx, as_of=date(2026, 7, 14))
+    row = df.row(0, named=True)
+    assert row["ohlc_source"] == OHLC_EM
+    assert row["reason"] == "fuzzy_ambiguous"
+
+
+def test_load_sector_routing_missing_file_returns_empty(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    assert load_sector_routing(cfg).is_empty()
+
+
+def test_load_sector_routing_reads_persisted_file(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg.meta_root.mkdir(parents=True)
+    pl.DataFrame({"sector_code": ["BK0437"]}).write_parquet(
+        cfg.meta_root / "sector_ohlc_routing.parquet"
+    )
+    out = load_sector_routing(cfg)
+    assert out["sector_code"].to_list() == ["BK0437"]
+
+
+def test_latest_em_boards_from_lake_missing_root_returns_empty(tmp_path):
+    from ashare_lake.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    assert sr._latest_em_boards_from_lake(cfg) == []
+
+
+def test_latest_em_boards_from_lake_no_partitions_returns_empty(tmp_path):
+    from ashare_lake.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    (cfg.curated_root / "sector_bars").mkdir(parents=True)
+    assert sr._latest_em_boards_from_lake(cfg) == []
+
+
+def test_latest_em_boards_from_lake_no_files_returns_empty(tmp_path):
+    from ashare_lake.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    (cfg.curated_root / "sector_bars" / "trade_date=2026-07-14").mkdir(parents=True)
+    assert sr._latest_em_boards_from_lake(cfg) == []
+
+
+def test_latest_em_boards_from_lake_reads_latest_partition(tmp_path):
+    from ashare_lake.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.curated_root / "sector_bars" / "trade_date=2026-07-14"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "sector_code": ["BK0437"],
+            "sector_name": ["煤炭"],
+            "board_type": ["industry"],
+        }
+    ).write_parquet(part / "part-000.parquet")
+    out = sr._latest_em_boards_from_lake(cfg)
+    assert out == [{"sector_code": "BK0437", "sector_name": "煤炭", "board_type": "industry"}]
+
+
+def test_derive_sector_routing_falls_back_to_lake_snapshot_when_live_fails(tmp_path, monkeypatch):
+    from ashare_lake.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.curated_root / "sector_bars" / "trade_date=2026-07-14"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "sector_code": ["BK0437"],
+            "sector_name": ["煤炭"],
+            "board_type": ["industry"],
+        }
+    ).write_parquet(part / "part-000.parquet")
+
+    monkeypatch.setattr(
+        sr,
+        "_fetch_em_boards_live",
+        lambda: (_ for _ in ()).throw(RuntimeError("clist down")),
+    )
+    monkeypatch.setattr(
+        sr, "_fetch_tdx_indices_live", lambda: [{"tdx_code": "881423", "name": "煤炭"}]
+    )
+    summary = derive_sector_routing(cfg, as_of=date(2026, 7, 14))
+    assert summary["em_boards"] == 1
+    assert summary["notes"] == ["em_live_failed:clist down"]
+    assert (cfg.meta_root / "sector_ohlc_routing.parquet").exists()
+
+
+def test_derive_sector_routing_raises_when_both_live_and_lake_fail(tmp_path, monkeypatch):
+    from ashare_lake.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    monkeypatch.setattr(
+        sr,
+        "_fetch_em_boards_live",
+        lambda: (_ for _ in ()).throw(RuntimeError("clist down")),
+    )
+    with pytest.raises(RuntimeError, match="no lake snapshot"):
+        derive_sector_routing(cfg)
+
+
+def test_derive_sector_routing_raises_when_tdx_fails(tmp_path, monkeypatch):
+    from ashare_lake.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    monkeypatch.setattr(
+        sr,
+        "_fetch_em_boards_live",
+        lambda: [{"sector_code": "BK0437", "sector_name": "煤炭", "board_type": "industry"}],
+    )
+    monkeypatch.setattr(
+        sr,
+        "_fetch_tdx_indices_live",
+        lambda: (_ for _ in ()).throw(RuntimeError("tdx offline")),
+    )
+    with pytest.raises(RuntimeError, match="TDX stock_all failed"):
+        derive_sector_routing(cfg)
 
 
 def test_fetch_tdx_indices_live_filters_88xxxx(monkeypatch):

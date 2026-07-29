@@ -1125,7 +1125,7 @@ def push2his_probe(config_path: str):
         body = getattr(resp, "text", "") or ""
         click.echo(f"probe OK status={code} bytes={len(body.encode('utf-8', 'replace'))}")
         if sticky and sticky.exists():
-            click.echo(f"sticky: {sticky.read_text().strip()}")
+            click.echo(f"sticky: {sticky.read_text(encoding='utf-8').strip()}")
     except Exception as exc:
         click.echo(f"probe FAILED: {exc}", err=True)
         raise SystemExit(1) from exc

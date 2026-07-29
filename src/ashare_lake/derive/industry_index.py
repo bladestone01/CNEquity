@@ -50,9 +50,11 @@ WEIGHTINGS = ("equal", "amount")
 def _membership(config: Config) -> pl.DataFrame:
     """申万 snapshots only — `industry_members` also carries EastMoney board rows
     under 3/4-digit codes, which are a different taxonomy entirely."""
+    from ashare_lake.query.parquet_scan import parquet_glob
+
     root = config.curated_root / "industry_members"
     df = (
-        pl.scan_parquet(str(root / "**" / "*.parquet"))
+        pl.scan_parquet(parquet_glob(root))
         .filter(pl.col("source") == "sw")
         .select("symbol", "industry_code", "as_of_date")
         .collect()
@@ -62,15 +64,13 @@ def _membership(config: Config) -> pl.DataFrame:
 
 def _priced_universe(config: Config) -> set[str]:
     """Symbols with an adjustment factor: everything else has no hfq series."""
+    from ashare_lake.query.parquet_scan import parquet_glob
+
     root = config.derived_root / "adj_factors"
     if not root.exists():
         return set()
     return set(
-        pl.scan_parquet(str(root / "**" / "*.parquet"))
-        .select("symbol")
-        .unique()
-        .collect()["symbol"]
-        .to_list()
+        pl.scan_parquet(parquet_glob(root)).select("symbol").unique().collect()["symbol"].to_list()
     )
 
 

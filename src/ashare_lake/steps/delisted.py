@@ -330,8 +330,10 @@ def _bar_spans(config: Config, symbols: list[str]) -> dict[str, tuple[date, date
     root = config.curated_root / "daily_bars"
     if not root.exists() or not any(root.rglob("*.parquet")):
         return {}
+    from ashare_lake.query.parquet_scan import parquet_glob
+
     frame = (
-        pl.scan_parquet(str(root / "**" / "*.parquet"))
+        pl.scan_parquet(parquet_glob(root))
         .filter(pl.col("symbol").is_in(symbols))
         .group_by("symbol")
         .agg(
@@ -401,8 +403,10 @@ def repair_delisted_instruments(
     if parts:
         lake_last = parts[-1].end
         cutoff = lake_last - timedelta(days=RETIRED_GAP_DAYS)
+        from ashare_lake.query.parquet_scan import parquet_glob
+
         last_bars = (
-            pl.scan_parquet(str(bars_root / "**" / "*.parquet"))
+            pl.scan_parquet(parquet_glob(bars_root))
             .group_by("symbol")
             .agg(pl.col("trade_date").max().alias("last_bar"))
             .filter(pl.col("last_bar") < cutoff)

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ashare_lake.config import Config
+from ashare_lake.file_lock import is_locked
 from ashare_lake.orchestrator.manifest import Manifest
 
 
@@ -110,7 +109,7 @@ def clean_stale_lock_files(
 ) -> int:
     """Delete old run-lock files nobody holds (they accumulate one per run).
 
-    A file is only removed after acquiring its flock non-blocking — a held
+    A file is only removed after a non-blocking probe proves it free — a held
     lock (live retry/compact) is always skipped.
     """
     lock_dir = meta_root / "locks"
@@ -121,15 +120,19 @@ def clean_stale_lock_files(
     for path in lock_dir.glob("*.lock"):
         if path.stat().st_mtime > cutoff:
             continue
-        with contextlib.suppress(OSError):
-            with open(path, "w") as fh:
-                try:
-                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    continue
-                if not dry_run:
-                    path.unlink(missing_ok=True)
-                removed += 1
+        if is_locked(path):
+            continue
+        if not dry_run:
+            try:
+                # Deliberately unlinked *after* the probe closed its handle:
+                # Windows refuses to delete an open file, so holding the lock
+                # across the unlink — which is what the flock version did —
+                # cannot work there. A holder that reappears in this gap turns
+                # the unlink into an OSError, and skipping is the right answer.
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+        removed += 1
     return removed
 
 

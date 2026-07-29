@@ -7,7 +7,6 @@ answers the question it cannot — whether that config works in *this* environme
 
 from __future__ import annotations
 
-import os
 import platform
 import shlex
 import sys
@@ -143,6 +142,17 @@ def _check_racer(findings: list[Finding]) -> None:
         )
 
 
+def _data_root_writable(data_root: Path) -> bool:
+    """True when a file can be created and removed under *data_root*."""
+    probe = data_root / ".asl_write_probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def _check_data_root(data_root: Path, findings: list[Finding]) -> None:
     if not data_root.is_absolute():
         findings.append(
@@ -169,13 +179,20 @@ def _check_data_root(data_root: Path, findings: list[Finding]) -> None:
         )
         return
 
-    if not os.access(data_root, os.W_OK):
+    # Probe a real write: ``os.access(..., W_OK)`` is unreliable on Windows ACLs,
+    # and ``chmod`` is the wrong remediation there.
+    if not _data_root_writable(data_root):
+        fix = (
+            f"在资源管理器中为当前用户授予「修改」权限: {data_root}"
+            if sys.platform == "win32"
+            else f"chmod u+w {data_root}"
+        )
         findings.append(
             Finding(
                 severity=Severity.ERROR,
                 title=f"data.root 不可写: {data_root}",
                 detail="编排会在首次写入时失败。",
-                fix=f"chmod u+w {data_root}",
+                fix=fix,
             )
         )
 

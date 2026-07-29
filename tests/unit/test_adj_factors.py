@@ -10,6 +10,7 @@ from ashare_lake.adapters.sina.adj_factors import (
     to_sina_symbol,
 )
 from ashare_lake.config import load_config
+from ashare_lake.config.bootstrap import path_for_toml
 from ashare_lake.derive.adj_factors import (
     _align_factors_to_bars,
     _cache_path,
@@ -141,7 +142,7 @@ def adj_config(tmp_path, monkeypatch):
     cfg_path.write_text(
         f"""
 [data]
-root = "{data_root}"
+root = "{path_for_toml(data_root)}"
 
 [orchestrator]
 workers = 1

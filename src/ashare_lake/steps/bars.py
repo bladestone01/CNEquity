@@ -638,12 +638,10 @@ def _history_plan(config: Config, start: date, end: date) -> list[tuple[str, dat
       asking for it is ~2600 symbols' worth of empty year files.
     * The rest start at their listing year rather than at ``start``.
     """
-    import glob
-
     import polars as pl
 
     symbols = [s for s in load_symbols(config) if not s.startswith("92")]
-    files = glob.glob(f"{config.curated_root}/instruments/**/*.parquet", recursive=True)
+    files = sorted((config.curated_root / "instruments").rglob("*.parquet"))
     if not files:
         # No instruments to plan against: fall back to the full window rather
         # than silently fetching nothing.
@@ -719,10 +717,11 @@ def _delisted_universe(config: Config, start: date, end: date) -> list[str]:
 
     from ashare_lake.adapters.baostock._session import _login, import_baostock
     from ashare_lake.adapters.baostock.delisted_bars import roster_on
+    from ashare_lake.query.parquet_scan import parquet_glob
 
     bars_root = config.curated_root / "daily_bars"
     have = set(
-        pl.scan_parquet(str(bars_root / "**" / "*.parquet"))
+        pl.scan_parquet(parquet_glob(bars_root))
         .select("symbol")
         .unique()
         .collect()["symbol"]

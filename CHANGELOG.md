@@ -4,6 +4,60 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Native Windows 10/11 (64-bit) support: cross-platform file locks replace
+  Unix-only `fcntl.flock` in run locks, watermark writes, rate limiting, and
+  staging cleanup (`ashare_lake.file_lock`).
+- CI `windows-latest` job running the offline unit suite.
+- `asl config init` defaults `workers = 1` on Windows (same as macOS); raising
+  workers later is allowed — Windows uses spawn, not the unsafe macOS fork path.
+- Installation docs cover PowerShell / cmd, path forms, and the supported
+  Windows scope (x86-64; 32-bit / ARM64 deferred).
+- README (zh/en) leads with a **shortest path to data** (demo vs daily lake),
+  then datasets and the peer comparison table — less duplicate install/read
+  sections for first-time readers.
+- README shows a layered architecture PNG (zh/en) above the shortest path;
+  drops the one-line peer punchline under the comparison table.
+- README screenshots re-rendered without the retired `mootdx` probe line;
+  banner copy tracks current `asl demo`.
+- Docs hub reordered (install/quickstart first); `architecture.md` and
+  `datasets/README.md` folded into overview/catalog stubs; module
+  cli/query/config pages reduced to source maps.
+- Architecture PNGs list primary + supplement adapters (`ths` / `sw` / `cni` /
+  `macro`, plus calendar seeds note).
+
+### Fixed
+
+- Windows CI: `path_for_toml(Path("/tmp/…"))` assertion accepts drive-letter
+  POSIX forms (`D:/tmp/…`) on `win32`.
+- Stale docs: removed retired pip extras (`[macro]` / `[valuation]` / …);
+  clarified `ASL_*` env vars are script-only (`asl` CLI does not read them);
+  fixed eastmoney adapter CLI relative link and quickstart Init anchor.
+
+
+- DuckDB view globs now use POSIX paths (`as_posix()`), so Windows backslashes
+  no longer break `read_parquet(...)` SQL literals.
+- Polars recursive scans go through `parquet_glob()` (same POSIX rule); the
+  instruments planner uses `Path.rglob` instead of `glob.glob(f"{Path}/…")`.
+- `asl config init --data-root` no longer strips escaped backslashes when the
+  path is a Windows `C:\…` form (callable `re.sub` replacement).
+- `asl demo` writes a TOML-safe `data.root` (escaped POSIX path) so follow-up
+  `asl query --config configs/ashare-lake.demo.toml` works on Windows.
+- `asl doctor` probes writability with a real create/delete (not `os.access`) and
+  suggests an ACL fix on Windows instead of `chmod`.
+- EastMoney sticky IP / CLI sticky reads always use UTF-8.
+- Atomic parquet replace retries briefly on `PermissionError` (WinError 32 when
+  DuckDB / Explorer still holds the destination).
+- TDX heartbeat thread is daemon and is joined on disconnect, so spawn workers
+  do not linger after close.
+- Test helpers embed `data.root` via `path_for_toml()` so Windows CI no longer
+  dies on `TOMLDecodeError: Invalid hex value` from unescaped `C:\Users\…`.
+- Offline unit coverage expanded across EastMoney / cninfo / failover /
+  sentiment / sector helpers so project branch coverage sits above 80%.
+
 ## [0.3.0] — 2026-07-29
 
 ### Upgrading from 0.2.x

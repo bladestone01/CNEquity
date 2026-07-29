@@ -36,7 +36,7 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 
 ```bash
 pip install ashare-lake   # 若尚未安装
-asl config init                 # → configs/ashare-lake.toml；macOS 自动 workers=1
+asl config init                 # → configs/ashare-lake.toml；macOS / Windows 自动 workers=1
 # 可选：asl config init --data-root /abs/path/to/lake
 asl config validate
 ```
@@ -71,7 +71,7 @@ asl init --resume --config configs/ashare-lake.toml
 asl retry --run-id <run_id> --config configs/ashare-lake.toml
 ```
 
-init 耗时较长（全市场日线分页回填），建议在稳定网络下运行。阶段定义见 [数据流 — Init](../architecture/data-flow.md#init-全量回填)。
+init 耗时较长（全市场日线分页回填），建议在稳定网络下运行。阶段定义见 [数据流 — Init](../architecture/data-flow.md#init全量回填)。
 
 ## 3. 回填验收（推荐，需仓库脚本）
 

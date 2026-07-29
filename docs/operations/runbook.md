@@ -49,6 +49,31 @@ scripts/uninstall_scheduler.sh
 5 16 * * * /path/to/ashare-lake/scripts/daily_pipeline.sh
 ```
 
+**Windows 任务计划程序**（原生 Win10/11；`daily_pipeline.sh` 不适用于 PowerShell）：
+
+1. 先确认 `asl doctor` 与 `asl config validate` 通过，`data.root` 用短绝对路径（如 `D:\lake`）。
+2. 打开「任务计划程序」→ 创建基本任务 → 每天 16:05（或收盘后任一时刻）。
+3. 操作选「启动程序」：
+
+| 字段 | 示例 |
+|------|------|
+| 程序/脚本 | `C:\path\to\.venv\Scripts\asl.exe` |
+| 添加参数 | `run daily --config C:\path\to\configs\ashare-lake.toml` |
+| 起始于 | `C:\path\to`（仓库或配置所在目录） |
+
+多 group 时建多个任务，或写一个 `.ps1` 顺序调用：
+
+```powershell
+$asl = "C:\path\to\.venv\Scripts\asl.exe"
+$cfg = "--config C:\path\to\configs\ashare-lake.toml"
+& $asl run daily --group core $cfg
+& $asl run daily --group capital $cfg
+# …其余 group
+& $asl audit --full $cfg
+```
+
+> 控制台中文乱码时：`chcp 65001`，或设置用户环境变量 `PYTHONUTF8=1`。
+
 ---
 
 ## 每日 Pipeline
@@ -138,11 +163,13 @@ asl run daily --group core   # 增量续采
 
 ---
 
-## 环境变量
+## 环境变量（仅 `scripts/*.sh`）
+
+下列变量由 [scripts.md](scripts.md) 中的 shell 脚本读取；**`asl` CLI 本身不读**（请用 `--config`）。
 
 | 变量 | 默认 | 作用 |
 |------|------|------|
-| `ASL_CONFIG` | `configs/ashare-lake.toml` | 配置 |
+| `ASL_CONFIG` | `configs/ashare-lake.toml` | 脚本传给 `asl --config` 的路径 |
 | `ASL_LOG_DIR` | `{data.root}/logs` | 日志 |
 | `ASL_GROUPS` | 全部 6 组 | 覆盖 pipeline 组列表 |
 | `ASL_NOTIFY` | `1` | `0` 关闭通知 |
@@ -195,6 +222,8 @@ asl init --config configs/ashare-lake.toml
 2016 起全量 init 大约 1.5–2.5 小时（TDX 分页 + Sina 复权；compact 内存尖峰约 2 GB）。
 macOS 上必须 `[orchestrator].workers = 1`（TDX 客户端与 `ProcessPoolExecutor` 不兼容；
 `asl config validate` 在 Darwin 上会拒绝 `workers>1`）。
+Windows 上 `asl config init` 同样默认 `workers = 1`（spawn 可用，但首次建议单进程）；
+需要时可自行提高，validate 不会拦截。
 单实例、收盘后运行。
 
 ---

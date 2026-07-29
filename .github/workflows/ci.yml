@@ -64,3 +64,28 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Windows is a first-class runtime target (file locks, path forms, wheels).
+  # One Python version is enough to catch platform regressions; Ubuntu already
+  # covers the 3.11/3.12 matrix. Network tests stay deselected via addopts.
+  test-windows:
+    runs-on: windows-latest
+    env:
+      # Force UTF-8 stdio so Chinese CLI/doctor strings never hit cp1252 EncodeError.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
+
+      - name: Test
+        run: pytest tests/unit -q

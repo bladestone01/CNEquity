@@ -242,7 +242,7 @@ def _load_sticky(path: Path | None) -> str | None:
     if path is None or not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         ip = str(data.get("ip") or "").strip()
         if ip:
             _STICKY_IP = ip
@@ -261,7 +261,8 @@ def _save_sticky(path: Path | None, ip: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps({"ip": ip, "host": "push2his.eastmoney.com", "updated_at": time.time()})
-            + "\n"
+            + "\n",
+            encoding="utf-8",
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("push2his sticky save failed: %s", exc)
@@ -286,7 +287,7 @@ def _mark_edge_failed(ip: str, sticky_path: Path | None) -> None:
     # Drop file sticky if it points at the dead edge — next success rewrites it.
     if sticky_path is not None and sticky_path.exists():
         try:
-            data = json.loads(sticky_path.read_text())
+            data = json.loads(sticky_path.read_text(encoding="utf-8"))
             if str(data.get("ip") or "").strip() == ip:
                 sticky_path.unlink(missing_ok=True)
         except Exception as exc:  # noqa: BLE001

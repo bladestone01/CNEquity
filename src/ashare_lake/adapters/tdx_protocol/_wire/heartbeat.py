@@ -25,7 +25,9 @@ class HeartBeatThread(Thread):
         self.client = client.client
         self.api = client
 
-        super().__init__()
+        # Daemon so a forgotten disconnect cannot keep the process alive on
+        # Windows spawn workers (and macOS/Linux alike).
+        super().__init__(daemon=True)
 
     def run(self):
         # stop_event 未设置就执行

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 from click.testing import CliRunner
@@ -153,11 +154,28 @@ def test_demo_help_lists_command():
     assert "--days" in result.output
 
 
-def test_probe_tdx_closes_its_client():
-    """An unclosed client keeps the non-daemon heartbeat thread alive.
+def test_write_demo_toml_escapes_windows_paths(tmp_path):
+    """Bare ``C:\\Users\\…`` is invalid TOML; follow-up ``asl query`` would fail."""
+    import tomllib
 
-    The demo then prints all six steps and never exits, which reads as a hang
-    even though the work finished seconds earlier.
+    from ashare_lake.cli.demo import _write_demo_toml
+
+    out = tmp_path / "demo.toml"
+    # Simulate a native Windows resolve() result even on Unix CI.
+    data_root = tmp_path / "Users" / "测试" / "lake"
+    data_root.mkdir(parents=True)
+    _write_demo_toml(out, data_root)
+
+    payload = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert "\\" not in payload["data"]["root"]
+    assert Path(payload["data"]["root"]).name == "lake"
+
+
+def test_probe_tdx_closes_its_client():
+    """Probe must close the client even though the heartbeat is now a daemon.
+
+    Before the close, an abandoned non-daemon thread kept the interpreter
+    alive after all six demo steps had already printed.
     """
     from unittest.mock import patch
 

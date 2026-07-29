@@ -32,6 +32,15 @@ def dataset_has_parquet(root: Path) -> bool:
     return root.exists() and any(root.rglob("*.parquet"))
 
 
+def parquet_glob(root: Path) -> str:
+    """Recursive ``*.parquet`` glob in POSIX form for polars / DuckDB.
+
+    ``str(root / "**" / "*.parquet")`` injects backslashes on Windows, which
+    break both engines' glob matchers. Forward slashes are accepted everywhere.
+    """
+    return f"{Path(root).resolve().as_posix()}/**/*.parquet"
+
+
 def _all_day_partitions(root: Path, partition_col: str | None) -> bool:
     """Whether every partition on disk is a single day.
 
@@ -139,12 +148,12 @@ def scan_parquet_root(
         if not files:
             # Window is outside the lake's coverage — return an empty frame with
             # the real schema rather than raising, so callers can filter freely.
-            return pl.scan_parquet(
-                str(root / "**" / "*.parquet"), hive_partitioning=use_hive
-            ).filter(pl.lit(False))
+            return pl.scan_parquet(parquet_glob(root), hive_partitioning=use_hive).filter(
+                pl.lit(False)
+            )
         lf = pl.scan_parquet([str(f) for f in files], hive_partitioning=use_hive)
     if lf is None:
-        lf = pl.scan_parquet(str(root / "**" / "*.parquet"), hive_partitioning=use_hive)
+        lf = pl.scan_parquet(parquet_glob(root), hive_partitioning=use_hive)
 
     # Still filter on the column: a coarse partition covers days outside the
     # window, and pruning alone would over-return at the period edges.
