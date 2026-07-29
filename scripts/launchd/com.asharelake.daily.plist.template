@@ -14,16 +14,18 @@
     <string>__REPO_ROOT__/scripts/daily_pipeline.sh</string>
   </array>
 
-  <!-- Fire at 15:00 local time every day; non-trading days are cheap no-ops. -->
+  <!-- Fire at 16:05 local time every day; non-trading days are cheap no-ops.
+       16:05 assumes a China-local Mac (after the 15:00 CST close). Overseas
+       timezones should edit the installed plist — re-running this installer
+       overwrites custom hours. -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
-    <integer>15</integer>
+    <integer>16</integer>
     <key>Minute</key>
-    <integer>0</integer>
+    <integer>5</integer>
   </dict>
 
-  <!-- If the Mac was asleep at 15:00, run once on wake. -->
   <key>RunAtLoad</key>
   <false/>
 

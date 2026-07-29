@@ -57,6 +57,27 @@ batch_rest_seconds = 60
 # When unset, httpx still honors HTTPS_PROXY / HTTP_PROXY env vars.
 # proxy = "http://127.0.0.1:7890"
 
+[sources.ths]
+# 同花顺 — primary source for sector_bars (board index OHLC), history and daily.
+# push2his (EastMoney's kline host) refuses non-mainland egress at the WAF layer,
+# and mixing sources put two index bases in one series; see docs.
+enabled = true
+# d.10jqka.com.cn (kline). Measured safe: ~1300 sequential requests at this pace
+# with zero failures, which is a full 432-board sweep in ~8 min. Do not lower it —
+# a rate-limit ban costs far more than the minutes it saves.
+min_interval_seconds = 1.0
+
+[sources.ths_pages]
+# q.10jqka.com.cn (board catalog and listing pages) is far less tolerant than the
+# kline host: it began returning 401 after ~23 requests at 1 req/s. Only the
+# catalog build touches it (~95 requests, then cached to
+# meta/state/ths_board_catalog.json), so a slow interval costs a rare ~30 min
+# rebuild rather than anything on the daily path.
+# This value is a conservative guess: the only figure actually measured is the
+# rate that got blocked, not one observed to be safe.
+enabled = true
+min_interval_seconds = 20.0
+
 [sources.cninfo]
 enabled = true
 min_interval_seconds = 1.0
