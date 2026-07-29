@@ -38,7 +38,10 @@ def test_every_required_package_declares_a_purpose():
 
 def test_required_packages_are_all_declared_dependencies():
     """The probe list must not drift from what the project actually installs."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
 
     pyproject = tomllib.loads(
         (Path(__file__).resolve().parents[2] / "pyproject.toml").read_bytes().decode("utf-8")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ashare_lake.config import Config
@@ -115,7 +115,7 @@ def clean_stale_lock_files(
     lock_dir = meta_root / "locks"
     if not lock_dir.exists():
         return 0
-    cutoff = datetime.now(UTC).timestamp() - retention_days * 86400
+    cutoff = datetime.now(timezone.utc).timestamp() - retention_days * 86400
     removed = 0
     for path in lock_dir.glob("*.lock"):
         if path.stat().st_mtime > cutoff:
@@ -156,7 +156,7 @@ def clean_staging(
     """
     manifest = Manifest(config.manifest_path)
     staging_root = config.staging_root
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
 
     known_run_ids = {row["run_id"] for row in manifest.list_runs()}
     staging_run_ids = list_staging_run_ids(staging_root)

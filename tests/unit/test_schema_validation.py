@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -38,7 +38,7 @@ def test_validate_casts_and_selects_schema_columns():
     assert "extra_col" not in out.columns
     assert out["trade_date"][0] == date(2024, 6, 28)
     assert out.schema["fetched_at"] == FETCHED_AT_DTYPE
-    assert out["fetched_at"][0] == datetime(2024, 6, 28, tzinfo=UTC)
+    assert out["fetched_at"][0] == datetime(2024, 6, 28, tzinfo=timezone.utc)
 
 
 def test_validate_missing_column_raises():

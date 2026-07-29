@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 
 import polars as pl
 
@@ -15,7 +15,7 @@ def _prov(source: str = "tdx_protocol") -> dict:
     return {
         "source": source,
         "data_version": "v1",
-        "fetched_at": datetime(2024, 6, 28, tzinfo=UTC),
+        "fetched_at": datetime(2024, 6, 28, tzinfo=timezone.utc),
     }
 
 

@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 from contextlib import AbstractContextManager
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import IO
 
@@ -70,7 +70,7 @@ class StateStore:
         with self._dataset_lock(dataset):
             payload = self._read_payload(path)
             payload[field] = value.isoformat()
-            payload["updated_at"] = datetime.now(UTC).isoformat()
+            payload["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._write_payload(path, payload)
 
     def update_max_date(
@@ -87,5 +87,5 @@ class StateStore:
             current = date.fromisoformat(str(current_raw)) if current_raw else None
             if current is None or candidate > current:
                 payload[field] = candidate.isoformat()
-                payload["updated_at"] = datetime.now(UTC).isoformat()
+                payload["updated_at"] = datetime.now(timezone.utc).isoformat()
                 self._write_payload(path, payload)

@@ -83,7 +83,7 @@ pytest tests/integration  # 可选
 
 ## 代码风格
 
-- Ruff：line-length 100，py311
+- Ruff：line-length 100，py310
 - 类型注解：新代码推荐完整标注
 - 注释：仅解释非显而易见的业务/协议细节
 

@@ -8,7 +8,7 @@ from datetime import date
 import polars as pl
 
 from ashare_lake.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
-from ashare_lake.adapters.eastmoney.common import _to_float
+from ashare_lake.adapters.eastmoney.common import _to_float, parse_em_ymd
 from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
 from ashare_lake.domain.symbols import parse_symbol
 
@@ -113,7 +113,7 @@ def fetch_daily_bars(
             if len(parts) < 7:
                 continue
             try:
-                trade_date = date.fromisoformat(parts[0])
+                trade_date = parse_em_ymd(parts[0])
             except ValueError:
                 continue
             rows.append(

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -267,6 +267,6 @@ def derive_sector_routing(config: Config, *, as_of: date | None = None) -> dict:
     out = _routing_path(config)
     df.write_parquet(out)
     summary["notes"] = notes
-    summary["generated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    summary["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     _summary_path(config).write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary

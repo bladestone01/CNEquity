@@ -6,6 +6,12 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Lowered the supported Python floor from 3.11 to **3.10** (`requires-python = ">=3.10"`).
+  EastMoney compact `YYYYMMDD` kline dates now parse via `strptime` (3.10
+  `date.fromisoformat` only accepts dashed ISO forms).
+
 ## [0.3.0] — 2026-07-29
 
 ### Upgrading from 0.2.x

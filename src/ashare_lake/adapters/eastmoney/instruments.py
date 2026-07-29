@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 
 import polars as pl
 
@@ -26,7 +26,7 @@ def _parse_list_date(value: object) -> date | None:
         except ValueError:
             return None
     if num > 1_000_000_000_000:
-        return datetime.fromtimestamp(num / 1000, tz=UTC).date()
+        return datetime.fromtimestamp(num / 1000, tz=timezone.utc).date()
     text = str(num)
     if len(text) == 8:
         return date.fromisoformat(f"{text[:4]}-{text[4:6]}-{text[6:8]}")

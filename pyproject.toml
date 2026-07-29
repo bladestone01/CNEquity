@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Self-hosted A-share Parquet data lake with multi-source ingest and daily orchestration"
 # Short PyPI page (absolute links only). GitHub keeps README.md / README.en.md.
 readme = "README.pypi.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ashare-lake Contributors" }]
 keywords = ["a-share", "stock", "data-engineering", "parquet", "duckdb"]
@@ -20,6 +20,7 @@ classifiers = [
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Topic :: Office/Business :: Financial :: Investment",
@@ -50,6 +51,8 @@ dependencies = [
   "pandas>=2.0",
   "openpyxl>=3.0",
   "xlrd>=2.0",
+  # stdlib tomllib is 3.11+; config loader falls back to tomli on 3.10.
+  "tomli>=2; python_version < '3.11'",
 ]
 
 # No [project.optional-dependencies]. Everything is a hard dependency.
@@ -95,7 +98,7 @@ ashare_lake = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 src = ["src", "tests"]
 # Vendored upstream code (tdxpy, MIT). Kept byte-close to its source so it can be
 # re-synced or diffed against upstream; reformatting it to our rules would only

@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 
@@ -198,7 +198,7 @@ def test_mark_stale_running_batches_failed(tmp_path):
     manifest = Manifest(cfg.manifest_path)
     run_id = "run-stale"
     manifest.start_batch(run_id, "batch-stuck", "daily_bars", "daily_bars", symbols=["600519.SH"])
-    old_start = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    old_start = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     with manifest._connect() as conn:
         conn.execute(
             """

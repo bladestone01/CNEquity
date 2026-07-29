@@ -51,7 +51,11 @@ def test_path_for_toml_makes_windows_tmp_paths_parseable():
     """Regression for windows-latest CI: bare ``C:\\Users\\…`` is invalid TOML."""
     import re
     import sys
-    import tomllib
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
 
     from ashare_lake.config.bootstrap import _toml_escape, path_for_toml
 
@@ -85,7 +89,10 @@ def test_write_user_config_refuses_overwrite(tmp_path):
         write_user_config(out, platform="linux")
     write_user_config(out, force=True, data_root=str(tmp_path / "data"), platform="linux")
     # Parse rather than substring-match: Windows paths are TOML-escaped (`\\`).
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
 
     payload = tomllib.loads(out.read_text(encoding="utf-8"))
     assert Path(payload["data"]["root"]).resolve() == (tmp_path / "data").resolve()

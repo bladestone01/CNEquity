@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
@@ -68,7 +68,7 @@ class OnDemandService:
             use_snownlp=use_snownlp,
         )
         payload["data_version"] = "v1"
-        payload["fetched_at"] = datetime.now(UTC).isoformat()
+        payload["fetched_at"] = datetime.now(timezone.utc).isoformat()
         return payload
 
     def _fetch_announcement_body(self, symbol: str) -> dict:

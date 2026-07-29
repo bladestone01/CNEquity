@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -11,7 +11,7 @@ def _prov(source: str = "test") -> dict:
     return {
         "source": source,
         "data_version": "v1",
-        "fetched_at": datetime(2024, 6, 28, tzinfo=UTC),
+        "fetched_at": datetime(2024, 6, 28, tzinfo=timezone.utc),
     }
 
 

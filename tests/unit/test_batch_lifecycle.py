@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 
@@ -42,7 +42,7 @@ def test_running_to_stale_to_failed_lifecycle(tmp_path):
     run_id = "run-lifecycle"
     manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars", symbols=["600519.SH"])
 
-    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     with manifest._connect() as conn:
         conn.execute(
             """
@@ -71,7 +71,7 @@ def test_compact_promotes_stale_running_batch(tmp_path):
     manifest.finish_batch(run_id, "batch-ok", "success", rows_written=1)
     manifest.start_batch(run_id, "batch-stuck", "daily_bars", "daily_bars", symbols=["600519.SH"])
 
-    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     with manifest._connect() as conn:
         conn.execute(
             """

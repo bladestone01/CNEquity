@@ -106,14 +106,14 @@ def test_reconcile_orphaned_runs_closes_stale_running(tmp_path):
 
 def test_reconcile_keeps_a_run_with_fresh_batch_heartbeat(tmp_path):
     """Long jobs must not be closed just because run.started_at is old."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     cfg = Config(data_root=tmp_path / "data")
     init_data_layout(cfg)
     manifest = Manifest(cfg.manifest_path)
     run_id = manifest.start_run("valuation_2001", {})
     # Backdate the run start so a started_at-only check would kill it.
-    old = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
     with manifest._connect() as conn:
         conn.execute(
             "UPDATE ingestion_runs SET started_at = ? WHERE run_id = ?",

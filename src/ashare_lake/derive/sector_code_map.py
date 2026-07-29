@@ -7,7 +7,7 @@ EastMoney uses one numeric board id in two spellings:
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -186,6 +186,6 @@ def derive_sector_code_map(config: Config, *, as_of: date | None = None) -> dict
 
     config.meta_root.mkdir(parents=True, exist_ok=True)
     df.write_parquet(_map_path(config))
-    summary["generated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    summary["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     _summary_path(config).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     return summary

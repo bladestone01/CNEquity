@@ -11,7 +11,7 @@ import platform
 import shlex
 import sys
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 from importlib import metadata
 from pathlib import Path
 
@@ -25,7 +25,7 @@ from ashare_lake.diagnostics.packages import (
 )
 
 
-class Severity(StrEnum):
+class Severity(str, Enum):
     OK = "ok"
     WARN = "warn"
     ERROR = "error"

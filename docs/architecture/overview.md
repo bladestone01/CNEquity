@@ -112,7 +112,7 @@ Job (daily / init / backfill / retry)
 
 | 组件 | 选型 |
 |------|------|
-| Python | ≥ 3.11 |
+| Python | ≥ 3.10 |
 | DataFrame | Polars |
 | 存储 | Parquet (PyArrow, zstd) |
 | 查询 | DuckDB（视图层） |

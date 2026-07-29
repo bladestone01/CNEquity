@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
 from ashare_lake.domain.symbols import format_symbol, is_all_a_symbol
 
 ALL_A_FS = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
@@ -17,6 +19,14 @@ PUSH2HIS_KLINE_HOSTS = (
     "https://push2his.eastmoney.com",
     "https://91.push2his.eastmoney.com",
 )
+
+
+def parse_em_ymd(value: str) -> date:
+    """Parse EastMoney compact ``YYYYMMDD`` (3.10 ``fromisoformat`` rejects this)."""
+    text = str(value).strip()
+    if len(text) == 8 and text.isdigit():
+        return datetime.strptime(text, "%Y%m%d").date()
+    return date.fromisoformat(text[:10])
 
 
 def symbol_from_secucode(secucode: str | None) -> str | None:

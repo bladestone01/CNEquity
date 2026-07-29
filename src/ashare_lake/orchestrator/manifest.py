@@ -4,13 +4,13 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -275,7 +275,7 @@ class Manifest:
 
     def promote_running_to_stale(self, run_id: str, *, stale_after_seconds: float) -> int:
         """Mark running batches with expired heartbeats as stale."""
-        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
         stale_ids: list[str] = []
         with self._connect() as conn:
             cur = conn.execute(
@@ -375,7 +375,7 @@ class Manifest:
         """
         from ashare_lake.orchestrator.run_lock import is_run_locked
 
-        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
         runs_closed = 0
         batches_closed = 0
         skipped_locked = 0
@@ -439,7 +439,7 @@ class Manifest:
         """How many ``running`` runs look orphaned (same rules as reconcile)."""
         from ashare_lake.orchestrator.run_lock import is_run_locked
 
-        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
         n = 0
         with self._connect() as conn:
             for row in conn.execute(

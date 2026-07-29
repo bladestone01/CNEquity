@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 
@@ -97,7 +97,7 @@ def test_clean_never_deletes_failed_run_staging_without_force(tmp_path):
         pl.DataFrame([_bar_row("000001.SZ", date(2024, 6, 28))]),
     )
     run_dir = cfg.staging_root / "daily_bars" / f"run_id={run_id}"
-    old = datetime.now(UTC) - timedelta(days=30)
+    old = datetime.now(timezone.utc) - timedelta(days=30)
     os.utime(run_dir, (old.timestamp(), old.timestamp()))
 
     result = clean_staging(cfg, orphan_retention_days=7)
@@ -168,7 +168,7 @@ def test_clean_removes_orphan_staging_without_manifest(tmp_path):
         pl.DataFrame([_bar_row("000001.SZ", date(2024, 6, 28))]),
     )
     run_dir = cfg.staging_root / "daily_bars" / f"run_id={run_id}"
-    old = datetime.now(UTC) - timedelta(days=10)
+    old = datetime.now(timezone.utc) - timedelta(days=10)
     os.utime(run_dir, (old.timestamp(), old.timestamp()))
 
     result = clean_staging(cfg, orphan_retention_days=7)
@@ -235,7 +235,7 @@ def test_clean_stale_lock_files_removes_old_unheld_lock(tmp_path):
     lock_dir.mkdir(parents=True)
     lock_path = lock_dir / "run-old.lock"
     lock_path.write_text("")
-    old = datetime.now(UTC) - timedelta(days=30)
+    old = datetime.now(timezone.utc) - timedelta(days=30)
     os.utime(lock_path, (old.timestamp(), old.timestamp()))
 
     removed = clean_stale_lock_files(meta_root, retention_days=7)
@@ -263,7 +263,7 @@ def test_clean_stale_lock_files_skips_held_lock(tmp_path):
     lock_dir.mkdir(parents=True)
     lock_path = lock_dir / "run-held.lock"
     lock_path.write_text("")
-    old = datetime.now(UTC) - timedelta(days=30)
+    old = datetime.now(timezone.utc) - timedelta(days=30)
     os.utime(lock_path, (old.timestamp(), old.timestamp()))
 
     with exclusive_lock(lock_path):
@@ -280,7 +280,7 @@ def test_clean_stale_lock_files_dry_run_keeps_file(tmp_path):
     lock_dir.mkdir(parents=True)
     lock_path = lock_dir / "run-old.lock"
     lock_path.write_text("")
-    old = datetime.now(UTC) - timedelta(days=30)
+    old = datetime.now(timezone.utc) - timedelta(days=30)
     os.utime(lock_path, (old.timestamp(), old.timestamp()))
 
     removed = clean_stale_lock_files(meta_root, retention_days=7, dry_run=True)

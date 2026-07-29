@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import polars as pl
 
@@ -597,7 +597,7 @@ def validate_dataframe(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
 
 
 def utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def with_provenance(df: pl.DataFrame, source: str, data_version: str) -> pl.DataFrame:
@@ -605,7 +605,7 @@ def with_provenance(df: pl.DataFrame, source: str, data_version: str) -> pl.Data
     # that marker must survive normalization.
     cols = [
         pl.lit(data_version).alias("data_version"),
-        pl.lit(datetime.now(UTC)).cast(FETCHED_AT_DTYPE).alias("fetched_at"),
+        pl.lit(datetime.now(timezone.utc)).cast(FETCHED_AT_DTYPE).alias("fetched_at"),
     ]
     if "source" not in df.columns:
         cols.append(pl.lit(source).alias("source"))

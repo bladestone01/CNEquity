@@ -12,6 +12,7 @@ from ashare_lake.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_cl
 from ashare_lake.adapters.eastmoney.common import (
     _to_float,
     exchange_from_datacenter,
+    parse_em_ymd,
     symbol_from_em,
     symbol_from_secucode,
 )
@@ -224,7 +225,7 @@ def fetch_northbound_flows(
         if len(parts) < 3:
             continue
         try:
-            row_date = date.fromisoformat(parts[0])
+            row_date = parse_em_ymd(parts[0])
         except ValueError:
             continue
         if row_date != trade_date:

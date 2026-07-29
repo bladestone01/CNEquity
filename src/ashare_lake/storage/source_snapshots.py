@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -130,7 +130,7 @@ def clean_source_snapshots(
     if not root.exists() or retention_days < 0:
         return result
 
-    anchor = now or datetime.now(UTC)
+    anchor = now or datetime.now(timezone.utc)
     cutoff = anchor.timestamp() - retention_days * 86400
 
     for dataset_dir in sorted(p for p in root.iterdir() if p.is_dir()):

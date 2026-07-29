@@ -1,5 +1,5 @@
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import polars as pl
@@ -68,7 +68,7 @@ def test_read_latest_uses_newest_run_only(tmp_path):
         / "run_id=run-old"
     )
     # Ensure mtime ordering: old run older than new.
-    older = (datetime.now(UTC) - timedelta(days=3)).timestamp()
+    older = (datetime.now(timezone.utc) - timedelta(days=3)).timestamp()
     for path in [old_dir, *old_dir.rglob("*")]:
         if path.exists():
             Path(path).touch()
@@ -114,7 +114,7 @@ def test_clean_source_snapshots_keeps_newest_and_recent(tmp_path):
         / "data_version=v1"
         / "run_id=run-stale"
     )
-    old_ts = (datetime.now(UTC) - timedelta(days=30)).timestamp()
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).timestamp()
     for path in [stale, *stale.rglob("*")]:
         os.utime(path, (old_ts, old_ts))
 

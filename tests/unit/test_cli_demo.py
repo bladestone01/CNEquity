@@ -156,7 +156,10 @@ def test_demo_help_lists_command():
 
 def test_write_demo_toml_escapes_windows_paths(tmp_path):
     """Bare ``C:\\Users\\…`` is invalid TOML; follow-up ``asl query`` would fail."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
 
     from ashare_lake.cli.demo import _write_demo_toml
 

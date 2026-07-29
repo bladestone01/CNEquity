@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -194,7 +194,7 @@ def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
         ),
     )
     manifest.start_batch(run_id, "batch-1", "daily_bars", "daily_bars", symbols=["600519.SH"])
-    old_start = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    old_start = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     with manifest._connect() as conn:
         conn.execute(
             """
