@@ -58,6 +58,10 @@ pip install ashare-lake
 asl demo
 ```
 
+<p align="center">
+  <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
+</p>
+
 ```python
 from ashare_lake.query import load
 
@@ -77,6 +81,14 @@ asl query --config configs/ashare-lake.demo.toml --sql "
   LIMIT 10
 "
 ```
+
+<p align="center">
+  <img src="docs/assets/asl-query.png" alt="asl query: DuckDB SQL with provenance source column" width="720" />
+</p>
+
+Optional: `asl demo --symbols 600519.SH,000001.SZ --days 10`. Needs reachability
+to TDX quote hosts (mainland egress is more reliable). On failure, try
+`asl servers test`.
 
 ### B. Self-hosted daily lake (research / production)
 
@@ -103,20 +115,6 @@ roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 
 > Path A writes `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`.  
 > Path B uses the config from `asl config init`. They do not overwrite each other.
-
-## One-minute demo
-
-Terminal look of path A (optional: `asl demo --symbols 600519.SH,000001.SZ --days 10`).
-Needs reachability to TDX quote hosts (mainland egress is more reliable). On
-failure, try `asl servers test`.
-
-<p align="center">
-  <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
-</p>
-
-<p align="center">
-  <img src="docs/assets/asl-query.png" alt="asl query: DuckDB SQL with provenance source column" width="720" />
-</p>
 
 ## Positioning: peers
 

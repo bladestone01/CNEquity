@@ -53,6 +53,10 @@ pip install ashare-lake
 asl demo
 ```
 
+<p align="center">
+  <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
+</p>
+
 ```python
 from ashare_lake.query import load
 
@@ -72,6 +76,12 @@ asl query --config configs/ashare-lake.demo.toml --sql "
   LIMIT 10
 "
 ```
+
+<p align="center">
+  <img src="docs/assets/asl-query.png" alt="asl query：带 source 溯源列的日线" width="720" />
+</p>
+
+可选：`asl demo --symbols 600519.SH,000001.SZ --days 10`。需要能访问 TDX 行情主机（大陆出口更稳）；失败先看 `asl servers test`。
 
 ### B. 自建日更湖（研究 / 生产）
 
@@ -98,19 +108,6 @@ roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 
 > demo（A）写的是 `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`；  
 > 全量湖（B）用 `asl config init` 写出的配置。两条线互不覆盖。
-
-## 一分钟体验
-
-路径 A 的终端观感（可选参数：`asl demo --symbols 600519.SH,000001.SZ --days 10`）。  
-需要能访问 TDX 行情主机（大陆出口更稳）；失败先看 `asl servers test`。
-
-<p align="center">
-  <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
-</p>
-
-<p align="center">
-  <img src="docs/assets/asl-query.png" alt="asl query：带 source 溯源列的日线" width="720" />
-</p>
 
 ## 定位：与同类差异
 
