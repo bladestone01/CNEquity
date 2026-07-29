@@ -19,8 +19,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - README (zh/en) leads with a **shortest path to data** (demo vs daily lake),
   then datasets and the peer comparison table — less duplicate install/read
   sections for first-time readers.
-- README adds a short sources → lake → query ASCII diagram above the shortest
-  path; drops the one-line peer punchline under the comparison table.
+- README shows a layered architecture PNG (zh/en) above the shortest path;
+  drops the one-line peer punchline under the comparison table.
 - README screenshots re-rendered without the retired `mootdx` probe line;
   banner copy tracks current `asl demo`.
 

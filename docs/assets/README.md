@@ -1,18 +1,27 @@
-# README screenshots
+# README assets
 
-Terminal-style PNGs embedded in `README.md` / `README.en.md` (relative paths).
+PNGs embedded in `README.md` / `README.en.md` (relative paths).
 PyPI uses the short `README.pypi.md`, which points at absolute
 `raw.githubusercontent.com` URLs for the one demo screenshot it embeds.
 
-Files:
+## Architecture
+
+| File | Shows |
+|------|--------|
+| `architecture-overview.zh.png` | Layered sources → orchestration → lake → consumers (zh) |
+| `architecture-overview.en.png` | Same diagram with English labels |
+
+```bash
+.venv/bin/python scripts/render_readme_architecture.py
+```
+
+## Terminal screenshots
 
 | File | Shows |
 |------|--------|
 | `asl-demo.png` | `asl demo` phased progress + sample bars |
 | `asl-query.png` | `asl query` SQL result with `source` |
 | `asl-load.png` | Python `load()` REPL |
-
-Regenerate (needs Pillow in the venv):
 
 ```bash
 .venv/bin/python scripts/render_readme_screenshots.py

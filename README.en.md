@@ -20,20 +20,9 @@ CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay down
 - Row-level provenance: `source` / `data_version` / `fetched_at`
 - One `load()` contract (adjust / universe / PIT)
 
-```
-   tdx_protocol    eastmoney    sina    cninfo    baostock / akshare …
-        │              │          │        │              │
-        ▼              ▼          ▼        ▼              ▼
-  ┌────────────────────────────────────────────────────────────┐
-  │   asl run daily  ·  orchestrate / watermarks / retry / audit │
-  └────────────────────────────────────────────────────────────┘
-                              │
-       staging ──▶ curated ──▶ derived        Parquet with row-level
-                              │               source / data_version / fetched_at
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-  Python load() API      DuckDB views / SQL     Polars on Parquet
-```
+<p align="center">
+  <img src="docs/assets/architecture-overview.en.png" alt="ashare-lake architecture: sources → asl run daily → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+</p>
 
 ## Shortest path to data
 

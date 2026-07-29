@@ -19,20 +19,9 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号�
 - 行级溯源：`source` / `data_version` / `fetched_at`
 - 统一 `load()` 契约（复权 / universe / PIT）
 
-```
-   tdx_protocol    eastmoney    sina    cninfo    baostock / akshare …
-        │              │          │        │              │
-        ▼              ▼          ▼        ▼              ▼
-  ┌────────────────────────────────────────────────────────────┐
-  │   asl run daily  ·  编排 / 水位 / 失败重试 / 质量审计          │
-  └────────────────────────────────────────────────────────────┘
-                              │
-       staging ──▶ curated ──▶ derived        Parquet，行级带
-                              │               source / data_version / fetched_at
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-  Python load() API      DuckDB 视图 / SQL     Polars 直读 Parquet
-```
+<p align="center">
+  <img src="docs/assets/architecture-overview.zh.png" alt="ashare-lake 架构：多源 → asl run daily → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+</p>
 
 ## 最短取数流程
 
