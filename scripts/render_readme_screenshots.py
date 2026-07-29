@@ -25,23 +25,24 @@ _FONT_CANDIDATES = [
 DEMO = """\
 $ asl demo --symbols 600519.SH,000001.SZ --days 5
 
-=== [1/6] Writing demo config ===
-Config → configs/ashare-lake.demo.toml
-data_root → data/ashare-lake-demo
+=== [1/6] Prepare demo lake at data/ashare-lake-demo ===
+data_root = …/data/ashare-lake-demo
+config    = configs/ashare-lake.demo.toml
+Note: this is a SEPARATE lake from a full `asl init` — safe to wipe.
 
-=== [2/6] Probing TDX hosts ===
-Connected (TDX / mootdx)
+=== [2/6] Probe TDX ===
+Probing TDX hosts (first successful server wins)…
+TDX connection OK (1.2s)
 
-=== [3/6] Instruments (2 symbols) ===
+=== [3/6] Instruments (demo universe) ===
+Fetching full instrument list, then keeping 2 demo symbols…
 Wrote 2 instruments → curated/instruments/
 
 === [4/6] Trading calendar ===
-Step trading_calendar OK (2765 rows)
-Demo window: 2026-07-21 → 2026-07-27 (5 trading days)
+Demo window: 2026-07-21 → 2026-07-27 (5 trading days target)
 
 === [5/6] daily_bars for 2 symbols ===
-Step daily_bars OK (8 rows) · compact OK
-Bars run: status=success  rows_written≈16
+Bars run …: status=success rows_written≈16
 
 === [6/6] Sample result ===
 600519.SH — latest rows:
@@ -122,7 +123,7 @@ def _colorize_line(line: str) -> list[tuple[str, str]]:
     if "tdx_protocol" in line and "│" in line:
         parts = line.rsplit("tdx_protocol", 1)
         return [(parts[0], "#c9d1d9"), ("tdx_protocol", "#ffa657"), (parts[1], "#c9d1d9")]
-    if line.startswith(("Demo lake", "Config →", "data_root")):
+    if line.startswith(("Demo lake", "Config →", "data_root", "config    =", "Note:")):
         return [(line, "#a5d6ff")]
     if "OK" in line or "success" in line or "ready" in line:
         return [(line, "#7ee787")]
@@ -169,7 +170,6 @@ def render_terminal(text: str, out: Path, *, title: str) -> None:
 
 
 def main() -> None:
-    # Prefer the slightly cleaner Connected line in the checked-in demo shot.
     render_terminal(DEMO, ASSETS / "asl-demo.png", title="asl demo")
     render_terminal(QUERY, ASSETS / "asl-query.png", title="asl query")
     render_terminal(LOAD, ASSETS / "asl-load.png", title="python — load()")

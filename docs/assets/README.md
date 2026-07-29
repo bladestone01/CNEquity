@@ -18,4 +18,5 @@ Regenerate (needs Pillow in the venv):
 .venv/bin/python scripts/render_readme_screenshots.py
 ```
 
-Numbers come from a short live `asl demo` run; re-render after UX copy changes.
+Banner copy should track `asl demo` (no mootdx). Sample bar numbers may be
+from an older live run; re-render after UX copy changes.
