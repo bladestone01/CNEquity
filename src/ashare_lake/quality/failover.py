@@ -11,7 +11,7 @@ from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_dai
 from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars_clist
 from ashare_lake.adapters.eastmoney.corporate_actions import fetch_corporate_actions_eastmoney
 from ashare_lake.config import Config, FailoverDatasetSpec
-from ashare_lake.domain.schemas import with_provenance
+from ashare_lake.domain.schemas import data_version_for, with_provenance
 from ashare_lake.storage.source_snapshots import SnapshotStore
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def write_backup_snapshot(
         dataset,
         df,
         source=source,
-        data_version="v1",
+        data_version=data_version_for(dataset),
         run_id=run_id,
         batch_id=batch_id,
         trade_date=trade_date,
@@ -75,7 +75,7 @@ def snapshot_daily_bars_clist(
         df = fetch_daily_bars_clist(trade_date, symbols=symbols, config=config)
     if df.is_empty():
         return df
-    stamped = with_provenance(df, source=spec.backup, data_version="v1")
+    stamped = with_provenance(df, source=spec.backup, data_version=data_version_for("daily_bars"))
     write_backup_snapshot(
         config,
         "daily_bars",
@@ -108,7 +108,7 @@ def snapshot_daily_bars_backup(
     df = fetch_em_daily_bars(symbols, start, end)
     if df.is_empty():
         return
-    df = with_provenance(df, source=spec.backup, data_version="v1")
+    df = with_provenance(df, source=spec.backup, data_version=data_version_for("daily_bars"))
     write_backup_snapshot(
         config,
         "daily_bars",

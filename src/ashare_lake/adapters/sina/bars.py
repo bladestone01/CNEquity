@@ -16,9 +16,14 @@ volume.
 
 Two units traps, both verified against a 760-day overlap on 600519.SH:
 
-* ``volume`` is in **shares**; the lake stores **lots** (手). Divide by 100.
+* ``volume`` is in **shares** (股) — which is what the lake stores, so it
+  passes through unchanged. This adapter used to divide by 100 on the belief
+  that the lake stored 手; it did not, and that conversion is what put Sina's
+  498,985 rows in the wrong unit. See :mod:`ashare_lake.domain.units`.
 * there is **no turnover/amount field**, so ``amount`` is null. Liquidity
-  factors built on turnover will not see delisted names.
+  factors built on turnover will not see delisted names. It also means
+  ``daily_bars_volume_unit`` cannot check this source from the data — Sina is
+  the one path the ratio test is blind to.
 
 Prices are unadjusted, matching the lake's raw-price contract: over that same
 760-day overlap 759 days matched the curated close exactly, and the one that did
@@ -55,8 +60,6 @@ _HEADERS = {
 # series (2753 bars) for 600001.SH and larger values return no more, so this is
 # the endpoint's ceiling rather than an arbitrary page size.
 _FULL_HISTORY_LEN = 5000
-# Sina reports shares; curated bars are in lots.
-_SHARES_PER_LOT = 100
 
 _OUTPUT_COLS = [c for c in DAILY_BARS_SCHEMA if c not in ("source", "data_version", "fetched_at")]
 
@@ -138,7 +141,6 @@ def fetch_daily_bars_sina(
     for item in rows:
         try:
             trade_date = date.fromisoformat(str(item["day"])[:10])
-            volume_shares = float(item["volume"])
             out.append(
                 {
                     "symbol": symbol,
@@ -147,7 +149,7 @@ def fetch_daily_bars_sina(
                     "high": float(item["high"]),
                     "low": float(item["low"]),
                     "close": float(item["close"]),
-                    "volume": int(volume_shares // _SHARES_PER_LOT),
+                    "volume": int(float(item["volume"])),
                     # Sina does not report turnover; leave it null rather than
                     # inventing close × volume, which is not the traded amount.
                     "amount": None,

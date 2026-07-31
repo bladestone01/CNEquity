@@ -51,7 +51,7 @@ def test_symbol_exists_and_fetch_filters(monkeypatch):
         end=date(2024, 1, 3),
     )
     assert df.height == 1
-    assert df["volume"][0] == 25  # shares → lots
+    assert df["volume"][0] == 2500  # 股 passes through — Sina already reports shares
     assert df["amount"][0] is None
 
 

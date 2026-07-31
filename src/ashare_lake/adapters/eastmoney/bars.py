@@ -1,4 +1,17 @@
-"""EastMoney daily bars: tip clist snapshot + historical kline."""
+"""EastMoney daily bars: tip clist snapshot + historical kline.
+
+Both endpoints report volume in 手 (kline field ``f56``, clist field ``f5``);
+the lake stores 股, so both convert here. See :mod:`ashare_lake.domain.units`.
+
+Unlike the other bar sources, this one is **not** confirmed against curated
+data: ``push2his`` is unreachable from many networks (the Sina adapter's
+docstring says the same), and the only EastMoney rows in the lake are all-zero
+suspension placeholders, so ``amount / close / volume`` has nothing to measure.
+The 手 reading comes from the same endpoint and field position that
+``commodity_bars`` already documents as 东财口径. If it turns out to be wrong,
+``daily_bars_volume_unit`` fires on the first real row rather than letting a
+100× error land quietly.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +24,7 @@ from ashare_lake.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_cl
 from ashare_lake.adapters.eastmoney.common import _to_float, parse_em_ymd
 from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
 from ashare_lake.domain.symbols import parse_symbol
+from ashare_lake.domain.units import lots_to_shares
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +79,7 @@ def fetch_daily_bars_clist(
                 "high": float(high),
                 "low": float(low),
                 "close": float(close),
-                "volume": int(vol or 0),
+                "volume": lots_to_shares(vol or 0),
                 "amount": float(amount or 0.0),
             }
         )
@@ -124,7 +138,7 @@ def fetch_daily_bars(
                     "close": float(parts[2]),
                     "high": float(parts[3]),
                     "low": float(parts[4]),
-                    "volume": int(float(parts[5])),
+                    "volume": lots_to_shares(float(parts[5])),
                     "amount": float(parts[6]),
                 }
             )

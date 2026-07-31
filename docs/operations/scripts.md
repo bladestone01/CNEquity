@@ -82,6 +82,28 @@ python scripts/accept_backfill.py check --compare /tmp/counts.json
 
 ---
 
+## 一次性迁移
+
+### migrate_daily_bars_volume_v2.py
+
+把 curated `daily_bars.volume` 全部改写为「股」，并将 `data_version` 由 `v1` 提到 `v2`。
+
+在修复之前，这一列混着两种单位：`tdx_protocol` / `sina` 写的是手，`ths` / `baostock`
+写的是股，正好差 100 倍。存量行在任何一种口径下都是错的，只能重写。背景与各源实测证据见
+[Schema 契约 · 成交量单位](../datasets/schema.md)。
+
+```bash
+scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --dry-run
+scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --apply
+```
+
+- `--dry-run`（默认）只统计不落盘；`--apply` **就地改写 curated**，先跑 `backup_meta.sh` 并备份 curated。
+- 幂等：已是 `v2` 的行跳过，中断后可直接续跑。
+- `fetched_at` 不重新打戳——记录这次重新解释的列是 `data_version`。
+- 跑完用 `asl audit` 确认 `daily_bars_volume_unit` 无 finding。
+
+---
+
 ## 测试与冒烟
 
 ### smoke_daily_e2e.py

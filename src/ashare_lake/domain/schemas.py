@@ -12,6 +12,25 @@ FETCHED_AT_DTYPE = pl.Datetime(time_unit="us", time_zone="UTC")
 # downstream; audit raises an error finding whenever they reach curated.
 MOCK_SOURCE = "mock"
 
+DEFAULT_DATA_VERSION = "v1"
+
+# Datasets whose stored values changed *meaning* — not shape. Adding a column
+# is a schema change and leaves `data_version` alone; reinterpreting a value
+# already written does not, because old and new rows are then not comparable
+# and a reader has no other way to tell them apart.
+#
+# daily_bars v2: `volume` is 股 for every source. v1 rows are 手 from
+# tdx_protocol and sina, 股 from ths and baostock — see
+# `ashare_lake.domain.units` and docs/datasets/schema.md.
+DATASET_DATA_VERSION = {
+    "daily_bars": "v2",
+}
+
+
+def data_version_for(dataset: str) -> str:
+    return DATASET_DATA_VERSION.get(dataset, DEFAULT_DATA_VERSION)
+
+
 DAILY_BARS_SCHEMA = {
     "symbol": pl.Utf8,
     "trade_date": pl.Date,

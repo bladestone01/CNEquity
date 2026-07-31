@@ -1,4 +1,18 @@
-"""TDX daily bars with pagination beyond the 800-bar API limit."""
+"""TDX daily bars with pagination beyond the 800-bar API limit.
+
+TDX reports daily-K ``vol`` in 手; the lake stores 股 (see
+:mod:`ashare_lake.domain.units`), so the stock path multiplies by 100 here, at
+the boundary. Measured over 12,182,204 curated rows, ``amount / close / vol``
+had a median of 100.000 before the conversion — a lot, not a share.
+
+The index path deliberately does **not** convert. ``client.index()`` is a
+different wire call from ``client.bars()``, and its ``vol`` does not reconcile
+against the sum of its constituents at any power of 100 (checked on
+000001.SH: index amount is 77% of the SH stock-sum amount, but the volumes are
+~300× apart, which no shares/lots reading explains). Until that unit is
+pinned down, ``index_bars`` and ``sector_bars`` keep the value TDX sent and
+their own contract; scaling it on a guess would only move the break.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +23,7 @@ from datetime import date
 import polars as pl
 
 from ashare_lake.domain.rate_limit import RateLimitSpec, wait_spec
+from ashare_lake.domain.units import lots_to_shares
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +63,21 @@ def _page_min_date(pdf: pl.DataFrame) -> date | None:
     return min(mins) if mins else None
 
 
-def _parse_bar_rows(pdf: pl.DataFrame, sym: str, start: date, end: date) -> list[dict]:
+def _parse_bar_rows(
+    pdf: pl.DataFrame,
+    sym: str,
+    start: date,
+    end: date,
+    *,
+    volume_in_lots: bool = True,
+) -> list[dict]:
     date_col = _date_column(pdf)
     rows: list[dict] = []
     for row in pdf.iter_rows(named=True):
         td = _coerce_date(row[date_col])
         if td < start or td > end:
             continue
+        raw_volume = int(row.get("volume", row.get("vol", 0)))
         rows.append(
             {
                 "symbol": sym,
@@ -63,7 +86,7 @@ def _parse_bar_rows(pdf: pl.DataFrame, sym: str, start: date, end: date) -> list
                 "high": float(row.get("high", 0)),
                 "low": float(row.get("low", 0)),
                 "close": float(row.get("close", 0)),
-                "volume": int(row.get("volume", row.get("vol", 0))),
+                "volume": lots_to_shares(raw_volume) if volume_in_lots else raw_volume,
                 "amount": float(row.get("amount", 0)),
             }
         )
@@ -85,6 +108,9 @@ def fetch_bars_paginated(
 
     Indices must use the ``index()`` call — ``bars()`` with a stock
     market id returns corrupt datetimes for index codes (e.g. 399001.SZ).
+
+    Stock rows come back with ``volume`` in 股; index rows keep TDX's own unit.
+    See the module docstring for why the two differ.
     """
     code, exch = sym.split(".")
     market = 1 if exch == "SH" else (0 if exch == "SZ" else 2)
@@ -127,7 +153,7 @@ def fetch_bars_paginated(
         else:
             pdf = pl.DataFrame(raw)
 
-        page_rows = _parse_bar_rows(pdf, sym, start, end)
+        page_rows = _parse_bar_rows(pdf, sym, start, end, volume_in_lots=not is_index)
         if page_rows:
             all_rows.extend(page_rows)
 

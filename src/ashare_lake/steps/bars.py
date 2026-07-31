@@ -193,7 +193,7 @@ def _gapfill_tip_via_clist(
     import polars as pl
 
     from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars_clist
-    from ashare_lake.domain.schemas import with_provenance
+    from ashare_lake.domain.schemas import data_version_for, with_provenance
     from ashare_lake.orchestrator.manifest import Manifest
     from ashare_lake.quality.failover import failover_spec, snapshot_daily_bars_clist
     from ashare_lake.storage import StagingWriter
@@ -273,7 +273,9 @@ def _gapfill_tip_via_clist(
             ],
         }
 
-    gap_df = with_provenance(gap_df, source=spec.backup, data_version="v1")
+    gap_df = with_provenance(
+        gap_df, source=spec.backup, data_version=data_version_for("daily_bars")
+    )
     batch_id = "em-clist-gapfill"
     filled_syms = sorted(set(gap_df["symbol"].to_list()))
     manifest = Manifest(config.manifest_path)
@@ -331,7 +333,7 @@ def _gapfill_multiday_via_kline(
     import polars as pl
 
     from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_kline
-    from ashare_lake.domain.schemas import with_provenance
+    from ashare_lake.domain.schemas import data_version_for, with_provenance
     from ashare_lake.orchestrator.manifest import Manifest
     from ashare_lake.quality.failover import failover_spec, write_backup_snapshot
     from ashare_lake.storage import StagingWriter
@@ -376,7 +378,9 @@ def _gapfill_multiday_via_kline(
     if gap_df.is_empty():
         return {"rows_read": df.height, "rows_written": 0, "filled": True}
 
-    gap_df = with_provenance(gap_df, source=spec.backup, data_version="v1")
+    gap_df = with_provenance(
+        gap_df, source=spec.backup, data_version=data_version_for("daily_bars")
+    )
     write_backup_snapshot(
         config,
         "daily_bars",
@@ -580,7 +584,7 @@ def step_daily_bars_history(config: Config, trade_date: date, run_id: str, conte
     """
     import polars as pl
 
-    from ashare_lake.domain.schemas import with_provenance
+    from ashare_lake.domain.schemas import data_version_for, with_provenance
     from ashare_lake.storage import StagingWriter
 
     start = getattr(config, "_backfill_start", None) or HISTORY_BACKFILL_START
@@ -608,7 +612,9 @@ def step_daily_bars_history(config: Config, trade_date: date, run_id: str, conte
         if not rows:
             return
         batch_no += 1
-        df = with_provenance(pl.DataFrame(rows), source="ths", data_version="v1")
+        df = with_provenance(
+            pl.DataFrame(rows), source="ths", data_version=data_version_for("daily_bars")
+        )
         writer.write_batch("daily_bars", run_id, f"history-{batch_no:04d}", df)
         written += df.height
         logger.info(
@@ -770,7 +776,7 @@ def step_daily_bars_delisted(config: Config, trade_date: date, run_id: str, cont
     import polars as pl
 
     from ashare_lake.adapters.baostock.delisted_bars import fetch_delisted_bars
-    from ashare_lake.domain.schemas import with_provenance
+    from ashare_lake.domain.schemas import data_version_for, with_provenance
     from ashare_lake.storage import StagingWriter
 
     start = getattr(config, "_backfill_start", None) or date(2016, 1, 1)
@@ -783,7 +789,9 @@ def step_daily_bars_delisted(config: Config, trade_date: date, run_id: str, cont
     rows, failed = fetch_delisted_bars(symbols, start, end, config=config)
     written = 0
     if rows:
-        df = with_provenance(pl.DataFrame(rows), source="baostock", data_version="v1")
+        df = with_provenance(
+            pl.DataFrame(rows), source="baostock", data_version=data_version_for("daily_bars")
+        )
         StagingWriter(config.staging_root).write_batch("daily_bars", run_id, "delisted-0000", df)
         written = df.height
     return {

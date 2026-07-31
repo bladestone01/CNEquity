@@ -6,6 +6,56 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`daily_bars.volume` mixed two units in one column, off by exactly 100×.**
+  The schema has always documented 股, but only `ths` and `baostock` wrote it:
+  `tdx_protocol` passed TDX's native 手 straight through (median
+  `amount / close / volume` = 100.000 over 12,182,204 curated rows), and the
+  Sina adapter actively divided by 100 on the mistaken belief that the lake
+  stored 手. Every turnover and liquidity factor built on the column was wrong
+  by 100× for whichever rows it happened to touch.
+
+  Every adapter now normalizes to **股** at its own boundary — TDX daily and
+  both EastMoney paths multiply by 100, Sina no longer divides, `ths` and
+  `baostock` are unchanged and documented as already correct. The per-vendor
+  units and their evidence live in `ashare_lake.domain.units`.
+
+  EastMoney's 手 reading is inferred, not independently verified: `push2his` is
+  unreachable from many networks and the only EastMoney rows in the lake are
+  all-zero suspension placeholders. It follows the same endpoint and field that
+  `commodity_bars` already documents as 东财口径, and the new check below
+  catches it if it is wrong.
+
+### Added
+
+- `daily_bars_volume_unit` audit check (`quality/unit_checks.py`): flags, per
+  source, any median `amount / close / volume` outside [0.8, 1.25], so an
+  adapter that stops converting cannot silently reintroduce the break. Runs as
+  part of `asl audit` / `lake_health`.
+
+### Changed
+
+- **`daily_bars` is now `data_version = v2`** — v2 guarantees `volume` is 股;
+  v1 means the unit depends on `source`. `data_version` is resolved per dataset
+  via `domain.schemas.data_version_for`; every other dataset stays on v1.
+
+  Rows already curated are wrong under either convention and need a one-off
+  rewrite:
+
+  ```bash
+  scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --dry-run
+  scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --apply
+  ```
+
+  It rescales `tdx_protocol` / `sina` v1 rows by 100, leaves the rest, stamps
+  everything v2, and is idempotent. `fetched_at` is deliberately not restamped.
+  Back up before `--apply`; it edits curated in place.
+
+- `index_bars` and `sector_bars` keep TDX's own volume unit and stay on v1.
+  It does not reconcile against the constituent sum at any power of 100, so it
+  is not silently rescaled to match; see `docs/datasets/schema.md`.
+
 ## [0.3.1] — 2026-07-29
 
 ### Changed

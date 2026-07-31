@@ -132,17 +132,18 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
         # (staging gap-fill also happens at the step for failed_symbols).
         if failover_enabled and dataset == "daily_bars" and start < end:
             from ashare_lake.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_bars
-            from ashare_lake.domain.schemas import with_provenance
+            from ashare_lake.domain.schemas import data_version_for, with_provenance
             from ashare_lake.storage.source_snapshots import SnapshotStore
 
             backup_df = fetch_em_bars(symbols, start, end)
             if backup_df.height:
-                backup_df = with_provenance(backup_df, source="eastmoney", data_version="v1")
+                version = data_version_for(dataset)
+                backup_df = with_provenance(backup_df, source="eastmoney", data_version=version)
                 SnapshotStore(Path(staging_root).parent / "meta").write(
                     dataset,
                     backup_df,
                     source="eastmoney",
-                    data_version="v1",
+                    data_version=version,
                     run_id=run_id,
                     batch_id=f"{batch_id}-backup",
                     trade_date=end,
@@ -221,7 +222,7 @@ def fetch_daily_bars_parallel(
                 config=config,
                 on_heartbeat=_heartbeat,
             )
-            df = normalize_with_source(df)
+            df = normalize_with_source(df, dataset=dataset)
             writer = StagingWriter(staging_root)
             writer.write_batch(dataset, run_id, batch_id, df)
             manifest.finish_batch(

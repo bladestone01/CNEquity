@@ -19,7 +19,7 @@ from ashare_lake.adapters.tdx_protocol.corporate_actions import fetch_corporate_
 from ashare_lake.adapters.tdx_protocol.session import TDX_SESSION_LOCK, close_quotes_client
 from ashare_lake.config import Config
 from ashare_lake.domain.rate_limit import RateLimitSpec, wait_spec
-from ashare_lake.domain.schemas import MOCK_SOURCE, with_provenance
+from ashare_lake.domain.schemas import MOCK_SOURCE, data_version_for, with_provenance
 from ashare_lake.domain.symbols import (
     ETF_PREFIXES,
     PREFIX_WHITELIST,
@@ -659,5 +659,12 @@ def fetch_trading_status(
     )
 
 
-def normalize_with_source(df: pl.DataFrame, source: str = "tdx_protocol") -> pl.DataFrame:
-    return with_provenance(df, source=source, data_version="v1")
+def normalize_with_source(
+    df: pl.DataFrame,
+    source: str = "tdx_protocol",
+    *,
+    dataset: str | None = None,
+) -> pl.DataFrame:
+    """Stamp provenance. *dataset* selects the version — daily_bars is on v2
+    (volume in 股); everything else defaults to v1."""
+    return with_provenance(df, source=source, data_version=data_version_for(dataset or ""))

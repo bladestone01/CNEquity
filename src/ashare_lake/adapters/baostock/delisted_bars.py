@@ -15,6 +15,11 @@ still publishes their adjustment factors, so the recovered bars go through the
 same hfq derivation as everything else.
 
 Unadjusted prices, as everywhere else in the lake (`adjustflag="3"`).
+
+``volume`` is already in 股, the lake's unit, so it passes through unconverted:
+``amount / close / volume`` has a median of 1.000 over the 374,888 curated
+baostock rows. The TDX path reports 手 and multiplies by 100 — that difference
+is real, not an inconsistency to iron out. See :mod:`ashare_lake.domain.units`.
 """
 
 from __future__ import annotations

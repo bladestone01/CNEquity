@@ -8,7 +8,7 @@ from datetime import date
 import polars as pl
 
 from ashare_lake.config import Config
-from ashare_lake.domain.schemas import with_provenance
+from ashare_lake.domain.schemas import data_version_for, with_provenance
 from ashare_lake.steps.common import fetch_incremental_daily, write_simple
 
 
@@ -21,7 +21,7 @@ def write_fetched(
     source: str,
     batch_id: str = "batch-0",
 ) -> dict:
-    df = with_provenance(df, source=source, data_version="v1")
+    df = with_provenance(df, source=source, data_version=data_version_for(dataset))
     return write_simple(config, run_id, dataset, df, batch_id=batch_id)
 
 

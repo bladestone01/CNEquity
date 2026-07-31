@@ -56,7 +56,7 @@ def test_fetch_daily_bars_parses_kline_rows():
     assert row["close"] == 10.5
     assert row["high"] == 11.0
     assert row["low"] == 9.0
-    assert row["volume"] == 1000
+    assert row["volume"] == 100_000  # 1000 手 → 股
     assert row["amount"] == 10500.0
 
 

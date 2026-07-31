@@ -25,6 +25,7 @@ from ashare_lake.quality.dataset_checks import (
     check_partition_fragmentation,
 )
 from ashare_lake.quality.source_diff import run_source_diffs
+from ashare_lake.quality.unit_checks import daily_bars_volume_unit_findings
 from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from ashare_lake.query.universe import (
     coverage_start_date,
@@ -214,6 +215,7 @@ def _collect_lake_findings(
 
     findings.extend(_index_bars_coverage_findings(config, trade_date))
     findings.extend(daily_bars_calendar_findings(config, trade_date))
+    findings.extend(daily_bars_volume_unit_findings(config, trade_date))
     # Reaches an external vendor for ~12 quotes; gated on [sources.sina] so a
     # lake without it (and every unit test) stays offline.
     findings.extend(

@@ -17,6 +17,12 @@ listing too, which is what makes one continuous convention possible.
 
 **Fetched per year.** History is served as one file per calendar year, so a
 symbol costs one request per year of history rather than one per day.
+
+``volume`` is already in 股, the lake's unit, so no conversion happens here —
+verified twice: ``amount / close / volume`` has a median of 0.999 over the
+5,303,037 curated 同花顺 rows, and a live 2015 file for 600519 gives
+1,875,063,100 / 202.52 / 9,451,517 = 0.98. Do not "align" this with the TDX
+path, which reports 手 and converts. See :mod:`ashare_lake.domain.units`.
 """
 
 from __future__ import annotations

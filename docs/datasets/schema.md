@@ -11,7 +11,9 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 | 交易所列 | `SH` / `SZ` / `BJ` |
 | 溯源列 | 每行必有 `source`、`data_version`、`fetched_at`（UTC 时间戳） |
 | 空值语义 | 停牌日：OHLCV 仍有值，`volume=0`、`amount=0` |
+| 成交量单位 | A 股个股成交量一律 **股**；供应商报「手」的（TDX 日线、东财）由 adapter 在边界 ×100 |
 | Schema 演进 | 只允许加列；破坏性变更须提升 `dataset_schema_version` |
+| `data_version` | 语义变更（不是加列）才提升；见下「成交量单位」 |
 
 ### 分区键（curated）
 
@@ -100,15 +102,46 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 | high | float64 | |
 | low | float64 | |
 | close | float64 | |
-| volume | int64 | 股 |
+| volume | int64 | **股**（见下「成交量单位」）；`data_version=v2` 才保证 |
 | amount | float64 | 人民币 |
 | source | string | |
-| data_version | string | |
+| data_version | string | `v2`=volume 为股；`v1`=按源而异，已弃用 |
 | fetched_at | timestamp | |
+
+##### 成交量单位（`daily_bars.volume`）
+
+各家供应商的原生单位并不一致，而 payload 里没有任何字段声明它，所以混在一列里会**正好差 100 倍**——足以毁掉一切换手率/流动性因子，却小到行数、主键、OHLC 检查都发现不了。
+
+**契约：一律存「股」。** 这也是唯一能让 `amount ≈ close × volume` 成立的选择，而这个恒等式正是质量检查赖以从数据本身发现单位错误的依据。每个 adapter 在自己的边界完成换算。
+
+各源原生单位（比值 = `amount / close / volume`，全量 curated 实测；≈1 即为股，≈100 即为手）：
+
+| source | 原生单位 | 证据 |
+|--------|---------|------|
+| tdx_protocol | 手 | 中位数 100.000，12,182,204 行 |
+| ths | 股 | 中位数 0.999，5,303,037 行 |
+| baostock | 股 | 中位数 1.000，374,888 行 |
+| sina | 股 | 供应商口径；不提供 `amount`，比值无法实测 |
+| eastmoney | 手 | **未独立验证**：`push2his` 在多数网络不可达，湖内东财行全是停牌占位零值；沿用 `commodity_bars` 已记录的「东财口径 = 手」（同一 endpoint 同一字段位）。若判断有误，`daily_bars_volume_unit` 会在第一批真实行落地时报错 |
+
+TDX 的单位**按频率而非按源**：日线（`frequency=9`）是手，同一 wire parser 出来的 1 分钟线是股（实测 600519 1m bar vol=59,700，amount=88,977,784，价格 ~1490 → 59,716 股）。未来的 `minute_bars` 不得复用日线的换算，minute↔daily 的成交量对账必须股对股。
+
+**质量检查。** `quality/unit_checks.py` 的 `daily_bars_volume_unit` 按 **source 分组**计算 `amount / close / volume` 中位数，落在 [0.8, 1.25] 之外即报 `error`（观测到的中位数与 1.0 相差不到 0.1%，容差留了 ~200 倍余量）。分组是刻意的：混单位的一列中位数既不接近 1 也不接近 100，且一个坏 adapter 会被另外几个健康的源在全市场口径下淹没。两个盲区已记录在案——sina 无 `amount` 因而不可测；`index_bars` / `sector_bars` 的 `close` 是点位不是股价，恒等式在那里没有意义（健康数据也会给出 36 的比值），故不在范围内。
+
+**迁移（v1 → v2）。** 湖里既有的行在任何一种口径下都是错的，必须重写：
+
+```bash
+scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --dry-run
+scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --apply
+```
+
+`source ∈ {tdx_protocol, sina}` 且 `data_version=v1` 的行 `volume ×100`；其余 v1 行原样保留（本就是股）；所有被处理的行改写为 `data_version=v2`。已是 v2 的行跳过，脚本幂等、可中断续跑。**`fetched_at` 不重新打戳**——这些行确实是当时抓的，改掉就抹掉了数据被观测到的时间；记录本次重新解释的列是 `data_version`，这正是它的用途。`--apply` 会就地改写 curated，请先备份。
 
 #### index_bars
 
 与 daily_bars 相同，另加 `frequency`（默认 `1d`）、`asset_type=index`。
+
+**例外：`volume` 不是股。** index_bars / sector_bars 保留 TDX `index()` 调用返回的原值，未做换算——它与成分股加总在任何 100 的幂次上都对不上（000001.SH 实测：指数 amount 是沪市个股 amount 之和的 77%，但两边 volume 差约 300 倍，股/手两种读法都解释不了）。在这个单位被确证之前，按猜测缩放只会把断裂挪个地方。这两个数据集仍是 `data_version=v1`。
 
 #### commodity_bars
 
