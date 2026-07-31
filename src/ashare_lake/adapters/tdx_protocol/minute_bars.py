@@ -27,6 +27,7 @@ from datetime import date, datetime, time
 
 import polars as pl
 
+from ashare_lake.adapters.tdx_protocol._decode import decoded_quantity
 from ashare_lake.domain.rate_limit import RateLimitSpec, wait_spec
 
 logger = logging.getLogger(__name__)
@@ -99,31 +100,6 @@ def _parse_stamp(row: dict) -> datetime | None:
         return None
 
 
-# TDX's volume field is a packed float, and its decoder maps a raw 0 to
-# 2**-127 (~5.88e-39) rather than to 0.0 — see ``_wire/helper.get_volume``,
-# where the exponent term survives when every mantissa byte is zero.
-#
-# It matters here far more than on the daily path: a minute with no trades is
-# ordinary (illiquid names have hundreds a day, a halted one has a full
-# session of them), while a whole zero-volume day is rare. ``int()`` already
-# flattens the volume to 0 by truncation, but ``amount`` would keep the
-# denormal, breaking the lake's stated no-trade convention (volume=0,
-# amount=0) and seeding a column that no longer sums exactly.
-#
-# Real quantities are integers ≥1 and real turnover is ≥0.01 yuan, so this
-# threshold sits ~24 orders of magnitude clear of any genuine value.
-_DECODED_ZERO = 1e-6
-
-
-def _decoded(value) -> float:
-    """A wire quantity, with the decoder's denormal zero snapped to 0.0."""
-    try:
-        number = float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
-    return 0.0 if abs(number) < _DECODED_ZERO else number
-
-
 def _rows_to_dicts(
     rows: list[dict],
     sym: str,
@@ -157,8 +133,8 @@ def _rows_to_dicts(
                 "high": float(row.get("high", 0)),
                 "low": float(row.get("low", 0)),
                 "close": float(row.get("close", 0)),
-                "volume": int(_decoded(row.get("volume", row.get("vol", 0)))),
-                "amount": _decoded(row.get("amount", 0)),
+                "volume": int(decoded_quantity(row.get("volume", row.get("vol", 0)))),
+                "amount": decoded_quantity(row.get("amount", 0)),
             }
         )
     return out, off_session

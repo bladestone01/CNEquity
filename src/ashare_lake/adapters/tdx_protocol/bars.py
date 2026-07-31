@@ -22,6 +22,7 @@ from datetime import date
 
 import polars as pl
 
+from ashare_lake.adapters.tdx_protocol._decode import decoded_quantity
 from ashare_lake.domain.rate_limit import RateLimitSpec, wait_spec
 from ashare_lake.domain.units import lots_to_shares
 
@@ -77,7 +78,7 @@ def _parse_bar_rows(
         td = _coerce_date(row[date_col])
         if td < start or td > end:
             continue
-        raw_volume = int(row.get("volume", row.get("vol", 0)))
+        raw_volume = int(decoded_quantity(row.get("volume", row.get("vol", 0))))
         rows.append(
             {
                 "symbol": sym,
@@ -87,7 +88,7 @@ def _parse_bar_rows(
                 "low": float(row.get("low", 0)),
                 "close": float(row.get("close", 0)),
                 "volume": lots_to_shares(raw_volume) if volume_in_lots else raw_volume,
-                "amount": float(row.get("amount", 0)),
+                "amount": decoded_quantity(row.get("amount", 0)),
             }
         )
     return rows

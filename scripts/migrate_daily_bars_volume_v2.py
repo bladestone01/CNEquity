@@ -16,6 +16,15 @@ What this does, per curated ``daily_bars`` parquet file:
 * rows already at ``v2`` are skipped, so the script is idempotent and safe to
   resume after an interrupt.
 
+It also clears a second artefact of the same vintage. TDX decodes a raw-zero
+quantity to ``2**-127`` (~5.9e-39) instead of ``0.0``, so every suspended day
+was written with that much "turnover" rather than the zero the schema promises
+— 439,774 rows in the reference lake. ``volume`` escaped it through ``int()``
+truncation; ``amount`` is a float and kept it, which quietly turned
+``amount > 0`` into "was quoted" instead of "traded". New rows are fixed at the
+adapter boundary (``ashare_lake.adapters.tdx_protocol._decode``); this pass
+fixes the ones already on disk.
+
 ``fetched_at`` is deliberately **not** restamped: these rows were fetched when
 they were fetched, and rewriting that would erase when the data was actually
 observed. ``data_version`` is the column that records the reinterpretation,
@@ -46,6 +55,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import polars as pl
 
+from ashare_lake.adapters.tdx_protocol._decode import DECODED_ZERO
 from ashare_lake.config import load_config
 from ashare_lake.domain.units import SHARES_PER_LOT
 from ashare_lake.storage.atomic import write_parquet_atomic
@@ -58,19 +68,28 @@ FROM_VERSION = "v1"
 TO_VERSION = "v2"
 
 
-def migrate_frame(df: pl.DataFrame) -> tuple[pl.DataFrame, int, int]:
-    """Return ``(migrated, rescaled_rows, restamped_rows)``.
+def migrate_frame(df: pl.DataFrame) -> tuple[pl.DataFrame, int, int, int]:
+    """Return ``(migrated, rescaled_rows, restamped_rows, dezeroed_rows)``.
 
     ``restamped_rows`` counts every v1 row moved to v2; ``rescaled_rows`` is the
-    subset whose ``volume`` was also multiplied.
+    subset whose ``volume`` was also multiplied; ``dezeroed_rows`` is the subset
+    whose no-trade ``amount`` was snapped back to 0.0 (see below).
     """
     stale = pl.col("data_version") == FROM_VERSION
     needs_rescale = stale & pl.col("source").is_in(LOTS_SOURCES)
+    # TDX decodes a raw zero quantity to 2**-127 (~5.9e-39) rather than 0.0, so
+    # every suspended day landed with a turnover of 5.9e-39 yuan instead of the
+    # zero the schema promises. `volume` escaped it via int() truncation;
+    # `amount` is a float and kept it. Fixed at the adapter boundary in
+    # ashare_lake.adapters.tdx_protocol._decode; this clears the rows already
+    # written. Left alone, `amount > 0` means "was quoted", not "traded".
+    denormal_amount = stale & (pl.col("amount").abs() < DECODED_ZERO) & (pl.col("amount") != 0)
 
     restamped = int(df.select(stale.sum()).item())
     if restamped == 0:
-        return df, 0, 0
+        return df, 0, 0, 0
     rescaled = int(df.select(needs_rescale.sum()).item())
+    dezeroed = int(df.select(denormal_amount.sum()).item())
 
     return (
         df.with_columns(
@@ -79,6 +98,7 @@ def migrate_frame(df: pl.DataFrame) -> tuple[pl.DataFrame, int, int]:
             .otherwise(pl.col("volume"))
             .cast(pl.Int64)
             .alias("volume"),
+            pl.when(denormal_amount).then(pl.lit(0.0)).otherwise(pl.col("amount")).alias("amount"),
             pl.when(stale)
             .then(pl.lit(TO_VERSION))
             .otherwise(pl.col("data_version"))
@@ -86,6 +106,7 @@ def migrate_frame(df: pl.DataFrame) -> tuple[pl.DataFrame, int, int]:
         ),
         rescaled,
         restamped,
+        dezeroed,
     )
 
 
@@ -96,15 +117,16 @@ def run(curated_root: Path, *, apply: bool) -> int:
         print(f"No daily_bars parquet under {root}")
         return 1
 
-    total_rescaled = total_restamped = touched_files = 0
+    total_rescaled = total_restamped = total_dezeroed = touched_files = 0
     for i, path in enumerate(files, start=1):
         df = pl.read_parquet(path)
-        migrated, rescaled, restamped = migrate_frame(df)
+        migrated, rescaled, restamped, dezeroed = migrate_frame(df)
         if restamped == 0:
             continue
         touched_files += 1
         total_rescaled += rescaled
         total_restamped += restamped
+        total_dezeroed += dezeroed
         if apply:
             write_parquet_atomic(path, migrated)
         if i % 500 == 0 or i == len(files):
@@ -114,7 +136,8 @@ def run(curated_root: Path, *, apply: bool) -> int:
     print(
         f"\n{verb} {touched_files}/{len(files)} file(s): "
         f"{total_restamped:,} row(s) stamped {FROM_VERSION}→{TO_VERSION}, "
-        f"of which {total_rescaled:,} had volume ×{SHARES_PER_LOT} (手→股)."
+        f"of which {total_rescaled:,} had volume ×{SHARES_PER_LOT} (手→股) "
+        f"and {total_dezeroed:,} had a denormal no-trade amount snapped to 0."
     )
     if not apply:
         print("Dry run — nothing was written. Re-run with --apply to commit.")

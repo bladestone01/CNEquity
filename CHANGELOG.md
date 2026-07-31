@@ -8,6 +8,20 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **No-trade bars stored a denormal turnover instead of zero.** TDX's packed-
+  float decoder maps a raw zero quantity to `2**-127` (~5.9e-39) rather than
+  `0.0`, so every suspended day landed in curated with that much `amount`
+  against `volume = 0` — 439,774 rows in the reference lake, contradicting the
+  documented suspension convention (`volume=0`, `amount=0`) and quietly making
+  `amount > 0` mean "was quoted" rather than "traded". `volume` escaped it
+  through `int()` truncation; `amount` is a float and kept it.
+
+  Fixed at the adapter boundary for both the daily and intraday paths
+  (`adapters/tdx_protocol/_decode.py`). Rows already written are cleaned by the
+  same `scripts/migrate_daily_bars_volume_v2.py` pass that does the v1→v2
+  volume rewrite. It matters more intraday, where an illiquid name has dozens
+  of no-trade minutes a day and a halted one has a full session of them.
+
 - **`daily_bars.volume` mixed two units in one column, off by exactly 100×.**
   The schema has always documented 股, but only `ths` and `baostock` wrote it:
   `tdx_protocol` passed TDX's native 手 straight through (median
