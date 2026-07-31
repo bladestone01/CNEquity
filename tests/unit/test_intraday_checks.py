@@ -1,0 +1,220 @@
+from datetime import date, datetime, timedelta
+
+import polars as pl
+import pytest
+
+from ashare_lake.adapters.tdx_protocol.minute_bars import in_session
+from ashare_lake.config import Config
+from ashare_lake.domain.schemas import with_provenance
+from ashare_lake.quality.intraday_checks import (
+    RECONCILE_MIN_SYMBOL_DAYS,
+    minute_bars_findings,
+)
+
+TRADE_DATE = date(2026, 7, 31)
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    config = Config(data_root=tmp_path / "lake")
+    config.curated_root.mkdir(parents=True, exist_ok=True)
+    return config
+
+
+def _session_stamps(day: date, count: int) -> list[datetime]:
+    """The first *count* closing-minute labels of *day*'s session."""
+    out: list[datetime] = []
+    stamp = datetime(day.year, day.month, day.day, 9, 31)
+    while len(out) < count:
+        if in_session(stamp):
+            out.append(stamp)
+        stamp += timedelta(minutes=1)
+    return out
+
+
+def _write_minute_bars(cfg: Config, rows: list[dict]):
+    df = with_provenance(pl.DataFrame(rows), source="tdx_protocol", data_version="v1")
+    for day, part in df.partition_by("trade_date", as_dict=True).items():
+        value = (day[0] if isinstance(day, tuple) else day).isoformat()
+        out = cfg.curated_root / "minute_bars" / f"trade_date={value}"
+        out.mkdir(parents=True, exist_ok=True)
+        part.write_parquet(out / "part-merged.parquet")
+
+
+def _minute_rows(symbols: list[str], days: list[date], bars: int, volume: int = 100):
+    rows = []
+    for day in days:
+        for sym in symbols:
+            for stamp in _session_stamps(day, bars):
+                rows.append(
+                    {
+                        "symbol": sym,
+                        "trade_date": day,
+                        "bar_time": stamp,
+                        "frequency": "1m",
+                        "open": 10.0,
+                        "high": 10.0,
+                        "low": 10.0,
+                        "close": 10.0,
+                        "volume": volume,
+                        "amount": volume * 10.0,
+                    }
+                )
+    return rows
+
+
+def _write_daily_bars(cfg: Config, rows: list[dict], data_version: str = "v2"):
+    df = with_provenance(pl.DataFrame(rows), source="tdx_protocol", data_version=data_version)
+    df = df.with_columns(pl.lit(data_version).alias("data_version"))
+    for day, part in df.partition_by("trade_date", as_dict=True).items():
+        value = (day[0] if isinstance(day, tuple) else day).isoformat()
+        out = cfg.curated_root / "daily_bars" / f"trade_date={value}"
+        out.mkdir(parents=True, exist_ok=True)
+        part.write_parquet(out / "part-merged.parquet")
+
+
+def test_no_findings_when_the_dataset_is_unused(cfg):
+    assert minute_bars_findings(cfg, TRADE_DATE) == []
+
+
+def test_full_sessions_produce_no_shape_findings(cfg):
+    _write_minute_bars(cfg, _minute_rows(["600519.SH"], [TRADE_DATE], 240))
+    checks = {f["check"] for f in minute_bars_findings(cfg, TRADE_DATE)}
+    assert "minute_bars_off_session" not in checks
+    assert "minute_bars_session_coverage" not in checks
+    assert "minute_bars_trade_date_mismatch" not in checks
+
+
+def test_off_session_bar_is_an_error(cfg):
+    rows = _minute_rows(["600519.SH"], [TRADE_DATE], 240)
+    rows.append({**rows[0], "bar_time": datetime(2026, 7, 31, 12, 15)})
+    _write_minute_bars(cfg, rows)
+
+    findings = [
+        f for f in minute_bars_findings(cfg, TRADE_DATE) if f["check"] == "minute_bars_off_session"
+    ]
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["rows"] == 1
+
+
+def test_trade_date_disagreeing_with_bar_time_is_an_error(cfg):
+    rows = _minute_rows(["600519.SH"], [TRADE_DATE], 240)
+    # A-shares have no overnight session, so this can only be a partitioning bug.
+    rows[0] = {**rows[0], "bar_time": datetime(2026, 7, 30, 9, 31)}
+    _write_minute_bars(cfg, rows)
+
+    findings = [
+        f
+        for f in minute_bars_findings(cfg, TRADE_DATE)
+        if f["check"] == "minute_bars_trade_date_mismatch"
+    ]
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+def test_widespread_short_sessions_warn(cfg):
+    # Every symbol truncated at half a session — a pipeline problem, not halts.
+    _write_minute_bars(cfg, _minute_rows(["600519.SH", "000001.SZ"], [TRADE_DATE], 120))
+    findings = [
+        f
+        for f in minute_bars_findings(cfg, TRADE_DATE)
+        if f["check"] == "minute_bars_session_coverage"
+    ]
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "warning"
+    assert findings[0]["short_symbol_days"] == 2
+
+
+def test_one_halted_symbol_does_not_warn(cfg):
+    # 1 of 10 symbol-days short is the shape a genuine intraday halt makes.
+    symbols = [f"60000{i}.SH" for i in range(9)]
+    rows = _minute_rows(symbols, [TRADE_DATE], 240)
+    rows += _minute_rows(["600519.SH"], [TRADE_DATE], 60)
+    _write_minute_bars(cfg, rows)
+
+    checks = {f["check"] for f in minute_bars_findings(cfg, TRADE_DATE)}
+    assert "minute_bars_session_coverage" not in checks
+
+
+def test_reconciliation_passes_when_minute_volume_matches_the_day(cfg):
+    symbols = [f"60000{i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
+    _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=100))
+    _write_daily_bars(
+        cfg,
+        [
+            {
+                "symbol": s,
+                "trade_date": TRADE_DATE,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 240 * 100,
+                "amount": 240 * 1000.0,
+            }
+            for s in symbols
+        ],
+    )
+    checks = {f["check"] for f in minute_bars_findings(cfg, TRADE_DATE)}
+    assert "minute_bars_daily_reconciliation" not in checks
+
+
+def test_reconciliation_flags_a_volume_mismatch(cfg):
+    symbols = [f"60000{i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
+    _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=100))
+    _write_daily_bars(
+        cfg,
+        [
+            {
+                "symbol": s,
+                "trade_date": TRADE_DATE,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 240 * 50,  # half of what the minutes add up to
+                "amount": 240 * 500.0,
+            }
+            for s in symbols
+        ],
+    )
+    findings = [
+        f
+        for f in minute_bars_findings(cfg, TRADE_DATE)
+        if f["check"] == "minute_bars_daily_reconciliation"
+    ]
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "warning"
+    assert findings[0]["median_ratio"] == pytest.approx(2.0)
+
+
+def test_reconciliation_ignores_pre_v2_daily_rows(cfg):
+    # v1 daily volume is 手 for tdx_protocol; comparing it against minute 股
+    # would report a 100x break that is really an un-migrated partition.
+    symbols = [f"60000{i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
+    _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=100))
+    _write_daily_bars(
+        cfg,
+        [
+            {
+                "symbol": s,
+                "trade_date": TRADE_DATE,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 240,  # 手
+                "amount": 240 * 1000.0,
+            }
+            for s in symbols
+        ],
+        data_version="v1",
+    )
+    findings = [
+        f
+        for f in minute_bars_findings(cfg, TRADE_DATE)
+        if f["check"] == "minute_bars_daily_reconciliation"
+    ]
+    # Reported as info (nothing comparable), never as a 100x break.
+    assert [f["severity"] for f in findings] == ["info"]

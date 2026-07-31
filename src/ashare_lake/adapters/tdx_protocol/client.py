@@ -453,6 +453,86 @@ def fetch_daily_bars(
     return _fail_or_mock("daily_bars", reason, allow_mock, _mock_bars(symbols, start, end))
 
 
+def fetch_minute_bars(
+    symbols: list[str],
+    start: date,
+    end: date,
+    *,
+    frequency: str = "1m",
+    rate_limit: RateLimitSpec | None = None,
+    backfill: bool = False,
+    config: Config | None = None,
+    on_heartbeat: Callable[[], None] | None = None,
+    max_pages: int | None = None,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Intraday bars for *symbols*, one TDX session for the whole batch.
+
+    Returns ``(frame, failed_symbols)``. A symbol that fails does not fail the
+    batch — with hundreds of symbols and a per-symbol horizon walk, one bad code
+    must not cost the run every other one — so the failures ride alongside the
+    frame rather than inside it.
+
+    No mock path. The daily fetch has one because the daily lake must keep
+    building in tests and demos when TDX is unreachable; ``minute_bars`` is
+    opt-in and empty by default, so a fabricated intraday series would buy
+    nothing and could be mistaken for a real 240-bar session.
+    """
+    from ashare_lake.adapters.tdx_protocol.minute_bars import fetch_minute_bars_paginated
+
+    client = None
+    rows: list[dict] = []
+    failed: list[str] = []
+    try:
+        with TDX_SESSION_LOCK:
+            client = _quotes_client(config)
+            for sym in symbols:
+                if on_heartbeat is not None:
+                    on_heartbeat()
+                try:
+                    rows.extend(
+                        fetch_minute_bars_paginated(
+                            client,
+                            sym,
+                            start,
+                            end,
+                            frequency=frequency,
+                            rate_limit=rate_limit,
+                            backfill=backfill,
+                            on_page=on_heartbeat,
+                            max_pages=max_pages,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                    logger.warning("minute_bars %s failed for %s: %s", frequency, sym, exc)
+                    failed.append(sym)
+    except ImportError as exc:
+        raise TdxSourceError("minute_bars: TDX wire client unavailable") from exc
+    except Exception as exc:
+        reset_tdx_server_cache()
+        raise TdxSourceError(f"minute_bars: TDX fetch failed: {exc}") from exc
+    finally:
+        _close_quotes_client(client)
+
+    df = pl.DataFrame(rows) if rows else pl.DataFrame(schema=_MINUTE_BARS_FETCH_SCHEMA)
+    return df, failed
+
+
+# Fetch-side shape (pre-provenance), so an all-failed batch still returns a
+# frame the writer can validate instead of a schema-less empty one.
+_MINUTE_BARS_FETCH_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "bar_time": pl.Datetime(time_unit="us"),
+    "frequency": pl.Utf8,
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    "volume": pl.Int64,
+    "amount": pl.Float64,
+}
+
+
 def fetch_index_bars(
     start: date,
     end: date,

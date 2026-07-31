@@ -81,7 +81,11 @@ def test_example_config_validates(monkeypatch):
         "fundamentals",
         "macro_risk",
         "research",
+        # Defined but deliberately unscheduled — `asl run daily --group
+        # intraday` is the only way in, and [minute_bars].enabled gates it.
+        "intraday",
     }
+    assert cfg.minute_bars_enabled is False
 
 
 def test_validate_config_rejects_multiprocess_on_darwin(tmp_path, monkeypatch):

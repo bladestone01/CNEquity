@@ -58,6 +58,16 @@ class DatasetSpec:
         When False, an empty curated root is a warning (not an error) and does
         not alone make ``lake_health`` UNHEALTHY. Use for registered datasets
         whose source is not yet wired or is temporarily unavailable.
+    history_horizon_days:
+        Trading days of history the *source* still serves, counted back from
+        today. ``None`` (the default) means the source has no such limit and
+        history is bounded only by what has been backfilled.
+
+        This is a property of the vendor, not of this lake, and it is the
+        difference between "not fetched yet" and "can never be fetched". TDX
+        keeps 95 trading days of 1-minute bars and 491 of 5-minute and coarser;
+        asking for 2016 does not return less data, it returns none, and no
+        backfill source extends it. ``by_date`` alone would promise a decade.
     """
 
     name: str
@@ -75,10 +85,34 @@ class DatasetSpec:
     # so their inherent lag is not mistaken for a stuck pipeline.
     max_staleness_days: int = 1
     required: bool = True
+    history_horizon_days: int | None = None
+    # Calendar days of history one backfill sub-run may cover. None = one run
+    # for the whole window, which is what every daily-cadence dataset wants.
+    #
+    # Set it where a full window's staging would not fit in memory: compact
+    # reads *every* staging file of a run into one frame, so a 95-day
+    # full-market minute_bars seed (~123M rows) has to be drained in slices.
+    # Chunking also makes a killed sweep resumable at the last compacted slice
+    # instead of losing everything.
+    backfill_chunk_days: int | None = None
 
     @property
     def query_date_col(self) -> str | None:
         return self.date_col or self.partition_col
+
+    def earliest_available(self, today: date, *, trading_days_per_year: int = 242) -> date | None:
+        """Rough calendar date before which the source serves nothing.
+
+        The horizon is counted in *trading* days because that is how the vendor
+        caps it (a fixed bar count), so it is converted with the usual ~242
+        sessions a year. Deliberately approximate and deliberately early: it
+        guards a CLI window, and refusing a window the source would in fact
+        have served is worse than fetching a few empty days.
+        """
+        if self.history_horizon_days is None:
+            return None
+        calendar_days = round(self.history_horizon_days * 365 / trading_days_per_year)
+        return date.fromordinal(max(1, today.toordinal() - calendar_days))
 
     def partition_for(self, d: date) -> str:
         """Directory value of the partition holding *d* for this dataset."""
@@ -101,6 +135,28 @@ _SPECS = [
     # L1 bars
     DatasetSpec("daily_bars", partition_col="trade_date"),
     DatasetSpec("index_bars", partition_col="trade_date", partition_granularity="year"),
+    # 1-minute bars. Day partitions: ~240 bars × the configured scope, which is
+    # 1.3M rows a day at full market — the top of the ≥1000 rows/day band, and
+    # ~30MB a partition. The schema draft once sketched
+    # frequency/trade_date/symbol_bucket; a second directory level buys nothing
+    # at that size and every partition-aware module here assumes exactly one.
+    #
+    # Opt-in (required=False): this is not on the default daily waves and a lake
+    # that never enabled it must not be judged unhealthy for holding no rows.
+    DatasetSpec(
+        "minute_bars",
+        partition_col="trade_date",
+        partition_granularity="day",
+        fetch_semantics="by_date",
+        required=False,
+        # Measured 2026-08-01 against 120.76.1.198:7709 — 22,800 bars for every
+        # symbol probed, across both exchanges and every liquidity band, so it
+        # is a server retention window rather than a per-symbol artefact.
+        history_horizon_days=95,
+        # ~7 trading days of full-market 1m per sub-run: ~9M rows staged, which
+        # compacts comfortably, against ~123M for the whole horizon at once.
+        backfill_chunk_days=10,
+    ),
     # Domestic commodity futures main-continuous (东财主连) + narrow offshore
     # gold (Sina COMEX ``GC0.CMX``); not A-share equity.
     DatasetSpec(

@@ -326,10 +326,22 @@ def load(
         date_col = DATE_COLUMNS[dataset]
         df = apply_universe_filter(df, cfg, universe=universe, date_col=date_col)
 
-    if adjust and dataset in {"daily_bars", "index_bars"}:
+    # minute_bars joins on (symbol, trade_date) like the daily bars do: a
+    # corporate action applies to a whole session, so every bar in a day shares
+    # that day's factor. Intraday prices are stored unadjusted for the same
+    # reason daily ones are — the factor series can be recomputed, a price
+    # written adjusted cannot be undone.
+    if adjust and dataset in {"daily_bars", "index_bars", "minute_bars"}:
         df = _apply_adjustment(df, cfg, adjust, start_d, end_d, strict_adj=strict_adj)
 
-    sort_cols = [c for c in (DATE_COLUMNS.get(dataset), "symbol") if c and c in df.columns]
+    # Intraday rows sort by symbol then timestamp: trade_date alone would leave
+    # a session's 240 bars in whatever order the pages arrived, and grouping by
+    # symbol first is what every resampling consumer wants.
+    if "bar_time" in df.columns:
+        order = ("symbol", "bar_time")
+    else:
+        order = (DATE_COLUMNS.get(dataset), "symbol")
+    sort_cols = [c for c in order if c and c in df.columns]
     if sort_cols:
         df = df.sort(sort_cols)
     return df
@@ -385,7 +397,9 @@ def list_datasets(
     parquet data is read, so this is cheap even on a 10-year lake.
 
     ``history_mode`` / ``backfill_source`` / ``coverage_start`` are the
-    programmatic available-from contract for research consumers.
+    programmatic available-from contract for research consumers, and
+    ``history_horizon_days`` is the ceiling on how far back that contract can
+    ever reach (None = no source-imposed limit).
     """
     from ashare_lake.domain.datasets import history_mode_for
     from ashare_lake.query.parquet_scan import list_partitions
@@ -413,6 +427,10 @@ def list_datasets(
                 "fetch_semantics": spec.fetch_semantics,
                 "history_mode": history_mode_for(spec),
                 "backfill_source": spec.backfill_source,
+                # None = unbounded. A number means the source itself serves only
+                # that many trading days back, so anything earlier is
+                # unreachable rather than merely un-backfilled.
+                "history_horizon_days": spec.history_horizon_days,
                 "pit": spec.pit,
                 "has_data": has_data,
                 "coverage_start": first_part,

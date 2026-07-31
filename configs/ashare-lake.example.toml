@@ -111,6 +111,25 @@ use_snownlp = false
 # HTTP stock_news fallback cap (primary news channel is curated news_headlines).
 news_symbol_limit = 50
 
+[minute_bars]
+# Intraday bars. Off by default and NOT on the daily waves: full-market 1m is
+# ~1.3M rows and ~30MB a day (6-8GB a year, several times the whole daily lake),
+# which would change what `asl init` costs someone who never asked for it.
+#
+# HISTORY HORIZON. TDX keeps ~95 trading days of 1m and ~491 (about 2 years) of
+# 5m and coarser. That is the vendor's retention, not this lake's backlog: an
+# older window returns nothing, and no backfill source extends it. `asl backfill
+# minute_bars --start` refuses a window that starts before the horizon.
+enabled = false
+# "index:<symbol>" — that index's latest constituents (~300 names for 沪深300,
+#   about 2MB a day at 1m). "watchlist" — exactly the symbols listed below.
+#   "all" — the whole universe; opt in knowingly.
+scope = "index:000300.SH"
+symbols = []
+# 1m | 5m | 15m | 30m | 60m. One dataset holds one frequency: the horizons
+# differ (95 days vs 491) and a dataset carries a single watermark.
+frequency = "1m"
+
 [failover]
 enabled = true
 
@@ -189,6 +208,12 @@ at = "18:30"
 steps = ["institutional_holdings", "analyst_consensus",
   "hot_rank", "sector_bars", "sector_fund_flow", "news_headlines", "flash_news_wire",
   "sentiment_scores", "compact"]
+
+# Not scheduled by anything: `asl run daily --group intraday` only. Enable
+# [minute_bars] first, and read the horizon note there before expecting history.
+[job.daily.groups.intraday]
+at = "18:45"
+steps = ["minute_bars", "compact"]
 
 [job.init.phases]
 names = [

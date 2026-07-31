@@ -1,0 +1,129 @@
+"""Backfill guards for horizon-limited and chunked datasets."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import pytest
+
+from ashare_lake.cli import main as cli_main
+from ashare_lake.domain.datasets import DatasetSpec, get_dataset
+
+
+def test_horizon_guard_refuses_a_window_the_source_cannot_serve():
+    spec = get_dataset("minute_bars")
+    too_old = spec.earliest_available(date.today()) - timedelta(days=1)
+    with pytest.raises(cli_main.click.ClickException) as excinfo:
+        cli_main._guard_history_horizon("minute_bars", too_old)
+    message = str(excinfo.value)
+    # The error has to say the data does not exist, not that the run failed —
+    # otherwise it reads as a lake bug rather than a vendor limit.
+    assert "older than the source horizon" in message
+    assert str(spec.history_horizon_days) in message
+    assert str(spec.earliest_available(date.today())) in message
+
+
+def test_horizon_guard_allows_a_window_inside_the_horizon():
+    inside = get_dataset("minute_bars").earliest_available(date.today()) + timedelta(days=1)
+    cli_main._guard_history_horizon("minute_bars", inside)
+
+
+def test_horizon_guard_is_a_no_op_without_a_horizon():
+    # daily_bars has no vendor ceiling; a 2001 start must stay legal.
+    cli_main._guard_history_horizon("daily_bars", date(2001, 1, 1))
+    cli_main._guard_history_horizon("minute_bars", None)
+
+
+def test_earliest_available_converts_trading_days_to_calendar_days():
+    spec = DatasetSpec("x", history_horizon_days=242)
+    # A year of sessions is a calendar year, not 242 calendar days.
+    assert spec.earliest_available(date(2026, 8, 1)) == date(2025, 8, 1)
+    assert DatasetSpec("y").earliest_available(date(2026, 8, 1)) is None
+
+
+class FakeEngine:
+    """Records the window each sub-run saw, via the config it is handed."""
+
+    instances: list[FakeEngine] = []
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.windows: list[tuple[date, date]] = []
+        self.compacted: list[str] = []
+        self.manifest = self
+        FakeEngine.instances.append(self)
+
+    def run_job(self, name, *, steps, backfill, finalize_run):
+        self.windows.append((self.cfg._backfill_start, self.cfg._backfill_end))
+        return {
+            "run_id": f"run-{len(self.windows)}",
+            "status": self._status(len(self.windows)),
+            "rows_read": 10,
+            "rows_written": 10,
+        }
+
+    def _status(self, index: int) -> str:
+        return "success"
+
+    def run_step(self, step, trade_date, run_id):
+        self.compacted.append(run_id)
+        return {"rows_written": 10}
+
+    def finish_run(self, *args, **kwargs):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_engines():
+    FakeEngine.instances.clear()
+    yield
+    FakeEngine.instances.clear()
+
+
+def test_chunked_backfill_slices_the_window_and_compacts_each_slice(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
+    cfg = type("Cfg", (), {})()
+
+    result = cli_main._backfill_chunked(
+        cfg, "minute_bars", date(2026, 7, 1), date(2026, 7, 25), chunk_days=10
+    )
+
+    engine = FakeEngine.instances[0]
+    assert engine.windows == [
+        (date(2026, 7, 1), date(2026, 7, 10)),
+        (date(2026, 7, 11), date(2026, 7, 20)),
+        (date(2026, 7, 21), date(2026, 7, 25)),
+    ]
+    # Every slice is drained to curated before the next one stages anything —
+    # that is the whole point, since compact holds a run's staging in memory.
+    assert engine.compacted == ["run-1", "run-2", "run-3"]
+    assert result["status"] == "success"
+    assert result["rows_written"] == 30
+    assert len(result["slices"]) == 3
+
+
+def test_chunked_backfill_stops_at_a_failed_slice_and_reports_where_to_resume(
+    tmp_path, monkeypatch
+):
+    class FailingSecond(FakeEngine):
+        def _status(self, index):
+            return "failed" if index == 2 else "success"
+
+    monkeypatch.setattr(cli_main, "JobEngine", FailingSecond)
+    cfg = type("Cfg", (), {})()
+
+    result = cli_main._backfill_chunked(
+        cfg, "minute_bars", date(2026, 7, 1), date(2026, 7, 25), chunk_days=10
+    )
+
+    assert result["status"] == "failed"
+    # The first slice stays in curated; the caller resumes from the one that broke.
+    assert result["resume_from"] == date(2026, 7, 11)
+    assert len(result["slices"]) == 2
+    assert FailingSecond.instances[0].compacted == ["run-1"]
+
+
+def test_minute_bars_declares_a_chunk_size():
+    # Without it, a full-horizon seed stages ~123M rows into one compact.
+    assert get_dataset("minute_bars").backfill_chunk_days == 10
+    assert get_dataset("daily_bars").backfill_chunk_days is None

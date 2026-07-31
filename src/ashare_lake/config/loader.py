@@ -78,6 +78,13 @@ class Config:
     adj_factors_types: list[str] = field(default_factory=lambda: ["hfq"])
     sentiment_use_snownlp: bool = False
     sentiment_news_symbol_limit: int = 50
+    # Intraday capture is off by default and scoped when on. Full market 1m is
+    # ~1.3M rows and ~30MB a day (6-8GB a year, several times the whole daily
+    # lake), so the default scope is an index rather than every symbol.
+    minute_bars_enabled: bool = False
+    minute_bars_scope: str = "index:000300.SH"
+    minute_bars_symbols: list[str] = field(default_factory=list)
+    minute_bars_frequency: str = "1m"
     failover_enabled: bool = True
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
@@ -227,6 +234,7 @@ def load_config(path: str | Path) -> Config:
             )
         )
 
+    minute_raw = raw.get("minute_bars", {})
     init_raw = raw.get("job", {}).get("init", {})
     phases_block = init_raw.get("phases", init_raw)
     init_phases = list(phases_block.get("names", init_raw.get("names", [])))
@@ -265,6 +273,10 @@ def load_config(path: str | Path) -> Config:
         adj_factors_types=list(adj_raw.get("adjust_types", ["hfq"])),
         sentiment_use_snownlp=bool(sentiment_raw.get("use_snownlp", False)),
         sentiment_news_symbol_limit=int(sentiment_raw.get("news_symbol_limit", 50)),
+        minute_bars_enabled=bool(minute_raw.get("enabled", False)),
+        minute_bars_scope=str(minute_raw.get("scope", "index:000300.SH")),
+        minute_bars_symbols=list(minute_raw.get("symbols", [])),
+        minute_bars_frequency=str(minute_raw.get("frequency", "1m")),
         failover_enabled=bool(failover_raw.get("enabled", True)),
         failover_datasets=failover_datasets,
         config_path=config_path,

@@ -66,7 +66,7 @@ Job (daily / init / backfill / retry)
                     └── Manifest (SQLite) — runs + batches 生命周期
 ```
 
-- **Step**：`@register_step` 注册的可执行单元（28 个：25 采集 + 3 finalize）
+- **Step**：`@register_step` 注册的可执行单元（39 个：36 采集 + 3 finalize）
 - **Batch**：`daily_bars` 等多进程 step 的最小重试单位
 - **水位**：`meta/state/{dataset}.json`，compact 成功后前移；有 failed batch 的数据集不推水位
 

@@ -21,7 +21,7 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 |---------|-----------|
 | daily_bars | `trade_date`（按日） |
 | index_bars | `trade_date`（按年） |
-| minute_bars | `frequency`, `trade_date`, `symbol_bucket` |
+| minute_bars | `trade_date`（按日） |
 | trading_status | `trade_date`（按月） |
 | corporate_actions | `ex_date`（按年） |
 | adj_factors | `trade_date`（按日） |
@@ -142,6 +142,31 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --appl
 与 daily_bars 相同，另加 `frequency`（默认 `1d`）、`asset_type=index`。
 
 **例外：`volume` 不是股。** index_bars / sector_bars 保留 TDX `index()` 调用返回的原值，未做换算——它与成分股加总在任何 100 的幂次上都对不上（000001.SH 实测：指数 amount 是沪市个股 amount 之和的 77%，但两边 volume 差约 300 倍，股/手两种读法都解释不了）。在这个单位被确证之前，按猜测缩放只会把断裂挪个地方。这两个数据集仍是 `data_version=v1`。
+
+#### minute_bars
+
+日内 K 线。**可选数据集**，默认关闭（`[minute_bars].enabled = false`），不在默认 daily wave 上。
+
+| 列 | 类型 | 说明 |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | 分区列；A 股无夜盘，恒等于 `bar_time` 的日期 |
+| bar_time | timestamp（naive） | **bar 的收盘分钟**，`Asia/Shanghai` 墙钟；见下「bar 语义」 |
+| frequency | string | `1m` / `5m` / `15m` / `30m` / `60m`；一个数据集只放一个频率 |
+| open / high / low / close | float64 | **未复权**；用 `load(..., adjust="hfq")` 在查询侧按 `(symbol, trade_date)` 关联当日因子 |
+| volume | int64 | **股**。TDX 日 K 是手、日内 K 原生就是股——日内路径**不得**复用日频的 ×100 换算 |
+| amount | float64 | 人民币元 |
+| source / data_version / fetched_at | | 溯源列 |
+
+**bar 语义。** 标签是 bar 的**收盘时刻**（右标签）：`09:31` 覆盖 09:30–09:31，`15:00` 含收盘集合竞价。一个完整交易日 1m 有 **240** 根（`09:31–11:30` 120 根 + `13:01–15:00` 120 根），午休无 bar。落在交易时段外的 bar 视为解码错误，adapter 直接丢弃，audit 的 `minute_bars_off_session` 会在它们进 curated 时报 error。
+
+**无成交分钟。** TDX 的 volume 打包浮点解码把原始 0 映射成 `2**-127`（≈5.88e-39）而非 0.0（见 `_wire/helper.get_volume`）。日内路径显式归零，`volume=0`、`amount=0`，与全湖的停牌约定一致。冷门股一天有几十个这样的分钟，停牌股则是一整个交易日。
+
+**历史视野（重要）。** 实测 2026-08-01：TDX 每个标的只保留 **22,800 根 1m（95 个交易日）**、**23,568 根 5m（491 个交易日，约 2 年）**，15m/30m/60m 同为 491 天。跨交易所、跨流动性完全一致，是服务端保留期。**更早的窗口返回的不是更少数据，而是没有数据**，且没有任何回填源能补深。`asl backfill minute_bars --start` 会直接拒绝越界窗口；`list_datasets()` 的 `history_horizon_days` 是程序化契约。
+
+**为什么不按 `frequency` / `symbol_bucket` 分区。** 早期草图写的是三级分区。全市场 1m 单日约 1.3M 行、约 35MB（实测 26.9 B/行），正落在「≥1000 行/日 → 按日」区间，多加两级目录没有收益，而 compact / 分区裁剪 / 视图 / 碎片检查全部假设恰好一层。`frequency` 留在 schema 与主键里，所以将来加 5m 不是破坏性变更——但**加 5m 应当再注册一个数据集**，而不是混进同一个：两者视野不同（95 天 vs 491 天），而一个数据集只有一个水位和一个 `coverage_start`，混在一起会让两边都说谎。
+
+**容量。** 实测 26.9 B/行 zstd。全市场 1m ≈ 35MB/日、**8.4 GB/年**（作为对照：现有全部日频数据 2001–2026 共 468MB）。默认 `scope = "index:000300.SH"` 约 300 只，≈2MB/日、0.5GB/年。
 
 #### commodity_bars
 

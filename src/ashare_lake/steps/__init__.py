@@ -6,6 +6,7 @@ from ashare_lake.steps import (  # noqa: F401
     events,
     finalize,
     fundamentals,
+    intraday,
     macro_risk,
     newsboard,
     reference,

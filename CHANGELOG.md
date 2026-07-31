@@ -29,6 +29,43 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`minute_bars` dataset — intraday (1m) bars, opt-in.** Registered with a
+  schema, a primary key of `(symbol, trade_date, bar_time, frequency)`, day
+  partitions, a step (`steps/intraday.py`, `group="intraday"`), `load()`
+  support including `adjust="qfq"/"hfq"`, and four audit checks. Off by default
+  (`[minute_bars].enabled = false`) and never on the daily waves: full-market
+  1m is ~1.3M rows and ~35MB a day (8.4GB a year, against 468MB for the entire
+  daily lake 2001–2026), which must not become what `asl init` costs someone
+  who never asked for it. `[minute_bars].scope` defaults to `index:000300.SH`
+  (~300 names, ~2MB a day).
+
+  `bar_time` is the bar's **closing** minute, as TDX labels them: a full
+  session is 240 bars over 09:31–11:30 and 13:01–15:00, and the 15:00 bar
+  carries the closing auction. Prices are unadjusted, like the daily bars;
+  adjustment joins the day's factor at query time.
+
+- **`DatasetSpec.history_horizon_days` — how far back a source still serves.**
+  Measured 2026-08-01, TDX keeps 22,800 1-minute bars per symbol (95 trading
+  days) and 23,568 5-minute (491, about two years); uniform across exchanges
+  and liquidity, so it is server retention rather than a per-symbol artefact.
+  An older window returns *nothing*, not less, and no backfill source extends
+  it — `history_mode = by_date` alone would have promised a decade. Surfaced in
+  `list_datasets()`, and `asl backfill` now refuses a `--start` before the
+  horizon instead of sweeping for hours into an empty lake.
+
+- `DatasetSpec.backfill_chunk_days`: backfills for datasets that declare it run
+  as a sequence of compacted date slices. `compact` reads a whole run's staging
+  into one frame, which a 95-day full-market `minute_bars` seed (~123M rows)
+  would not survive; slicing also makes a killed sweep resumable at the last
+  compacted slice rather than losing everything.
+
+- Intraday audit checks (`quality/intraday_checks.py`): `minute_bars_off_session`
+  and `minute_bars_trade_date_mismatch` (error), `minute_bars_session_coverage`
+  and `minute_bars_daily_reconciliation` (warning). A session that quietly loses
+  40 of its 240 bars still has rows on every trading day and passes every
+  dataset-level check the lake already runs; the daily reconciliation is the
+  only one that compares the series against independently fetched data.
+
 - `daily_bars_volume_unit` audit check (`quality/unit_checks.py`): flags, per
   source, any median `amount / close / volume` outside [0.8, 1.25], so an
   adapter that stops converting cannot silently reintroduce the break. Runs as

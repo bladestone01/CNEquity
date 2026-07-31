@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import click
@@ -596,16 +596,48 @@ def backfill(
         if retry_failed and force:
             raise click.ClickException("Use either --retry-failed or --force, not both.")
         cfg._sector_bars_force = force
-    if start_str:
-        cfg._backfill_start = date.fromisoformat(start_str)
-    if end_str:
-        cfg._backfill_end = date.fromisoformat(end_str)
+    start_d = date.fromisoformat(start_str) if start_str else None
+    end_d = date.fromisoformat(end_str) if end_str else None
+    _guard_history_horizon(dataset, start_d)
+    if start_d:
+        cfg._backfill_start = start_d
+    if end_d:
+        cfg._backfill_end = end_d
     cfg._backfill_workers = workers
-    engine = JobEngine(cfg)
-    # Do not finish_run until after compact — otherwise a kill between the two
-    # leaves status=success with no compact batch, and `asl clean` cannot reclaim
-    # staging that never reached curated (same ordering as delisted CLI).
-    result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
+
+    chunk_days = get_dataset(dataset).backfill_chunk_days
+    if chunk_days and start_d and end_d:
+        result = _backfill_chunked(cfg, dataset, start_d, end_d, chunk_days)
+    else:
+        result = _backfill_once(cfg, dataset)
+    click.echo(json.dumps(result, indent=2, default=str))
+    if result["status"] != "success":
+        raise SystemExit(1)
+
+
+def _guard_history_horizon(dataset: str, start: date | None) -> None:
+    """Refuse a window the source cannot serve, instead of sweeping into nothing.
+
+    A horizon-limited source does not return *less* data for an older window,
+    it returns none — so without this an ``asl backfill minute_bars --start
+    2016-01-01`` spends hours producing an empty lake and reads as a bug in the
+    lake rather than a limit of the vendor.
+    """
+    spec = get_dataset(dataset)
+    earliest = spec.earliest_available(date.today())
+    if earliest is None or start is None or start >= earliest:
+        return
+    raise click.ClickException(
+        f"{dataset}: --start {start} is older than the source horizon. "
+        f"The vendor serves only ~{spec.history_horizon_days} trading days "
+        f"(back to about {earliest}); earlier bars do not exist at any depth "
+        "and no backfill source extends them. Re-run with "
+        f"--start {earliest} or later."
+    )
+
+
+def _finish_backfill_run(engine, result: dict) -> dict:
+    """Compact this run's staging, then close the run out."""
     run_id = result["run_id"]
     # Compact partial sweeps too. `compact` only ever drains the *current* run's
     # staging, so skipping it on a warning would strand every row the sweep did
@@ -614,8 +646,7 @@ def backfill(
     if result["status"] in ("success", "warning"):
         # Through the engine, not step_compact directly: the recorded compact
         # batch is what later lets `asl clean` release this run's staging.
-        compact_out = engine.run_step("compact", date.today(), run_id)
-        result["compact"] = compact_out
+        result["compact"] = engine.run_step("compact", date.today(), run_id)
     engine.manifest.finish_run(
         run_id,
         result["status"],
@@ -623,9 +654,63 @@ def backfill(
         rows_written=result.get("rows_written", 0),
         error_message="one or more steps failed" if result["status"] == "failed" else None,
     )
-    click.echo(json.dumps(result, indent=2, default=str))
-    if result["status"] != "success":
-        raise SystemExit(1)
+    return result
+
+
+def _backfill_once(cfg, dataset: str) -> dict:
+    engine = JobEngine(cfg)
+    # Do not finish_run until after compact — otherwise a kill between the two
+    # leaves status=success with no compact batch, and `asl clean` cannot reclaim
+    # staging that never reached curated (same ordering as delisted CLI).
+    result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
+    return _finish_backfill_run(engine, result)
+
+
+def _backfill_chunked(cfg, dataset: str, start: date, end: date, chunk_days: int) -> dict:
+    """Run the backfill as a sequence of compacted date slices.
+
+    One run for the whole window would stage more than compact can hold in
+    memory (it reads every staging file of a run into one frame). Slicing also
+    means a kill costs the current slice rather than the whole sweep: every
+    earlier slice is already in curated.
+    """
+    engine = JobEngine(cfg)
+    slices: list[dict] = []
+    status = "success"
+    rows_read = rows_written = 0
+    cursor = start
+    while cursor <= end:
+        slice_end = min(cursor + timedelta(days=chunk_days - 1), end)
+        cfg._backfill_start, cfg._backfill_end = cursor, slice_end
+        click.echo(f"[{dataset}] slice {cursor}..{slice_end}", err=True)
+        result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
+        result = _finish_backfill_run(engine, result)
+        rows_read += int(result.get("rows_read", 0))
+        rows_written += int(result.get("rows_written", 0))
+        slices.append(
+            {
+                "start": cursor,
+                "end": slice_end,
+                "status": result["status"],
+                "rows_written": result.get("rows_written", 0),
+            }
+        )
+        if result["status"] == "failed":
+            # Stop rather than press on: the slices already compacted are kept,
+            # and the window to resume from is the one printed here.
+            status = "failed"
+            break
+        if result["status"] == "warning":
+            status = "warning" if status == "success" else status
+        cursor = slice_end + timedelta(days=1)
+    return {
+        "dataset": dataset,
+        "status": status,
+        "rows_read": rows_read,
+        "rows_written": rows_written,
+        "slices": slices,
+        "resume_from": slices[-1]["start"] if status == "failed" and slices else None,
+    }
 
 
 @cli.command()

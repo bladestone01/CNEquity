@@ -1,6 +1,6 @@
 # 数据集目录
 
-ashare-lake 交付 **28 个注册数据集**（27 curated + 1 derived `adj_factors`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。
+ashare-lake 交付 **37 个注册数据集**（34 curated + 3 derived：`adj_factors`、`industry_index`、`delisting_events`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。其中 `minute_bars` 默认关闭，需在 `[minute_bars]` 显式开启。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -55,6 +55,19 @@ ashare-lake 交付 **28 个注册数据集**（27 curated + 1 derived `adj_facto
 
 `trading_status` 的 ST/停牌覆盖目前从约 2016 起（`daily_bars` 已到 2001）；audit `trading_status_coverage_start` 会报缺口——**不要**假定 2001 起 `universe="all_a"` 已剔除历史 ST。
 
+### 历史视野（history_horizon_days）
+
+`history_mode` 说的是**能不能**回补，这一项说的是**能回补多远**。取值为「源端还提供多少个交易日」，`None` = 源端无此限制，历史只受你回填了多少所限。
+
+| 数据集 | history_horizon_days | 含义 |
+|--------|---------------------|------|
+| minute_bars | **95** | TDX 每标的只留 22,800 根 1m。5m/15m/30m/60m 是 491 个交易日（约 2 年） |
+| 其余全部 | `None` | 源端不设上限 |
+
+这是**源的属性，不是本湖的待办**。更早的窗口返回的不是更少数据，而是没有数据，且没有回填源能补深——`by_date` 单独看会让人以为能回补十年。实测 2026-08-01，跨交易所、跨流动性一致（`600519.SH` / `000001.SZ` / `300750.SZ` / `688981.SH` / `603005.SH` 均为 95±1 天）。
+
+`asl backfill minute_bars --start` 早于视野会直接报错而不是扫一整天返回空。程序化读法：`list_datasets()` 的 `history_horizon_days` 列。
+
 ---
 
 ## 溯源列（所有 curated 行）
@@ -89,6 +102,7 @@ ashare-lake 交付 **28 个注册数据集**（27 curated + 1 derived `adj_facto
 |--------|--------|------|------|------|------|------|
 | daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | tip 缺口东财 clist 路由进 curated；多日 kline；BJ→sina；snapshot 仍留 audit |
 | index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
+| minute_bars | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | **可选**，默认关；`[minute_bars]` 配置范围；**源端只有 95 个交易日 1m**（见下「历史视野」）；required=false |
 | commodity_bars | trade_date | symbol, trade_date | by_date | ✓ | eastmoney+sina | 国内主连 + COMEX金 `GC0.CMX`；`asl backfill commodity_bars`；required=false |
 | adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`asl derive adj_factors` |
 | delisting_events | —（单文件 merge） | symbol | derived | — | sina | 每只退市股的结尾形态；`asl delisted backfill` 产出 |
@@ -192,6 +206,7 @@ ashare-lake 交付 **28 个注册数据集**（27 curated + 1 derived `adj_facto
 |-----------|--------|
 | reference.py | instruments, trading_calendar, trading_status |
 | bars.py | daily_bars, index_bars |
+| intraday.py | minute_bars（可选；不在默认 wave 上，`asl run daily --group intraday`） |
 | events.py | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | fundamentals.py | valuation_metrics, financial_statement_items |
 | capital.py | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades |

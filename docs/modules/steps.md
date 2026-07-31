@@ -16,7 +16,7 @@
 from ashare_lake.steps import reference, bars, events, ...  # noqa
 ```
 
-当前 **28 个**注册 step（25 采集 + 3 finalize）。
+当前 **39 个**注册 step（36 采集 + 3 finalize）。
 
 ---
 
@@ -36,6 +36,16 @@ from ashare_lake.steps import reference, bars, events, ...  # noqa
 |------|--------|--------|------|
 | daily_bars | daily_bars | **是** | tdx_protocol（失败时东财备源快照） |
 | index_bars | index_bars | 否 | tdx_protocol |
+
+### intraday.py（L1，可选）
+
+| Step | 数据集 | Worker | 主源 |
+|------|--------|--------|------|
+| minute_bars | minute_bars | 否 | tdx_protocol |
+
+`group="intraday"`，**不在默认 daily wave 上**，且 `[minute_bars].enabled` 默认 false——全市场 1m 约 35MB/日、8.4GB/年，不该落在没主动要它的用户头上。入口只有 `asl run daily --group intraday` 和 `asl backfill minute_bars`。
+
+范围由 `[minute_bars].scope` 决定：`index:<symbol>`（默认沪深300，约 300 只）/ `watchlist` / `all`。源端 1m 只有 95 个交易日——见 [catalog.md 历史视野](../datasets/catalog.md)。
 
 ### events.py（L2）
 

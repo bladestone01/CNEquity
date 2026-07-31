@@ -45,6 +45,38 @@ DAILY_BARS_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# Intraday bars. One registered dataset holds exactly one frequency: TDX serves
+# 95 trading days of 1m but 491 of 5m and coarser, and a dataset carries a
+# single watermark and a single coverage_start — mixing the two horizons under
+# one name would make both of them lie. `frequency` is still in the schema and
+# in the PK so a second frequency can be added without a breaking change.
+#
+# bar_time is the bar's CLOSING minute, which is how TDX labels them: a session
+# runs 09:31…11:30 and 13:01…15:00, 240 bars, no lunch bars, and the 15:00 bar
+# carries the closing auction. It is a naive Asia/Shanghai wall clock, matching
+# the convention that only fetched_at is stored tz-aware.
+#
+# A-shares have no overnight session, so trade_date == bar_time.date() always;
+# it is stored anyway because it is the partition column.
+MINUTE_BARS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "bar_time": pl.Datetime(time_unit="us"),
+    "frequency": pl.Utf8,
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    # 股, like every other dataset (ashare_lake.domain.units). TDX reports
+    # intraday bars in 股 natively — unlike its daily K, which is 手 — so this
+    # path must NOT reuse the daily lots_to_shares conversion.
+    "volume": pl.Int64,
+    "amount": pl.Float64,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 # Domestic commodity futures main-continuous daily bars (东财主连).
 # symbol = {ROOT}0.{EXCH} e.g. AU0.SHF / I0.DCE — not A-share .SH/.SZ.
 COMMODITY_BARS_SCHEMA = {
@@ -497,6 +529,7 @@ DATASET_SCHEMAS = {
     "trading_status": TRADING_STATUS_SCHEMA,
     "daily_bars": DAILY_BARS_SCHEMA,
     "index_bars": {**DAILY_BARS_SCHEMA, "frequency": pl.Utf8},
+    "minute_bars": MINUTE_BARS_SCHEMA,
     "commodity_bars": COMMODITY_BARS_SCHEMA,
     "corporate_actions": CORPORATE_ACTIONS_SCHEMA,
     "adj_factors": ADJ_FACTORS_SCHEMA,
@@ -536,6 +569,7 @@ PRIMARY_KEYS = {
     "trading_status": ["symbol", "trade_date"],
     "daily_bars": ["symbol", "trade_date"],
     "index_bars": ["symbol", "trade_date", "frequency"],
+    "minute_bars": ["symbol", "trade_date", "bar_time", "frequency"],
     "commodity_bars": ["symbol", "trade_date"],
     "corporate_actions": ["symbol", "ex_date", "action_type"],
     "adj_factors": ["symbol", "trade_date", "adjust_type"],
