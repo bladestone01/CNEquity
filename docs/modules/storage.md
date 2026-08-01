@@ -89,6 +89,8 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, backups/, meta/locks/
 - 根目录下的散落 parquet 记为 `partition=null`：merge 式数据集（instruments / delisting_events）本来如此，分区数据集则是异常，两种情况行数都不会被漏计
 - `--dataset` 局部重建会保留其它数据集的行（`_merge`）
 
+刷新：`stats_freshness(config)` 比对 sidecar 的 `latest_run_id` 与 manifest 最新 run（run id 而非时钟——改变湖的是采集）；`refresh_stats_if_stale(config)` 过期才重建，非阻塞锁下抢不到就返回 `None`。线程策略留给调用方。
+
 字段与设计取舍见 [CLI 参考 · asl stats](../reference/cli.md#asl-stats)。
 
 ---

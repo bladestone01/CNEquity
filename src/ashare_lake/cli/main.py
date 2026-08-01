@@ -1270,6 +1270,33 @@ def stats_rebuild(config_path: str, dataset_names: tuple[str, ...], as_json: boo
         click.echo(f"no parquet yet: {', '.join(sorted(result.empty))}")
 
 
+@stats.command("refresh")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--force", is_flag=True, help="Rebuild even when the stats are current.")
+def stats_refresh(config_path: str, force: bool):
+    """Rebuild only if ingestion has run since the stats were built.
+
+    Safe to schedule on a timer: it is a no-op when nothing has changed, and a
+    concurrent rebuild elsewhere makes it exit rather than queue behind one.
+    """
+    from ashare_lake.storage.stats import refresh_stats_if_stale, stats_freshness
+
+    cfg = _cfg(config_path)
+    freshness = stats_freshness(cfg)
+    result = refresh_stats_if_stale(cfg, force=force)
+    if result is None:
+        if freshness.stale:
+            click.echo("stale, but another rebuild holds the lock — nothing to do")
+        else:
+            click.echo(f"current as of run {freshness.latest_run_id} — nothing to do")
+        return
+    click.echo(
+        f"rebuilt ({freshness.reason or 'forced'}): "
+        f"{len(result.datasets)} dataset(s), {result.rows:,} row(s) "
+        f"in {result.elapsed_seconds:.1f}s"
+    )
+
+
 @stats.command("show")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option("--dataset", default=None, help="Per-partition detail for one dataset.")
@@ -1280,12 +1307,14 @@ def stats_show(config_path: str, dataset: str | None, by_source: bool):
         load_partition_stats,
         load_provenance_stats,
         load_summary,
+        stats_freshness,
     )
 
     cfg = _cfg(config_path)
     summary = load_summary(cfg)
     if summary is None:
         raise click.ClickException("no stats yet — run `asl stats rebuild`")
+    freshness = stats_freshness(cfg)
 
     df = load_provenance_stats(cfg) if by_source else load_partition_stats(cfg)
     if dataset:
@@ -1308,7 +1337,11 @@ def stats_show(config_path: str, dataset: str | None, by_source: bool):
             pl.col("period_end").max(),
         )
 
-    click.echo(f"generated_at: {summary.get('generated_at')}  run: {summary.get('latest_run_id')}")
+    stale_note = f"  STALE — {freshness.reason}; run `asl stats refresh`" if freshness.stale else ""
+    click.echo(
+        f"generated_at: {summary.get('generated_at')}  "
+        f"run: {summary.get('latest_run_id')}{stale_note}"
+    )
     with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
         click.echo(df.sort(df.columns[:2]))
 

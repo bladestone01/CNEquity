@@ -264,11 +264,26 @@ JSON 列出 curated 各数据集文件数与行数。每次都全扫；固定的
 
 全量重建：参考湖（1.5GB / 6600 万行 / 21k 分区）约 6 秒——只读 `source`、`data_version`、`fetched_at` 三列。增量刷新是可行的（跑批动过的分区可以从 `ingestion_batches.window_start/window_end` 反推），但没到需要的规模。
 
-`meta/stats` 不会自动刷新。挂在跑批后面：
+### asl stats refresh
+
+只在「湖动过了」时才重建，否则空转返回。
+
+| 选项 | 说明 |
+|------|------|
+| `--force` | 即使是最新的也重建 |
+
+**判据是 run id，不是时钟。** 改变湖的是采集，所以建于最后一个 run 之后的表无论多旧都是当前的，建于之前的无论多新都是过期的——`stats-latest.json` 的 `latest_run_id` 和 manifest 的最新 run 比对即可，只读一个小 JSON 加一行 SQLite。
+
+并发用非阻塞锁收敛：面板请求、cron、夜间跑批同时想重建时只有一个真做，抢不到锁的直接返回而不是排队——把 web 请求堵在一次全扫后面比多看一个 run 的旧数字更糟。
+
+刷新策略（`meta/stats` 不会自己刷新）：
 
 ```bash
-asl run daily && asl stats rebuild
+# 兜底：定时器上跑，没变化就是空转
+asl stats refresh
 ```
+
+面板（M2）走 `stats_freshness()` 判过期 + 后台线程调 `refresh_stats_if_stale()`；线程策略留在调用方，模块本身是同步的。`asl run daily && asl stats rebuild` 也可以，但 `refresh` 更省。
 
 ### asl stats show
 

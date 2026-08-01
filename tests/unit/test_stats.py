@@ -7,12 +7,16 @@ from datetime import datetime, timezone
 import polars as pl
 import pytest
 
+from ashare_lake.file_lock import exclusive_lock
 from ashare_lake.storage.stats import (
     load_partition_stats,
     load_provenance_stats,
     load_summary,
     partition_stats_path,
     rebuild_stats,
+    refresh_stats_if_stale,
+    stats_freshness,
+    stats_root,
 )
 
 FETCHED = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
@@ -188,3 +192,88 @@ def test_missing_stats_load_as_empty_frames_not_errors(config):
     assert load_partition_stats(config).is_empty()
     assert load_provenance_stats(config).is_empty()
     assert load_summary(config) is None
+
+
+# --- staleness ---------------------------------------------------------------
+
+
+def _start_run(config) -> str:
+    from ashare_lake.orchestrator.manifest import Manifest
+
+    return Manifest(config.manifest_path).start_run("daily")
+
+
+def _seed(config) -> None:
+    _write(config.curated_root / "daily_bars", "trade_date=2026-07-31", [_bar("600519.SH")])
+
+
+def test_no_stats_is_stale(config):
+    freshness = stats_freshness(config)
+    assert freshness.stale
+    assert freshness.reason == "no stats yet"
+
+
+def test_stats_without_any_ingestion_run_are_current(config):
+    """Nothing has run, so nothing can have invalidated them."""
+    _seed(config)
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    freshness = stats_freshness(config)
+    assert not freshness.stale
+    assert freshness.latest_run_id is None
+    assert freshness.generated_at.tzinfo is not None
+
+
+def test_a_run_landing_after_the_rebuild_makes_them_stale(config):
+    _seed(config)
+    _start_run(config)
+    rebuild_stats(config, datasets=["daily_bars"])
+    assert not stats_freshness(config).stale
+
+    run_id = _start_run(config)
+    freshness = stats_freshness(config)
+    assert freshness.stale
+    assert run_id in freshness.reason
+    assert freshness.latest_run_id == run_id
+    assert freshness.stats_run_id != run_id
+
+
+def test_refresh_is_a_no_op_while_current(config):
+    _seed(config)
+    rebuild_stats(config, datasets=["daily_bars"])
+    before = load_summary(config)["generated_at"]
+
+    assert refresh_stats_if_stale(config) is None
+    assert load_summary(config)["generated_at"] == before
+
+
+def test_refresh_rebuilds_after_a_run(config):
+    _seed(config)
+    rebuild_stats(config, datasets=["daily_bars"])
+    _write(config.curated_root / "daily_bars", "trade_date=2026-07-30", [_bar("000001.SZ")])
+    _start_run(config)
+
+    result = refresh_stats_if_stale(config)
+    assert result is not None
+    # A refresh covers the whole lake, not just what a caller happened to name.
+    assert result.rows == 2
+    assert not stats_freshness(config).stale
+
+
+def test_force_rebuilds_a_current_table(config):
+    _seed(config)
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    assert refresh_stats_if_stale(config, force=True) is not None
+
+
+def test_refresh_yields_to_a_rebuild_already_running(config):
+    """Losing the lock returns None rather than queueing behind a full scan."""
+    _seed(config)
+    stats_root(config).mkdir(parents=True, exist_ok=True)
+
+    with exclusive_lock(stats_root(config) / ".rebuild.lock"):
+        assert refresh_stats_if_stale(config) is None
+
+    # Lock released — the same call now does the work.
+    assert refresh_stats_if_stale(config) is not None

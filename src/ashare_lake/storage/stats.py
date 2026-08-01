@@ -51,12 +51,14 @@ import polars as pl
 from ashare_lake.config import Config
 from ashare_lake.domain.datasets import DATASETS, DatasetSpec
 from ashare_lake.domain.partitions import granularity_of, parse_partition
+from ashare_lake.file_lock import LockUnavailable, exclusive_lock
 from ashare_lake.query.parquet_scan import list_partitions, partition_dir
 from ashare_lake.storage.atomic import write_parquet_atomic
 
 PARTITION_STATS_FILE = "partition_stats.parquet"
 PROVENANCE_STATS_FILE = "provenance_stats.parquet"
 STATS_SUMMARY_FILE = "stats-latest.json"
+_REBUILD_LOCK = ".rebuild.lock"
 
 # Column polars fills with the source file of each row. Underscored so it cannot
 # collide with a dataset column.
@@ -346,26 +348,100 @@ def _write_summary(config: Config, result: StatsResult, rebuilt: set[str]) -> No
     A reader comparing ``latest_run_id`` against the manifest can tell whether
     the tables predate the last ingestion without reading the parquet at all.
     """
-    latest_run_id = None
-    try:
-        from ashare_lake.orchestrator.manifest import Manifest
-
-        latest = Manifest(config.manifest_path).latest_run()
-        if latest:
-            latest_run_id = latest["run_id"]
-    except Exception:
-        # The summary is a convenience; a missing manifest must not fail a
-        # rebuild that has already written both tables.
-        pass
-
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "latest_run_id": latest_run_id,
+        "latest_run_id": _latest_run_id(config),
         "rebuilt_datasets": sorted(rebuilt),
         **result.as_dict(),
     }
     with open(summary_path(config), "w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2, default=str)
+
+
+def _latest_run_id(config: Config) -> str | None:
+    """Newest run in the manifest, or None when there is no readable manifest."""
+    try:
+        from ashare_lake.orchestrator.manifest import Manifest
+
+        latest = Manifest(config.manifest_path).latest_run()
+        return latest["run_id"] if latest else None
+    except Exception:
+        # Staleness is a convenience signal and the summary is a sidecar; a
+        # missing or locked manifest must not fail a rebuild that has already
+        # written both tables.
+        return None
+
+
+@dataclass(frozen=True)
+class StatsFreshness:
+    """Whether the tables still describe the lake as it stands."""
+
+    stale: bool
+    reason: str | None
+    generated_at: datetime | None
+    stats_run_id: str | None
+    latest_run_id: str | None
+
+
+def stats_freshness(config: Config) -> StatsFreshness:
+    """Compare the stats sidecar against the manifest's newest run.
+
+    Reads one small JSON and one SQLite row — cheap enough for a dashboard to
+    call on every request, which is the point: the tables do not refresh
+    themselves, so somebody has to notice.
+
+    The run id is the signal rather than a wall-clock age. Ingestion is what
+    changes the lake, so tables built after the last run are current however
+    old they are, and tables built before it are stale however recent.
+    """
+    latest_run_id = _latest_run_id(config)
+    summary = load_summary(config)
+    if summary is None:
+        return StatsFreshness(True, "no stats yet", None, None, latest_run_id)
+
+    generated_at = None
+    raw = summary.get("generated_at")
+    if isinstance(raw, str):
+        try:
+            generated_at = datetime.fromisoformat(raw)
+        except ValueError:
+            generated_at = None
+
+    stats_run_id = summary.get("latest_run_id")
+    if latest_run_id is not None and stats_run_id != latest_run_id:
+        return StatsFreshness(
+            True,
+            f"ingestion run {latest_run_id} landed after the stats were built",
+            generated_at,
+            stats_run_id,
+            latest_run_id,
+        )
+    return StatsFreshness(False, None, generated_at, stats_run_id, latest_run_id)
+
+
+def refresh_stats_if_stale(config: Config, *, force: bool = False) -> StatsResult | None:
+    """Rebuild only when the lake has moved on. Returns None when it has not.
+
+    Guarded by a non-blocking lock so the callers that share a lake — a
+    dashboard request, a cron fallback, a nightly run — collapse into one
+    rebuild instead of racing. A caller that loses the lock returns None rather
+    than waiting: another rebuild is already producing the answer, and blocking
+    a web request behind a full scan is worse than serving numbers one run old.
+
+    Threading policy stays with the caller. A server wanting this off the
+    request path runs it in its own background thread.
+    """
+    if not force and not stats_freshness(config).stale:
+        return None
+    try:
+        with exclusive_lock(stats_root(config) / _REBUILD_LOCK, blocking=False):
+            # Re-check under the lock: whoever held it may have just finished
+            # the very rebuild this call was about to repeat.
+            if not force and not stats_freshness(config).stale:
+                return None
+            return rebuild_stats(config)
+    except LockUnavailable:
+        return None
 
 
 def load_partition_stats(config: Config) -> pl.DataFrame:
