@@ -8,7 +8,6 @@ answers the question it cannot — whether that config works in *this* environme
 from __future__ import annotations
 
 import platform
-import shlex
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -18,10 +17,6 @@ from pathlib import Path
 from ashare_lake.diagnostics.packages import (
     PackageStatus,
     probe_packages,
-    racer_native_lib,
-    racer_package_dir,
-    racer_providers,
-    racer_repair_commands,
 )
 
 
@@ -73,15 +68,6 @@ def _environment() -> dict[str, str]:
     }
 
 
-def _racer_fix_text() -> str:
-    commands = racer_repair_commands()
-    if not commands:
-        return "当前环境既没有 pip 也找不到 uv；请用管理该环境的工具卸载 py-mini-racer 后强制重装 mini-racer"
-    return "`asl doctor --fix` 可自动执行，或手动依次运行：\n" + "\n".join(
-        "  " + shlex.join(cmd) for cmd in commands
-    )
-
-
 def _check_packages(statuses: list[PackageStatus], findings: list[Finding]) -> None:
     """A declared dependency that will not import means the install is damaged."""
     missing = [s for s in statuses if not s.importable]
@@ -97,49 +83,6 @@ def _check_packages(statuses: list[PackageStatus], findings: list[Finding]) -> N
             fix="pip install --force-reinstall ashare-lake",
         )
     )
-
-
-def _check_racer(findings: list[Finding]) -> None:
-    providers = racer_providers()
-    if len(providers) > 1:
-        findings.append(
-            # WARN, not ERROR: nothing this project installs can produce the
-            # collision any more, and every akshare endpoint it calls lives in a
-            # module that never evals JS.
-            Finding(
-                severity=Severity.WARN,
-                title=f"py_mini_racer 包名冲突: {' + '.join(providers)}",
-                detail=(
-                    "这些发行包都往同一个 import 包 py_mini_racer/ 里写文件，"
-                    "安装器不会拦截，后装的覆盖先装的，结果是加载器与二进制不匹配"
-                    "（dlsym: symbol not found）。\n"
-                    "  本项目采集不受影响：用到的 akshare 接口都不做 JS 求值。"
-                    "若你直接调用 akshare 的 cninfo / sina 系列接口，那些会失败。\n"
-                    "  py-mini-racer 来自已移除的 mootdx——多半是从 0.2.x 升级后的残留。"
-                ),
-                # Rendered as separate argv lines rather than a `&&` chain: that
-                # operator is a syntax error in Windows PowerShell 5.1.
-                fix=_racer_fix_text(),
-            )
-        )
-        return
-
-    if not providers or racer_package_dir() is None:
-        return
-
-    if racer_native_lib() is None:
-        findings.append(
-            Finding(
-                severity=Severity.WARN,
-                title=f"py_mini_racer 缺少本平台原生库 ({providers[0]})",
-                detail=(
-                    f"{platform.system()}/{platform.machine()} 上没有匹配的原生库——"
-                    "多半是没有对应 wheel、从 sdist 构建后只落了其他平台的二进制。"
-                    "import 能过，首次求值才 RuntimeError。当前没有源用到 JS 求值，暂不影响。"
-                ),
-                fix="需要 JS 求值时改用有本平台 wheel 的 mini-racer（akshare 会带上）",
-            )
-        )
 
 
 def _data_root_writable(data_root: Path) -> bool:
@@ -203,7 +146,6 @@ def build_report(config=None, config_path: Path | None = None) -> Report:
     findings: list[Finding] = []
 
     _check_packages(statuses, findings)
-    _check_racer(findings)
 
     if config is None:
         findings.append(

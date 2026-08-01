@@ -224,13 +224,7 @@ def config_cmd(action: str, config_path: str, force: bool, data_root: str | None
 @cli.command()
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
-@click.option(
-    "--fix",
-    "do_fix",
-    is_flag=True,
-    help="Repair the py_mini_racer collision in this environment, then re-check.",
-)
-def doctor(config_path: str, as_json: bool, do_fix: bool):
+def doctor(config_path: str, as_json: bool):
     """Check environment, optional dependencies, and config for silent breakage.
 
     Runs without a config (fresh install) and without network. Exits non-zero
@@ -251,13 +245,6 @@ def doctor(config_path: str, as_json: bool, do_fix: bool):
             click.echo(f"WARN: 配置解析失败 {path}: {exc}", err=True)
 
     report = build_report(config=cfg, config_path=resolved)
-
-    if do_fix:
-        from ashare_lake.diagnostics.repair import repair_racer_conflict
-
-        if not repair_racer_conflict(echo=click.echo):
-            raise SystemExit(1)
-        report = build_report(config=cfg, config_path=resolved)
 
     if as_json:
         click.echo(json.dumps(to_dict(report), indent=2, default=str))

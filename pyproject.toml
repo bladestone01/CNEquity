@@ -41,8 +41,10 @@ dependencies = [
   "curl_cffi>=0.7",
   "polars>=1.0",
   "pyarrow>=15.0",
-  # AkShare: macro series EastMoney does not return, plus an ST-label cross-check.
-  "akshare>=1.14",
+  # No AkShare. Its two call sites wrapped endpoints already queried directly —
+  # the ST board (push2 clist) and the PMI / 货币供应量 datacenter reports — so it
+  # bought a parsing layer, 14 transitive packages and the mini-racer collision
+  # rather than a second source. See issue #3.
   # Baostock: valuation / ST / delisted-bar history for `asl init` and backfills.
   "baostock>=0.8",
   # SnowNLP: on-demand stock_news sentiment ([sentiment] use_snownlp).

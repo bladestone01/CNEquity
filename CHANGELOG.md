@@ -8,6 +8,28 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`m2_yoy` held M0 month-over-month growth, not M2 year-on-year.** The AkShare
+  path picked its value column by Chinese-substring match with a
+  `next(..., columns[-1])` default. The hint `"M2-同比增长"` never matched the
+  real label `"货币和准货币(M2)-同比增长"` — the bracket breaks the substring — so
+  every fetch silently fell through to the *last* column,
+  `流通中的现金(M0)-环比增长`. A correct-looking indicator name has been carrying
+  an unrelated series since it was introduced: 2013-04 stored 0.264 where M2 YoY
+  was 16.1.
+
+  Now read as an explicit field (`BASIC_CURRENCY_SAME`) from the EastMoney
+  report. Rows already in curated are wrong, but need no migration script: the
+  adapter fetches the full published history (2008 →) on every run and compact
+  dedupes on `(indicator_id, obs_date)` keeping the newest `fetched_at`, so the
+  next `macro_indicators` run rewrites the whole series.
+
+- **`social_financing` never wrote a single row.** MOFCOM formats 月份 as compact
+  `YYYYMM` (`202604`), which the macro adapter's date parser did not accept — it
+  only handled separated forms — so every 社融 record was dropped as
+  unparseable. The indicator was configured, documented and catalogued while
+  producing nothing. The new MOFCOM adapter parses it and backfills 136 months
+  from 2015-01.
+
 - **`macro_indicators` rows fetched from AkShare were stamped
   `source = "eastmoney"`.** `fetch_macro_indicators` returned rows without a
   `source` column, and `steps/macro_risk.py` passed a blanket
@@ -27,6 +49,44 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   absent `[sources.akshare]` section counts as off, as does the no-config
   path. Daily rates (`cnbond_yield_10y`, `shibor_3m`, `lpr_1y`) are unaffected;
   they come from EastMoney directly.
+
+  (Superseded below — AkShare is gone entirely, so the flag no longer exists.)
+
+### Removed
+
+- **AkShare is no longer a dependency.** Issue #3 asked whether its data-quality
+  risk was worth carrying. Reading the wrappers settled it without needing the
+  proposed comparison study: neither call site was a second source.
+
+  `ak.stock_zh_a_st_em` requests `push2.eastmoney.com/api/qt/clist/get` with
+  `fs=m:0+f:4,m:1+f:4` — the same vendor, endpoint and filter that
+  `adapters/eastmoney/trading_status.py` already queries. Unioning it could only
+  repeat the answer or fail, so the ST union is removed; the client's
+  push2 → push2delay failover is the real robustness, and baostock's per-day
+  `isST` stays the one independent reading on the `--backfill` path.
+  `macro_china_pmi` and `macro_china_money_supply` request the same
+  `datacenter-web.eastmoney.com` reports this module already talks to, so PMI
+  and M2 now read `RPT_ECONOMY_PMI` / `RPT_ECONOMY_CURRENCY_SUPPLY` directly and
+  pick up the project's own retry, throttle and TLS handling. Direct PMI matches
+  the wrapper on all 223 months; M2 differs on all 222 because the wrapper path
+  was reading the wrong column (above).
+
+  Dropping it removes 15 transitive packages, including the `mini-racer` V8
+  binding. With it go the `py_mini_racer` collision check, `asl doctor --fix`,
+  and `diagnostics/repair.py` — that collision was only ever about two packages
+  this project no longer installs.
+
+### Added
+
+- `adapters/mofcom/` — 商务部数据中心, publisher of 社会融资规模增量, replacing the
+  AkShare wrapper for that series. It reads the response **by key** (`tiosfs`);
+  the wrapper relabelled columns positionally, so a reordered payload would have
+  silently relabelled 社融 as 委托贷款. Network or shape failures degrade to a
+  warning rather than failing the daily run.
+- `[sources.mofcom]` in the example config. `[sources.akshare]` is gone — leaving
+  it would advertise a source no adapter reads.
+
+### Fixed
 
 - **`daily_bars.volume` mixed two units in one column, off by exactly 100×.**
   The schema has always documented 股, but only `ths` and `baostock` wrote it:

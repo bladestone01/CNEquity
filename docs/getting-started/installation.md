@@ -14,7 +14,7 @@ Windows 说明：
 - 支持原生 Win10/11 + PowerShell / cmd；CI 有 `windows-latest` 单元测试。
 - 范围是 **64-bit x86-64**；32-bit 与 ARM64 Windows 未验证。
 - WSL 可作为过渡，但不是必需——原生 Windows 已可用。
-- 依赖（duckdb / polars / pyarrow / mini-racer 等）均有 `win_amd64` 轮子；若某包退化成从源码编，`asl doctor` 会报出。
+- 依赖（duckdb / polars / pyarrow 等）均有 `win_amd64` 轮子；若某包退化成从源码编，`asl doctor` 会报出。
 
 ## 从 PyPI 安装（推荐）
 
@@ -23,7 +23,7 @@ pip install ashare-lake
 asl demo    # 一分钟真数样例，不需要先 clone 仓库
 ```
 
-**没有 extras**。一条命令装齐所有数据源——通达信协议（内置客户端）、东方财富、新浪、巨潮、AkShare、Baostock、SnowNLP，以及申万/国证成分表所需的 XLS 解析。
+**没有 extras**。一条命令装齐所有数据源——通达信协议（内置客户端）、东方财富、新浪、巨潮、商务部、Baostock、SnowNLP，以及申万/国证成分表所需的 XLS 解析。
 
 旧文档里的 `pip install "ashare-lake[tdx]"` 之类仍然可用，装出来的结果完全一致——pip 会提示一句 `does not provide the extra 'tdx'` 然后照常安装，uv 则不作声。
 
@@ -48,7 +48,7 @@ asl demo
 asl query --config configs/ashare-lake.demo.toml --sql "SELECT count(*) FROM daily_bars"
 ```
 
-> PowerShell 5.1 不支持 `&&`。请分行执行，或用 PowerShell 7+ / cmd。`asl doctor --fix` 已绕过 shell，直接以 argv 调安装器。
+> PowerShell 5.1 不支持 `&&`。请分行执行，或用 PowerShell 7+ / cmd。
 
 ## 从源码安装（开发）
 
@@ -81,7 +81,6 @@ pip install -e . --group dev
 | polars、pyarrow、duckdb | 湖存储与查询 |
 | httpx、curl_cffi | HTTP 源（东财 / 新浪 / 巨潮） |
 | click | CLI |
-| akshare | 东财未覆盖的宏观序列，ST 标签交叉校验 |
 | baostock | 估值 / ST / 退市行情的历史回填 |
 | snownlp | on-demand `stock_news` 情绪（`[sentiment] use_snownlp`） |
 | pandas、openpyxl、xlrd | 申万 / 国证成分历史的 XLS·XLSX 解析 |
@@ -133,24 +132,25 @@ pytest tests/unit -q                               # 需源码 + --group dev，�
 
 `pyproject.toml` 里 `httpx>=0.25` 的下界现在只标记「我们用到的 `Client()` 选项最早出现在哪个版本」，不再是为了迁就别人。
 
-### py_mini_racer 包名冲突（历史问题，干净安装已不会遇到）
+### 从 0.3.x 升级：mini-racer 已成为孤儿包
 
-`akshare` 依赖 `mini-racer`，而已移除的 `mootdx` 依赖 `py-mini-racer`——**两个不同的发行包，却都往同一个 import 包 `py_mini_racer/` 里装文件**。安装器不拦截这种重叠，后装的覆盖先装的，可能留下「加载器与原生二进制不匹配」（`dlsym: symbol not found`），且结果取决于安装顺序。
+0.4 之前 `akshare` 是硬依赖，它带进来一个编译型 V8 绑定 `mini-racer`。AkShare
+已移除（见 [issue #3](https://github.com/rootSunc/ashare-lake/issues/3)），但
+pip 与 uv 都不会删除「不再被依赖」的包，所以升级后的环境里 `mini-racer` 会留下来。
 
-本项目不再依赖 mootdx，所以**干净环境装不出这个冲突**。仍可能遇到的情况只有两种：
-
-- 从旧版本升级上来，环境里还残留 `py-mini-racer`
-- 你出于自己的原因另行安装了 mootdx
-
-`asl doctor` 会检测这个状态，`--fix` 直接修好：
+它对本项目已无任何作用，可以直接卸载：
 
 ```bash
-asl doctor --fix
+pip uninstall mini-racer
 ```
 
-它在 macOS / Linux / Windows 上行为一致：不走 shell，直接以 argv 调用当前解释器的安装器（有 pip 用 `python -m pip`，`uv venv` 建的无 pip 环境自动改用 `uv pip`）。doctor 也会把等价的手动命令按行打印出来。
+若环境里同时还残留更早的 `py-mini-racer`（来自 0.2.x 时代的 `mootdx`），两者会
+在共享的 `py_mini_racer/` import 包上互相覆盖。这曾由 `asl doctor --fix` 处理；
+现在本项目两个包都不用，直接把它们一起卸掉即可：
 
-> 手动执行时不要把两条命令用 `&&` 串起来——那在 Windows PowerShell 5.1（多数 Windows 的默认 shell）是语法错误。同时**两步缺一不可**：两个发行包在 `__init__.py` 上重叠，只卸载 `py-mini-racer` 会连带删掉 `mini-racer` 需要的文件。
+```bash
+pip uninstall py-mini-racer mini-racer
+```
 
 ## 下一步
 

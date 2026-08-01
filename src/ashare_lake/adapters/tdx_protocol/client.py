@@ -625,7 +625,6 @@ def fetch_trading_status(
     *,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
-    extra_st_symbols: set[str] | None = None,
 ) -> pl.DataFrame:
     def _mock_status() -> pl.DataFrame:
         rows = [
@@ -644,7 +643,7 @@ def fetch_trading_status(
 
     wait_spec(rate_limit)
     try:
-        df = fetch_trading_status_eastmoney(symbols, trade_date, extra_st_symbols=extra_st_symbols)
+        df = fetch_trading_status_eastmoney(symbols, trade_date)
         if df.height:
             return df
         reason = "EastMoney returned no trading status rows"

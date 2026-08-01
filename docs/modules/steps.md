@@ -28,7 +28,7 @@ from ashare_lake.steps import reference, bars, events, ...  # noqa
 |------|--------|--------|------|
 | instruments | instruments | 否 | tdx_protocol + EM list_date |
 | trading_calendar | trading_calendar | 否 | exchange_calendar 种子 |
-| trading_status | trading_status | 否 | eastmoney + akshare；init 后可选 baostock ST 回填 |
+| trading_status | trading_status | 否 | eastmoney；init 后可选 baostock ST 回填 |
 
 ### bars.py（L1）
 

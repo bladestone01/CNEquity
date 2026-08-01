@@ -29,7 +29,7 @@ uv run pytest -m network tests/unit/test_datacenter_live_contracts.py -q
 |------|------|------|
 | `baostock login failed: 黑名单用户`（`10001011`） | IP 被免费 API 封禁：日请求 >5 万、或并发连接、或扫太快 | **停扫**；换出口或去 QQ 群求助解封。解封后用 `[sources.baostock]` 默认限速 resume，**勿并发** |
 | 东财 429 / Empty reply / 连接被掐 | 请求过密或海外出口 | 保持 `min_interval_seconds ≥ 1.0`；大陆出口或 `proxy`；见下文 sector_bars |
-| cninfo / akshare 间歇失败 | 同源风控 | 已按页/按调用 `rate_limit`；失败 fail-loud 后降频重试 |
+| cninfo / mofcom 间歇失败 | 同源风控 / 站点抖动 | 已按页/按调用 `rate_limit`；社融取全量序列，失败仅告警，下次运行自动补回 |
 
 原则：**时间可以等，封禁成本远高于多等一天。** 勿为加速关掉 `min_interval` 或开多进程打同一免费源。
 
@@ -75,7 +75,7 @@ uv run asl status --datasets   # valuation 不应再停在稀疏 tip
 | macOS 上频繁 OOM / 池崩溃 | TDX 客户端非 fork-safe + `workers>1` | `asl config validate` **拒绝** Darwin 上 `workers>1`；生产用 `workers = 1`（见 runbook / `daily_pipeline.sh`） |
 | Windows 上 `import fcntl` / 文件锁失败 | 旧版用 Unix-only `fcntl.flock` | 升级到含 `ashare_lake.file_lock` 的版本；锁在 Win/POSIX 上语义一致 |
 | Windows 上 DuckDB 视图空 / 路径错 | 反斜杠进了 `read_parquet` SQL | 新版本用 `as_posix()`；确认 `data.root` 可读写后重跑 `asl init` / 刷新视图 |
-| Windows 上 PowerShell `&&` 语法错误 | PS 5.1 不支持 `&&` | 分行执行；`asl doctor --fix` 已不走 shell |
+| Windows 上 PowerShell `&&` 语法错误 | PS 5.1 不支持 `&&` | 分行执行，或用 PowerShell 7+ / cmd |
 
 ---
 

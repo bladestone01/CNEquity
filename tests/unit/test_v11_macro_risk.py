@@ -74,12 +74,15 @@ def test_v11_steps_registered():
         assert get_step(name).fn is not None
 
 
-def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
-    # Keep the test hermetic: akshare (when installed) would fetch the real
-    # full monthly history over the network.
+def _no_social_financing(monkeypatch):
+    """Keep tests hermetic — 社融 is a live MOFCOM call."""
     from ashare_lake.adapters.macro import indicators as macro_indicators
 
-    monkeypatch.setattr(macro_indicators, "_akshare_rows", lambda _td, config=None: [])
+    monkeypatch.setattr(macro_indicators, "_social_financing_rows", lambda _td, config=None: [])
+
+
+def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
+    _no_social_financing(monkeypatch)
     client = FakeDatacenterClient(
         {
             "RPTA_WEB_TREASURYYIELD": [{"SOLAR_DATE": "2024-06-28", "EMM00166466": 2.25}],
@@ -101,85 +104,106 @@ def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
     assert out["obs_date"][0] == date(2024, 6, 28)
 
 
-def _macro_config(tmp_path, *, akshare: bool | None):
-    """Config whose [sources.akshare] is on, off, or absent."""
-    cfg = Config(data_root=tmp_path / "data")
-    cfg.sources = {} if akshare is None else {"akshare": akshare}
-    return cfg
+_EM_MONTHLY_BATCHES = {
+    "RPTA_WEB_TREASURYYIELD": [{"SOLAR_DATE": "2024-06-28", "EMM00166466": 2.25}],
+    # EastMoney publishes monthly observations dated at month start.
+    "RPT_ECONOMY_PMI": [
+        {"REPORT_DATE": "2024-05-01 00:00:00", "TIME": "2024年05月份", "MAKE_INDEX": 49.5},
+        {"REPORT_DATE": "2024-07-01 00:00:00", "TIME": "2024年07月份", "MAKE_INDEX": 49.0},
+    ],
+    "RPT_ECONOMY_CURRENCY_SUPPLY": [
+        {
+            "REPORT_DATE": "2024-05-01 00:00:00",
+            "TIME": "2024年05月份",
+            "BASIC_CURRENCY": 3010000.0,
+            "BASIC_CURRENCY_SAME": 7.0,
+        }
+    ],
+}
 
 
-def _stub_akshare(monkeypatch, calls: list[str]):
-    """Point the wrapped akshare endpoints at canned frames, recording each call."""
-    import akshare as ak
-    import pandas as pd
+def test_macro_monthly_series_come_from_eastmoney_directly(monkeypatch):
+    """PMI and M2 are read from the EastMoney reports, not an AkShare wrapper.
 
-    frames = {
-        "macro_china_pmi": pd.DataFrame({"月份": ["2024年05月份"], "制造业-指数": [49.5]}),
-        "macro_china_money_supply": pd.DataFrame(
-            {"月份": ["2024年05月份"], "货币和准货币(M2)-同比增长": [7.0]}
-        ),
-        "macro_china_shrzgm": pd.DataFrame({"月份": ["202405"], "社会融资规模增量": [2000.0]}),
-    }
-    for name, frame in frames.items():
-
-        def _fake(_name=name, _frame=frame):
-            calls.append(_name)
-            return _frame
-
-        monkeypatch.setattr(ak, name, _fake, raising=False)
-
-
-def test_macro_akshare_rows_are_labeled_akshare(monkeypatch, tmp_path):
-    """akshare-sourced rows must not end up stamped `source=eastmoney`.
-
-    The step passes a blanket source="eastmoney" and with_provenance only fills
-    the column when it is absent, so the adapter has to label each row itself.
-    Regression for monthly PMI/M2/社融 landing in curated credited to EastMoney.
+    Both wrappers requested this same datacenter endpoint, so going direct keeps
+    the publisher and drops the parsing layer (issue #3).
     """
-    from ashare_lake.domain.schemas import with_provenance
+    _no_social_financing(monkeypatch)
+    df = fetch_macro_indicators(
+        date(2024, 6, 28),
+        client=FakeDatacenterClient(_EM_MONTHLY_BATCHES),  # type: ignore[arg-type]
+    )
+    by_id = dict(zip(df["indicator_id"].to_list(), df["source"].to_list(), strict=True))
+    assert by_id["pmi_manufacturing"] == "eastmoney"
+    assert by_id["m2_yoy"] == "eastmoney"
 
-    calls: list[str] = []
-    _stub_akshare(monkeypatch, calls)
-    client = FakeDatacenterClient(
-        {"RPTA_WEB_TREASURYYIELD": [{"SOLAR_DATE": "2024-06-28", "EMM00166466": 2.25}]}
+
+def test_macro_m2_reads_the_yoy_column_not_a_positional_fallback():
+    """`m2_yoy` must be M2 年同比, i.e. BASIC_CURRENCY_SAME.
+
+    The AkShare path matched columns by substring with a
+    `next(..., columns[-1])` default. Its hint "M2-同比增长" never matched the
+    real label "货币和准货币(M2)-同比增长" (the bracket breaks the substring), so
+    it silently fell through to the *last* column — 流通中的现金(M0)-环比增长 —
+    and the lake stored M0 month-over-month growth under the name `m2_yoy`.
+    Reading a named field cannot fail that way.
+    """
+    from ashare_lake.adapters.macro.indicators import _EM_MONTHLY_SERIES, _eastmoney_monthly
+
+    assert _EM_MONTHLY_SERIES["m2_yoy"]["value_column"] == "BASIC_CURRENCY_SAME"
+    rows = _eastmoney_monthly(
+        FakeDatacenterClient(_EM_MONTHLY_BATCHES),  # type: ignore[arg-type]
+        date(2024, 6, 28),
+    )
+    m2 = [r for r in rows if r["indicator_id"] == "m2_yoy"]
+    assert [r["value"] for r in m2] == [7.0]
+
+
+def test_macro_monthly_obs_dates_land_on_month_end_and_respect_trade_date():
+    """Month-start REPORT_DATE is converted; future months are not published early."""
+    from ashare_lake.adapters.macro.indicators import _eastmoney_monthly
+
+    rows = _eastmoney_monthly(
+        FakeDatacenterClient(_EM_MONTHLY_BATCHES),  # type: ignore[arg-type]
+        date(2024, 6, 28),
+    )
+    pmi = [r for r in rows if r["indicator_id"] == "pmi_manufacturing"]
+    # 2024-05 kept at month end; 2024-07 is past trade_date and dropped.
+    assert [r["obs_date"] for r in pmi] == [date(2024, 5, 31)]
+
+
+def test_social_financing_comes_from_mofcom(monkeypatch):
+    from ashare_lake.adapters.macro import indicators as macro_indicators
+
+    monkeypatch.setattr(
+        macro_indicators,
+        "_social_financing_rows",
+        lambda td, config=None: [
+            {
+                "indicator_id": "social_financing",
+                "obs_date": date(2024, 5, 31),
+                "value": 2000.0,
+                "frequency": "monthly",
+                "source": "mofcom",
+            }
+        ],
     )
     df = fetch_macro_indicators(
         date(2024, 6, 28),
-        client=client,  # type: ignore[arg-type]
-        config=_macro_config(tmp_path, akshare=True),
+        client=FakeDatacenterClient(_EM_MONTHLY_BATCHES),  # type: ignore[arg-type]
     )
-    assert calls, "akshare endpoints should have been called with the source enabled"
-
-    # Blanket step stamp must not overwrite what the adapter already set.
-    out = with_provenance(df, source="eastmoney", data_version="v1")
-    by_id = dict(zip(out["indicator_id"].to_list(), out["source"].to_list(), strict=True))
-    assert by_id["cnbond_yield_10y"] == "eastmoney"
-    assert by_id["pmi_manufacturing"] == "akshare"
-    assert by_id["m2_yoy"] == "akshare"
+    row = df.filter(pl.col("indicator_id") == "social_financing")
+    assert row.height == 1
+    assert row["source"][0] == "mofcom"
 
 
-@pytest.mark.parametrize("akshare_enabled", [False, None])
-def test_macro_akshare_skipped_when_source_disabled(monkeypatch, tmp_path, akshare_enabled):
-    """`_akshare_rows` must honour [sources.akshare], like the trading_status site.
+@pytest.mark.parametrize("enabled", [False])
+def test_social_financing_honours_sources_mofcom(tmp_path, enabled):
+    from ashare_lake.adapters.macro.indicators import _social_financing_rows
 
-    Before this gate the monthly series were fetched even with akshare disabled.
-    """
-    from ashare_lake.adapters.macro.indicators import _akshare_rows
-
-    calls: list[str] = []
-    _stub_akshare(monkeypatch, calls)
-    cfg = _macro_config(tmp_path, akshare=akshare_enabled)
-    assert _akshare_rows(date(2024, 6, 28), config=cfg) == []
-    assert calls == []
-
-
-def test_macro_akshare_skipped_without_config(monkeypatch):
-    from ashare_lake.adapters.macro.indicators import _akshare_rows
-
-    calls: list[str] = []
-    _stub_akshare(monkeypatch, calls)
-    assert _akshare_rows(date(2024, 6, 28), config=None) == []
-    assert calls == []
+    cfg = Config(data_root=tmp_path / "data")
+    cfg.sources = {"mofcom": enabled}
+    assert _social_financing_rows(date(2024, 6, 28), config=cfg) == []
 
 
 def test_share_unlock_schedule_parses():
@@ -299,7 +323,12 @@ def test_load_macro_indicators_by_date_range(tmp_path):
 def test_parse_series_obs_date_handles_month_formats():
     from ashare_lake.adapters.macro.indicators import _parse_series_obs_date
 
-    assert _parse_series_obs_date("2024-06-28") == date(2024, 6, 28)
+    # Monthly-only helper: every accepted form maps to the month's last day.
+    # EastMoney reports monthly observations at month *start*, and curated has
+    # always keyed them at month end, so the conversion has to happen here.
+    assert _parse_series_obs_date("2026-07-01 00:00:00") == date(2026, 7, 31)
+    assert _parse_series_obs_date(date(2026, 7, 1)) == date(2026, 7, 31)
+    assert _parse_series_obs_date("2024-06-28") == date(2024, 6, 30)
     assert _parse_series_obs_date("2024-06") == date(2024, 6, 30)
     assert _parse_series_obs_date("2024年6月份") == date(2024, 6, 30)
     assert _parse_series_obs_date("2024年12月") == date(2024, 12, 31)

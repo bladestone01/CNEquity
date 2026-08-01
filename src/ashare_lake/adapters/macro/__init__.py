@@ -1,1 +1,1 @@
-"""Macro indicator adapters (EastMoney datacenter + optional akshare)."""
+"""Macro indicator adapters (EastMoney datacenter + MOFCOM)."""

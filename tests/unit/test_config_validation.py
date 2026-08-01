@@ -66,10 +66,13 @@ def test_example_config_validates(monkeypatch):
     assert cfg.baostock_batch_size == 20
     assert cfg.baostock_batch_rest_seconds == 120.0
     # EastMoney pacing is a floor, not a fixed value: push2his bans bursty
-    # overseas IPs, so the example config may raise it further. AKShare mostly
-    # wraps EastMoney, so it must never be faster or the two share a ban.
+    # overseas IPs, so the example config may raise it further.
     assert cfg.source_intervals["eastmoney"] >= 1.0
-    assert cfg.source_intervals["akshare"] <= cfg.source_intervals["eastmoney"]
+    # MOFCOM feeds social_financing; one request per run, but keep it paced.
+    assert cfg.source_intervals["mofcom"] >= 1.0
+    # AkShare is retired — shipping a [sources.akshare] section would advertise
+    # a source no adapter reads (issue #3).
+    assert "akshare" not in cfg.sources
     assert cfg.tdx_min_interval_ms == 100
     # Every schedule group we ship must be defined and pass validation. This
     # replaced four per-group tests that each re-asserted validate_config == []

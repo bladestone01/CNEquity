@@ -1,7 +1,18 @@
-"""Macro indicators — daily bond/SHIBOR via EastMoney; monthly via optional akshare.
+"""Macro indicators — daily rates and monthly series, each from its own publisher.
 
-Rows carry their own ``source`` (``eastmoney`` / ``akshare``) rather than taking
-the step's blanket value, so a curated row always names the feed it came from.
+Rows carry their own ``source`` rather than taking the step's blanket value, so
+a curated row always names the feed it came from.
+
+Every series except 社融 comes from EastMoney's datacenter; 社融 comes from
+MOFCOM. AkShare used to supply the monthly block, but its PMI and 货币供应量
+wrappers request the *same* ``datacenter-web.eastmoney.com`` endpoint this module
+already talks to, so going direct removes a parsing layer without changing the
+publisher — and picks up the project's own retry, throttle and TLS handling.
+See issue #3.
+
+Monthly observations are stamped at month end. EastMoney reports them at month
+*start* (``REPORT_DATE = 2026-07-01``), so they are converted; changing this
+convention would double-write every month already in curated under a second key.
 """
 
 from __future__ import annotations
@@ -29,11 +40,26 @@ _SHIBOR_FILTER = '(MARKET_CODE="001")(CURRENCY_CODE="CNY")(INDICATOR_ID="203")'
 _LPR_REPORT = "RPTA_WEB_RATE"
 _LPR_COLUMNS = "TRADE_DATE,LPR1Y"
 
-_AKSHARE_SERIES = {
-    "lpr_1y": ("macro_china_lpr", "LPR1Y", "monthly"),
-    "pmi_manufacturing": ("macro_china_pmi", "制造业", "monthly"),
-    "m2_yoy": ("macro_china_money_supply", "M2-同比增长", "monthly"),
-    "social_financing": ("macro_china_shrzgm", "社会融资规模增量", "monthly"),
+# Monthly series published on EastMoney's 经济数据 pages, read directly.
+#   pmi_manufacturing  制造业 PMI          data.eastmoney.com/cjsj/pmi.html
+#   m2_yoy             M2 同比增长 (%)     data.eastmoney.com/cjsj/hbgyl.html
+# `columns` is the full set the page requests; only `value_column` is kept, but
+# asking for the page's own column list is what keeps the report accepting it.
+_EM_MONTHLY_SERIES = {
+    "pmi_manufacturing": {
+        "report": "RPT_ECONOMY_PMI",
+        "columns": "REPORT_DATE,TIME,MAKE_INDEX,MAKE_SAME,NMAKE_INDEX,NMAKE_SAME",
+        "value_column": "MAKE_INDEX",
+    },
+    "m2_yoy": {
+        "report": "RPT_ECONOMY_CURRENCY_SUPPLY",
+        "columns": (
+            "REPORT_DATE,TIME,BASIC_CURRENCY,BASIC_CURRENCY_SAME,"
+            "CURRENCY,CURRENCY_SAME,FREE_CASH,FREE_CASH_SAME"
+        ),
+        # BASIC_CURRENCY is the M2 level; _SAME is its year-on-year change.
+        "value_column": "BASIC_CURRENCY_SAME",
+    },
 }
 
 
@@ -51,27 +77,31 @@ _MONTH_RE = re.compile(r"^(\d{4})[-年/.](\d{1,2})月?")
 
 
 def _parse_series_obs_date(value: object) -> date | None:
-    """Parse an akshare observation date; monthly values map to month end.
+    """Parse a monthly observation date, mapping the month to its last day.
 
-    Returns None when unparseable — the row is dropped rather than stamped
-    with a fabricated date.
+    Accepts ISO dates (EastMoney's ``2026-07-01 00:00:00``) and separated month
+    forms (``2026年07月份``, ``2026-07``). Returns None when unparseable — the
+    row is dropped rather than stamped with a fabricated date.
     """
     if value is None:
         return None
     if isinstance(value, date):
-        return value
+        return _to_month_end(value)
     text = str(value).strip()
     try:
-        return date.fromisoformat(text[:10])
+        return _to_month_end(date.fromisoformat(text[:10]))
     except ValueError:
         pass
     match = _MONTH_RE.match(text)
     if match:
         year, month = int(match.group(1)), int(match.group(2))
         if 1 <= month <= 12:
-            last_day = calendar.monthrange(year, month)[1]
-            return date(year, month, last_day)
+            return date(year, month, calendar.monthrange(year, month)[1])
     return None
+
+
+def _to_month_end(value: date) -> date:
+    return value.replace(day=calendar.monthrange(value.year, value.month)[1])
 
 
 def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
@@ -150,60 +180,76 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
     return rows
 
 
-def _akshare_rows(trade_date: date, *, config=None) -> list[dict]:
-    # Gated like the other akshare call site (steps/reference.py trading_status):
-    # absent `[sources.akshare]` means off. Without this the monthly series were
-    # fetched even with the source explicitly disabled. `config is None` is the
-    # no-config path (tests, direct adapter calls) and stays off too.
-    if config is None or not config.sources.get("akshare", False):
-        return []
+def _eastmoney_monthly(client: EastMoneyClient, trade_date: date) -> list[dict]:
+    """PMI and M2 straight from the EastMoney datacenter reports.
 
-    try:
-        import akshare as ak  # type: ignore[import-not-found]
-    except ImportError:
-        return []
-
+    Each report returns its whole published history (~220 months back to 2008)
+    in one page. Everything up to ``trade_date`` is kept: monthly observations
+    almost never land on the run day, and compact dedupes by
+    ``(indicator_id, obs_date)``, so re-ingesting is idempotent and a first run
+    backfills the series.
+    """
     rows: list[dict] = []
-    for indicator_id, (func_name, col_hint, frequency) in _AKSHARE_SERIES.items():
-        if indicator_id == "lpr_1y":
-            continue  # prefer EastMoney LPR when present
-        if config is not None:
-            config.rate_limit("akshare")
+    for indicator_id, spec in _EM_MONTHLY_SERIES.items():
+        report = spec["report"]
+        value_column = spec["value_column"]
         try:
-            func = getattr(ak, func_name)
-            pdf = func()
-        except Exception as exc:
-            logger.debug("akshare %s failed: %s", func_name, exc)
-            continue
-        if pdf is None or pdf.empty:
+            records = fetch_datacenter(
+                client,
+                report,
+                spec["columns"],
+                sort_columns="REPORT_DATE",
+                sort_types="-1",
+            )
+        except EastMoneyDatacenterError as exc:
+            # Non-fatal, and deliberately louder than the AkShare path it
+            # replaced: a schema rejection here is a column rename worth seeing.
+            logger.warning("EastMoney %s (%s) fetch skipped: %s", indicator_id, report, exc)
             continue
 
-        date_col = pdf.columns[0]
-        value_col = next((c for c in pdf.columns if col_hint in str(c)), pdf.columns[-1])
-        # akshare returns the full published series. Keep everything up to
-        # trade_date — monthly obs dates almost never equal the run day, and
-        # compact dedupes by (indicator_id, obs_date) so re-ingesting is
-        # idempotent. Filtering to obs == trade_date would drop ~all rows.
-        for _, rec in pdf.iterrows():
-            obs = _parse_series_obs_date(rec.get(date_col))
+        for item in records:
+            obs = _parse_series_obs_date(item.get("REPORT_DATE") or item.get("TIME"))
             if obs is None or obs > trade_date:
                 continue
-            val = rec.get(value_col)
-            if val is None or (isinstance(val, float) and val != val):
+            val = item.get(value_column)
+            if val is None:
+                continue
+            try:
+                value = float(val)
+            except (TypeError, ValueError):
                 continue
             rows.append(
                 {
                     "indicator_id": indicator_id,
                     "obs_date": obs,
-                    "value": float(val),
-                    "frequency": frequency,
-                    # Stamped per row, not by the step: these values come from
-                    # akshare's wrapper, not from the EastMoney client above, and
-                    # ADR-0003 needs curated to say which.
-                    "source": "akshare",
+                    "value": value,
+                    "frequency": "monthly",
+                    "source": "eastmoney",
                 }
             )
     return rows
+
+
+def _social_financing_rows(trade_date: date, *, config=None) -> list[dict]:
+    """社融增量 from MOFCOM, the publisher behind the retired AkShare wrapper."""
+    # Defaults on, like eastmoney: this is now the primary feed for the
+    # indicator, not a supplement.
+    if config is not None and not config.sources.get("mofcom", True):
+        return []
+
+    from ashare_lake.adapters.mofcom.social_financing import fetch_social_financing
+
+    return [
+        {
+            "indicator_id": "social_financing",
+            "obs_date": item["obs_date"],
+            "value": item["value"],
+            "frequency": "monthly",
+            "source": "mofcom",
+        }
+        for item in fetch_social_financing(config=config)
+        if item["obs_date"] <= trade_date
+    ]
 
 
 def fetch_macro_indicators(
@@ -217,11 +263,18 @@ def fetch_macro_indicators(
         client = EastMoneyClient(config=config)
 
     rows = _eastmoney_daily(client, trade_date)
+    # Daily rates first, so an LPR row already published on the daily report
+    # wins over a monthly restatement of the same (indicator_id, obs_date).
+    seen = {(r["indicator_id"], r["obs_date"]) for r in rows}
+    for item in _eastmoney_monthly(client, trade_date):
+        key = (item["indicator_id"], item["obs_date"])
+        if key not in seen:
+            rows.append(item)
+            seen.add(key)
     if owns:
         client.close()
 
-    seen = {(r["indicator_id"], r["obs_date"]) for r in rows}
-    for item in _akshare_rows(trade_date, config=config):
+    for item in _social_financing_rows(trade_date, config=config):
         key = (item["indicator_id"], item["obs_date"])
         if key not in seen:
             rows.append(item)
