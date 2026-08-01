@@ -1,0 +1,213 @@
+<!doctype html>
+<!--
+  Lake overview. Self-contained on purpose: no CDN, no build step, no external
+  font — a lake often runs on an offline box or behind a proxy, and an external
+  asset there is a page that does not load.
+
+  The charting library goes in when the heatmap needs zoom and drill-down; until
+  then a CSS grid renders the same cells and this file stays something you can
+  read.
+-->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ashare-lake</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b64; --line: #e3e3de;
+    --card: #fff; --fresh: #2f855a; --stale: #c05621; --empty: #a0a09a;
+    --cell-covered: #4a9d6f; --cell-gap: #e0684f; --cell-outside: #edecea;
+    --cell-cadence: #cfd8dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --fg: #e8e8e4; --muted: #96968e; --line: #2e2e33;
+      --card: #1f1f23; --fresh: #68d391; --stale: #f6ad55; --empty: #5a5a55;
+      --cell-covered: #3d7f5a; --cell-gap: #b8503c; --cell-outside: #2a2a2e;
+      --cell-cadence: #3c4348;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.5rem 4rem; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; font-weight: 600; }
+  .sub { color: var(--muted); margin-bottom: 1.75rem; font-size: .85rem; }
+  .banner {
+    background: var(--card); border: 1px solid var(--stale); border-left-width: 3px;
+    border-radius: 5px; padding: .6rem .85rem; margin-bottom: 1.25rem; font-size: .85rem;
+  }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; margin-bottom: 2rem; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: .8rem .9rem; }
+  .kpi .n { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi .l { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+  h2 { font-size: .95rem; margin: 2rem 0 .75rem; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+  td.n, th.n { text-align: right; }
+  .tier-row { cursor: pointer; }
+  .tier-row:hover { background: var(--card); }
+  .tier-tag { font-weight: 600; margin-right: .5rem; }
+  .dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .4rem; }
+  .fresh { background: var(--fresh); } .stale { background: var(--stale); }
+  .empty, .na { background: var(--empty); }
+  .members td { background: var(--card); font-size: .85rem; }
+  .members table { margin: .25rem 0 .5rem; }
+  .scroll { overflow-x: auto; }
+  .grid-row { display: flex; align-items: center; gap: .5rem; margin-bottom: 2px; }
+  .grid-name { flex: 0 0 190px; font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cells { display: flex; gap: 1px; }
+  .cell { width: 7px; height: 13px; border-radius: 1px; background: var(--cell-outside); }
+  .cell.c { background: var(--cell-covered); } .cell.g { background: var(--cell-gap); }
+  /* A non-daily source is meant to have holes; only a daily one's gap is a fault. */
+  .cell.gc { background: var(--cell-cadence); }
+  .cell.u { background: repeating-linear-gradient(45deg, var(--cell-outside), var(--cell-outside) 2px, transparent 2px, transparent 4px); }
+  .legend { color: var(--muted); font-size: .75rem; margin: .6rem 0 0; display: flex; gap: 1rem; flex-wrap: wrap; }
+  .legend span { display: flex; align-items: center; gap: .3rem; }
+  code { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: .05rem .3rem; font-size: .8rem; }
+  .err { color: var(--stale); }
+</style>
+</head>
+<body>
+<main>
+  <h1>ashare-lake</h1>
+  <div class="sub" id="sub">加载中…</div>
+  <div id="banner"></div>
+  <div class="kpis" id="kpis"></div>
+
+  <h2>分层（点击展开数据集）</h2>
+  <div class="scroll"><table id="tiers"><tbody></tbody></table></div>
+
+  <h2>覆盖热力（最近 <span id="days">90</span> 个交易日）</h2>
+  <div class="scroll" id="heat"></div>
+  <p class="legend">
+    <span><i class="cell c"></i> 有分区覆盖</span>
+    <span><i class="cell g"></i> 日更源的缺口</span>
+    <span><i class="cell gc"></i> 非日更源的间隔（属其节奏）</span>
+    <span><i class="cell"></i> 覆盖区间外</span>
+    <span><i class="cell u"></i> 无分区（单文件 merge）</span>
+    <span>月/季/年分区的格子按其周期着色，不代表单日有行</span>
+  </p>
+</main>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const TOKEN = qs.get("token");
+const DAYS = Number(qs.get("days") || 90);
+
+async function api(path) {
+  const sep = path.includes("?") ? "&" : "?";
+  const url = TOKEN ? `${path}${sep}token=${encodeURIComponent(TOKEN)}` : path;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
+}
+
+const fmt = (n) => (n ?? 0).toLocaleString();
+const mb = (b) => !b ? "—" : b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : (b / 1e6).toFixed(0) + " MB";
+
+function kpi(n, label) {
+  return `<div class="kpi"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+}
+
+function renderHealth(h) {
+  document.getElementById("sub").textContent =
+    `最后交易日 ${h.anchor} · ${h.datasets} 个注册数据集 · 审计快照 ${h.audit_trade_date || "无"}`;
+
+  const sev = h.findings_by_severity || {};
+  document.getElementById("kpis").innerHTML = [
+    kpi(h.fresh, "fresh"),
+    kpi(`<span class="${h.stale ? "err" : ""}">${h.stale}</span>`, "stale"),
+    kpi(h.empty, "empty"),
+    kpi(fmt(h.rows), "行"),
+    kpi(mb(h.bytes), "体积"),
+    kpi(`<span class="${sev.error ? "err" : ""}">${sev.error || 0}</span> / ${sev.warning || 0}`, "error / warning"),
+  ].join("");
+
+  const notes = [];
+  if (h.stats_stale) {
+    notes.push(`度量表过期（${h.stats_reason}）——已在后台重建，稍后刷新。`);
+  }
+  if (h.stale_datasets.length) {
+    notes.push(`STALE：<code>${h.stale_datasets.join("</code> <code>")}</code>`);
+  }
+  if (h.empty_required.length) {
+    notes.push(`必需但为空：<code>${h.empty_required.join("</code> <code>")}</code>`);
+  }
+  document.getElementById("banner").innerHTML = notes.length
+    ? `<div class="banner">${notes.join("<br>")}</div>` : "";
+}
+
+function renderTiers(tiers, datasets) {
+  const byTier = {};
+  for (const d of datasets) (byTier[d.tier] ||= []).push(d);
+
+  const body = document.querySelector("#tiers tbody");
+  body.innerHTML = `<tr><th>分层</th><th class="n">数据集</th><th class="n">fresh</th>
+    <th class="n">stale</th><th class="n">empty</th><th class="n">行</th><th class="n">体积</th></tr>`;
+
+  for (const t of tiers) {
+    const tr = document.createElement("tr");
+    tr.className = "tier-row";
+    tr.innerHTML = `<td><span class="tier-tag">${t.tier}</span>${t.label}</td>
+      <td class="n">${t.datasets}</td><td class="n">${t.fresh}</td>
+      <td class="n ${t.stale ? "err" : ""}">${t.stale || ""}</td>
+      <td class="n">${t.empty || ""}</td><td class="n">${fmt(t.rows)}</td><td class="n">${mb(t.bytes)}</td>`;
+    const detail = document.createElement("tr");
+    detail.className = "members";
+    detail.style.display = "none";
+    detail.innerHTML = `<td colspan="7">${membersTable(byTier[t.tier] || [])}</td>`;
+    tr.onclick = () => { detail.style.display = detail.style.display === "none" ? "" : "none"; };
+    body.append(tr, detail);
+  }
+}
+
+function membersTable(rows) {
+  const head = `<tr><th>数据集</th><th>语义</th><th>粒度</th><th>覆盖</th>
+    <th>水位</th><th class="n">行</th><th class="n">体积</th></tr>`;
+  const body = rows.map((d) => {
+    const cls = d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty";
+    const cover = d.coverage_start ? `${d.coverage_start} → ${d.coverage_end}` : "—";
+    const opt = d.required ? "" : " <span style='opacity:.6'>(可选)</span>";
+    return `<tr><td><span class="dot ${cls}"></span>${d.dataset}${opt}</td>
+      <td>${d.history_mode}</td><td>${d.granularity || "merge"}</td><td>${cover}</td>
+      <td>${d.watermark || "—"}</td><td class="n">${fmt(d.row_count)}</td>
+      <td class="n">${mb(d.bytes)}</td></tr>`;
+  }).join("");
+  return `<table>${head}${body}</table>`;
+}
+
+function renderHeatmap(hm) {
+  document.getElementById("days").textContent = hm.days.length;
+  const html = hm.rows.map((r) => {
+    // Only a daily source's hole is a fault; a quarterly one's is its cadence.
+    const gap = r.cadence_days > 1 ? "gc" : "g";
+    const cls = { "#": "c", ".": gap, " ": "", "-": "u" };
+    const cells = [...r.cells].map((ch) => `<i class="cell ${cls[ch] ?? ""}"></i>`).join("");
+    const cadence = r.cadence_days > 1 ? ` · 容忍 ${r.cadence_days} 天` : "";
+    return `<div class="grid-row" title="${r.dataset} · ${r.granularity || "merge"} · ${r.freshness}${cadence}">
+      <div class="grid-name">${r.dataset}</div><div class="cells">${cells}</div></div>`;
+  }).join("");
+  document.getElementById("heat").innerHTML = html;
+}
+
+(async () => {
+  try {
+    const [health, tiers, datasets, hm] = await Promise.all([
+      api("/api/health"), api("/api/tiers"), api("/api/datasets"), api(`/api/heatmap?days=${DAYS}`),
+    ]);
+    renderHealth(health);
+    renderTiers(tiers, datasets);
+    renderHeatmap(hm);
+  } catch (err) {
+    document.getElementById("sub").innerHTML = `<span class="err">加载失败：${err.message}</span>`;
+  }
+})();
+</script>
+</body>
+</html>

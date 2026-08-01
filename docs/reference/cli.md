@@ -237,6 +237,30 @@ JSON 列出 curated 各数据集文件数与行数。每次都全扫；固定的
 
 ---
 
+## asl serve
+
+只读湖面板：分层总览、逐数据集覆盖与新鲜度、溯源分布、覆盖热力图。
+
+| 选项 | 默认 | 说明 |
+|------|------|------|
+| `--host` | `127.0.0.1` | 非回环地址**必须**配 `--token` |
+| `--port` | `8787` | |
+| `--token` | 无 | 要求 `Authorization: Bearer <token>` 或 `?token=` |
+
+```bash
+asl serve
+```
+
+页面在 `/`，OpenAPI 在 `/api/docs`（由 handler 生成，不会与实现漂移）。
+
+**面板不写湖。** 没有端点会跑批、重试或清理——那些留给 CLI。唯一的例外是 `meta/stats` 会在后台按需重建，因为它是湖的缓存而不是湖的一部分。
+
+数值全部来自已落盘的产物（注册表、目录布局、`meta/stats`、`meta/quality/health-latest.json`、manifest），**请求路径上不扫 curated**。所以：先 `asl stats rebuild` 才有行数与体积；findings 显示的是上次 `asl audit --full` 的快照，页面上标了日期。
+
+端点与热力图语义见 [serve 模块](../modules/serve.md)。
+
+---
+
 ## asl stats
 
 湖的自我度量表，写到 `meta/stats/`。`list_datasets()` 只看目录名，答不了「这个分区有多少行、多大、谁写的」——那些在这里。

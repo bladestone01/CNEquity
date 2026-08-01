@@ -1228,6 +1228,45 @@ def catalog(config_path: str):
     click.echo(json.dumps(entries, indent=2))
 
 
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+@cli.command()
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8787, show_default=True)
+@click.option(
+    "--token",
+    default=None,
+    help="Require this bearer token (or ?token=). Mandatory for a non-loopback --host.",
+)
+def serve(config_path: str, host: str, port: int, token: str | None):
+    """Serve the read-only lake dashboard.
+
+    Shows coverage, freshness and source mix. Nothing here writes to the lake —
+    running, retrying and cleaning stay with the CLI.
+    """
+    import uvicorn
+
+    from ashare_lake.serve.app import create_app
+
+    # Checked before the config is even loaded: a typo in --config must not
+    # mask the bind guard by failing first. The service has no other access
+    # control, and a lake holds a full market history plus the paths and
+    # sources that built it.
+    if host not in _LOOPBACK and not token:
+        raise click.ClickException(
+            f"--host {host} would expose the dashboard beyond this machine; "
+            "pass --token to require one, or leave --host at 127.0.0.1."
+        )
+
+    cfg = _cfg(config_path)
+    click.echo(f"lake:      {cfg.data_root}")
+    click.echo(f"dashboard: http://{host}:{port}/" + (f"?token={token}" if token else ""))
+    click.echo(f"api docs:  http://{host}:{port}/api/docs")
+    uvicorn.run(create_app(cfg, token=token), host=host, port=port, log_level="info")
+
+
 @cli.group()
 def stats():
     """Lake measurement tables under meta/stats (rows, bytes, source mix)."""
