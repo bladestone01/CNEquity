@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from concurrent.futures import as_completed as _as_completed
 from datetime import date, timedelta
@@ -195,6 +196,33 @@ def _quotes_client(config: Config | None = None):
 def quotes_client_factory(config: Config | None = None):
     """Callable factory for corporate_actions xdxr (one client per batch)."""
     return lambda: _quotes_client(config)
+
+
+# A cold TCP handshake to a TDX host occasionally times out under sustained
+# load rather than failing outright — measured on a full-market intraday
+# seed (7,747 symbols, 50-per-batch), which reconnects on every batch and hit
+# a `socket.recv` timeout during setup after ~44 minutes and ~600 prior
+# reconnects. One retry, against a re-probed server, clears this without
+# escalating all the way to a failed batch.
+_CONNECT_RETRY_ATTEMPTS = 2
+_CONNECT_RETRY_BACKOFF_SEC = 2.0
+
+
+def _connect_with_retry(config: Config | None = None):
+    """``_quotes_client``, retrying once (with a fresh server) on failure."""
+    last_exc: Exception | None = None
+    for attempt in range(_CONNECT_RETRY_ATTEMPTS):
+        try:
+            return _quotes_client(config)
+        except Exception as exc:  # noqa: BLE001 — retried, then re-raised as-is
+            last_exc = exc
+            if attempt + 1 < _CONNECT_RETRY_ATTEMPTS:
+                # The cached server just failed us; re-probe rather than
+                # retrying the same one straight into the same timeout.
+                reset_tdx_server_cache()
+                time.sleep(_CONNECT_RETRY_BACKOFF_SEC)
+    assert last_exc is not None
+    raise last_exc
 
 
 # TDX market ids: 0=Shenzhen, 1=Shanghai (not "SH"/"SZ" strings).
@@ -515,7 +543,7 @@ def fetch_minute_bars(
         # one thread — which is the property the lock's comment is about.
         with TDX_SESSION_LOCK:
             if lanes == 1:
-                clients = [_quotes_client(config)]
+                clients = [_connect_with_retry(config)]
                 for sym in symbols:
                     if on_heartbeat is not None:
                         on_heartbeat()
@@ -559,7 +587,7 @@ def _fetch_threaded(
     from concurrent.futures import ThreadPoolExecutor
 
     for _ in range(lanes):
-        clients.append(_quotes_client(config))
+        clients.append(_connect_with_retry(config))
 
     heartbeat_lock = threading.Lock()
 

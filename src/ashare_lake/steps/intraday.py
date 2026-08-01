@@ -25,7 +25,15 @@ logger = logging.getLogger(__name__)
 
 # Symbols per staged batch. Small enough that a killed backfill loses minutes
 # rather than hours, large enough that the parquet footers stay negligible.
-_BATCH_SYMBOLS = 50
+#
+# Also the reconnect unit: `fetch_minute_bars` opens fresh TDX connections per
+# call, so this many symbols is also how often a full-market sweep pays for a
+# TCP handshake. At 50, a 7,747-symbol seed reconnects ~155 times; one of
+# those handshakes timed out under sustained load (measured) and — before the
+# per-batch try/except below existed — took the whole step down with it. 200
+# keeps the same order-of-magnitude "loses minutes, not hours" property while
+# cutting reconnects roughly 4x.
+_BATCH_SYMBOLS = 200
 
 
 class MinuteBarsScopeError(RuntimeError):
@@ -179,17 +187,35 @@ def capture_intraday_bars(
 
     for index in range(0, len(symbols), _BATCH_SYMBOLS):
         chunk = symbols[index : index + _BATCH_SYMBOLS]
-        df, chunk_failed = fetch_minute_bars(
-            chunk,
-            start,
-            end,
-            frequency=frequency,
-            rate_limit=rate_limit,
-            backfill=getattr(config, "_backfill", False),
-            config=config,
-            max_pages=max_pages,
-            workers=config.minute_bars_fetch_workers,
-        )
+        try:
+            df, chunk_failed = fetch_minute_bars(
+                chunk,
+                start,
+                end,
+                frequency=frequency,
+                rate_limit=rate_limit,
+                backfill=getattr(config, "_backfill", False),
+                config=config,
+                max_pages=max_pages,
+                workers=config.minute_bars_fetch_workers,
+            )
+        except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+            # A batch failing outright (e.g. a connect timeout after hundreds
+            # of prior reconnects on a full-market sweep) must cost this batch,
+            # not the whole step — the same contract as a single symbol's
+            # failure, just at a coarser grain. None of these symbols got a
+            # chance to succeed or fail individually, so all of them count as
+            # failed rather than silently vanishing from the totals.
+            logger.warning(
+                "%s: batch of %d symbol(s) failed outright (%s..%s): %s",
+                dataset,
+                len(chunk),
+                chunk[0],
+                chunk[-1],
+                exc,
+            )
+            failed.extend(chunk)
+            continue
         failed.extend(chunk_failed)
         if df.is_empty():
             continue

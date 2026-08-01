@@ -346,3 +346,54 @@ def test_approx_trading_days_uses_the_real_calendar_when_available(cfg):
     # give 4 for this same window, so a wrong (fallback) answer here is
     # distinguishable from the real-calendar one being exercised.
     assert _approx_trading_days(cfg, start, end) == 5
+
+
+def test_a_failing_batch_does_not_abort_the_whole_sweep(cfg, monkeypatch):
+    """A whole batch raising (e.g. a connect timeout) must cost that batch,
+    not the rest of the run.
+
+    Observed on a real full-market seed: a TCP handshake timed out ~44
+    minutes and ~600 reconnects into a run, and — before this fix — took the
+    entire step down with it, discarding every batch already fetched.
+    """
+    monkeypatch.setattr(intraday, "_BATCH_SYMBOLS", 2)
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_scope = "watchlist"
+    cfg.minute_bars_symbols = ["600519.SH", "000001.SZ", "600485.SH", "600001.SH"]
+
+    def fetch(symbols, start, end, *, frequency, **kwargs):
+        if "600485.SH" in symbols:
+            raise TimeoutError("connect timed out")
+        return _fake_fetch()(symbols, start, end, frequency=frequency, **kwargs)
+
+    monkeypatch.setattr(intraday, "fetch_minute_bars", fetch)
+    result = capture_intraday_bars(
+        cfg, date(2026, 7, 31), "run-1", dataset="minute_bars", frequency="1m"
+    )
+
+    # The other batch's rows survive; the failing batch's symbols are
+    # recorded as failed rather than silently dropped or fatal to the run.
+    assert result["symbols_with_rows"] == 2
+    assert result["failed_symbols"] == 2
+    assert result["rows_written"] > 0
+    findings = result["context_updates"]["audit_findings"]
+    assert "600485.SH" in findings[0]["message"]
+
+
+def test_all_batches_failing_still_raises(cfg, monkeypatch):
+    # If every batch fails outright, the existing "nothing at all came back"
+    # guard must still fire — this fix tolerates one bad batch, not a
+    # completely unreachable source.
+    monkeypatch.setattr(intraday, "_BATCH_SYMBOLS", 1)
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_scope = "watchlist"
+    cfg.minute_bars_symbols = ["600519.SH", "000001.SZ"]
+    monkeypatch.setattr(
+        intraday,
+        "fetch_minute_bars",
+        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("connect timed out")),
+    )
+    with pytest.raises(RuntimeError, match="no rows for any"):
+        capture_intraday_bars(
+            cfg, date(2026, 7, 31), "run-1", dataset="minute_bars", frequency="1m"
+        )

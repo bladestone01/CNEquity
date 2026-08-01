@@ -8,6 +8,26 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A single reconnect failure could take down an entire full-market intraday
+  sweep.** `fetch_minute_bars` opens a fresh TDX connection per 50-symbol
+  batch; run against the full market (7,747 symbols, ~155 reconnects), one
+  connect attempt hit a `socket.recv` timeout ~44 minutes in and the exception
+  propagated all the way out of the step, discarding every batch already
+  fetched (staged but never compacted, since compact only runs on a
+  success/warning step). A second full-market attempt got through the fetch
+  cleanly but returned zero rows for all 7,747 symbols — a TDX host degrading
+  under sustained connection churn rather than raising outright.
+
+  Fixed two ways. `client.py` now retries a failed connect once, against a
+  freshly re-probed server, before giving up (`_connect_with_retry`) — the
+  same "rotate server, don't hammer the dead one" pattern `fetch_index_bars`
+  already used. `steps/intraday.py` now catches a whole batch failing outright
+  and records its symbols as failed rather than letting the exception abort
+  the step — the same contract a single symbol's failure already had, just at
+  the batch grain. The batch size (`_BATCH_SYMBOLS`) also moved from 50 to 200,
+  cutting full-market reconnects roughly 4x, while staying small enough that a
+  killed run still loses minutes, not hours.
+
 - **No-trade bars stored a denormal turnover instead of zero.** TDX's packed-
   float decoder maps a raw zero quantity to `2**-127` (~5.9e-39) rather than
   `0.0`, so every suspended day landed in curated with that much `amount`

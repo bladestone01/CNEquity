@@ -430,6 +430,8 @@ def test_single_worker_records_a_raised_symbol_without_failing_the_batch(monkeyp
 def test_wire_client_unavailable_raises_a_named_error(monkeypatch):
     from ashare_lake.adapters.tdx_protocol import client as client_mod
 
+    monkeypatch.setattr(client_mod, "_CONNECT_RETRY_BACKOFF_SEC", 0)
+
     def _boom(config):
         raise ImportError("no wire module")
 
@@ -441,6 +443,7 @@ def test_wire_client_unavailable_raises_a_named_error(monkeypatch):
 def test_general_fetch_failure_resets_server_cache_and_raises(monkeypatch):
     from ashare_lake.adapters.tdx_protocol import client as client_mod
 
+    monkeypatch.setattr(client_mod, "_CONNECT_RETRY_BACKOFF_SEC", 0)
     reset_calls = []
     monkeypatch.setattr(client_mod, "reset_tdx_server_cache", lambda: reset_calls.append(1))
 
@@ -450,8 +453,9 @@ def test_general_fetch_failure_resets_server_cache_and_raises(monkeypatch):
     monkeypatch.setattr(client_mod, "_quotes_client", _boom)
     with pytest.raises(client_mod.TdxSourceError, match="TDX fetch failed"):
         client_mod.fetch_minute_bars(["600519.SH"], date(2026, 7, 31), date(2026, 7, 31))
-    # A dead server must not stay cached for the next batch to retry against.
-    assert reset_calls == [1]
+    # Once between the two connect attempts, once more at the outer handler —
+    # a dead server must not stay cached for the next batch to retry against.
+    assert reset_calls == [1, 1]
 
 
 def test_threaded_fetch_calls_heartbeat_once_per_symbol(monkeypatch):
@@ -483,3 +487,39 @@ def test_unparseable_row_is_skipped_without_breaking_the_page():
         FakeClient([page]), "600519.SH", date(2026, 7, 31), date(2026, 7, 31)
     )
     assert [r["bar_time"].time() for r in rows] == [time(9, 31), time(9, 32)]
+
+
+def test_connect_with_retry_succeeds_after_one_failure(monkeypatch):
+    from ashare_lake.adapters.tdx_protocol import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_CONNECT_RETRY_BACKOFF_SEC", 0)
+    reset_calls = []
+    monkeypatch.setattr(client_mod, "reset_tdx_server_cache", lambda: reset_calls.append(1))
+
+    attempts = []
+
+    def flaky(config):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise TimeoutError("timed out")
+        return "a-client"
+
+    monkeypatch.setattr(client_mod, "_quotes_client", flaky)
+    assert client_mod._connect_with_retry(None) == "a-client"
+    assert len(attempts) == 2
+    # Re-probes rather than retrying the same server straight into the same timeout.
+    assert reset_calls == [1]
+
+
+def test_connect_with_retry_raises_the_last_error_once_exhausted(monkeypatch):
+    from ashare_lake.adapters.tdx_protocol import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_CONNECT_RETRY_BACKOFF_SEC", 0)
+    monkeypatch.setattr(client_mod, "reset_tdx_server_cache", lambda: None)
+
+    def always_fails(config):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(client_mod, "_quotes_client", always_fails)
+    with pytest.raises(TimeoutError, match="timed out"):
+        client_mod._connect_with_retry(None)
