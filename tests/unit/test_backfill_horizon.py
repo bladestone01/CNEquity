@@ -127,3 +127,53 @@ def test_minute_bars_declares_a_chunk_size():
     # Without it, a full-horizon seed stages ~123M rows into one compact.
     assert get_dataset("minute_bars").backfill_chunk_days == 10
     assert get_dataset("daily_bars").backfill_chunk_days is None
+
+
+def _backfill_argv(dataset: str, *extra: str) -> list[str]:
+    return ["backfill", dataset, "--config", "cfg.toml", *extra]
+
+
+def test_symbols_flag_overrides_scope_for_intraday(tmp_path, monkeypatch):
+    """A one-off pull must not require editing the config first."""
+    seen: dict = {}
+
+    class Cfg:
+        minute_bars_enabled = False
+        minute_bars_scope = "index:000300.SH"
+        minute_bars_symbols: list[str] = []
+        minute_bars_frequencies = ["1m"]
+
+    cfg = Cfg()
+
+    def fake_backfill(config, dataset):
+        seen["cfg"] = config
+        return {"status": "success", "rows_written": 0}
+
+    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+    monkeypatch.setattr(cli_main, "_backfill_once", fake_backfill)
+
+    from click.testing import CliRunner
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        _backfill_argv("minute_bars_5m", "--symbols", "600519.sh, 000001.SZ"),
+    )
+    assert result.exit_code == 0, result.output
+    assert cfg.minute_bars_scope == "watchlist"
+    assert cfg.minute_bars_symbols == ["600519.SH", "000001.SZ"]
+    # Enabled for this run, and the dataset's own frequency added, so a config
+    # with intraday off still serves a deliberate one-off backfill.
+    assert cfg.minute_bars_enabled is True
+    assert "5m" in cfg.minute_bars_frequencies
+
+
+def test_symbols_flag_is_rejected_for_non_intraday_datasets(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "_cfg", lambda _p: object())
+
+    from click.testing import CliRunner
+
+    result = CliRunner().invoke(
+        cli_main.cli, _backfill_argv("daily_bars", "--symbols", "600519.SH")
+    )
+    assert result.exit_code != 0
+    assert "only applies to intraday datasets" in result.output

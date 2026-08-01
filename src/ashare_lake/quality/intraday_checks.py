@@ -17,10 +17,14 @@ Three shape checks and one cross-check:
 * ``minute_bars_session_coverage`` — symbol-days short of a full session.
   Warning: a genuine intraday halt produces exactly this shape, so it flags a
   pattern to look at rather than a defect.
-* ``minute_bars_daily_reconciliation`` — the day's minute volume against
-  ``daily_bars``. This is the one check that can catch a wrong frequency, a
-  wrong symbol mapping, or a unit slip, because it compares the dataset against
-  an independently fetched series rather than against itself.
+* ``minute_bars_daily_reconciliation`` — the day's minute volume *and* turnover
+  against ``daily_bars``. This is the one check that can catch a wrong
+  frequency, a wrong symbol mapping, or a unit slip, because it compares the
+  dataset against an independently fetched series rather than against itself.
+  Both metrics, because they fail differently: ``volume`` is the column with a
+  unit history and so catches a conversion slip, while ``amount`` is yuan from
+  every source and so cannot be wrong for a unit reason — a break there means
+  the wrong bars, not the wrong scale.
 """
 
 from __future__ import annotations
@@ -171,7 +175,12 @@ def daily_reconciliation_findings(
     start: date,
     end: date,
 ) -> list[dict]:
-    """Compare each session's minute volume against ``daily_bars``.
+    """Compare each session's minute volume *and* turnover against ``daily_bars``.
+
+    Both, because they fail differently. ``volume`` is the column with a unit
+    history (股 vs 手), so it catches a conversion slip; ``amount`` is in yuan
+    from every source and so is the one number that cannot be wrong for a unit
+    reason — a break there means the wrong bars, not the wrong scale.
 
     Only v2 daily rows take part: v1 predates the 股 normalisation and would
     report every symbol-day as a 100× break. Too few comparable rows is
@@ -185,16 +194,29 @@ def daily_reconciliation_findings(
     daily = (
         scan_parquet_root(daily_root, partition_col="trade_date", start=start, end=end)
         .filter((pl.col("data_version") == DAILY_BARS_SHARES_VERSION) & (pl.col("volume") > 0))
-        .select("symbol", "trade_date", pl.col("volume").alias("daily_volume"))
+        .select(
+            "symbol",
+            "trade_date",
+            pl.col("volume").alias("daily_volume"),
+            pl.col("amount").alias("daily_amount"),
+        )
     )
     minute = (
         lf.group_by("symbol", "trade_date")
-        .agg(pl.col("volume").sum().alias("minute_volume"))
+        .agg(
+            pl.col("volume").sum().alias("minute_volume"),
+            pl.col("amount").sum().alias("minute_amount"),
+        )
         .filter(pl.col("minute_volume") > 0)
     )
     joined = (
         minute.join(daily, on=["symbol", "trade_date"], how="inner")
-        .with_columns((pl.col("minute_volume") / pl.col("daily_volume")).alias("ratio"))
+        .with_columns(
+            (pl.col("minute_volume") / pl.col("daily_volume")).alias("volume_ratio"),
+            pl.when(pl.col("daily_amount") > 0)
+            .then(pl.col("minute_amount") / pl.col("daily_amount"))
+            .alias("amount_ratio"),
+        )
         .collect()
     )
 
@@ -214,27 +236,37 @@ def daily_reconciliation_findings(
             }
         ]
 
-    median = float(joined["ratio"].median())
-    if RECONCILE_LOW <= median <= RECONCILE_HIGH:
-        return []
-    hint = (
-        "minute volume far exceeds the day's — check for duplicated bars or a wrong frequency"
-        if median > RECONCILE_HIGH
-        else "minute volume falls short of the day's — check for truncated sessions"
-    )
-    return [
-        {
-            "dataset": dataset,
-            "severity": "warning",
-            "check": "minute_bars_daily_reconciliation",
-            "message": (
-                f"median minute/daily volume = {median:.4f} over {joined.height} "
-                f"symbol-day(s) in {start}..{end}; expected ~1.0 — {hint}"
-            ),
-            "median_ratio": median,
-            "symbol_days": joined.height,
-        }
-    ]
+    findings: list[dict] = []
+    for column, label, unit in (
+        ("volume_ratio", "volume", "股"),
+        ("amount_ratio", "amount", "yuan"),
+    ):
+        series = joined[column].drop_nulls()
+        if series.is_empty():
+            continue
+        median = float(series.median())
+        if RECONCILE_LOW <= median <= RECONCILE_HIGH:
+            continue
+        hint = (
+            f"minute {label} far exceeds the day's — check for duplicated bars or a wrong frequency"
+            if median > RECONCILE_HIGH
+            else f"minute {label} falls short of the day's — check for truncated sessions"
+        )
+        findings.append(
+            {
+                "dataset": dataset,
+                "severity": "warning",
+                "check": "minute_bars_daily_reconciliation",
+                "message": (
+                    f"median minute/daily {label} ({unit}) = {median:.4f} over "
+                    f"{len(series)} symbol-day(s) in {start}..{end}; expected ~1.0 — {hint}"
+                ),
+                "metric": label,
+                "median_ratio": median,
+                "symbol_days": len(series),
+            }
+        )
+    return findings
 
 
 def dataset_findings(

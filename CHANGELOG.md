@@ -134,9 +134,19 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   600519 over 2,400 bars, zero). Keeping them would put a phantom bar in every
   gap check and skew any resampling that assumes fixed bar counts.
 
+- `asl backfill <intraday dataset> --symbols A,B`: restrict a one-off intraday
+  backfill without editing the config — it overrides `[minute_bars].scope` for
+  that run and enables capture, so pulling a few names does not mean flipping
+  config flags first. Rejected for non-intraday datasets, which take their
+  universe from `instruments`.
+
 - Intraday audit checks (`quality/intraday_checks.py`): `minute_bars_off_session`
   and `minute_bars_trade_date_mismatch` (error), `minute_bars_session_coverage`
-  and `minute_bars_daily_reconciliation` (warning). A session that quietly loses
+  and `minute_bars_daily_reconciliation` (warning). The reconciliation compares
+  both volume and turnover against `daily_bars`: `volume` is the column with a
+  unit history and so catches a conversion slip, while `amount` is yuan from
+  every source and so cannot be wrong for a unit reason — a break there means
+  the wrong bars, not the wrong scale. A session that quietly loses
   40 of its 240 bars still has rows on every trading day and passes every
   dataset-level check the lake already runs; the daily reconciliation is the
   only one that compares the series against independently fetched data.

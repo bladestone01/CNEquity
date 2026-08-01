@@ -184,9 +184,10 @@ def test_reconciliation_flags_a_volume_mismatch(cfg):
         for f in minute_bars_findings(cfg, TRADE_DATE)
         if f["check"] == "minute_bars_daily_reconciliation"
     ]
-    assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
-    assert findings[0]["median_ratio"] == pytest.approx(2.0)
+    # Both metrics are halved in this fixture, so both must report.
+    assert {f["metric"] for f in findings} == {"volume", "amount"}
+    assert all(f["severity"] == "warning" for f in findings)
+    assert all(f["median_ratio"] == pytest.approx(2.0) for f in findings)
 
 
 def test_reconciliation_ignores_pre_v2_daily_rows(cfg):
@@ -218,3 +219,37 @@ def test_reconciliation_ignores_pre_v2_daily_rows(cfg):
     ]
     # Reported as info (nothing comparable), never as a 100x break.
     assert [f["severity"] for f in findings] == ["info"]
+
+
+def test_reconciliation_catches_an_amount_only_break(cfg):
+    """Turnover is the metric a unit error cannot explain away.
+
+    ``volume`` has a unit history (股 vs 手), so a break there is ambiguous.
+    ``amount`` is yuan from every source, so a break there means the wrong
+    bars — and a volume-only reconciliation would never see it.
+    """
+    symbols = [f"60000{i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
+    _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=100))
+    _write_daily_bars(
+        cfg,
+        [
+            {
+                "symbol": s,
+                "trade_date": TRADE_DATE,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 240 * 100,  # agrees
+                "amount": 240 * 250.0,  # does not: minutes sum to 4x this
+            }
+            for s in symbols
+        ],
+    )
+    findings = [
+        f
+        for f in minute_bars_findings(cfg, TRADE_DATE)
+        if f["check"] == "minute_bars_daily_reconciliation"
+    ]
+    assert [f["metric"] for f in findings] == ["amount"]
+    assert findings[0]["median_ratio"] == pytest.approx(4.0)

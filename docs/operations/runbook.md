@@ -279,6 +279,10 @@ fetch_workers = 1
 # 一次性种子（分片、可续跑）
 asl backfill minute_bars_5m --start 2024-08-01 --end 2026-07-31
 
+# 只拉几只，不改配置（--symbols 会临时覆盖 scope 并开启本次抓取）
+asl backfill minute_bars_5m --start 2026-05-01 --end 2026-07-31 \
+  --symbols 600519.SH,000001.SZ
+
 # 日更：单独一个 group，不要塞进 core
 asl run daily --group intraday
 ```

@@ -10,7 +10,11 @@ import polars as pl
 import ashare_lake.steps  # noqa: F401 — register steps
 from ashare_lake.config import WaveConfig, load_config, validate_config, write_user_config
 from ashare_lake.derive.adj_factors import compute_adj_factors
-from ashare_lake.domain.datasets import fetch_semantics, get_dataset
+from ashare_lake.domain.datasets import (
+    fetch_semantics,
+    get_dataset,
+    intraday_dataset_names,
+)
 from ashare_lake.orchestrator.engine import JobEngine
 from ashare_lake.orchestrator.manifest import Manifest
 from ashare_lake.orchestrator.run_lock import RunLockError
@@ -567,6 +571,14 @@ def run_catchup(
     "financial_statement_items period walk) and sector_bars (default: today).",
 )
 @click.option(
+    "--symbols",
+    "symbols_str",
+    default=None,
+    help="Comma-separated symbols to restrict an intraday backfill to "
+    "(minute_bars, minute_bars_5m), overriding [minute_bars].scope for this "
+    "run only. Use it for a one-off pull without editing the config.",
+)
+@click.option(
     "--workers",
     default=1,
     show_default=True,
@@ -580,6 +592,7 @@ def backfill(
     force: bool,
     start_str: str | None,
     end_str: str | None,
+    symbols_str: str | None,
     workers: int,
 ):
     """Backfill a dataset."""
@@ -608,6 +621,23 @@ def backfill(
     start_d = date.fromisoformat(start_str) if start_str else None
     end_d = date.fromisoformat(end_str) if end_str else None
     _guard_history_horizon(dataset, start_d)
+    if symbols_str:
+        symbols = [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
+        if not get_dataset(dataset).intraday_frequency:
+            raise click.ClickException(
+                f"--symbols only applies to intraday datasets "
+                f"({', '.join(sorted(intraday_dataset_names()))}); {dataset} takes its "
+                "universe from instruments."
+            )
+        # Enabling here too: a one-off `--symbols` pull should not also require
+        # flipping [minute_bars].enabled in the config first.
+        cfg.minute_bars_enabled = True
+        cfg.minute_bars_scope = "watchlist"
+        cfg.minute_bars_symbols = symbols
+        freq = get_dataset(dataset).intraday_frequency
+        if freq not in cfg.minute_bars_frequencies:
+            cfg.minute_bars_frequencies = [*cfg.minute_bars_frequencies, freq]
+        click.echo(f"[{dataset}] scope overridden for this run: {len(symbols)} symbol(s)", err=True)
     if start_d:
         cfg._backfill_start = start_d
     if end_d:
