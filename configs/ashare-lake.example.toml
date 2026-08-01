@@ -82,8 +82,21 @@ min_interval_seconds = 20.0
 enabled = true
 min_interval_seconds = 1.0
 
-# 商务部数据中心 — publishes 社会融资规模增量 (macro_indicators).
-[sources.mofcom]
+# 中国人民银行 调查统计司 — publishes 社会融资规模增量 (macro_indicators).
+# One index fetch plus one workbook per year, so pace it politely.
+[sources.pboc]
+enabled = true
+min_interval_seconds = 1.0
+
+# 国家统计局 — the 制造业 PMI release, used to cross-check the vendor's value.
+# Set enabled = false to keep `asl audit` off the network.
+[sources.nbs]
+enabled = true
+min_interval_seconds = 1.0
+
+# 上交所 / 深交所 listing tables — official ST designations, cross-checked
+# against `trading_status`. One request per exchange.
+[sources.exchange]
 enabled = true
 min_interval_seconds = 1.0
 

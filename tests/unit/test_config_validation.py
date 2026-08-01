@@ -68,8 +68,8 @@ def test_example_config_validates(monkeypatch):
     # EastMoney pacing is a floor, not a fixed value: push2his bans bursty
     # overseas IPs, so the example config may raise it further.
     assert cfg.source_intervals["eastmoney"] >= 1.0
-    # MOFCOM feeds social_financing; one request per run, but keep it paced.
-    assert cfg.source_intervals["mofcom"] >= 1.0
+    # PBOC feeds social_financing; an index fetch plus a workbook per year.
+    assert cfg.source_intervals["pboc"] >= 1.0
     # AkShare is retired — shipping a [sources.akshare] section would advertise
     # a source no adapter reads (issue #3).
     assert "akshare" not in cfg.sources
@@ -157,3 +157,26 @@ def test_fetch_workers_below_one_is_rejected(tmp_path):
         minute_bars_fetch_workers=0,
     )
     assert any("fetch_workers must be >= 1" in e for e in validate_config(cfg))
+
+
+def test_rate_limited_sources_are_all_declared_in_the_example_config():
+    """Every `config.rate_limit("x")` must have a matching `[sources.x]`.
+
+    `SourceRateLimiters.wait` no-ops on a name it has no limiter for, so a
+    typo — or gating on `[sources.exchange]` while throttling on `"sse"` —
+    disables `min_interval_seconds` silently instead of failing.
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[2]
+    cfg = load_config(root / "configs" / "ashare-lake.example.toml")
+    declared = set(cfg.sources) | {"tdx_protocol"}
+
+    literal = re.compile(r"""rate_limit\(\s*["'](\w+)["']\s*\)""")
+    used: dict[str, str] = {}
+    for path in (root / "src" / "ashare_lake").rglob("*.py"):
+        for name in literal.findall(path.read_text(encoding="utf-8")):
+            used.setdefault(name, path.relative_to(root).as_posix())
+
+    missing = {name: where for name, where in used.items() if name not in declared}
+    assert not missing, f"rate_limit() names with no [sources.*] section: {missing}"

@@ -34,7 +34,7 @@ ashare-lake 是 A 股数据的**采集编排层**：在多个外部数据源之�
 
 | 层 | 目录 | 职责 | 关键实现 |
 |----|------|------|----------|
-| 1 | `adapters/` | 协议封装、分页、源侧格式转换 | `tdx_protocol/`、`eastmoney/`、`sina/`、`cninfo/`、`baostock/`、`mofcom/`、`ths/`、`sw/`、`cni/`、`macro/`、`calendar/`；限速 `domain/rate_limit.py` |
+| 1 | `adapters/` | 协议封装、分页、源侧格式转换 | `tdx_protocol/`、`eastmoney/`、`sina/`、`cninfo/`、`baostock/`、`pboc/`、`nbs/`、`exchange/`、`ths/`、`sw/`、`cni/`、`macro/`、`calendar/`；限速 `domain/rate_limit.py` |
 | 2 | `orchestrator/` + `steps/` | Job/Wave/Step、批级 manifest、增量水位 | `JobEngine`、`manifest.py`、`compact_gate.py`、`storage/state.py` |
 | 3 | `storage/` + `derive/` | Parquet 四层湖、compact、派生 | `parquet.py`；[ADR-0002](../adr/0002-parquet-lake-over-database.md)/[ADR-0003](../adr/0003-canonical-curated-with-source-snapshots.md) |
 | 4 | `quality/` | run 级 findings、湖级 health、跨源 diff | `audit.py::lake_health()`、`cross_checks.py`、`source_diff.py` |

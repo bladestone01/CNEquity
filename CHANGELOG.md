@@ -6,6 +6,92 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Publisher cross-checks (`quality/authority_checks.py`).** Every other check
+  reasons about the lake's internal consistency, so none of them can see a
+  vendor publishing on time, in the right shape, with a wrong number — exactly
+  the shape of the `m2_yoy` defect. These two reach the publisher:
+
+  - `macro_pmi_vs_nbs` — 制造业 PMI against the 国家统计局 release
+  - `st_labels_vs_exchange` — ST designations against the SSE / SZSE listings
+
+  Both are gated on their `[sources.*]` flag, **defaulting off** when the
+  section is absent, so an offline lake and the unit suite never touch the
+  network. Results also land in `meta/quality/source_diffs/authority-{date}.json`
+  even when everything agrees: a findings file records only disagreement, which
+  cannot distinguish "checked, agreed" from "never checked".
+
+  The NBS *query API* is deliberately not used — `data.stats.gov.cn/easyquery.htm`
+  answers 403 (WAF `UrlACL`) from non-mainland egress while the release pages
+  answer normally, so building on it would leave the check silently dead for the
+  users least able to diagnose it. The release sentence is parsed instead.
+
+  Both directions of the ST comparison run over the **shared universe**. The
+  exchanges carry a company until formal delisting while a quote feed drops it
+  when it stops trading: on 2026-08-01 SSE designated two names ST that neither
+  EastMoney nor TDX still listed. Restricting only one side left that as a
+  permanent shortfall consuming most of the tolerance. SSE's 主板/科创板
+  downloads also exclude the risk-warning board — five ST symbols were missing
+  from both — so `stockType=10` is used.
+
+  M2 is not covered: the PBOC publishes 货币供应量 as levels only and revised
+  the M1 caliber from 2025-01, so a derived year-on-year figure would report
+  drift that is an artefact of our own arithmetic. EastMoney's M2 was verified
+  against the PBOC release by hand instead.
+
+
+- **`st_label_crosscheck`** — `trading_status` ST labels vs the ST prefix on the
+  instrument's exchange short name. Both sides are already in curated, so it
+  costs no requests, and it is genuinely independent: the short name is assigned
+  by the exchange and arrives over the TDX binary protocol, while the
+  risk-warning board comes over EastMoney HTTP. This is the check the retired
+  AkShare union only appeared to be — that one queried the same push2 endpoint
+  with the same filter as the EastMoney adapter, so it could never disagree.
+  Measured 2026-08-01: 205 names on each side, symmetric difference 0.
+
+- **`macro_checks.py`** — freshness and revision tracking for the monthly macro
+  series (issue #10).
+
+  `macro_indicator_stale` catches a publisher that stops. Every run refetches
+  the full history and dedupes on `(indicator_id, obs_date)`, so a dead feed
+  looks exactly like a healthy one in curated — the old rows are still there and
+  no step fails. Only the lag between the newest observation and the run date
+  shows it. Thresholds are per indicator, set from measured publication rhythm
+  plus ~1.5 months, so a single missed release is what trips them.
+
+  `macro_value_revised` records restatements. Compact keeps the newest
+  `fetched_at` per key, so a revision silently replaces the earlier value. That
+  overwrite is deliberate — it is what let the bad `m2_yoy` history heal itself
+  without a migration script — so the check runs between fetch and write and
+  reports what changed rather than blocking it. curated still holds the latest
+  published value; the finding is the only record the earlier one existed.
+
+### Changed
+
+- **`social_financing` now comes from the PBOC, not MOFCOM.** 社会融资规模 is a
+  PBOC statistic; MOFCOM republished it two release cycles late *and* served a
+  superseded vintage — 2026-04 as 6245 after the PBOC had revised it to 6238.
+  Summing the PBOC series for 2026 Jan–Apr gives 154,500, exactly the 15.45万亿
+  the PBOC states in prose, against the republisher's 154,507. A backup that
+  quietly carries stale values is not a safe backup (ADR-0003), so the MOFCOM
+  adapter is removed rather than kept as failover.
+
+  The PBOC publishes this as an Excel attachment with bilingual headers and an
+  explicit `单位：亿元人民币`, not as prose — pandas/openpyxl/xlrd are already
+  dependencies for the Shenwan and CNI workbooks. Coverage improves from 136
+  months ending 2026-04 to 138 ending 2026-06, and the staleness threshold
+  tightens from 135 days to 75, matching `m2_yoy` since both are mid-month PBOC
+  releases.
+
+  Two parsing traps the live data exposed, both covered by tests: the 2019
+  workbook stacks a percentage table (`单位：%`) under the 亿元 one and both have
+  a month column, so parsing follows each table's own unit declaration; and
+  `.xlsx` stores the month as a float, where October arrives as `2026.1` and
+  only formats back correctly at two decimals. Year workbooks also overlap with
+  different vintages — 2019 restates 2017 under the 完善后 caliber — so years
+  are read newest-first and the later publication wins.
+
 ### Fixed
 
 - **A backfilled intraday slice near the historical edge silently returned

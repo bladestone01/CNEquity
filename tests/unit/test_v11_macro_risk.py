@@ -172,7 +172,7 @@ def test_macro_monthly_obs_dates_land_on_month_end_and_respect_trade_date():
     assert [r["obs_date"] for r in pmi] == [date(2024, 5, 31)]
 
 
-def test_social_financing_comes_from_mofcom(monkeypatch):
+def test_social_financing_comes_from_pboc(monkeypatch):
     from ashare_lake.adapters.macro import indicators as macro_indicators
 
     monkeypatch.setattr(
@@ -184,7 +184,7 @@ def test_social_financing_comes_from_mofcom(monkeypatch):
                 "obs_date": date(2024, 5, 31),
                 "value": 2000.0,
                 "frequency": "monthly",
-                "source": "mofcom",
+                "source": "pboc",
             }
         ],
     )
@@ -194,15 +194,15 @@ def test_social_financing_comes_from_mofcom(monkeypatch):
     )
     row = df.filter(pl.col("indicator_id") == "social_financing")
     assert row.height == 1
-    assert row["source"][0] == "mofcom"
+    assert row["source"][0] == "pboc"
 
 
 @pytest.mark.parametrize("enabled", [False])
-def test_social_financing_honours_sources_mofcom(tmp_path, enabled):
+def test_social_financing_honours_sources_pboc(tmp_path, enabled):
     from ashare_lake.adapters.macro.indicators import _social_financing_rows
 
     cfg = Config(data_root=tmp_path / "data")
-    cfg.sources = {"mofcom": enabled}
+    cfg.sources = {"pboc": enabled}
     assert _social_financing_rows(date(2024, 6, 28), config=cfg) == []
 
 

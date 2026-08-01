@@ -23,7 +23,7 @@ pip install ashare-lake
 asl demo    # 一分钟真数样例，不需要先 clone 仓库
 ```
 
-**没有 extras**。一条命令装齐所有数据源——通达信协议（内置客户端）、东方财富、新浪、巨潮、商务部、Baostock、SnowNLP，以及申万/国证成分表所需的 XLS 解析。
+**没有 extras**。一条命令装齐所有数据源——通达信协议（内置客户端）、东方财富、新浪、巨潮、中国人民银行、Baostock、SnowNLP，以及申万/国证成分表所需的 XLS 解析。
 
 旧文档里的 `pip install "ashare-lake[tdx]"` 之类仍然可用，装出来的结果完全一致——pip 会提示一句 `does not provide the extra 'tdx'` 然后照常安装，uv 则不作声。
 

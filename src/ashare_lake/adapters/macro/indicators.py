@@ -3,8 +3,8 @@
 Rows carry their own ``source`` rather than taking the step's blanket value, so
 a curated row always names the feed it came from.
 
-Every series except 社融 comes from EastMoney's datacenter; 社融 comes from
-MOFCOM. AkShare used to supply the monthly block, but its PMI and 货币供应量
+Every series except 社融 comes from EastMoney's datacenter; 社融 comes from the
+PBOC, which publishes it. AkShare used to supply the monthly block, but its PMI and 货币供应量
 wrappers request the *same* ``datacenter-web.eastmoney.com`` endpoint this module
 already talks to, so going direct removes a parsing layer without changing the
 publisher — and picks up the project's own retry, throttle and TLS handling.
@@ -231,13 +231,19 @@ def _eastmoney_monthly(client: EastMoneyClient, trade_date: date) -> list[dict]:
 
 
 def _social_financing_rows(trade_date: date, *, config=None) -> list[dict]:
-    """社融增量 from MOFCOM, the publisher behind the retired AkShare wrapper."""
-    # Defaults on, like eastmoney: this is now the primary feed for the
-    # indicator, not a supplement.
-    if config is not None and not config.sources.get("mofcom", True):
+    """社融增量 from the PBOC's own statistical tables.
+
+    Read from the publisher rather than a republisher. MOFCOM, which this
+    replaced, was two release cycles behind *and* serving a superseded vintage
+    (2026-04 as 6245 after the PBOC had revised it to 6238) — so it was not a
+    safe backup either, only a quieter way to be wrong. See issue #10.
+    """
+    # Defaults on, like eastmoney: this is the primary feed for the indicator,
+    # not a supplement.
+    if config is not None and not config.sources.get("pboc", True):
         return []
 
-    from ashare_lake.adapters.mofcom.social_financing import fetch_social_financing
+    from ashare_lake.adapters.pboc.social_financing import fetch_social_financing
 
     return [
         {
@@ -245,7 +251,7 @@ def _social_financing_rows(trade_date: date, *, config=None) -> list[dict]:
             "obs_date": item["obs_date"],
             "value": item["value"],
             "frequency": "monthly",
-            "source": "mofcom",
+            "source": "pboc",
         }
         for item in fetch_social_financing(config=config)
         if item["obs_date"] <= trade_date
