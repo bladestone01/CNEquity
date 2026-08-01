@@ -9,36 +9,22 @@
 
 [English](README.en.md)
 
-**自托管 A 股研究数据湖**:  构建覆盖行情、复权、基本面、资金流、行业结构、宏观及舆情等多维数据的本地数据湖，支持行级数据追溯与多源交叉校验。
+**别再每次重拉、自己拼复权了。** 一行命令把能按天自动更新的 A 股研究湖落到本地 Parquet——多源进同一契约，行级可溯源。
 
+- **真数上手**：`pip install` → `asl demo`，几分钟出可复权日线
+- **日更能挂着跑**：水位 / 失败重试 / 质量审计；作者自用每天自动跑
+- **研究口径一次定好**：复权 · universe · PIT；38 个注册数据集，日线可回溯到约 2001
 
-CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号留给下游）。
+CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号留给下游）· 可选分钟线（1m / 5m，默认关）
 
-- 真数 demo，不是假数据玩具
-- 水位 / 失败重试 / 质量审计，适合挂 cron
-- 行级溯源：`source` / `data_version` / `fetched_at`
-- 统一 `load()` 契约（复权 / universe / PIT）
-- 可选分钟线（1m / 5m，默认关闭）
+## 30 秒拿到真数
 
-## 整体架构
-<p align="center">
-  <img src="docs/assets/architecture-overview.png" alt="ashare-lake 架构：数据源 → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
-</p>
-
-## 最短取数流程
-
-下列 `pip` / `asl` 在 **macOS / Linux / Windows**（PowerShell、cmd）上通用。  
-venv 激活与任务调度见 [installation](docs/getting-started/installation.md) / [runbook](docs/operations/runbook.md)。
-
-### A. 试用（几分钟）
-
-5 只流动性股票 × 约 30 个交易日；独立目录，**不会**变成全市场湖。
+需要能访问 **TDX 行情主机**（大陆出口更稳）。5 只流动性股票 × 约 30 个交易日；独立目录，**不会**变成全市场湖。demo 只落日线——下面表里的其它数据集要走自建湖。
 
 ```bash
 pip install ashare-lake
 asl demo
-# 可选：再看一根完整 1m 会话
-# asl demo --intraday
+# 可选：asl demo --intraday   # 再看一根完整 1m 会话
 ```
 
 <p align="center">
@@ -65,23 +51,24 @@ asl query --config configs/ashare-lake.demo.toml --sql "
   <img src="docs/assets/asl-query.png" alt="asl query：带 source 溯源列的日线" width="720" />
 </p>
 
-TDX 不可达时先跑 `asl servers test`。可选：`asl demo --symbols 600519.SH,000001.SZ --days 10`，或 `asl demo --intraday`。
+TDX 不通时先 `asl servers test`。也可 `asl demo --symbols 600519.SH,000001.SZ --days 10`。
 
-### B. 自建日更湖（研究 / 生产）
+macOS / Linux / Windows（PowerShell、cmd）命令通用；venv 与调度见 [installation](docs/getting-started/installation.md) / [runbook](docs/operations/runbook.md)。
 
-首次 `asl init` 会回填（耗时长、占磁盘）；之后日常只需增量 + 读取。
+## 自建日更湖
+
+首次 `asl init` 会回填（耗时长、占磁盘）；之后日常增量 + 读取。`load()` 默认读 cwd 下 `configs/ashare-lake.toml` 的 `data.root`。
+
+**默认不含分钟线。** `asl init` / `asl run daily` 只跑日频与基本面等主路径；1m / 5m 需显式开启（见下节）。
 
 ```bash
 pip install ashare-lake
 # macOS / Linux：
 asl config init --data-root /Users/you/ashare-lake
-# Windows（正斜杠或反斜杠均可）：
-# asl config init --data-root D:/ashare-lake
-# asl config init --data-root "D:\ashare-lake"
-# macOS / Windows 会把 workers 默认写成 1；Linux 示例模板为 8
-# 默认读取 cwd 下 configs/ashare-lake.toml，一般不必再写 --config
+# Windows：asl config init --data-root D:/ashare-lake
+# macOS / Windows 默认 workers=1；Linux 示例模板为 8
 asl init          # 建目录 + 首次回填
-asl run daily     # 之后每个交易日
+asl run daily     # 之后每个交易日（不含分钟线）
 asl status
 ```
 
@@ -109,15 +96,59 @@ asl query --sql "
 "
 ```
 
-> A 使用 `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`（查数时要带  
-> `--config configs/ashare-lake.demo.toml`）；  
-> B 使用 `asl config init` 写出的默认 `configs/ashare-lake.toml`。两条线互不覆盖。
+> demo 线：`data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml`（查数要带该 `--config`）。  
+> 日更线：`asl config init` 写出的 `configs/ashare-lake.toml`。两条线互不覆盖。
 
 无 extras：`pip install ashare-lake` 装齐运行时数据源。全量回填后建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 再挂调度。
 
+### 可选：分钟线（1m / 5m）
+
+默认关闭，也**不在** `asl run daily` 里——全市场 1m 约 35MB/日、8.4GB/年。TDX 约只留 **95** 个交易日的 1m、**491** 个交易日的 5m；更早窗口为空，无法靠回填拉长。磁盘与耗时见 [runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
+
+在 `configs/ashare-lake.toml` 里打开：
+
+```toml
+[minute_bars]
+enabled = true
+scope = "index:000300.SH"     # 或 watchlist / all
+frequencies = ["1m", "5m"]    # 5m 是唯一有较长历史的频率
+```
+
+```bash
+# 一次性种子（可续跑；--symbols 可只拉几只、不必改配置）
+asl backfill minute_bars_5m --start 2024-08-01 --end 2026-07-31
+asl backfill minute_bars --start 2026-05-01 --symbols 600519.SH,000001.SZ
+
+# 日更：单独一组，不要塞进默认 daily
+asl run daily --group intraday
+```
+
+```python
+from ashare_lake.query import load
+
+m5 = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"], adjust="hfq")
+```
+
+## 架构
+
+<p align="center">
+  <img src="docs/assets/architecture-overview.png" alt="ashare-lake 架构：数据源 → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+</p>
+
+落盘布局（日更湖的 `data.root` 下）：
+
+```
+{data_root}/
+  curated/   {dataset}/{partition}=v/part-*.parquet
+  derived/   adj_factors/...
+  staging/   本次 run 原始落地（compact 后可清理）
+  meta/      manifest、quality findings、水位、on-demand 缓存
+  duckdb/    ashare-lake.duckdb
+```
+
 ## 有什么数据
 
-数据集名即 `load()` 的第一个参数。字段见 [schema](docs/datasets/schema.md)，编排元数据见 [catalog](docs/datasets/catalog.md)。
+数据集名即 `load()` 的第一个参数。字段见 [schema](docs/datasets/schema.md)，编排见 [catalog](docs/datasets/catalog.md)。
 
 | 类别 | 数据集 |
 |------|--------|
@@ -131,21 +162,10 @@ asl query --sql "
 | 舆情 / 轮动 | `sentiment_scores` · `hot_rank` · `sector_bars` · `sector_fund_flow` · `news_headlines` |
 | 风险 | `share_unlock_schedule` · `regulatory_events` |
 
-落盘布局（B 的 `data.root` 下）：
-
-```
-{data_root}/
-  curated/   {dataset}/{partition}=v/part-*.parquet
-  derived/   adj_factors/...
-  staging/   本次 run 原始落地（compact 后可清理）
-  meta/      manifest、quality findings、水位、on-demand 缓存
-  duckdb/    ashare-lake.duckdb
-```
-
 ## 定位：与同类差异
 
 AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」；Qlib / vn.py 解决「研究/交易平台」。  
-**ashare-lake** 专做中间层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖。设计取舍详见 [comparison](docs/comparison.md)。
+**ashare-lake** 专做中间层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖。详见 [comparison](docs/comparison.md)。
 
 | 你在意什么 | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
 |--|--|--|--|--|--|
@@ -156,19 +176,18 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 | 源挂了会怎样 | **fail batch**，暴露问题，可按批 retry | 看调用方 | 看平台 | 看调用方 | 视模块 |
 | 能否单独当研究数据底座 | **能**（湖 + 日更 + `load()`） | 否，还需自建落盘/编排 | 云端表，非自建湖 | 否，会话拉数 | 能，但绑平台 |
 
-
 ## 已知限制
 
 - **幸存者偏差**：退市股需 `asl delisted backfill` + `repair`；未补齐前收益序列要打折看
 - **海外网络**：部分 HTTP / 板块回填依赖大陆出口；行情 demo 需 TDX 可达
-- **日内视野**：TDX 约保留 95 个交易日的 1m、491 个交易日的 5m；更早窗口为空，无法靠回填拉长——见 [catalog](docs/datasets/catalog.md)
+- **日内视野**：TDX 约保留 95 个交易日的 1m、491 个交易日的 5m；更早窗口为空——见 [catalog](docs/datasets/catalog.md)
 - **年/月分区**（如 `index_bars`）：优先 `asl query` / `load()`，避免 hive 分区标签撞真日期——见 [lake-layout](docs/architecture/lake-layout.md)
 
 更多见 [runbook](docs/operations/runbook.md)、[排障](docs/operations/troubleshooting.md)、[legal](docs/legal-and-data-sources.md)。
 
 ## 项目状态
 
-[0.4.0](CHANGELOG.md) — 当前主线；上 [PyPI](https://pypi.org/project/ashare-lake/) 后 `pip install -U ashare-lake`。作者自用数据层公开版，日常挂 cron。
+[0.4.0](CHANGELOG.md) — 当前主线；上 [PyPI](https://pypi.org/project/ashare-lake/) 后 `pip install -U ashare-lake`。作者自用数据层，每个交易日自动更新。Schema / `load()` 在 1.0 前可能变。
 
 个人项目：issue / PR 欢迎，响应尽力而为。[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)。文档中文为主；[CHANGELOG](CHANGELOG.md) 与 [ADR](docs/adr/) 为英文。
 

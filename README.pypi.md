@@ -1,35 +1,23 @@
 # 自托管 A 股研究数据湖
 
-日线 / 复权 / 基本面 / 资金面 / 行业结构 / 宏观舆情等到同一契约，日更编排落盘为带行级溯源的 curated Parquet。  
-相对拉数库多水位·重试·审计，相对云端宽表可本地续跑；DuckDB / Polars / `load()` 直接查，无需自建库或通达信客户端。
+**别再每次重拉、自己拼复权了。** 一行命令把能按天自动更新的 A 股研究湖落到本地 Parquet——多源进同一契约，行级可溯源；DuckDB / Polars / `load()` 直接查，无需自建库或通达信客户端。
 
 CLI：`asl` · 包名：`ashare_lake` · **Python ≥ 3.10** · **只做数据层**（回测和信号留给下游）。
 
-## 为什么用它
-
-AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」；Qlib / vn.py 解决「研究/交易平台」。  
-**ashare-lake** 专做中间层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖。
-
-相对同类更突出的几点：
-
-- **本地可续跑**：水位 / 失败重试 / 质量审计，适合挂 cron
-- **行级溯源**：每行带 `source` / `data_version` / `fetched_at`，出了问题能查回来源
-- **多源可核验**：主源进 curated，备源进 snapshot，可 diff，不静默顶替
-- **研究口径稳定**：`load()` 统一复权 / universe / PIT `as_of`，不用自己拼
-- **纯数据层**：不做回测和交易，和拉数库互补、也不绑架整套框架
-
-一条命令跑通真数 demo：
+- **真数上手**：`asl demo` 几分钟出可复权日线（不是 mock）
+- **日更能挂着跑**：水位 / 失败重试 / 质量审计
+- **研究口径一次定好**：复权 · universe · PIT；相对拉数库多编排，相对云端宽表可本地续跑
 
 ## 安装与一分钟体验
 
-需要 **Python 3.10+**（macOS / Linux / Windows）。
+需要 **Python 3.10+**，且能访问 TDX 行情主机（大陆出口更稳）。
 
 ```bash
 pip install ashare-lake
 asl demo
 ```
 
-通过 TDX 拉几只流动性股票 × 约 30 个交易日，写入 `data/ashare-lake-demo/`，并打印样例表。需要能访问 TDX 行情主机（大陆出口更稳）。
+写入 `data/ashare-lake-demo/`（几只流动性股票 × 约 30 个交易日），并打印样例表。
 
 ```bash
 asl query --config configs/ashare-lake.demo.toml --sql "

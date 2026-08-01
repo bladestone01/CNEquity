@@ -9,40 +9,31 @@
 
 [中文](README.md)
 
-A self-hosted A-share research lake: daily bars, adjust factors, fundamentals,
-fund flow, sector structure, macro & sentiment — one contract, daily orchestration,
-row-level provenance on curated Parquet.  
-More than a fetch wrapper (watermarks / retry / audit); local vs cloud wide tables;
-query with DuckDB / Polars / `load()` — no DB server, no TDX desktop client.
+**Stop re-fetching and hand-rolling adjust factors.** One install drops an
+A-share research lake you can refresh automatically every trading day onto
+local Parquet — many sources, one contract, row-level provenance, query with
+DuckDB / Polars / `load()`.
 
-CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay downstream).
+- **Real data in minutes:** `pip install` → `asl demo` (not a mock)
+- **Daily jobs that stay up:** watermarks / retry / audit; the author runs it
+  every trading day
+- **Stable research semantics:** adjust · universe · PIT; 38 registered datasets;
+  daily bars back to ~2001
 
-- Real-data demo, not a toy mock
-- Watermarks / retry / quality audit — cron-ready
-- Row-level provenance: `source` / `data_version` / `fetched_at`
-- One `load()` contract (adjust / universe / PIT)
-- Opt-in minute bars (1m / 5m, off by default)
+CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay
+downstream) · opt-in minute bars (1m / 5m, off by default)
 
-<p align="center">
-  <img src="docs/assets/architecture-overview.png" alt="ashare-lake architecture: sources → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
-</p>
+## Data in ~30 seconds
 
-## Shortest path to data
-
-The `pip` / `asl` commands below work on **macOS / Linux / Windows** (PowerShell
-or cmd). Venv activation and schedulers differ by OS — see
-[installation](docs/getting-started/installation.md) /
-[runbook](docs/operations/runbook.md).
-
-### A. Try it (minutes)
-
-Five liquid names × ~30 trading days. Separate data root — **not** a full-market lake.
+Needs reachability to **TDX quote hosts** (mainland egress is more reliable).
+Five liquid names × ~30 trading days. Separate data root — **not** a
+full-market lake. The demo lands daily bars only; everything else in the
+catalog needs the self-hosted path below.
 
 ```bash
 pip install ashare-lake
 asl demo
-# optional: also print one full 1m session
-# asl demo --intraday
+# optional: asl demo --intraday   # also print one full 1m session
 ```
 
 <p align="center">
@@ -69,25 +60,30 @@ asl query --config configs/ashare-lake.demo.toml --sql "
   <img src="docs/assets/asl-query.png" alt="asl query: DuckDB SQL with provenance source column" width="720" />
 </p>
 
-If TDX is unreachable, try `asl servers test`. Optional:
-`asl demo --symbols 600519.SH,000001.SZ --days 10`, or
-`asl demo --intraday`.
+If TDX is down, try `asl servers test`. Or
+`asl demo --symbols 600519.SH,000001.SZ --days 10`.
 
-### B. Self-hosted daily lake (research / production)
+Commands work on macOS / Linux / Windows (PowerShell or cmd). Venv and
+schedulers: [installation](docs/getting-started/installation.md) /
+[runbook](docs/operations/runbook.md).
+
+## Self-hosted daily lake
 
 First `asl init` backfills (slow, multi-GB). Afterwards: incremental + read.
+`load()` reads `data.root` from `configs/ashare-lake.toml` under the cwd by
+default.
+
+**Minute bars are off by default.** `asl init` / `asl run daily` cover the
+daily / fundamentals path only; enable 1m / 5m explicitly (next subsection).
 
 ```bash
 pip install ashare-lake
 # macOS / Linux:
 asl config init --data-root /Users/you/ashare-lake
-# Windows (forward or back slashes):
-# asl config init --data-root D:/ashare-lake
-# asl config init --data-root "D:\ashare-lake"
+# Windows: asl config init --data-root D:/ashare-lake
 # macOS / Windows default workers=1; Linux example template uses 8
-# Defaults to configs/ashare-lake.toml under cwd — --config usually omitted
 asl init          # layout + first backfill
-asl run daily     # every trading day afterwards
+asl run daily     # every trading day afterwards (no minute bars)
 asl status
 ```
 
@@ -115,19 +111,67 @@ asl query --sql "
 "
 ```
 
-> Path A uses `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml` (pass  
-> `--config configs/ashare-lake.demo.toml` when querying).  
-> Path B uses the default `configs/ashare-lake.toml` from `asl config init`.  
-> The two lanes do not overwrite each other.
+> Demo lane: `data/ashare-lake-demo/` + `configs/ashare-lake.demo.toml` (pass
+> that `--config` when querying).  
+> Daily lane: `configs/ashare-lake.toml` from `asl config init`.  
+> The two do not overwrite each other.
 
 No extras: `pip install ashare-lake` brings every runtime source. After the
 initial backfill, run the [acceptance checks](docs/operations/runbook.md)
 before wiring a scheduler.
 
+### Optional: minute bars (1m / 5m)
+
+Off by default, and **not** part of plain `asl run daily` — full-market 1m is
+~35MB/day and ~8.4GB/year. TDX keeps ~**95** trading days of 1m and ~**491** of
+5m; older windows return nothing. Costs:
+[runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m).
+
+In `configs/ashare-lake.toml`:
+
+```toml
+[minute_bars]
+enabled = true
+scope = "index:000300.SH"     # or watchlist / all
+frequencies = ["1m", "5m"]    # 5m is the only frequency with real history
+```
+
+```bash
+# One-off seed (resumable; --symbols pulls a few names without editing config)
+asl backfill minute_bars_5m --start 2024-08-01 --end 2026-07-31
+asl backfill minute_bars --start 2026-05-01 --symbols 600519.SH,000001.SZ
+
+# Daily refresh: separate group, do not fold into default daily
+asl run daily --group intraday
+```
+
+```python
+from ashare_lake.query import load
+
+m5 = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"], adjust="hfq")
+```
+
+## Architecture
+
+<p align="center">
+  <img src="docs/assets/architecture-overview.png" alt="ashare-lake architecture: sources → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+</p>
+
+On-disk layout under the daily lake's `data.root`:
+
+```
+{data_root}/
+  curated/   {dataset}/{partition}=v/part-*.parquet
+  derived/   adj_factors/...
+  staging/   raw landing per run (cleanable after compact)
+  meta/      manifest, quality findings, watermarks, on-demand cache
+  duckdb/    ashare-lake.duckdb
+```
+
 ## Datasets
 
 Dataset names are the first argument to `load()`. Columns:
-[schema](docs/datasets/schema.md); orchestration metadata:
+[schema](docs/datasets/schema.md); orchestration:
 [catalog](docs/datasets/catalog.md).
 
 | Category | Datasets |
@@ -142,24 +186,13 @@ Dataset names are the first argument to `load()`. Columns:
 | Sentiment / rotation | `sentiment_scores` · `hot_rank` · `sector_bars` · `sector_fund_flow` · `news_headlines` |
 | Risk | `share_unlock_schedule` · `regulatory_events` |
 
-On-disk layout under path B's `data.root`:
-
-```
-{data_root}/
-  curated/   {dataset}/{partition}=v/part-*.parquet
-  derived/   adj_factors/...
-  staging/   raw landing per run (cleanable after compact)
-  meta/      manifest, quality findings, watermarks, on-demand cache
-  duckdb/    ashare-lake.duckdb
-```
-
 ## Positioning: peers
 
 AkShare / efinance answer “how do I fetch?”; Tushare answers “cloud wide tables”;
 Qlib / vn.py answer “research / trading platform”.
 **ashare-lake** owns the middle layer: many sources into one contract, as a
 resumable, provenance-tagged, auditable local Parquet lake.
-Trade-offs: [comparison](docs/comparison.md) (Chinese).
+Details: [comparison](docs/comparison.md) (Chinese).
 
 | What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
 |--|--|--|--|--|--|
@@ -169,7 +202,6 @@ Trade-offs: [comparison](docs/comparison.md) (Chinese).
 | Stable research semantics | **`load()` contract**: adjust / universe / PIT `as_of` | DIY | DIY | DIY | Platform semantics |
 | When a source fails | **Fail the batch**, surface it, retry by batch | Up to caller | Up to vendor | Up to caller | Varies |
 | Standalone research data base? | **Yes** (lake + daily jobs + `load()`) | No — you still build landing/orchestration | Cloud tables, not self-hosted | No — session fetch | Yes, but platform-tied |
-
 
 ## Known limitations
 
@@ -186,14 +218,15 @@ More: [runbook](docs/operations/runbook.md) ·
 [troubleshooting](docs/operations/troubleshooting.md) ·
 [legal](docs/legal-and-data-sources.md).
 
-> Detailed getting-started docs are Chinese-first; this English README is the
-> short path. See [docs/](docs/README.md) for the full index.
+> Getting-started docs are Chinese-first; this English README is the short path.
+> Full index: [docs/](docs/README.md).
 
 ## Project status
 
 [0.4.0](CHANGELOG.md) — current mainline; install from
 [PyPI](https://pypi.org/project/ashare-lake/) after the release is cut.
-Personal daily-cron data layer. Schema / `load()` may change before 1.0.
+Personal data layer, refreshed every trading day. Schema / `load()` may change
+before 1.0.
 
 Personal project: issues and PRs welcome, responses best-effort.
 [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md). Docs are
