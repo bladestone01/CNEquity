@@ -165,7 +165,17 @@ def capture_intraday_bars(
     # Bound the page walk: without it, every symbol is paged back to its full
     # retention depth and the extra pages are then discarded by the window
     # filter — 29 requests where 1 would do on the daily path.
-    trading_days = max(1, _approx_trading_days(config, start, end))
+    #
+    # The depth is trade_date -> start, NOT end -> start. The wire always pages
+    # back from the live tip (offset 0 = today), regardless of what `end` is,
+    # so a backfill slice near the historical edge still has to walk through
+    # everything between today and its start before reaching it — a shallow
+    # 10-day-wide slice sitting 140 days back needs ~30 pages, not ~4. Using
+    # the slice's own width here made every page land after `end`, get
+    # discarded by the date filter, and every symbol come back with zero rows
+    # — silently, with no error, indistinguishable from "TDX has nothing here"
+    # until traced back to a raw wire probe.
+    trading_days = max(1, _approx_trading_days(config, start, trade_date))
     max_pages = pages_for_window(frequency, trading_days)
 
     logger.info(
