@@ -30,7 +30,7 @@ from ashare_lake.storage.repartition import (
 
 @pytest.mark.parametrize(
     ("granularity", "expected"),
-    [("day", "2024-06-03"), ("month", "2024-06"), ("year", "2024")],
+    [("day", "2024-06-03"), ("month", "2024-06"), ("quarter", "2024Q2"), ("year", "2024")],
 )
 def test_partition_value_per_granularity(granularity, expected):
     assert partition_value(date(2024, 6, 3), granularity) == expected
@@ -65,7 +65,17 @@ def test_parse_partition_rejects_non_periods(value):
 
 @pytest.mark.parametrize(
     ("value", "granularity"),
-    [("2024-06-03", "day"), ("2024-06", "month"), ("2024", "year")],
+    [
+        ("2024-06-03", "day"),
+        ("2024-06", "month"),
+        ("2024", "year"),
+        # Q1 starts in January and Q4 ends in December, so both brush against
+        # the year test; a quarter read back as "month" would make every
+        # report_period dataset disagree with the registry forever.
+        ("2016Q1", "quarter"),
+        ("2016Q2", "quarter"),
+        ("2016Q4", "quarter"),
+    ],
 )
 def test_granularity_of_reads_back_the_written_period(value, granularity):
     assert granularity_of(parse_partition(value)) == granularity
@@ -78,6 +88,8 @@ def test_granularity_of_reads_back_the_written_period(value, granularity):
         ("2024-01-01", "2023-12-31"),
         ("2024-06", "2024-05"),
         ("2024-01", "2023-12"),
+        ("2024Q2", "2024Q1"),
+        ("2024Q1", "2023Q4"),
         ("2024", "2023"),
     ],
 )

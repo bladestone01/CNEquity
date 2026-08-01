@@ -35,10 +35,10 @@ def test_horizon_guard_is_a_no_op_without_a_horizon():
 
 
 def test_earliest_available_converts_trading_days_to_calendar_days():
-    spec = DatasetSpec("x", history_horizon_days=242)
+    spec = DatasetSpec("x", tier="L1", history_horizon_days=242)
     # A year of sessions is a calendar year, not 242 calendar days.
     assert spec.earliest_available(date(2026, 8, 1)) == date(2025, 8, 1)
-    assert DatasetSpec("y").earliest_available(date(2026, 8, 1)) is None
+    assert DatasetSpec("y", tier="L1").earliest_available(date(2026, 8, 1)) is None
 
 
 class FakeEngine:

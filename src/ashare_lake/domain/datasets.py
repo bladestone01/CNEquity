@@ -22,16 +22,46 @@ FetchSemantics = Literal["by_date", "snapshot"]
 HistoryMode = Literal["by_date", "snapshot_with_backfill", "snapshot_only"]
 Layer = Literal["curated", "derived"]
 
+# Research-use classification, orthogonal to ``Layer`` (which is a storage
+# location). L0 is the reference spine everything joins on and L8 the risk
+# overlay; the ordering is roughly "how far from the price series".
+Tier = Literal["L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
+
+TIERS: tuple[Tier, ...] = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8")
+
+TIER_LABELS: dict[Tier, str] = {
+    "L0": "基础参考",
+    "L1": "行情",
+    "L2": "公司事件",
+    "L3": "基本面",
+    "L4": "资金面",
+    "L5": "结构行业",
+    "L6": "宏观",
+    "L7": "舆情 / 轮动",
+    "L8": "风险合规",
+}
+
 
 @dataclass(frozen=True)
 class DatasetSpec:
     """Orchestration/query metadata for one dataset.
 
+    tier:
+        L0–L8 research classification (see ``Tier``). Mandatory and without a
+        default: an unclassified dataset would silently fall into whichever
+        bucket the default named, and this is what groups the catalog docs and
+        the lake dashboard. ``layer`` is where the parquet lives; this is what
+        the data is *for*, and the two are independent — ``adj_factors`` is
+        derived storage but L1 research input.
+
     partition_col:
         Hive partition directory key under the lake (None = merge-style single
         file, e.g. instruments).
     partition_granularity:
-        Period each partition directory covers — ``day``, ``month`` or ``year``.
+        Period each partition directory covers — ``day``, ``month``, ``quarter``
+        or ``year``. ``quarter`` is for the ``report_period`` datasets, whose
+        directories are the reporting periods themselves (``2016Q1``) rather
+        than a period chosen for file size.
         Pick it from rows per day, not from habit: a Parquet footer costs ~1KB
         whatever it holds, so a dataset with a handful of rows a day spends
         almost all its bytes and all its file opens on metadata. Rough bands
@@ -79,6 +109,7 @@ class DatasetSpec:
     """
 
     name: str
+    tier: Tier
     layer: Layer = "curated"
     partition_col: str | None = None
     partition_granularity: Granularity = "day"
@@ -153,15 +184,20 @@ _SPECS = [
     # path to a survivorship-free universe.
     DatasetSpec(
         "instruments",
+        tier="L0",
         partition_col=None,
         watermark=False,
         backfill_source="baostock",
     ),
-    DatasetSpec("trading_calendar", partition_col="trade_date", partition_granularity="year"),
-    DatasetSpec("trading_status", partition_col="trade_date", partition_granularity="month"),
+    DatasetSpec(
+        "trading_calendar", tier="L0", partition_col="trade_date", partition_granularity="year"
+    ),
+    DatasetSpec(
+        "trading_status", tier="L0", partition_col="trade_date", partition_granularity="month"
+    ),
     # L1 bars
-    DatasetSpec("daily_bars", partition_col="trade_date"),
-    DatasetSpec("index_bars", partition_col="trade_date", partition_granularity="year"),
+    DatasetSpec("daily_bars", tier="L1", partition_col="trade_date"),
+    DatasetSpec("index_bars", tier="L1", partition_col="trade_date", partition_granularity="year"),
     # 1-minute bars. Day partitions: ~240 bars × the configured scope, which is
     # 1.3M rows a day at full market — the top of the ≥1000 rows/day band, and
     # ~30MB a partition. The schema draft once sketched
@@ -172,6 +208,7 @@ _SPECS = [
     # that never enabled it must not be judged unhealthy for holding no rows.
     DatasetSpec(
         "minute_bars",
+        tier="L1",
         partition_col="trade_date",
         partition_granularity="day",
         fetch_semantics="by_date",
@@ -199,6 +236,7 @@ _SPECS = [
     # more datasets holding a `group_by_dynamic` away from data already here.
     DatasetSpec(
         "minute_bars_5m",
+        tier="L1",
         partition_col="trade_date",
         partition_granularity="day",
         fetch_semantics="by_date",
@@ -217,6 +255,7 @@ _SPECS = [
     # gold (Sina COMEX ``GC0.CMX``); not A-share equity.
     DatasetSpec(
         "commodity_bars",
+        tier="L1",
         partition_col="trade_date",
         partition_granularity="year",
         fetch_semantics="by_date",
@@ -225,47 +264,72 @@ _SPECS = [
         max_staleness_days=2,
     ),
     # L2 corporate events
-    DatasetSpec("corporate_actions", partition_col="ex_date", partition_granularity="year"),
-    DatasetSpec("announcement_index", partition_col="announce_date", pit=True),
+    DatasetSpec(
+        "corporate_actions", tier="L2", partition_col="ex_date", partition_granularity="year"
+    ),
+    DatasetSpec("announcement_index", tier="L2", partition_col="announce_date", pit=True),
     # Current-state timetable (revisions overwrite scheduled_date; not PIT).
     DatasetSpec(
         "earnings_disclosure_schedule",
+        tier="L2",
         partition_col="report_period",
+        partition_granularity="quarter",
         watermark=False,
     ),
     # L3 fundamentals
     DatasetSpec(
         "financial_statement_items",
+        tier="L3",
         partition_col="report_period",
+        partition_granularity="quarter",
         watermark=False,
         pit=True,
     ),
     DatasetSpec(
         "valuation_metrics",
+        tier="L3",
         partition_col="trade_date",
         fetch_semantics="snapshot",
         backfill_source="baostock",
     ),
-    DatasetSpec("analyst_consensus", partition_col="forecast_date", fetch_semantics="snapshot"),
+    DatasetSpec(
+        "analyst_consensus", tier="L3", partition_col="forecast_date", fetch_semantics="snapshot"
+    ),
     # L4 capital flows
-    DatasetSpec("fund_flow", partition_col="trade_date", fetch_semantics="snapshot"),
-    DatasetSpec("margin_trading", partition_col="trade_date", max_staleness_days=2),
+    DatasetSpec("fund_flow", tier="L4", partition_col="trade_date", fetch_semantics="snapshot"),
+    DatasetSpec("margin_trading", tier="L4", partition_col="trade_date", max_staleness_days=2),
     # Per-stock northbound holdings are quarterly since Aug 2024; tolerate the
     # gap to the next quarter-end before flagging stale.
-    DatasetSpec("northbound_holdings", partition_col="trade_date", max_staleness_days=100),
+    DatasetSpec(
+        "northbound_holdings", tier="L4", partition_col="trade_date", max_staleness_days=100
+    ),
     DatasetSpec(
         "northbound_flows",
+        tier="L4",
         partition_col="trade_date",
         partition_granularity="year",
         max_staleness_days=2,
     ),
-    DatasetSpec("dragon_tiger", partition_col="trade_date", partition_granularity="month"),
-    DatasetSpec("block_trades", partition_col="trade_date", partition_granularity="month"),
-    DatasetSpec("institutional_holdings", partition_col="report_period", watermark=False),
+    DatasetSpec(
+        "dragon_tiger", tier="L4", partition_col="trade_date", partition_granularity="month"
+    ),
+    DatasetSpec(
+        "block_trades", tier="L4", partition_col="trade_date", partition_granularity="month"
+    ),
+    DatasetSpec(
+        "institutional_holdings",
+        tier="L4",
+        partition_col="report_period",
+        partition_granularity="quarter",
+        watermark=False,
+    ),
     # L5 structure
-    DatasetSpec("sector_members", partition_col="as_of_date", fetch_semantics="snapshot"),
+    DatasetSpec(
+        "sector_members", tier="L5", partition_col="as_of_date", fetch_semantics="snapshot"
+    ),
     DatasetSpec(
         "index_constituents",
+        tier="L5",
         partition_col="as_of_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
@@ -275,24 +339,33 @@ _SPECS = [
     ),
     DatasetSpec(
         "industry_members",
+        tier="L5",
         partition_col="as_of_date",
         fetch_semantics="snapshot",
         # Shenwan StockClassifyUse intervals → monthly as_of from 2020.
         backfill_source="sw",
     ),
     # L6 macro
-    DatasetSpec("macro_indicators", partition_col="obs_date", partition_granularity="year"),
-    DatasetSpec("market_breadth", partition_col="trade_date", partition_granularity="year"),
+    DatasetSpec(
+        "macro_indicators", tier="L6", partition_col="obs_date", partition_granularity="year"
+    ),
+    DatasetSpec(
+        "market_breadth", tier="L6", partition_col="trade_date", partition_granularity="year"
+    ),
     # L7 sentiment / rotation
-    DatasetSpec("sentiment_scores", partition_col="trade_date", partition_granularity="month"),
+    DatasetSpec(
+        "sentiment_scores", tier="L7", partition_col="trade_date", partition_granularity="month"
+    ),
     DatasetSpec(
         "hot_rank",
+        tier="L7",
         partition_col="trade_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
     ),
     DatasetSpec(
         "sector_bars",
+        tier="L7",
         partition_col="trade_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
@@ -303,18 +376,21 @@ _SPECS = [
     ),
     DatasetSpec(
         "sector_fund_flow",
+        tier="L7",
         partition_col="trade_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
     ),
     DatasetSpec(
         "news_headlines",
+        tier="L7",
         partition_col="publish_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
     ),
     DatasetSpec(
         "flash_news_wire",
+        tier="L7",
         partition_col="publish_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
@@ -323,21 +399,34 @@ _SPECS = [
     # schema/registry for a replacement source, but do not fail lake health.
     DatasetSpec(
         "economic_calendar",
+        tier="L7",
         partition_col="event_date",
         partition_granularity="year",
         fetch_semantics="snapshot",
         required=False,
     ),
     # L8 risk
-    DatasetSpec("share_unlock_schedule", partition_col="unlock_date", partition_granularity="year"),
-    DatasetSpec("regulatory_events", partition_col="event_date", partition_granularity="year"),
-    # derived
-    DatasetSpec("adj_factors", layer="derived", partition_col="trade_date"),
+    DatasetSpec(
+        "share_unlock_schedule",
+        tier="L8",
+        partition_col="unlock_date",
+        partition_granularity="year",
+    ),
+    DatasetSpec(
+        "regulatory_events", tier="L8", partition_col="event_date", partition_granularity="year"
+    ),
+    # derived — ``layer`` is where the parquet lives, ``tier`` what the data is
+    # for, so these carry the tier of the question they answer, not "derived".
+    DatasetSpec("adj_factors", tier="L1", layer="derived", partition_col="trade_date"),
     # Industry returns computed from 申万 membership × hfq bars rather than
     # fetched, so index and constituents cannot disagree. Yearly partitions:
     # ~3 levels × 2 weightings × ~500 industries a day.
+    # L5, not L1: the unit of observation is an industry (PK carries
+    # industry_code/level/weighting, not symbol), so it belongs beside the
+    # membership table that produces it rather than beside the bars.
     DatasetSpec(
         "industry_index",
+        tier="L5",
         layer="derived",
         partition_col="trade_date",
         partition_granularity="year",
@@ -347,6 +436,7 @@ _SPECS = [
     # rows total. date_col (not partition_col) so load(start=/end=) still filters.
     DatasetSpec(
         "delisting_events",
+        tier="L1",
         layer="derived",
         partition_col=None,
         date_col="last_trade_date",
@@ -370,6 +460,18 @@ def curated_dataset_names() -> frozenset[str]:
 
 def derived_dataset_names() -> frozenset[str]:
     return frozenset(s.name for s in DATASETS.values() if s.layer == "derived")
+
+
+def datasets_by_tier() -> dict[Tier, list[str]]:
+    """``{tier: [dataset, ...]}`` for every tier, in registry order.
+
+    Every tier is present even when empty, so a consumer grouping by tier
+    (catalog docs, the lake dashboard) renders a stable set of sections.
+    """
+    grouped: dict[Tier, list[str]] = {tier: [] for tier in TIERS}
+    for spec in _SPECS:
+        grouped[spec.tier].append(spec.name)
+    return grouped
 
 
 def pit_dataset_names() -> frozenset[str]:

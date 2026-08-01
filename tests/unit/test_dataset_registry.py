@@ -4,8 +4,11 @@ from ashare_lake.domain.datasets import (
     DATASETS,
     FETCH_SEMANTICS,
     PARTITION_COLS,
+    TIER_LABELS,
+    TIERS,
     WATERMARK_SKIP,
     curated_dataset_names,
+    datasets_by_tier,
     derived_dataset_names,
     fetch_semantics,
     get_dataset,
@@ -80,6 +83,27 @@ def test_layer_partitions():
     assert "adj_factors" not in curated_dataset_names()
     assert pit_dataset_names() == {"financial_statement_items", "announcement_index"}
     assert get_dataset("daily_bars").partition_col == "trade_date"
+
+
+def test_every_dataset_lands_in_exactly_one_tier():
+    grouped = datasets_by_tier()
+    assert set(grouped) == set(TIERS)
+    assert set(TIER_LABELS) == set(TIERS)
+    placed = [name for names in grouped.values() for name in names]
+    assert sorted(placed) == sorted(DATASETS)
+    assert len(placed) == len(set(placed))
+
+
+def test_report_period_datasets_are_partitioned_by_quarter():
+    """The directories are ``2016Q1``, so anything else makes audit cry wolf.
+
+    ``check_mixed_partition_granularity`` compares the on-disk period against
+    the registry, and a report_period dataset left on the ``day`` default
+    reports every one of its partitions as stale, forever.
+    """
+    for name, spec in DATASETS.items():
+        if spec.partition_col == "report_period":
+            assert spec.partition_granularity == "quarter", name
 
 
 def test_registered_fetch_steps_cover_curated_datasets():

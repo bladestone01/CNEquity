@@ -32,9 +32,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-Granularity = Literal["day", "month", "year"]
+Granularity = Literal["day", "month", "quarter", "year"]
 
-GRANULARITIES: tuple[Granularity, ...] = ("day", "month", "year")
+GRANULARITIES: tuple[Granularity, ...] = ("day", "month", "quarter", "year")
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,8 @@ def partition_value(d: date, granularity: Granularity) -> str:
     """Directory value for the partition holding *d*."""
     if granularity == "year":
         return f"{d.year:04d}"
+    if granularity == "quarter":
+        return f"{d.year:04d}Q{(d.month - 1) // 3 + 1}"
     if granularity == "month":
         return f"{d.year:04d}-{d.month:02d}"
     return d.isoformat()
@@ -126,6 +128,14 @@ def granularity_of(part: Partition) -> Granularity:
         return "day"
     if part.start.month == 1 and part.end.month == 12:
         return "year"
+    # Report-period dirs (``2016Q1``) span a calendar quarter. Checked after
+    # year so Q1..Q4 of a year-partitioned dataset cannot be mistaken for one.
+    if (
+        part.start.day == 1
+        and part.start.month in (1, 4, 7, 10)
+        and part.end.month == part.start.month + 2
+    ):
+        return "quarter"
     return "month"
 
 
@@ -134,6 +144,14 @@ def previous_partition(part: Partition, granularity: Granularity | None = None) 
     granularity = granularity or granularity_of(part)
     if granularity == "year":
         return partition_value(part.start.replace(year=part.start.year - 1), granularity)
+    if granularity == "quarter":
+        first = part.start
+        prev = (
+            date(first.year - 1, 10, 1)
+            if first.month == 1
+            else date(first.year, first.month - 3, 1)
+        )
+        return partition_value(prev, granularity)
     if granularity == "month":
         first = part.start
         prev_year = first.year - 1 if first.month == 1 else first.year

@@ -19,13 +19,14 @@ ashare-lake 交付 **38 个注册数据集**（35 curated + 3 derived：`adj_fac
 | **L2** 公司事件 | 除权除息、公告、预约披露 | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | **L3** 基本面 | 财报、估值、一致预期 | financial_statement_items, valuation_metrics, analyst_consensus |
 | **L4** 资金面 | 北向、融资、主力 | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades, institutional_holdings |
-| **L5** 结构行业 | 板块、指数成分、行业 | sector_members, index_constituents, industry_members, industry_index（派生） |
-| **L6** 宏观 | 利率、景气、货币、经济日历 | macro_indicators, market_breadth, economic_calendar* |
-| **L7** 舆情 / 轮动 | 新闻、情绪、板块、人气 | sentiment_scores, hot_rank, sector_bars, sector_fund_flow, news_headlines, flash_news_wire（stock_news 为 on-demand） |
+| **L5** 结构行业 | 板块、指数成分、行业 | sector_members, index_constituents, industry_members, industry_index |
+| **L6** 宏观 | 利率、景气、货币 | macro_indicators, market_breadth |
+| **L7** 舆情 / 轮动 | 新闻、情绪、板块、人气、事件流 | sentiment_scores, hot_rank, sector_bars, sector_fund_flow, news_headlines, flash_news_wire, economic_calendar*（stock_news 为 on-demand） |
 | **L8** 风险合规 | 解禁、监管 | share_unlock_schedule, regulatory_events |
-| **派生** | 由 curated 计算 | adj_factors, industry_index, delisting_events |
 
 \*可选或 `required=false`：分钟线默认关；商品期货需显式回填；`economic_calendar` 东财源已下线，仅占位。
+
+分层是**研究用途**，与存储 `layer` 正交：`adj_factors` / `delisting_events`（L1）和 `industry_index`（L5）落在 `derived/` 而非 `curated/`，但按用途归入各自层，所以没有单独的「派生」层。权威来源是 `DatasetSpec.tier`；`test_docs_catalog.py` 断言本文档与注册表逐层一致。
 
 ---
 
@@ -179,6 +180,9 @@ bars_15m = (
 | sector_members | as_of_date | symbol, sector_code, as_of_date | snapshot | ✓ | eastmoney |
 | index_constituents | as_of_date | index_symbol, symbol, as_of_date | snapshot | ✓ | eastmoney |
 | industry_members | as_of_date | symbol, classification_system, as_of_date | snapshot | ✓ | eastmoney |
+| industry_index | trade_date（按年） | trade_date, industry_code, level, weighting | derived | ✓ | derived (industry_members × hfq daily_bars) |
+
+`industry_index` 归 L5 而非 L1：观测单位是行业而不是标的，且由本层的成员关系算出，指数与成分不会打架。`asl derive industry_index` 重算。
 
 快照类仅积累「每日一份成员关系」，历史分位数需多日分区累积。
 
@@ -193,7 +197,6 @@ bars_15m = (
 |--------|--------|------|------|------|------|------|
 | macro_indicators | obs_date | indicator_id, obs_date | by_date | ✓ | eastmoney / pboc（社融） | |
 | market_breadth | trade_date | trade_date, metric_id | by_date | ✓ | derived (daily_bars) | |
-| economic_calendar | event_date | event_id | snapshot | ✓ | — | 东财 `RPT_ECONOMICCALENDAR` 已下线；`required=false`，不单独拖垮 `lake_health` |
 
 ---
 
@@ -207,6 +210,7 @@ bars_15m = (
 | sector_fund_flow | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 板块主力净流入 |
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 新闻标题 |
 | flash_news_wire | publish_date | wire_id, wire_source | snapshot | ✓ | eastmoney | 7×24 快讯线 |
+| economic_calendar | event_date（按年） | event_id | snapshot | ✓ | —（源已下线） | EM `RPT_ECONOMICCALENDAR` 已退役（code 9501），保留 schema 等替代源；`required=false`，空表不判 UNHEALTHY |
 
 `sector_bars` 日更只有当日 OHLC；历史由 `asl backfill sector_bars` 一次性写入（国内网络或代理）。
 海外一键脚本见引擎 `scripts/china_egress_backfill.sh`（含 `trading_status` ST 回填）。
@@ -219,16 +223,6 @@ bars_15m = (
 |--------|--------|------|------|------|------|
 | share_unlock_schedule | unlock_date | symbol, unlock_date | by_date | ✓ | eastmoney |
 | regulatory_events | event_date | event_id | by_date | ✓ | cninfo |
-
----
-
-## 派生（derived）
-
-| 数据集 | 分区键 | 主键 | 语义 | 水位 | 备注 |
-|--------|--------|------|------|------|------|
-| adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | 见 L1；`asl derive adj_factors` |
-| industry_index | trade_date（按年） | trade_date, industry_code, level, weighting | derived | ✓ | 申万成分 × 后复权日线；`asl derive industry_index` |
-| delisting_events | —（单文件 merge） | symbol | derived | — | 见 L1；`asl delisted backfill` 产出 |
 
 ---
 
