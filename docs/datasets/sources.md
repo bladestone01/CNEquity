@@ -17,7 +17,7 @@
 |------|-------|
 | 波次 | `instruments`（Wave 0） |
 | 主源 | tdx_protocol（内置 security_list） |
-| 备源 | akshare |
+| 备源 | baostock（仅 `--backfill`，补退市标的） |
 | 频率 | 每日 |
 | 主键 | symbol |
 | 股票池 | SH/SZ/BJ 前缀白名单 60/68/00/30/92 |
@@ -122,7 +122,7 @@
 | 项 | 值 |
 |------|-------|
 | 分组 | signals@17:00 |
-| 主源 | eastmoney / akshare |
+| 主源 | eastmoney |
 | 主键 | (symbol, trade_date) |
 
 #### valuation_metrics
@@ -150,7 +150,7 @@
 
 | 数据集 | 来源 | 触发 |
 |---------|--------|---------|
-| stock_news | eastmoney / akshare | `asl query --dataset stock_news --symbol` |
+| stock_news | eastmoney | `asl query --dataset stock_news --symbol` |
 | research_reports | eastmoney reportapi | 按标的 |
 | announcement_body | cninfo | **未实现**（勿写入 `[on_demand].datasets`） |
 | financial_reports | sina / gpcw | **未实现**（勿写入 `[on_demand].datasets`） |
@@ -175,8 +175,13 @@
 |--------|----------|-----------|--------|---------|
 | tdx_protocol | TCP | bars、instruments、calendar | eastmoney clist（tip 路由）/ kline（多日） | tip 缺口进 curated（ADR-0005）；snapshot 供 diff |
 | sina | HTTP | adj_factors（qfq/hfq） | — | 跳过该标的 + quality finding |
-| eastmoney | HTTP | 公司行为备源、资金面 | akshare | 跳过 + quality finding |
+| eastmoney | HTTP | 公司行为备源、资金面 | — | 跳过 + quality finding |
 | cninfo | HTTP | announcement_index | — | 仅按需 |
-| akshare | HTTP | 可选 | — | 默认关闭 |
+| baostock | TCP | 退市标的、历史 ST、估值回补 | — | 仅 `--backfill` |
+| akshare | HTTP | 可选补充：ST 集合 union、月度宏观（PMI/M2/社融） | — | `[sources.akshare]` 关闭即完全不调用 |
+
+> akshare 的两个调用点都受 `[sources.akshare].enabled` 控制；配置里没有该段落时视为关闭。
+> 随包安装的 `configs/ashare-lake.example.toml` 里该项为 `enabled = true`。
+> 由它产出的 `macro_indicators` 行带 `source = "akshare"`，与东财行可在 curated 中区分。
 
 调度与主备切换见 [运维 Runbook](../operations/runbook.md)。

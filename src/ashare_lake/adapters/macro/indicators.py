@@ -1,4 +1,8 @@
-"""Macro indicators — daily bond/SHIBOR via EastMoney; monthly via optional akshare."""
+"""Macro indicators — daily bond/SHIBOR via EastMoney; monthly via optional akshare.
+
+Rows carry their own ``source`` (``eastmoney`` / ``akshare``) rather than taking
+the step's blanket value, so a curated row always names the feed it came from.
+"""
 
 from __future__ import annotations
 
@@ -93,6 +97,7 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
                     "obs_date": _parse_obs_date(item.get("SOLAR_DATE"), trade_date),
                     "value": float(val),
                     "frequency": "daily",
+                    "source": "eastmoney",
                 }
             )
 
@@ -115,6 +120,7 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
                     "obs_date": _parse_obs_date(item.get("REPORT_DATE"), trade_date),
                     "value": float(val),
                     "frequency": "daily",
+                    "source": "eastmoney",
                 }
             )
 
@@ -137,6 +143,7 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
                     "obs_date": _parse_obs_date(item.get("TRADE_DATE"), trade_date),
                     "value": float(val),
                     "frequency": "monthly",
+                    "source": "eastmoney",
                 }
             )
 
@@ -144,6 +151,13 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
 
 
 def _akshare_rows(trade_date: date, *, config=None) -> list[dict]:
+    # Gated like the other akshare call site (steps/reference.py trading_status):
+    # absent `[sources.akshare]` means off. Without this the monthly series were
+    # fetched even with the source explicitly disabled. `config is None` is the
+    # no-config path (tests, direct adapter calls) and stays off too.
+    if config is None or not config.sources.get("akshare", False):
+        return []
+
     try:
         import akshare as ak  # type: ignore[import-not-found]
     except ImportError:
@@ -183,6 +197,10 @@ def _akshare_rows(trade_date: date, *, config=None) -> list[dict]:
                     "obs_date": obs,
                     "value": float(val),
                     "frequency": frequency,
+                    # Stamped per row, not by the step: these values come from
+                    # akshare's wrapper, not from the EastMoney client above, and
+                    # ADR-0003 needs curated to say which.
+                    "source": "akshare",
                 }
             )
     return rows

@@ -17,12 +17,22 @@
 
 ## 指标示例
 
-| indicator_id | 说明 | 频率 |
-|--------------|------|------|
-| 国债收益率、SHIBOR 等 | 利率曲线 | 日/周 |
-| PMI、M2、社融 等 | 景气/货币 | 月（akshare 补充） |
+| indicator_id | 说明 | 频率 | source |
+|--------------|------|------|--------|
+| `cnbond_yield_10y`、`shibor_3m`、`lpr_1y` | 利率曲线 | 日 / 月 | `eastmoney` |
+| `pmi_manufacturing`、`m2_yoy`、`social_financing` | 景气/货币 | 月 | `akshare` |
 
 具体 ID 列表见 `indicators.py` 内注册与 [schema.md](../../datasets/schema.md)。
+
+---
+
+## 溯源
+
+行级 `source` 由适配器写入，不取 step 的统一值：东财直连行为 `eastmoney`，
+akshare 补充行为 `akshare`。`with_provenance` 只在缺列时填充，故适配器的标注会保留。
+
+akshare 段落受 `[sources.akshare].enabled` 控制，关闭（或配置中无此段落）时
+月度序列为空，日频利率不受影响。
 
 ---
 

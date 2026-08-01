@@ -101,6 +101,87 @@ def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
     assert out["obs_date"][0] == date(2024, 6, 28)
 
 
+def _macro_config(tmp_path, *, akshare: bool | None):
+    """Config whose [sources.akshare] is on, off, or absent."""
+    cfg = Config(data_root=tmp_path / "data")
+    cfg.sources = {} if akshare is None else {"akshare": akshare}
+    return cfg
+
+
+def _stub_akshare(monkeypatch, calls: list[str]):
+    """Point the wrapped akshare endpoints at canned frames, recording each call."""
+    import akshare as ak
+    import pandas as pd
+
+    frames = {
+        "macro_china_pmi": pd.DataFrame({"月份": ["2024年05月份"], "制造业-指数": [49.5]}),
+        "macro_china_money_supply": pd.DataFrame(
+            {"月份": ["2024年05月份"], "货币和准货币(M2)-同比增长": [7.0]}
+        ),
+        "macro_china_shrzgm": pd.DataFrame({"月份": ["202405"], "社会融资规模增量": [2000.0]}),
+    }
+    for name, frame in frames.items():
+
+        def _fake(_name=name, _frame=frame):
+            calls.append(_name)
+            return _frame
+
+        monkeypatch.setattr(ak, name, _fake, raising=False)
+
+
+def test_macro_akshare_rows_are_labeled_akshare(monkeypatch, tmp_path):
+    """akshare-sourced rows must not end up stamped `source=eastmoney`.
+
+    The step passes a blanket source="eastmoney" and with_provenance only fills
+    the column when it is absent, so the adapter has to label each row itself.
+    Regression for monthly PMI/M2/社融 landing in curated credited to EastMoney.
+    """
+    from ashare_lake.domain.schemas import with_provenance
+
+    calls: list[str] = []
+    _stub_akshare(monkeypatch, calls)
+    client = FakeDatacenterClient(
+        {"RPTA_WEB_TREASURYYIELD": [{"SOLAR_DATE": "2024-06-28", "EMM00166466": 2.25}]}
+    )
+    df = fetch_macro_indicators(
+        date(2024, 6, 28),
+        client=client,  # type: ignore[arg-type]
+        config=_macro_config(tmp_path, akshare=True),
+    )
+    assert calls, "akshare endpoints should have been called with the source enabled"
+
+    # Blanket step stamp must not overwrite what the adapter already set.
+    out = with_provenance(df, source="eastmoney", data_version="v1")
+    by_id = dict(zip(out["indicator_id"].to_list(), out["source"].to_list(), strict=True))
+    assert by_id["cnbond_yield_10y"] == "eastmoney"
+    assert by_id["pmi_manufacturing"] == "akshare"
+    assert by_id["m2_yoy"] == "akshare"
+
+
+@pytest.mark.parametrize("akshare_enabled", [False, None])
+def test_macro_akshare_skipped_when_source_disabled(monkeypatch, tmp_path, akshare_enabled):
+    """`_akshare_rows` must honour [sources.akshare], like the trading_status site.
+
+    Before this gate the monthly series were fetched even with akshare disabled.
+    """
+    from ashare_lake.adapters.macro.indicators import _akshare_rows
+
+    calls: list[str] = []
+    _stub_akshare(monkeypatch, calls)
+    cfg = _macro_config(tmp_path, akshare=akshare_enabled)
+    assert _akshare_rows(date(2024, 6, 28), config=cfg) == []
+    assert calls == []
+
+
+def test_macro_akshare_skipped_without_config(monkeypatch):
+    from ashare_lake.adapters.macro.indicators import _akshare_rows
+
+    calls: list[str] = []
+    _stub_akshare(monkeypatch, calls)
+    assert _akshare_rows(date(2024, 6, 28), config=None) == []
+    assert calls == []
+
+
 def test_share_unlock_schedule_parses():
     client = FakeDatacenterClient(
         {

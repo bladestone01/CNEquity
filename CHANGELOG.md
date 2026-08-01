@@ -8,6 +8,26 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`macro_indicators` rows fetched from AkShare were stamped
+  `source = "eastmoney"`.** `fetch_macro_indicators` returned rows without a
+  `source` column, and `steps/macro_risk.py` passed a blanket
+  `source="eastmoney"` to `run_incremental_fetched`; since `with_provenance`
+  only fills the column when it is absent, every monthly PMI / M2 / 社融 value
+  landed in curated attributed to EastMoney. That is a provenance
+  falsification: it defeats ADR-0003's premise that a curated row names the
+  feed it came from, and left `audit` with no way to tell the two apart. The
+  adapter now stamps `source` per row (`eastmoney` / `akshare`); the step's
+  value only applies to the empty-frame case.
+
+- **The monthly macro series ignored `[sources.akshare]`.** `_akshare_rows`
+  was called unconditionally from `fetch_macro_indicators`, so setting
+  `enabled = false` disabled the ST cross-check (`steps/reference.py` did
+  check the flag) but not the macro path — AkShare was still imported and
+  called on every daily run. It is now gated like the other call site: an
+  absent `[sources.akshare]` section counts as off, as does the no-config
+  path. Daily rates (`cnbond_yield_10y`, `shibor_3m`, `lpr_1y`) are unaffected;
+  they come from EastMoney directly.
+
 - **`daily_bars.volume` mixed two units in one column, off by exactly 100×.**
   The schema has always documented 股, but only `ths` and `baostock` wrote it:
   `tdx_protocol` passed TDX's native 手 straight through (median
