@@ -640,9 +640,7 @@ def backfill(
     # Tip-paged sources (intraday) must chunk by symbol, not by date: the wire
     # always walks tip → start, so date slices re-fetch every newer page.
     if spec.backfill_chunk_symbols and start_d and end_d:
-        result = _backfill_symbol_chunked(
-            cfg, dataset, start_d, end_d, spec.backfill_chunk_symbols
-        )
+        result = _backfill_symbol_chunked(cfg, dataset, start_d, end_d, spec.backfill_chunk_symbols)
     elif spec.backfill_chunk_days and start_d and end_d:
         result = _backfill_chunked(cfg, dataset, start_d, end_d, spec.backfill_chunk_days)
     else:
@@ -707,9 +705,7 @@ def _backfill_once(cfg, dataset: str) -> dict:
     return _finish_backfill_run(engine, result)
 
 
-def _backfill_symbol_chunked(
-    cfg, dataset: str, start: date, end: date, chunk_symbols: int
-) -> dict:
+def _backfill_symbol_chunked(cfg, dataset: str, start: date, end: date, chunk_symbols: int) -> dict:
     """Backfill a tip-paged dataset as compacted symbol slices over [start, end].
 
     TDX intraday pages backwards from the live tip. A date-sliced sweep of the
@@ -743,9 +739,7 @@ def _backfill_symbol_chunked(
                 f"{len(symbols)} ({chunk[0]}..{chunk[-1]}) window {start}..{end}",
                 err=True,
             )
-            result = engine.run_job(
-                "backfill", steps=[dataset], backfill=True, finalize_run=False
-            )
+            result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
             result = _finish_backfill_run(engine, result)
             rows_read += int(result.get("rows_read", 0))
             rows_written += int(result.get("rows_written", 0))
