@@ -397,3 +397,42 @@ def test_all_batches_failing_still_raises(cfg, monkeypatch):
         capture_intraday_bars(
             cfg, date(2026, 7, 31), "run-1", dataset="minute_bars", frequency="1m"
         )
+
+
+def test_max_pages_covers_the_walk_back_from_today_not_just_the_slice_width(cfg, monkeypatch):
+    """A chunked backfill slice deep in the past needs a deep page walk.
+
+    The wire always pages back from the live tip (offset 0 = today), not from
+    the slice's own `end`. Bounding max_pages by the slice's width (trading
+    days *within* [start, end]) starves a slice sitting near the historical
+    edge: every page it is allowed lands after `end`, gets discarded by the
+    date filter, and the symbol comes back with zero rows -- silently, with
+    no error, indistinguishable from "nothing there" until traced back to a
+    raw probe. Reproduced live against TDX before this fix: an 8-trading-day
+    slice starting ~140 days back got max_pages=4 (from the slice's own
+    width) and returned 0 rows; the correct depth (~98 trading days back to
+    trade_date) needs max_pages=31 and returns the real data.
+    """
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_scope = "watchlist"
+    cfg.minute_bars_symbols = ["600519.SH"]
+    cfg._backfill = True
+    # A 10-day-wide slice, but its END is ~140 days before trade_date -- the
+    # shape of the oldest chunk in a `_backfill_chunked` sweep.
+    cfg._backfill_start = date(2026, 3, 11)
+    cfg._backfill_end = date(2026, 3, 20)
+    trade_date = date(2026, 8, 1)
+
+    seen: dict = {}
+
+    def fetch(symbols, start, end, *, max_pages, **kwargs):
+        seen["max_pages"] = max_pages
+        return _fake_fetch()(symbols, start, end, **kwargs)
+
+    monkeypatch.setattr(intraday, "fetch_minute_bars", fetch)
+    capture_intraday_bars(cfg, trade_date, "run-1", dataset="minute_bars", frequency="1m")
+
+    # ~98 trading days (2026-03-11 -> 2026-08-01) at 240 bars/day needs ~30
+    # pages of 800; the slice's own width (8 trading days) would give 4 --
+    # enough to reach nowhere near the real window.
+    assert seen["max_pages"] >= 25

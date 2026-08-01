@@ -8,6 +8,26 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A backfilled intraday slice near the historical edge silently returned
+  zero rows for every symbol, for no reason the logs could explain.**
+  `capture_intraday_bars` bounded the page walk (`max_pages`) by the trading
+  days *within* the requested slice (`end - start`), but the wire always pages
+  backward from the live tip (offset 0 = today), regardless of what `end` is.
+  For a slice sitting near the source's historical horizon, every page landed
+  more recent than `end`, got discarded by the date filter, and the walk gave
+  up at `max_pages` long before ever reaching the requested dates — an
+  8-trading-day-wide slice ~140 days back got `max_pages=4` and returned 0
+  rows; the depth actually needed was ~98 trading days, `max_pages=31`.
+
+  No exception, no partial data — just silence indistinguishable from "the
+  source has nothing here," on every symbol, at any scope, deterministically.
+  Found chasing what looked like TDX degrading under sustained full-market
+  load; a raw wire probe against the same window, run directly, returned real
+  data instantly, which ruled that out and pointed at the pagination bound
+  instead. `max_pages` now sizes off `trade_date -> start` (the real walk
+  depth) rather than `end -> start` (the slice's own width); the daily
+  incremental path is unaffected since its `end` already equals `trade_date`.
+
 - **`m2_yoy` held M0 month-over-month growth, not M2 year-on-year.** The AkShare
   path picked its value column by Chinese-substring match with a
   `next(..., columns[-1])` default. The hint `"M2-同比增长"` never matched the
