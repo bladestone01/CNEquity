@@ -29,6 +29,10 @@ from ashare_lake.domain.symbols import format_symbol, is_all_a_symbol
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 60.0
+# Must match the `[sources.<name>]` section that gates this adapter:
+# `SourceRateLimiters.wait` silently no-ops on an unregistered name, so a
+# mismatch here would disable `min_interval_seconds` without any error.
+_SOURCE = "exchange"
 
 # stockType=10 is the whole A-share table including the risk-warning board.
 SSE_URL = (
@@ -67,7 +71,7 @@ def is_st_name(name: str | None) -> bool:
 def fetch_sse_names(*, config=None) -> dict[str, str]:
     """``{symbol: 简称}`` for every SSE A-share. Empty when unreachable."""
     if config is not None:
-        config.rate_limit("sse")
+        config.rate_limit(_SOURCE)
     try:
         resp = _client().get(
             SSE_URL, headers=_SSE_HEADERS, impersonate="chrome", timeout=_TIMEOUT_SECONDS
@@ -94,7 +98,7 @@ def fetch_sse_names(*, config=None) -> dict[str, str]:
 def fetch_szse_names(*, config=None) -> dict[str, str]:
     """``{symbol: 简称}`` for every SZSE A-share. Empty when unreachable."""
     if config is not None:
-        config.rate_limit("szse")
+        config.rate_limit(_SOURCE)
     try:
         import pandas as pd
 
