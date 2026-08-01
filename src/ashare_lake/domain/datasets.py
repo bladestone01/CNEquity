@@ -98,11 +98,19 @@ class DatasetSpec:
     # for the whole window, which is what every daily-cadence dataset wants.
     #
     # Set it where a full window's staging would not fit in memory: compact
-    # reads *every* staging file of a run into one frame, so a 95-day
-    # full-market minute_bars seed (~123M rows) has to be drained in slices.
-    # Chunking also makes a killed sweep resumable at the last compacted slice
-    # instead of losing everything.
+    # reads *every* staging file of a run into one frame. Prefer
+    # ``backfill_chunk_symbols`` for tip-paged sources (see below) — date
+    # slices re-walk the same tip→start pages on every chunk.
     backfill_chunk_days: int | None = None
+    # Symbols per backfill sub-run for tip-paged sources (TDX intraday pages
+    # backwards from today). None = do not symbol-chunk.
+    #
+    # Date-chunking a tip-paged source is catastrophically wasteful: each
+    # slice still has to walk tip → slice_start before any in-window row
+    # appears, so a 15-slice CSI300 1m seed paid ~8× the wire traffic of one
+    # tip→horizon walk. Symbol chunks keep one walk per name and still bound
+    # compact memory (200 × 240 × 95 ≈ 4.6M rows of 1m per sub-run).
+    backfill_chunk_symbols: int | None = None
     # Bar frequency for intraday datasets ("1m", "5m"), None for everything
     # else. One dataset holds exactly one frequency, so this is also what marks
     # a dataset as intraday — steps, audit checks and the reader all derive the
@@ -172,9 +180,8 @@ _SPECS = [
         # symbol probed, across both exchanges and every liquidity band, so it
         # is a server retention window rather than a per-symbol artefact.
         history_horizon_days=95,
-        # ~7 trading days of full-market 1m per sub-run: ~9M rows staged, which
-        # compacts comfortably, against ~123M for the whole horizon at once.
-        backfill_chunk_days=10,
+        # Tip-paged: chunk by symbol, not by date (see backfill_chunk_symbols).
+        backfill_chunk_symbols=200,
         intraday_frequency="1m",
     ),
     # 5-minute bars — a separate dataset, not a `frequency` value inside
@@ -201,9 +208,9 @@ _SPECS = [
         # 1,964 bars), which is what says it is a time-based retention policy
         # rather than a bar-count cap.
         history_horizon_days=491,
-        # A fifth of 1m's row rate, so a slice five times as wide stages a
-        # comparable ~13M rows.
-        backfill_chunk_days=50,
+        # Same tip-paged contract as 1m; 200 symbols × 48 bars × 491 days ≈
+        # 4.7M rows per sub-run — comparable compact memory to 1m's chunk.
+        backfill_chunk_symbols=200,
         intraday_frequency="5m",
     ),
     # Domestic commodity futures main-continuous (东财主连) + narrow offshore

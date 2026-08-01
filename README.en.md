@@ -170,21 +170,24 @@ On-disk layout under the daily lake's `data.root`:
 
 ## Datasets
 
-Dataset names are the first argument to `load()`. Columns:
+All **38** registered datasets (35 curated + 3 derived; kept in sync with
+`domain/datasets.py`). Names are the first argument to `load()`. Columns:
 [schema](docs/datasets/schema.md); orchestration:
 [catalog](docs/datasets/catalog.md).
 
-| Category | Datasets |
-|----------|----------|
-| Reference | `instruments` · `trading_calendar` · `trading_status` (suspensions / ST) |
-| Market data | `daily_bars` (unadjusted) · `index_bars` · `adj_factors` · `minute_bars` / `minute_bars_5m` (opt-in intraday) |
-| Corporate events | `corporate_actions` · `announcement_index` · `earnings_disclosure_schedule` |
-| Fundamentals / valuation | `financial_statement_items` (PIT) · `valuation_metrics` · `analyst_consensus` |
-| Capital flow | `fund_flow` · `margin_trading` · `northbound_flows` / `northbound_holdings` · `dragon_tiger` · `block_trades` · `institutional_holdings` |
-| Structure / industry | `sector_members` · `index_constituents` · `industry_members` |
-| Macro | `macro_indicators` · `market_breadth` |
-| Sentiment / rotation | `sentiment_scores` · `hot_rank` · `sector_bars` · `sector_fund_flow` · `news_headlines` |
-| Risk | `share_unlock_schedule` · `regulatory_events` |
+| Category | Datasets (`load()` name · meaning) |
+|----------|-------------------------------------|
+| Reference | `instruments` security master · `trading_calendar` trading calendar · `trading_status` suspensions / ST |
+| Market data | `daily_bars` daily bars (unadjusted) · `index_bars` index bars · `minute_bars` 1m (opt-in) · `minute_bars_5m` 5m (opt-in) · `commodity_bars` commodity main-continuous (opt-in) · `adj_factors` adjust factors (derived) · `delisting_events` delisting endings (derived) |
+| Corporate events | `corporate_actions` corp actions (XDXR) · `announcement_index` announcement index · `earnings_disclosure_schedule` earnings disclosure timetable |
+| Fundamentals / valuation | `financial_statement_items` financial statement items (PIT) · `valuation_metrics` valuation metrics · `analyst_consensus` analyst consensus |
+| Capital flow | `fund_flow` stock fund flow · `margin_trading` margin trading · `northbound_flows` northbound flows · `northbound_holdings` northbound holdings · `dragon_tiger` dragon-tiger list · `block_trades` block trades · `institutional_holdings` institutional holdings |
+| Structure / industry | `sector_members` sector members · `index_constituents` index constituents · `industry_members` industry membership · `industry_index` industry index (derived) |
+| Macro | `macro_indicators` macro indicators · `market_breadth` market breadth · `economic_calendar` economic calendar (placeholder; source retired) |
+| Sentiment / rotation | `sentiment_scores` sentiment scores · `hot_rank` popularity rank · `sector_bars` sector bars · `sector_fund_flow` sector fund flow · `news_headlines` news headlines · `flash_news_wire` 24/7 flash wire |
+| Risk | `share_unlock_schedule` share unlock schedule · `regulatory_events` regulatory events |
+
+**On-demand** (not on the curated daily path): `stock_news`, `research_reports`, etc. — see [catalog](docs/datasets/catalog.md).
 
 ## Positioning: peers
 

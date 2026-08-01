@@ -123,10 +123,75 @@ def test_chunked_backfill_stops_at_a_failed_slice_and_reports_where_to_resume(
     assert FailingSecond.instances[0].compacted == ["run-1"]
 
 
-def test_minute_bars_declares_a_chunk_size():
-    # Without it, a full-horizon seed stages ~123M rows into one compact.
-    assert get_dataset("minute_bars").backfill_chunk_days == 10
+def test_minute_bars_declares_symbol_chunking_not_date_chunking():
+    # Tip-paged: date chunks re-walk tip→start every slice. Symbol chunks keep
+    # one walk per name and still bound compact memory.
+    assert get_dataset("minute_bars").backfill_chunk_symbols == 200
+    assert get_dataset("minute_bars").backfill_chunk_days is None
+    assert get_dataset("minute_bars_5m").backfill_chunk_symbols == 200
     assert get_dataset("daily_bars").backfill_chunk_days is None
+    assert get_dataset("daily_bars").backfill_chunk_symbols is None
+
+
+def test_symbol_chunked_backfill_walks_full_window_per_symbol_batch(monkeypatch):
+    monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
+    symbols = [f"{i:06d}.SH" for i in range(250)]
+    monkeypatch.setattr(
+        "ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols
+    )
+    cfg = type(
+        "Cfg",
+        (),
+        {
+            "minute_bars_scope": "index:000300.SH",
+            "minute_bars_symbols": [],
+        },
+    )()
+
+    result = cli_main._backfill_symbol_chunked(
+        cfg, "minute_bars", date(2026, 3, 11), date(2026, 8, 1), chunk_symbols=200
+    )
+
+    engine = FakeEngine.instances[0]
+    # Two symbol batches, each covering the full requested window once.
+    assert engine.windows == [
+        (date(2026, 3, 11), date(2026, 8, 1)),
+        (date(2026, 3, 11), date(2026, 8, 1)),
+    ]
+    assert engine.compacted == ["run-1", "run-2"]
+    assert result["status"] == "success"
+    assert result["rows_written"] == 20
+    assert [c["symbols_from"] for c in result["chunks"]] == [1, 201]
+    assert [c["symbols_to"] for c in result["chunks"]] == [200, 250]
+    # Scope restored so a later step in the same process sees the original.
+    assert cfg.minute_bars_scope == "index:000300.SH"
+    assert cfg.minute_bars_symbols == []
+
+
+def test_symbol_chunked_backfill_stops_and_reports_resume_symbol(monkeypatch):
+    class FailingSecond(FakeEngine):
+        def _status(self, index):
+            return "failed" if index == 2 else "success"
+
+    monkeypatch.setattr(cli_main, "JobEngine", FailingSecond)
+    symbols = [f"{i:06d}.SH" for i in range(250)]
+    monkeypatch.setattr(
+        "ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols
+    )
+    cfg = type(
+        "Cfg",
+        (),
+        {"minute_bars_scope": "all", "minute_bars_symbols": []},
+    )()
+
+    result = cli_main._backfill_symbol_chunked(
+        cfg, "minute_bars", date(2026, 3, 11), date(2026, 8, 1), chunk_symbols=200
+    )
+
+    assert result["status"] == "failed"
+    assert result["resume_from_symbol"] == "000200.SH"
+    assert len(result["chunks"]) == 2
+    assert FailingSecond.instances[0].compacted == ["run-1"]
 
 
 def _backfill_argv(dataset: str, *extra: str) -> list[str]:
@@ -196,13 +261,22 @@ def test_chunked_backfill_keeps_a_warning_status_across_later_successes(monkeypa
     assert len(result["slices"]) == 3
 
 
-def test_cli_backfill_takes_the_chunked_path_when_both_dates_given(monkeypatch):
+def test_cli_backfill_takes_the_symbol_chunked_path_when_both_dates_given(monkeypatch):
     import types
 
     from click.testing import CliRunner
 
     monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
-    cfg = types.SimpleNamespace()
+    symbols = [f"{i:06d}.SH" for i in range(250)]
+    monkeypatch.setattr(
+        "ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols
+    )
+    cfg = types.SimpleNamespace(
+        minute_bars_scope="index:000300.SH",
+        minute_bars_symbols=[],
+        minute_bars_enabled=True,
+        minute_bars_frequencies=["1m"],
+    )
     monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
 
     result = CliRunner().invoke(
@@ -211,13 +285,10 @@ def test_cli_backfill_takes_the_chunked_path_when_both_dates_given(monkeypatch):
     )
     assert result.exit_code == 0, result.output
     engine = FakeEngine.instances[0]
-    # Sliced into chunk_days=10 windows by the real command, not just by the
-    # helper in isolation — confirms --start/--end actually reach the chunked
-    # path rather than falling through to a single unsliced run.
+    # Tip-paged path: full window once per symbol batch (200 + 50), not date slices.
     assert engine.windows == [
-        (date(2026, 7, 1), date(2026, 7, 10)),
-        (date(2026, 7, 11), date(2026, 7, 20)),
-        (date(2026, 7, 21), date(2026, 7, 25)),
+        (date(2026, 7, 1), date(2026, 7, 25)),
+        (date(2026, 7, 1), date(2026, 7, 25)),
     ]
 
 
@@ -231,7 +302,15 @@ def test_cli_backfill_exits_nonzero_when_the_result_is_not_success(monkeypatch):
             return "failed"
 
     monkeypatch.setattr(cli_main, "JobEngine", AllFail)
-    cfg = types.SimpleNamespace()
+    monkeypatch.setattr(
+        "ashare_lake.steps.intraday.resolve_scope", lambda _cfg: ["600519.SH"]
+    )
+    cfg = types.SimpleNamespace(
+        minute_bars_scope="watchlist",
+        minute_bars_symbols=["600519.SH"],
+        minute_bars_enabled=True,
+        minute_bars_frequencies=["1m"],
+    )
     monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
 
     result = CliRunner().invoke(

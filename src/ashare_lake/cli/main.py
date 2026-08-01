@@ -636,9 +636,15 @@ def backfill(
         cfg._backfill_end = end_d
     cfg._backfill_workers = workers
 
-    chunk_days = get_dataset(dataset).backfill_chunk_days
-    if chunk_days and start_d and end_d:
-        result = _backfill_chunked(cfg, dataset, start_d, end_d, chunk_days)
+    spec = get_dataset(dataset)
+    # Tip-paged sources (intraday) must chunk by symbol, not by date: the wire
+    # always walks tip → start, so date slices re-fetch every newer page.
+    if spec.backfill_chunk_symbols and start_d and end_d:
+        result = _backfill_symbol_chunked(
+            cfg, dataset, start_d, end_d, spec.backfill_chunk_symbols
+        )
+    elif spec.backfill_chunk_days and start_d and end_d:
+        result = _backfill_chunked(cfg, dataset, start_d, end_d, spec.backfill_chunk_days)
     else:
         result = _backfill_once(cfg, dataset)
     click.echo(json.dumps(result, indent=2, default=str))
@@ -701,6 +707,81 @@ def _backfill_once(cfg, dataset: str) -> dict:
     return _finish_backfill_run(engine, result)
 
 
+def _backfill_symbol_chunked(
+    cfg, dataset: str, start: date, end: date, chunk_symbols: int
+) -> dict:
+    """Backfill a tip-paged dataset as compacted symbol slices over [start, end].
+
+    TDX intraday pages backwards from the live tip. A date-sliced sweep of the
+    same window therefore re-walks tip → each slice_start for every symbol —
+    measured ~8× the wire traffic of one tip→horizon walk on CSI300 1m. Chunking
+    by symbol keeps one walk per name, bounds compact memory, and makes a kill
+    cost only the current symbol batch.
+    """
+    from ashare_lake.steps.intraday import resolve_scope
+
+    symbols = resolve_scope(cfg)
+    if not symbols:
+        raise click.ClickException(
+            f"{dataset}: scope resolved to zero symbols — check [minute_bars].scope"
+        )
+
+    engine = JobEngine(cfg)
+    chunks: list[dict] = []
+    status = "success"
+    rows_read = rows_written = 0
+    original_scope = cfg.minute_bars_scope
+    original_symbols = list(cfg.minute_bars_symbols)
+    cfg._backfill_start, cfg._backfill_end = start, end
+    try:
+        for index in range(0, len(symbols), chunk_symbols):
+            chunk = symbols[index : index + chunk_symbols]
+            cfg.minute_bars_scope = "watchlist"
+            cfg.minute_bars_symbols = chunk
+            click.echo(
+                f"[{dataset}] symbols {index + 1}..{index + len(chunk)}/"
+                f"{len(symbols)} ({chunk[0]}..{chunk[-1]}) window {start}..{end}",
+                err=True,
+            )
+            result = engine.run_job(
+                "backfill", steps=[dataset], backfill=True, finalize_run=False
+            )
+            result = _finish_backfill_run(engine, result)
+            rows_read += int(result.get("rows_read", 0))
+            rows_written += int(result.get("rows_written", 0))
+            chunks.append(
+                {
+                    "symbols_from": index + 1,
+                    "symbols_to": index + len(chunk),
+                    "first_symbol": chunk[0],
+                    "last_symbol": chunk[-1],
+                    "start": start,
+                    "end": end,
+                    "status": result["status"],
+                    "rows_written": result.get("rows_written", 0),
+                }
+            )
+            if result["status"] == "failed":
+                status = "failed"
+                break
+            if result["status"] == "warning":
+                status = "warning" if status == "success" else status
+    finally:
+        cfg.minute_bars_scope = original_scope
+        cfg.minute_bars_symbols = original_symbols
+
+    return {
+        "dataset": dataset,
+        "status": status,
+        "rows_read": rows_read,
+        "rows_written": rows_written,
+        "chunks": chunks,
+        "resume_from_symbol": (
+            chunks[-1]["first_symbol"] if status == "failed" and chunks else None
+        ),
+    }
+
+
 def _backfill_chunked(cfg, dataset: str, start: date, end: date, chunk_days: int) -> dict:
     """Run the backfill as a sequence of compacted date slices.
 
@@ -708,6 +789,9 @@ def _backfill_chunked(cfg, dataset: str, start: date, end: date, chunk_days: int
     memory (it reads every staging file of a run into one frame). Slicing also
     means a kill costs the current slice rather than the whole sweep: every
     earlier slice is already in curated.
+
+    Do **not** use this for tip-paged intraday sources — see
+    ``_backfill_symbol_chunked``.
     """
     engine = JobEngine(cfg)
     slices: list[dict] = []

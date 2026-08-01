@@ -174,7 +174,7 @@ Wave DAG：每个 wave 含 `name`、`parallel`（wave 内 step 是否并行）�
 | `scope` | `"index:000300.SH"` | `index:<symbol>` / `watchlist` / `all` |
 | `symbols` | `[]` | `scope = "watchlist"` 时的显式列表 |
 | `frequencies` | `["1m"]` | `"1m"` → `minute_bars`；`"5m"` → `minute_bars_5m` |
-| `fetch_workers` | `1` | 并发 TDX 连接数（不提高请求速率，只消网络空转） |
+| `fetch_workers` | `4` | 并发 TDX 连接数（不提高请求速率，只消网络空转；上限仍约 10 req/s） |
 
 **源端视野**（实测 2026-08-01）：1m ≈ 95 个交易日，5m ≈ 491 个交易日。更早窗口返回空；`asl backfill … --start` 早于视野会直接拒绝。磁盘与耗时见 [runbook — 日内数据](../operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
 

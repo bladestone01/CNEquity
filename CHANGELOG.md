@@ -6,6 +6,17 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Intraday backfill no longer date-slices tip-paged TDX walks.** Minute-bar
+  sources page backwards from today, so a 10-day chunk sitting near the horizon
+  still had to re-fetch every newer page — CSI300 1m paid ~8× the necessary
+  wire traffic. `minute_bars` / `minute_bars_5m` now use
+  `backfill_chunk_symbols=200` (one tip→horizon walk per symbol, compacted per
+  batch). `resume_from_symbol` replaces date `resume_from` on that path.
+  Default `[minute_bars].fetch_workers` raised to 4 (still capped at ~10 req/s
+  by the cross-process limiter).
+
 ## [0.4.0] — 2026-08-01
 
 ### Upgrading from 0.3.x

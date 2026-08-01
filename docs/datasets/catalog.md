@@ -15,14 +15,17 @@ ashare-lake 交付 **38 个注册数据集**（35 curated + 3 derived：`adj_fac
 | 层次 | 说明 | 代表数据集 |
 |------|------|------------|
 | **L0** 基础参考 | Universe、日历、交易状态 | instruments, trading_calendar, trading_status |
-| **L1** 行情 | 未复权价量 + 复权因子 + 商品期货主连 | daily_bars, index_bars, commodity_bars, adj_factors |
+| **L1** 行情 | 未复权价量 + 复权因子 + 可选分钟/商品 + 退市形态 | daily_bars, index_bars, minute_bars*, minute_bars_5m*, commodity_bars*, adj_factors, delisting_events |
 | **L2** 公司事件 | 除权除息、公告、预约披露 | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | **L3** 基本面 | 财报、估值、一致预期 | financial_statement_items, valuation_metrics, analyst_consensus |
 | **L4** 资金面 | 北向、融资、主力 | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades, institutional_holdings |
-| **L5** 结构行业 | 板块、指数成分、行业 | sector_members, index_constituents, industry_members |
-| **L6** 宏观 | 利率、景气、货币 | macro_indicators, market_breadth |
-| **L7** 舆情 | 新闻、情绪 | sentiment_scores（stock_news 为 on-demand） |
+| **L5** 结构行业 | 板块、指数成分、行业 | sector_members, index_constituents, industry_members, industry_index（派生） |
+| **L6** 宏观 | 利率、景气、货币、经济日历 | macro_indicators, market_breadth, economic_calendar* |
+| **L7** 舆情 / 轮动 | 新闻、情绪、板块、人气 | sentiment_scores, hot_rank, sector_bars, sector_fund_flow, news_headlines, flash_news_wire（stock_news 为 on-demand） |
 | **L8** 风险合规 | 解禁、监管 | share_unlock_schedule, regulatory_events |
+| **派生** | 由 curated 计算 | adj_factors, industry_index, delisting_events |
+
+\*可选或 `required=false`：分钟线默认关；商品期货需显式回填；`economic_calendar` 东财源已下线，仅占位。
 
 ---
 
@@ -186,10 +189,11 @@ bars_15m = (
 
 ## L6 宏观
 
-| 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 |
-|--------|--------|------|------|------|------|
-| macro_indicators | obs_date | indicator_id, obs_date | by_date | ✓ | eastmoney / pboc（社融） |
-| market_breadth | trade_date | trade_date, metric_id | by_date | ✓ | derived (daily_bars) |
+| 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
+|--------|--------|------|------|------|------|------|
+| macro_indicators | obs_date | indicator_id, obs_date | by_date | ✓ | eastmoney / pboc（社融） | |
+| market_breadth | trade_date | trade_date, metric_id | by_date | ✓ | derived (daily_bars) | |
+| economic_calendar | event_date | event_id | snapshot | ✓ | — | 东财 `RPT_ECONOMICCALENDAR` 已下线；`required=false`，不单独拖垮 `lake_health` |
 
 ---
 
@@ -199,9 +203,10 @@ bars_15m = (
 |--------|--------|------|------|------|------|------|
 | sentiment_scores | trade_date | symbol, trade_date, score_channel | by_date | ✓ | derived | |
 | hot_rank | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 人气榜 top500 |
-| sector_bars | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 回填：eastmoney_kline（push2his） |
+| sector_bars | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 回填：ths（同花顺 board-kline） |
 | sector_fund_flow | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 板块主力净流入 |
-| news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 7×24 快讯 |
+| news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 新闻标题 |
+| flash_news_wire | publish_date | wire_id, wire_source | snapshot | ✓ | eastmoney | 7×24 快讯线 |
 
 `sector_bars` 日更只有当日 OHLC；历史由 `asl backfill sector_bars` 一次性写入（国内网络或代理）。
 海外一键脚本见引擎 `scripts/china_egress_backfill.sh`（含 `trading_status` ST 回填）。
@@ -214,6 +219,16 @@ bars_15m = (
 |--------|--------|------|------|------|------|
 | share_unlock_schedule | unlock_date | symbol, unlock_date | by_date | ✓ | eastmoney |
 | regulatory_events | event_date | event_id | by_date | ✓ | cninfo |
+
+---
+
+## 派生（derived）
+
+| 数据集 | 分区键 | 主键 | 语义 | 水位 | 备注 |
+|--------|--------|------|------|------|------|
+| adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | 见 L1；`asl derive adj_factors` |
+| industry_index | trade_date（按年） | trade_date, industry_code, level, weighting | derived | ✓ | 申万成分 × 后复权日线；`asl derive industry_index` |
+| delisting_events | —（单文件 merge） | symbol | derived | — | 见 L1；`asl delisted backfill` 产出 |
 
 ---
 
@@ -241,8 +256,9 @@ bars_15m = (
 | commodity.py | commodity_bars |
 | research.py | institutional_holdings, analyst_consensus, sentiment_scores |
 | rotation.py | hot_rank, sector_bars, sector_fund_flow, news_headlines |
+| newsboard.py | flash_news_wire, economic_calendar |
 | delisted.py | 退市股发现 / repair（已有 bars → instruments） / 回填 → daily_bars, instruments, delisting_events |
-| finalize.py | compact, derive_adj_factors, audit |
+| derive / finalize | adj_factors, industry_index, compact, audit |
 
 ---
 

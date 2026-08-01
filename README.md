@@ -148,19 +148,22 @@ m5 = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"], adjust="h
 
 ## 有什么数据
 
-数据集名即 `load()` 的第一个参数。字段见 [schema](docs/datasets/schema.md)，编排见 [catalog](docs/datasets/catalog.md)。
+下表覆盖注册表全部 **38** 个数据集（35 curated + 3 derived，与 `domain/datasets.py` 同步）。  
+英文名即 `load()` 的第一个参数；字段见 [schema](docs/datasets/schema.md)，编排与主源见 [catalog](docs/datasets/catalog.md)。
 
-| 类别 | 数据集 |
-|------|--------|
-| 基础参考 | `instruments` · `trading_calendar` · `trading_status`（停复牌 / ST） |
-| 行情 | `daily_bars`（未复权） · `index_bars` · `adj_factors` · `minute_bars` / `minute_bars_5m`（可选日内） |
-| 公司事件 | `corporate_actions` · `announcement_index` · `earnings_disclosure_schedule` |
-| 基本面 / 估值 | `financial_statement_items`（PIT） · `valuation_metrics` · `analyst_consensus` |
-| 资金面 | `fund_flow` · `margin_trading` · `northbound_flows` / `northbound_holdings` · `dragon_tiger` · `block_trades` · `institutional_holdings` |
-| 结构 / 行业 | `sector_members` · `index_constituents` · `industry_members` |
-| 宏观 | `macro_indicators` · `market_breadth` |
-| 舆情 / 轮动 | `sentiment_scores` · `hot_rank` · `sector_bars` · `sector_fund_flow` · `news_headlines` |
-| 风险 | `share_unlock_schedule` · `regulatory_events` |
+| 类别 | 数据集（`load()` 名 · 中文） |
+|------|------------------------------|
+| 基础参考 | `instruments` 证券主数据 · `trading_calendar` 交易日历 · `trading_status` 交易状态（停复牌 / ST） |
+| 行情 | `daily_bars` 日线（未复权） · `index_bars` 指数日线 · `minute_bars` 1 分钟线（可选） · `minute_bars_5m` 5 分钟线（可选） · `commodity_bars` 商品期货主连（可选） · `adj_factors` 复权因子（派生） · `delisting_events` 退市事件（派生） |
+| 公司事件 | `corporate_actions` 公司行为（除权除息） · `announcement_index` 公告索引 · `earnings_disclosure_schedule` 业绩披露预约 |
+| 基本面 / 估值 | `financial_statement_items` 财务报表科目（PIT） · `valuation_metrics` 估值指标 · `analyst_consensus` 分析师一致预期 |
+| 资金面 | `fund_flow` 个股资金流 · `margin_trading` 融资融券 · `northbound_flows` 北向资金流向 · `northbound_holdings` 北向持股 · `dragon_tiger` 龙虎榜 · `block_trades` 大宗交易 · `institutional_holdings` 机构持股 |
+| 结构 / 行业 | `sector_members` 板块成分 · `index_constituents` 指数成分 · `industry_members` 行业分类成分 · `industry_index` 行业指数（派生） |
+| 宏观 | `macro_indicators` 宏观指标 · `market_breadth` 市场宽度 · `economic_calendar` 经济日历（占位，源已下线） |
+| 舆情 / 轮动 | `sentiment_scores` 情绪评分 · `hot_rank` 人气榜 · `sector_bars` 板块行情 · `sector_fund_flow` 板块资金流 · `news_headlines` 新闻标题 · `flash_news_wire` 7×24 快讯 |
+| 风险 | `share_unlock_schedule` 解禁日程 · `regulatory_events` 监管事件 |
+
+另有 **on-demand**（不进 curated 主路径）：`stock_news`、`research_reports` 等，见 [catalog](docs/datasets/catalog.md)。
 
 ## 定位：与同类差异
 

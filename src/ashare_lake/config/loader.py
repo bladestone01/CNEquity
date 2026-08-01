@@ -92,7 +92,7 @@ class Config:
     # today's behaviour. This does NOT raise the request rate — the limiter
     # is cross-process and paces every request regardless — it only stops a
     # single lane idling on network latency between calls.
-    minute_bars_fetch_workers: int = 1
+    minute_bars_fetch_workers: int = 4
     failover_enabled: bool = True
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
@@ -285,7 +285,7 @@ def load_config(path: str | Path) -> Config:
         minute_bars_scope=str(minute_raw.get("scope", "index:000300.SH")),
         minute_bars_symbols=list(minute_raw.get("symbols", [])),
         minute_bars_frequencies=list(minute_raw.get("frequencies", ["1m"])),
-        minute_bars_fetch_workers=int(minute_raw.get("fetch_workers", 1)),
+        minute_bars_fetch_workers=int(minute_raw.get("fetch_workers", 4)),
         failover_enabled=bool(failover_raw.get("enabled", True)),
         failover_datasets=failover_datasets,
         config_path=config_path,
