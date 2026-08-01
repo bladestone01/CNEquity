@@ -6,379 +6,160 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-01
+
+### Upgrading from 0.3.x
+
+1. **`daily_bars.volume` is always 股 (`data_version = v2`).** Lakes written under
+   0.3.x mix units by source and need a one-off rewrite before trusting turnover
+   or liquidity factors:
+
+   ```bash
+   scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --dry-run
+   scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --apply
+   ```
+
+   Back up curated first; the script is idempotent and does not restamp
+   `fetched_at`.
+
+2. **AkShare is gone.** Delete `[sources.akshare]` from any hand-edited config
+   (the example template no longer has it). Add `[sources.pboc]` for 社融, and
+   optionally `[sources.nbs]` / `[sources.exchange]` for publisher cross-checks
+   in `asl audit`. Orphan packages left behind by pip/uv:
+
+   ```bash
+   pip uninstall akshare mini-racer py-mini-racer
+   ```
+
+   `asl doctor --fix` is removed — it only repaired the mini-racer collision.
+
+3. **Macro self-heal.** The next `macro_indicators` run rewrites the bad
+   `m2_yoy` history and backfills `social_financing` from the PBOC; no separate
+   migration. Rows keep the newest `fetched_at` per `(indicator_id, obs_date)`.
+
+4. **Intraday is opt-in.** `[minute_bars].enabled` defaults to `false` and is
+   not on the daily waves. Enable it, then `asl run daily --group intraday`
+   (or `asl demo --intraday` / `asl backfill minute_bars_5m …`). TDX keeps ~95
+   trading days of 1m and ~491 of 5m — older windows return nothing.
+
 ### Added
 
-- **Publisher cross-checks (`quality/authority_checks.py`).** Every other check
-  reasons about the lake's internal consistency, so none of them can see a
-  vendor publishing on time, in the right shape, with a wrong number — exactly
-  the shape of the `m2_yoy` defect. These two reach the publisher:
+- **`minute_bars` / `minute_bars_5m` — opt-in intraday bars.** Separate datasets
+  (one frequency each) because the source keeps 95 trading days of 1m against
+  491 of 5m, and a dataset carries one watermark, one `coverage_start` and one
+  horizon. Registered with schema, PK `(symbol, trade_date, bar_time, frequency)`,
+  day partitions, `steps/intraday.py` (`group="intraday"`), `load()` with
+  `adjust="qfq"/"hfq"`, and four audit checks. Off by default
+  (`[minute_bars].enabled = false`); full-market 1m is ~35MB/day (8.4GB/year)
+  against 468MB for the entire daily lake 2001–2026.
+  `[minute_bars].scope` defaults to `index:000300.SH` (~2MB/day at 1m).
+
+  `bar_time` is the bar's **closing** minute (TDX labelling): a full session is
+  240 bars over 09:31–11:30 and 13:01–15:00; the 15:00 bar carries the closing
+  auction. Prices are unadjusted; adjustment joins the day's factor at query
+  time. 15m/30m/60m are not stored — they aggregate exactly from 5m
+  (`docs/datasets/catalog.md` has the resampling snippet).
+
+- `asl demo --intraday`, `[minute_bars].fetch_workers` (threaded concurrent TDX
+  connections; does not raise the request rate), `asl backfill <intraday>
+  --symbols`, `DatasetSpec.history_horizon_days` / `backfill_chunk_days`, and
+  intraday audit checks (`minute_bars_off_session`,
+  `minute_bars_trade_date_mismatch`, `minute_bars_session_coverage`,
+  `minute_bars_daily_reconciliation`). `asl backfill` refuses a `--start`
+  before the source horizon.
+
+- **Publisher cross-checks (`quality/authority_checks.py`).** Reach the
+  publisher, not only the lake's internal consistency:
 
   - `macro_pmi_vs_nbs` — 制造业 PMI against the 国家统计局 release
-  - `st_labels_vs_exchange` — ST designations against the SSE / SZSE listings
+  - `st_labels_vs_exchange` — ST designations against SSE / SZSE listings
 
-  Both are gated on their `[sources.*]` flag, **defaulting off** when the
-  section is absent, so an offline lake and the unit suite never touch the
-  network. Results also land in `meta/quality/source_diffs/authority-{date}.json`
-  even when everything agrees: a findings file records only disagreement, which
-  cannot distinguish "checked, agreed" from "never checked".
+  Gated on `[sources.nbs]` / `[sources.exchange]`, defaulting off when absent.
+  Results land in `meta/quality/source_diffs/authority-{date}.json` even when
+  everything agrees. The NBS query API is not used (403 from non-mainland
+  egress); the release sentence is parsed instead. M2 is not covered: the PBOC
+  publishes levels only and revised the M1 caliber from 2025-01.
 
-  The NBS *query API* is deliberately not used — `data.stats.gov.cn/easyquery.htm`
-  answers 403 (WAF `UrlACL`) from non-mainland egress while the release pages
-  answer normally, so building on it would leave the check silently dead for the
-  users least able to diagnose it. The release sentence is parsed instead.
+- **`st_label_crosscheck`** — `trading_status` ST labels vs the ST prefix on
+  the instrument's exchange short name (TDX short name × EastMoney risk board;
+  no network). Replaces the retired AkShare ST union, which queried the same
+  push2 endpoint as the EastMoney adapter and could never disagree.
 
-  Both directions of the ST comparison run over the **shared universe**. The
-  exchanges carry a company until formal delisting while a quote feed drops it
-  when it stops trading: on 2026-08-01 SSE designated two names ST that neither
-  EastMoney nor TDX still listed. Restricting only one side left that as a
-  permanent shortfall consuming most of the tolerance. SSE's 主板/科创板
-  downloads also exclude the risk-warning board — five ST symbols were missing
-  from both — so `stockType=10` is used.
+- **`macro_checks.py`** — freshness and revision tracking for monthly macro
+  (issue #10): `macro_indicator_stale`, `macro_value_revised`.
 
-  M2 is not covered: the PBOC publishes 货币供应量 as levels only and revised
-  the M1 caliber from 2025-01, so a derived year-on-year figure would report
-  drift that is an artefact of our own arithmetic. EastMoney's M2 was verified
-  against the PBOC release by hand instead.
+- **`adapters/pboc/`** — 社会融资规模增量 from the PBOC Excel attachments
+  (bilingual headers, explicit `单位：亿元人民币`). `[sources.pboc]` in the
+  example config. Coverage through 2026-06; staleness threshold 75 days.
 
-
-- **`st_label_crosscheck`** — `trading_status` ST labels vs the ST prefix on the
-  instrument's exchange short name. Both sides are already in curated, so it
-  costs no requests, and it is genuinely independent: the short name is assigned
-  by the exchange and arrives over the TDX binary protocol, while the
-  risk-warning board comes over EastMoney HTTP. This is the check the retired
-  AkShare union only appeared to be — that one queried the same push2 endpoint
-  with the same filter as the EastMoney adapter, so it could never disagree.
-  Measured 2026-08-01: 205 names on each side, symmetric difference 0.
-
-- **`macro_checks.py`** — freshness and revision tracking for the monthly macro
-  series (issue #10).
-
-  `macro_indicator_stale` catches a publisher that stops. Every run refetches
-  the full history and dedupes on `(indicator_id, obs_date)`, so a dead feed
-  looks exactly like a healthy one in curated — the old rows are still there and
-  no step fails. Only the lag between the newest observation and the run date
-  shows it. Thresholds are per indicator, set from measured publication rhythm
-  plus ~1.5 months, so a single missed release is what trips them.
-
-  `macro_value_revised` records restatements. Compact keeps the newest
-  `fetched_at` per key, so a revision silently replaces the earlier value. That
-  overwrite is deliberate — it is what let the bad `m2_yoy` history heal itself
-  without a migration script — so the check runs between fetch and write and
-  reports what changed rather than blocking it. curated still holds the latest
-  published value; the finding is the only record the earlier one existed.
+- `daily_bars_volume_unit` audit check (`quality/unit_checks.py`): per-source
+  median `amount / close / volume` outside [0.8, 1.25] fails the run.
 
 ### Changed
 
-- **`social_financing` now comes from the PBOC, not MOFCOM.** 社会融资规模 is a
-  PBOC statistic; MOFCOM republished it two release cycles late *and* served a
-  superseded vintage — 2026-04 as 6245 after the PBOC had revised it to 6238.
-  Summing the PBOC series for 2026 Jan–Apr gives 154,500, exactly the 15.45万亿
-  the PBOC states in prose, against the republisher's 154,507. A backup that
-  quietly carries stale values is not a safe backup (ADR-0003), so the MOFCOM
-  adapter is removed rather than kept as failover.
+- **`daily_bars` is `data_version = v2`** — v2 guarantees `volume` is 股; v1
+  meant the unit depended on `source`. Resolved per dataset via
+  `domain.schemas.data_version_for`; every other dataset stays on v1.
+  `index_bars` and `sector_bars` keep TDX's own volume unit (see
+  `docs/datasets/schema.md`).
 
-  The PBOC publishes this as an Excel attachment with bilingual headers and an
-  explicit `单位：亿元人民币`, not as prose — pandas/openpyxl/xlrd are already
-  dependencies for the Shenwan and CNI workbooks. Coverage improves from 136
-  months ending 2026-04 to 138 ending 2026-06, and the staleness threshold
-  tightens from 135 days to 75, matching `m2_yoy` since both are mid-month PBOC
-  releases.
+- **`social_financing` comes from the PBOC.** 社会融资规模 is a PBOC statistic;
+  an intermediate MOFCOM republisher path (never shipped) lagged two release
+  cycles and served a superseded vintage. A backup that quietly carries stale
+  values is not a safe backup (ADR-0003). Year workbooks are read newest-first
+  so restated vintages win; percentage tables stacked under the 亿元 table are
+  skipped by each table's own unit declaration.
 
-  Two parsing traps the live data exposed, both covered by tests: the 2019
-  workbook stacks a percentage table (`单位：%`) under the 亿元 one and both have
-  a month column, so parsing follows each table's own unit declaration; and
-  `.xlsx` stores the month as a float, where October arrives as `2026.1` and
-  only formats back correctly at two decimals. Year workbooks also overlap with
-  different vintages — 2019 restates 2017 under the 完善后 caliber — so years
-  are read newest-first and the later publication wins.
+- Macro monthly series (`pmi`, `m2_yoy`) read EastMoney datacenter reports
+  directly (`RPT_ECONOMY_PMI` / `RPT_ECONOMY_CURRENCY_SUPPLY`) with the
+  project's retry, throttle and TLS handling. Each row stamps its own `source`.
+
+- README architecture diagram refreshed (`docs/assets/architecture-overview.png`):
+  drops AkShare, adds `pboc` under official sources.
 
 ### Fixed
 
-- **A backfilled intraday slice near the historical edge silently returned
-  zero rows for every symbol, for no reason the logs could explain.**
-  `capture_intraday_bars` bounded the page walk (`max_pages`) by the trading
-  days *within* the requested slice (`end - start`), but the wire always pages
-  backward from the live tip (offset 0 = today), regardless of what `end` is.
-  For a slice sitting near the source's historical horizon, every page landed
-  more recent than `end`, got discarded by the date filter, and the walk gave
-  up at `max_pages` long before ever reaching the requested dates — an
-  8-trading-day-wide slice ~140 days back got `max_pages=4` and returned 0
-  rows; the depth actually needed was ~98 trading days, `max_pages=31`.
+- **`m2_yoy` held M0 month-over-month growth, not M2 year-on-year.** The old
+  AkShare path matched columns by Chinese substring with a
+  `next(..., columns[-1])` default; `"M2-同比增长"` never matched
+  `"货币和准货币(M2)-同比增长"`, so every fetch fell through to
+  `流通中的现金(M0)-环比增长`. Now read as field `BASIC_CURRENCY_SAME`.
+  Next `macro_indicators` run rewrites the series (full history refetch +
+  compact keeps newest `fetched_at`).
 
-  No exception, no partial data — just silence indistinguishable from "the
-  source has nothing here," on every symbol, at any scope, deterministically.
-  Found chasing what looked like TDX degrading under sustained full-market
-  load; a raw wire probe against the same window, run directly, returned real
-  data instantly, which ruled that out and pointed at the pagination bound
-  instead. `max_pages` now sizes off `trade_date -> start` (the real walk
-  depth) rather than `end -> start` (the slice's own width); the daily
-  incremental path is unaffected since its `end` already equals `trade_date`.
+- **`social_financing` never wrote a single row** under the AkShare-era path
+  (compact `YYYYMM` months were dropped as unparseable). The PBOC adapter
+  backfills from 2015-01.
 
-- **`m2_yoy` held M0 month-over-month growth, not M2 year-on-year.** The AkShare
-  path picked its value column by Chinese-substring match with a
-  `next(..., columns[-1])` default. The hint `"M2-同比增长"` never matched the
-  real label `"货币和准货币(M2)-同比增长"` — the bracket breaks the substring — so
-  every fetch silently fell through to the *last* column,
-  `流通中的现金(M0)-环比增长`. A correct-looking indicator name has been carrying
-  an unrelated series since it was introduced: 2013-04 stored 0.264 where M2 YoY
-  was 16.1.
-
-  Now read as an explicit field (`BASIC_CURRENCY_SAME`) from the EastMoney
-  report. Rows already in curated are wrong, but need no migration script: the
-  adapter fetches the full published history (2008 →) on every run and compact
-  dedupes on `(indicator_id, obs_date)` keeping the newest `fetched_at`, so the
-  next `macro_indicators` run rewrites the whole series.
-
-- **`social_financing` never wrote a single row.** MOFCOM formats 月份 as compact
-  `YYYYMM` (`202604`), which the macro adapter's date parser did not accept — it
-  only handled separated forms — so every 社融 record was dropped as
-  unparseable. The indicator was configured, documented and catalogued while
-  producing nothing. The new MOFCOM adapter parses it and backfills 136 months
-  from 2015-01.
-
-- **`macro_indicators` rows fetched from AkShare were stamped
-  `source = "eastmoney"`.** `fetch_macro_indicators` returned rows without a
-  `source` column, and `steps/macro_risk.py` passed a blanket
-  `source="eastmoney"` to `run_incremental_fetched`; since `with_provenance`
-  only fills the column when it is absent, every monthly PMI / M2 / 社融 value
-  landed in curated attributed to EastMoney. That is a provenance
-  falsification: it defeats ADR-0003's premise that a curated row names the
-  feed it came from, and left `audit` with no way to tell the two apart. The
-  adapter now stamps `source` per row (`eastmoney` / `akshare`); the step's
-  value only applies to the empty-frame case.
-
-- **The monthly macro series ignored `[sources.akshare]`.** `_akshare_rows`
-  was called unconditionally from `fetch_macro_indicators`, so setting
-  `enabled = false` disabled the ST cross-check (`steps/reference.py` did
-  check the flag) but not the macro path — AkShare was still imported and
-  called on every daily run. It is now gated like the other call site: an
-  absent `[sources.akshare]` section counts as off, as does the no-config
-  path. Daily rates (`cnbond_yield_10y`, `shibor_3m`, `lpr_1y`) are unaffected;
-  they come from EastMoney directly.
-
-  (Superseded below — AkShare is gone entirely, so the flag no longer exists.)
-
-- **A single reconnect failure could take down an entire full-market intraday
-  sweep.** `fetch_minute_bars` opens a fresh TDX connection per 50-symbol
-  batch; run against the full market (7,747 symbols, ~155 reconnects), one
-  connect attempt hit a `socket.recv` timeout ~44 minutes in and the exception
-  propagated all the way out of the step, discarding every batch already
-  fetched (staged but never compacted, since compact only runs on a
-  success/warning step). A second full-market attempt got through the fetch
-  cleanly but returned zero rows for all 7,747 symbols — a TDX host degrading
-  under sustained connection churn rather than raising outright.
-
-  Fixed two ways. `client.py` now retries a failed connect once, against a
-  freshly re-probed server, before giving up (`_connect_with_retry`) — the
-  same "rotate server, don't hammer the dead one" pattern `fetch_index_bars`
-  already used. `steps/intraday.py` now catches a whole batch failing outright
-  and records its symbols as failed rather than letting the exception abort
-  the step — the same contract a single symbol's failure already had, just at
-  the batch grain. The batch size (`_BATCH_SYMBOLS`) also moved from 50 to 200,
-  cutting full-market reconnects roughly 4x, while staying small enough that a
-  killed run still loses minutes, not hours.
+- **`daily_bars.volume` mixed 股 and 手, off by exactly 100×.** Only `ths` and
+  `baostock` already wrote 股; `tdx_protocol` passed 手 through and Sina
+  divided by 100. Every adapter now normalizes to 股 at its boundary
+  (`ashare_lake.domain.units`).
 
 - **No-trade bars stored a denormal turnover instead of zero.** TDX's packed-
-  float decoder maps a raw zero quantity to `2**-127` (~5.9e-39) rather than
-  `0.0`, so every suspended day landed in curated with that much `amount`
-  against `volume = 0` — 439,774 rows in the reference lake, contradicting the
-  documented suspension convention (`volume=0`, `amount=0`) and quietly making
-  `amount > 0` mean "was quoted" rather than "traded". `volume` escaped it
-  through `int()` truncation; `amount` is a float and kept it.
+  float decoder maps raw zero to `2**-127`; fixed at
+  `adapters/tdx_protocol/_decode.py` for daily and intraday. Existing rows are
+  cleaned by the volume v2 migration script.
 
-  Fixed at the adapter boundary for both the daily and intraday paths
-  (`adapters/tdx_protocol/_decode.py`). Rows already written are cleaned by the
-  same `scripts/migrate_daily_bars_volume_v2.py` pass that does the v1→v2
-  volume rewrite. It matters more intraday, where an illiquid name has dozens
-  of no-trade minutes a day and a halted one has a full session of them.
+- **A backfilled intraday slice near the historical edge silently returned
+  zero rows.** `max_pages` sized off the slice width (`end - start`) while the
+  wire always pages backward from today; near-horizon slices exhausted
+  `max_pages` before reaching the requested dates. Now sized off
+  `trade_date -> start` (real walk depth).
 
-- **`daily_bars.volume` mixed two units in one column, off by exactly 100×.**
-  The schema has always documented 股, but only `ths` and `baostock` wrote it:
-  `tdx_protocol` passed TDX's native 手 straight through (median
-  `amount / close / volume` = 100.000 over 12,182,204 curated rows), and the
-  Sina adapter actively divided by 100 on the mistaken belief that the lake
-  stored 手. Every turnover and liquidity factor built on the column was wrong
-  by 100× for whichever rows it happened to touch.
-
-  Every adapter now normalizes to **股** at its own boundary — TDX daily and
-  both EastMoney paths multiply by 100, Sina no longer divides, `ths` and
-  `baostock` are unchanged and documented as already correct. The per-vendor
-  units and their evidence live in `ashare_lake.domain.units`.
-
-  EastMoney's 手 reading is inferred, not independently verified: `push2his` is
-  unreachable from many networks and the only EastMoney rows in the lake are
-  all-zero suspension placeholders. It follows the same endpoint and field that
-  `commodity_bars` already documents as 东财口径, and the new check below
-  catches it if it is wrong.
+- **A single reconnect failure could abort an entire full-market intraday
+  sweep**, discarding staged-but-uncompacted batches. Connect retries once
+  against a re-probed server; batch-level failures are recorded rather than
+  aborting the step; batch size 50 → 200.
 
 ### Removed
 
-- **AkShare is no longer a dependency.** Issue #3 asked whether its data-quality
-  risk was worth carrying. Reading the wrappers settled it without needing the
-  proposed comparison study: neither call site was a second source.
-
-  `ak.stock_zh_a_st_em` requests `push2.eastmoney.com/api/qt/clist/get` with
-  `fs=m:0+f:4,m:1+f:4` — the same vendor, endpoint and filter that
-  `adapters/eastmoney/trading_status.py` already queries. Unioning it could only
-  repeat the answer or fail, so the ST union is removed; the client's
-  push2 → push2delay failover is the real robustness, and baostock's per-day
-  `isST` stays the one independent reading on the `--backfill` path.
-  `macro_china_pmi` and `macro_china_money_supply` request the same
-  `datacenter-web.eastmoney.com` reports this module already talks to, so PMI
-  and M2 now read `RPT_ECONOMY_PMI` / `RPT_ECONOMY_CURRENCY_SUPPLY` directly and
-  pick up the project's own retry, throttle and TLS handling. Direct PMI matches
-  the wrapper on all 223 months; M2 differs on all 222 because the wrapper path
-  was reading the wrong column (above).
-
-  Dropping it removes 15 transitive packages, including the `mini-racer` V8
-  binding. With it go the `py_mini_racer` collision check, `asl doctor --fix`,
-  and `diagnostics/repair.py` — that collision was only ever about two packages
-  this project no longer installs.
-
-### Added
-
-- `adapters/mofcom/` — 商务部数据中心, publisher of 社会融资规模增量, replacing the
-  AkShare wrapper for that series. It reads the response **by key** (`tiosfs`);
-  the wrapper relabelled columns positionally, so a reordered payload would have
-  silently relabelled 社融 as 委托贷款. Network or shape failures degrade to a
-  warning rather than failing the daily run.
-- `[sources.mofcom]` in the example config. `[sources.akshare]` is gone — leaving
-  it would advertise a source no adapter reads.
-
-- **`minute_bars` dataset — intraday (1m) bars, opt-in.** Registered with a
-  schema, a primary key of `(symbol, trade_date, bar_time, frequency)`, day
-  partitions, a step (`steps/intraday.py`, `group="intraday"`), `load()`
-  support including `adjust="qfq"/"hfq"`, and four audit checks. Off by default
-  (`[minute_bars].enabled = false`) and never on the daily waves: full-market
-  1m is ~1.3M rows and ~35MB a day (8.4GB a year, against 468MB for the entire
-  daily lake 2001–2026), which must not become what `asl init` costs someone
-  who never asked for it. `[minute_bars].scope` defaults to `index:000300.SH`
-  (~300 names, ~2MB a day).
-
-  `bar_time` is the bar's **closing** minute, as TDX labels them: a full
-  session is 240 bars over 09:31–11:30 and 13:01–15:00, and the 15:00 bar
-  carries the closing auction. Prices are unadjusted, like the daily bars;
-  adjustment joins the day's factor at query time.
-
-- **`minute_bars_5m` — 5-minute bars, the only intraday frequency with real
-  history.** A separate dataset rather than a `frequency` value inside
-  `minute_bars`, because the source keeps 491 trading days of 5m against 95 of
-  1m, and a dataset carries one watermark, one `coverage_start` and one
-  horizon — holding both frequencies would make all three wrong for both. The
-  dataset↔frequency mapping is `DatasetSpec.intraday_frequency`, and the steps,
-  the audit checks and `load()`'s adjustable set are all derived from it, so
-  adding a frequency is one registry entry.
-
-  Configured together: `[minute_bars].frequencies = ["1m", "5m"]` shares one
-  scope across both. At a fifth of 1m's row rate it is ~6MB a day at full
-  market (1.5GB a year, against 8.4GB for 1m).
-
-  15m/30m/60m are deliberately **not** stored: they aggregate exactly from 5m
-  (48 bars divide by 3, 6 and 12 onto identical closing-minute boundaries —
-  verified against live data), so three more datasets would hold a
-  `group_by_dynamic` away from data already present. `docs/datasets/catalog.md`
-  carries the resampling snippet.
-
-- `asl demo --intraday`: adds a seventh step capturing 1m bars for the same
-  handful of symbols and printing a real session, so the closing-minute
-  labelling and the 240-bar shape are visible without building a lake.
-
-- `[minute_bars].fetch_workers`: concurrent TDX connections for the intraday
-  fetch, one per thread. It does **not** raise the request rate — the limiter
-  is cross-process and paces every request either way — it only stops one lane
-  idling on network latency. Measured over 40 symbols × 5 sessions: 4.50 req/s
-  at 1 worker against 10.13 at 4, which is the ceiling the 100ms limiter
-  already permits. Threads rather than the daily path's ProcessPool, so it
-  works on macOS too, where the fork-unsafe wire client pins `workers` to 1.
-
-  Left at 1 by default: the measurement is a two-minute burst, not a five-hour
-  sweep. `docs/operations/runbook.md` carries the disk and wall-clock numbers
-  for a full-market decision.
-
-- **`DatasetSpec.history_horizon_days` — how far back a source still serves.**
-  Measured 2026-08-01, TDX keeps 22,800 1-minute bars per symbol and 23,568
-  5-minute. The cap is a **bar count**, not a date: divided by a full session
-  that is 95 and 491 trading days, which holds for any instrument quoted every
-  session — every A-share stock, and what these datasets are for. An instrument
-  with bars on only scattered days reaches proportionally further back
-  (162107.SZ, a barely-traded LOF, holds 3,216 5m bars over 67 days and so
-  reaches 2012), so the field is the guarantee for a normal stock rather than a
-  hard ceiling for every symbol.
-
-  An older window returns *nothing*, not less, and no backfill source extends
-  it — `history_mode = by_date` alone would have promised a decade. Surfaced in
-  `list_datasets()`, and `asl backfill` now refuses a `--start` before the
-  horizon instead of sweeping for hours into an empty lake.
-
-- `DatasetSpec.backfill_chunk_days`: backfills for datasets that declare it run
-  as a sequence of compacted date slices. `compact` reads a whole run's staging
-  into one frame, which a 95-day full-market `minute_bars` seed (~123M rows)
-  would not survive; slicing also makes a killed sweep resumable at the last
-  compacted slice rather than losing everything.
-
-- **A single intraday bar's volume is not reproducible; the day's total is.**
-  Fetching the same settled window twice returns different `volume`/`amount`
-  for ~0.6% of bars (257 of 43,920 over 40 symbols × 5 sessions). It is
-  boundary attribution, not corruption: a trade sitting on a minute edge lands
-  either side depending on when the server aggregated, and the neighbour
-  compensates exactly — across all 183 symbol-days in that sample the daily
-  volume totals were identical and the amount totals matched to 0.00e+00
-  relative. Documented in `docs/datasets/schema.md`, because a factor that
-  reads absolute per-bar quantities needs to know.
-
-  Unrelated to concurrency: two *serial* fetches disagreed on more rows (435)
-  than a serial and a threaded one did (181).
-
-- Intraday bars outside continuous trading are dropped at parse time. The
-  source really does emit them: 162107.SZ, a barely-traded LOF, returns a
-  13:00-labelled bar on days it did not trade, zero volume with a stale close
-  carried forward — padding, not a tradable minute (an active name emits none;
-  600519 over 2,400 bars, zero). Keeping them would put a phantom bar in every
-  gap check and skew any resampling that assumes fixed bar counts.
-
-- `asl backfill <intraday dataset> --symbols A,B`: restrict a one-off intraday
-  backfill without editing the config — it overrides `[minute_bars].scope` for
-  that run and enables capture, so pulling a few names does not mean flipping
-  config flags first. Rejected for non-intraday datasets, which take their
-  universe from `instruments`.
-
-- Intraday audit checks (`quality/intraday_checks.py`): `minute_bars_off_session`
-  and `minute_bars_trade_date_mismatch` (error), `minute_bars_session_coverage`
-  and `minute_bars_daily_reconciliation` (warning). The reconciliation compares
-  both volume and turnover against `daily_bars`: `volume` is the column with a
-  unit history and so catches a conversion slip, while `amount` is yuan from
-  every source and so cannot be wrong for a unit reason — a break there means
-  the wrong bars, not the wrong scale. A session that quietly loses
-  40 of its 240 bars still has rows on every trading day and passes every
-  dataset-level check the lake already runs; the daily reconciliation is the
-  only one that compares the series against independently fetched data.
-
-- `daily_bars_volume_unit` audit check (`quality/unit_checks.py`): flags, per
-  source, any median `amount / close / volume` outside [0.8, 1.25], so an
-  adapter that stops converting cannot silently reintroduce the break. Runs as
-  part of `asl audit` / `lake_health`.
-
-### Changed
-
-- **`daily_bars` is now `data_version = v2`** — v2 guarantees `volume` is 股;
-  v1 means the unit depends on `source`. `data_version` is resolved per dataset
-  via `domain.schemas.data_version_for`; every other dataset stays on v1.
-
-  Rows already curated are wrong under either convention and need a one-off
-  rewrite:
-
-  ```bash
-  scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --dry-run
-  scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --apply
-  ```
-
-  It rescales `tdx_protocol` / `sina` v1 rows by 100, leaves the rest, stamps
-  everything v2, and is idempotent. `fetched_at` is deliberately not restamped.
-  Back up before `--apply`; it edits curated in place.
-
-- `index_bars` and `sector_bars` keep TDX's own volume unit and stay on v1.
-  It does not reconcile against the constituent sum at any power of 100, so it
-  is not silently rescaled to match; see `docs/datasets/schema.md`.
+- **AkShare is no longer a dependency.** Neither former call site was a second
+  source: the ST board hit the same EastMoney push2 filter already queried
+  in-tree, and the PMI / money-supply wrappers hit the same datacenter reports.
+  Dropping it removes 15 transitive packages including `mini-racer`, plus
+  `asl doctor --fix` and `diagnostics/repair.py` (only ever about that
+  collision). `[sources.akshare]` is gone from the example config.
 
 ## [0.3.1] — 2026-07-29
 
@@ -561,6 +342,7 @@ First public release of the self-hosted A-share Parquet data layer.
 - TLS verify on by default for HTTP clients
 - Project URLs point at `rootSunc/ashare-lake`
 
+[0.4.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.4.0
 [0.3.1]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.1
 [0.3.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.0
 [0.2.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.2.0

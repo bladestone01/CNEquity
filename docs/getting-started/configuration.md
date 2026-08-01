@@ -158,8 +158,25 @@ Wave DAG：每个 wave 含 `name`、`parallel`（wave 内 step 是否并行）�
 | `fundamentals` | 17:30 | 财报、指数成分、行业 |
 | `macro_risk` | 18:00 | 宏观、市场宽度、解禁、监管 |
 | `research` | 18:30 | 机构持仓、一致预期、情绪 |
+| `intraday` | 18:45 | `minute_bars` / `minute_bars_5m`（**不在默认调度**；需先开 `[minute_bars]`） |
 
 `asl run daily --group <name>` 只跑该组 steps。
+
+---
+
+## `[minute_bars]`
+
+可选日内线。默认关闭，且**不在** `[job.daily.waves]` 上——全市场 1m 约 35MB/日、8.4GB/年，不能变成没人要时 `asl init` 的成本。开启后用 `asl run daily --group intraday` 或 `asl backfill`。
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `enabled` | `false` | 总开关 |
+| `scope` | `"index:000300.SH"` | `index:<symbol>` / `watchlist` / `all` |
+| `symbols` | `[]` | `scope = "watchlist"` 时的显式列表 |
+| `frequencies` | `["1m"]` | `"1m"` → `minute_bars`；`"5m"` → `minute_bars_5m` |
+| `fetch_workers` | `1` | 并发 TDX 连接数（不提高请求速率，只消网络空转） |
+
+**源端视野**（实测 2026-08-01）：1m ≈ 95 个交易日，5m ≈ 491 个交易日。更早窗口返回空；`asl backfill … --start` 早于视野会直接拒绝。磁盘与耗时见 [runbook — 日内数据](../operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
 
 ---
 
@@ -214,7 +231,7 @@ names = [
 |------|------|------|
 | `ASL_CONFIG` | `configs/ashare-lake.toml` | 脚本传入 `asl --config` 的路径 |
 | `ASL_LOG_DIR` | `{data.root}/logs` | 日志目录 |
-| `ASL_GROUPS` | 全部 6 组 | 覆盖 pipeline 要跑的组 |
+| `ASL_GROUPS` | 全部调度组（不含需显式开启的 `intraday`） | 覆盖 pipeline 要跑的组 |
 | `ASL_NOTIFY` | `1` | `0` 关闭 macOS 通知 |
 | `ASL_BACKUP_DIR` | 湖内 backups | 元数据备份目录 |
 | `ASL_BACKUP_RETENTION_DAYS` | 14 | 备份保留天数 |

@@ -59,4 +59,4 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install ashare-lake`
 
 ## 版本
 
-- [CHANGELOG](../CHANGELOG.md)
+当前主线 **0.4.0**（见 [CHANGELOG](../CHANGELOG.md)）。从 0.3.x 升级先看其中的 *Upgrading from 0.3.x*，以及 [installation — 升级](getting-started/installation.md#从-03x-升级到-04)。

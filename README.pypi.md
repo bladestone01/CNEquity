@@ -63,7 +63,7 @@ asl run daily --config configs/ashare-lake.toml
 | 类别 | 数据集 |
 |------|--------|
 | 基础参考 | `instruments` · `trading_calendar` · `trading_status`（停复牌 / ST） |
-| 行情 | `daily_bars`（未复权） · `index_bars` · `adj_factors` |
+| 行情 | `daily_bars`（未复权） · `index_bars` · `adj_factors` · `minute_bars` / `minute_bars_5m`（可选日内） |
 | 公司事件 | `corporate_actions` · `announcement_index` · `earnings_disclosure_schedule` |
 | 基本面 / 估值 | `financial_statement_items`（PIT） · `valuation_metrics` · `analyst_consensus` |
 | 资金面 | `fund_flow` · `margin_trading` · `northbound_flows` / `northbound_holdings` · `dragon_tiger` · `block_trades` · `institutional_holdings` |

@@ -14,6 +14,8 @@
 ```bash
 pip install ashare-lake
 asl demo
+# 可选：再看一根完整 1m 会话
+# asl demo --intraday
 ```
 
 会写入独立的 `data/ashare-lake-demo/` 与 `configs/ashare-lake.demo.toml`。  

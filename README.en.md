@@ -21,9 +21,10 @@ CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay down
 - Watermarks / retry / quality audit — cron-ready
 - Row-level provenance: `source` / `data_version` / `fetched_at`
 - One `load()` contract (adjust / universe / PIT)
+- Opt-in minute bars (1m / 5m, off by default)
 
 <p align="center">
-  <img src="docs/assets/architecture-overview.jpg" alt="ashare-lake architecture: sources → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+  <img src="docs/assets/architecture-overview.png" alt="ashare-lake architecture: sources → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
 </p>
 
 ## Shortest path to data
@@ -40,6 +41,8 @@ Five liquid names × ~30 trading days. Separate data root — **not** a full-mar
 ```bash
 pip install ashare-lake
 asl demo
+# optional: also print one full 1m session
+# asl demo --intraday
 ```
 
 <p align="center">
@@ -67,7 +70,8 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 </p>
 
 If TDX is unreachable, try `asl servers test`. Optional:
-`asl demo --symbols 600519.SH,000001.SZ --days 10`.
+`asl demo --symbols 600519.SH,000001.SZ --days 10`, or
+`asl demo --intraday`.
 
 ### B. Self-hosted daily lake (research / production)
 
@@ -129,7 +133,7 @@ Dataset names are the first argument to `load()`. Columns:
 | Category | Datasets |
 |----------|----------|
 | Reference | `instruments` · `trading_calendar` · `trading_status` (suspensions / ST) |
-| Market data | `daily_bars` (unadjusted) · `index_bars` · `adj_factors` |
+| Market data | `daily_bars` (unadjusted) · `index_bars` · `adj_factors` · `minute_bars` / `minute_bars_5m` (opt-in intraday) |
 | Corporate events | `corporate_actions` · `announcement_index` · `earnings_disclosure_schedule` |
 | Fundamentals / valuation | `financial_statement_items` (PIT) · `valuation_metrics` · `analyst_consensus` |
 | Capital flow | `fund_flow` · `margin_trading` · `northbound_flows` / `northbound_holdings` · `dragon_tiger` · `block_trades` · `institutional_holdings` |
@@ -172,6 +176,8 @@ Trade-offs: [comparison](docs/comparison.md) (Chinese).
 - **Survivorship bias:** delisted names need `asl delisted backfill` + `repair`
   before trusting return series
 - **Network:** some HTTP / sector backfills need mainland egress; demo needs TDX
+- **Intraday horizon:** TDX keeps ~95 trading days of 1m and ~491 of 5m; older
+  windows return nothing — see [catalog](docs/datasets/catalog.md)
 - **Year/month partitions** (e.g. `index_bars`): prefer `asl query` / `load()` so
   hive labels do not collide with real dates — see
   [lake-layout](docs/architecture/lake-layout.md)
@@ -185,9 +191,9 @@ More: [runbook](docs/operations/runbook.md) ·
 
 ## Project status
 
-[0.3.0](CHANGELOG.md) — published on [PyPI](https://pypi.org/project/ashare-lake/);
-first public data-layer release the author runs on a personal daily cron.
-Schema / `load()` may change before 1.0; see [CHANGELOG](CHANGELOG.md).
+[0.4.0](CHANGELOG.md) — current mainline; install from
+[PyPI](https://pypi.org/project/ashare-lake/) after the release is cut.
+Personal daily-cron data layer. Schema / `load()` may change before 1.0.
 
 Personal project: issues and PRs welcome, responses best-effort.
 [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md). Docs are

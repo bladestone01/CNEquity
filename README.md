@@ -18,10 +18,11 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号�
 - 水位 / 失败重试 / 质量审计，适合挂 cron
 - 行级溯源：`source` / `data_version` / `fetched_at`
 - 统一 `load()` 契约（复权 / universe / PIT）
+- 可选分钟线（1m / 5m，默认关闭）
 
 ## 整体架构
 <p align="center">
-  <img src="docs/assets/architecture-overview.jpg" alt="ashare-lake 架构：数据源 → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+  <img src="docs/assets/architecture-overview.png" alt="ashare-lake 架构：数据源 → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
 </p>
 
 ## 最短取数流程
@@ -36,6 +37,8 @@ venv 激活与任务调度见 [installation](docs/getting-started/installation.m
 ```bash
 pip install ashare-lake
 asl demo
+# 可选：再看一根完整 1m 会话
+# asl demo --intraday
 ```
 
 <p align="center">
@@ -62,7 +65,7 @@ asl query --config configs/ashare-lake.demo.toml --sql "
   <img src="docs/assets/asl-query.png" alt="asl query：带 source 溯源列的日线" width="720" />
 </p>
 
-TDX 不可达时先跑 `asl servers test`。可选：`asl demo --symbols 600519.SH,000001.SZ --days 10`。
+TDX 不可达时先跑 `asl servers test`。可选：`asl demo --symbols 600519.SH,000001.SZ --days 10`，或 `asl demo --intraday`。
 
 ### B. 自建日更湖（研究 / 生产）
 
@@ -119,7 +122,7 @@ asl query --sql "
 | 类别 | 数据集 |
 |------|--------|
 | 基础参考 | `instruments` · `trading_calendar` · `trading_status`（停复牌 / ST） |
-| 行情 | `daily_bars`（未复权） · `index_bars` · `adj_factors` |
+| 行情 | `daily_bars`（未复权） · `index_bars` · `adj_factors` · `minute_bars` / `minute_bars_5m`（可选日内） |
 | 公司事件 | `corporate_actions` · `announcement_index` · `earnings_disclosure_schedule` |
 | 基本面 / 估值 | `financial_statement_items`（PIT） · `valuation_metrics` · `analyst_consensus` |
 | 资金面 | `fund_flow` · `margin_trading` · `northbound_flows` / `northbound_holdings` · `dragon_tiger` · `block_trades` · `institutional_holdings` |
@@ -158,13 +161,14 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 
 - **幸存者偏差**：退市股需 `asl delisted backfill` + `repair`；未补齐前收益序列要打折看
 - **海外网络**：部分 HTTP / 板块回填依赖大陆出口；行情 demo 需 TDX 可达
+- **日内视野**：TDX 约保留 95 个交易日的 1m、491 个交易日的 5m；更早窗口为空，无法靠回填拉长——见 [catalog](docs/datasets/catalog.md)
 - **年/月分区**（如 `index_bars`）：优先 `asl query` / `load()`，避免 hive 分区标签撞真日期——见 [lake-layout](docs/architecture/lake-layout.md)
 
 更多见 [runbook](docs/operations/runbook.md)、[排障](docs/operations/troubleshooting.md)、[legal](docs/legal-and-data-sources.md)。
 
 ## 项目状态
 
-[0.3.0](CHANGELOG.md) — 已发布 [PyPI](https://pypi.org/project/ashare-lake/)；作者自用数据层公开版，日常挂 cron。
+[0.4.0](CHANGELOG.md) — 当前主线；上 [PyPI](https://pypi.org/project/ashare-lake/) 后 `pip install -U ashare-lake`。作者自用数据层公开版，日常挂 cron。
 
 个人项目：issue / PR 欢迎，响应尽力而为。[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)。文档中文为主；[CHANGELOG](CHANGELOG.md) 与 [ADR](docs/adr/) 为英文。
 

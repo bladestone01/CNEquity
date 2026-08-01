@@ -132,25 +132,30 @@ pytest tests/unit -q                               # 需源码 + --group dev，�
 
 `pyproject.toml` 里 `httpx>=0.25` 的下界现在只标记「我们用到的 `Client()` 选项最早出现在哪个版本」，不再是为了迁就别人。
 
-### 从 0.3.x 升级：mini-racer 已成为孤儿包
+### 从 0.3.x 升级到 0.4
 
-0.4 之前 `akshare` 是硬依赖，它带进来一个编译型 V8 绑定 `mini-racer`。AkShare
-已移除（见 [issue #3](https://github.com/rootSunc/ashare-lake/issues/3)），但
-pip 与 uv 都不会删除「不再被依赖」的包，所以升级后的环境里 `mini-racer` 会留下来。
+完整说明见 [CHANGELOG 0.4.0 — Upgrading](../../CHANGELOG.md#upgrading-from-03x)。要点：
 
-它对本项目已无任何作用，可以直接卸载：
+1. **`daily_bars.volume` → 一律股（`data_version = v2`）**。已有湖需一次性改写，否则换手 / 流动性因子会错 100×：
 
-```bash
-pip uninstall mini-racer
-```
+   ```bash
+   scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --dry-run
+   scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --apply
+   ```
 
-若环境里同时还残留更早的 `py-mini-racer`（来自 0.2.x 时代的 `mootdx`），两者会
-在共享的 `py_mini_racer/` import 包上互相覆盖。这曾由 `asl doctor --fix` 处理；
-现在本项目两个包都不用，直接把它们一起卸掉即可：
+2. **配置**：删掉手写配置里的 `[sources.akshare]`；加上 `[sources.pboc]`（社融）。可选 `[sources.nbs]` / `[sources.exchange]` 打开发布方交叉核验。或直接 `asl config init --force` 后把 `data.root` 改回原路径。
 
-```bash
-pip uninstall py-mini-racer mini-racer
-```
+3. **孤儿包**：AkShare 已移除（[issue #3](https://github.com/rootSunc/ashare-lake/issues/3)），pip / uv 不会卸掉不再依赖的包：
+
+   ```bash
+   pip uninstall akshare mini-racer py-mini-racer
+   ```
+
+   `asl doctor --fix` 已删除（只修 mini-racer 冲突）。
+
+4. **宏观自愈**：下次 `macro_indicators` 会重写错误的 `m2_yoy`、并从央行回填 `social_financing`，无需单独迁移脚本。
+
+5. **日内可选**：`[minute_bars].enabled` 默认 `false`；需要时再开，见 [configuration — minute_bars](configuration.md#minute_bars)。
 
 ## 下一步
 

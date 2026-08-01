@@ -275,7 +275,15 @@ def run():
 
 @run.command("daily")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-@click.option("--group", "group_name", default=None, help="Schedule group: core, capital, signals")
+@click.option(
+    "--group",
+    "group_name",
+    default=None,
+    help=(
+        "Schedule group: core, capital, signals, fundamentals, "
+        "macro_risk, research, intraday"
+    ),
+)
 @click.option(
     "--trade-date",
     "trade_date_str",

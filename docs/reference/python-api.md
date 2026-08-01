@@ -34,7 +34,7 @@ def load(
 |------|------|
 | `dataset` | 注册数据集名 |
 | `start`, `end` | 含边界日期窗口（数据集主日期列） |
-| `adjust` | `hfq` / `qfq`；仅价量数据集 |
+| `adjust` | `hfq` / `qfq`；适用于 `daily_bars`、`minute_bars`、`minute_bars_5m` 等价量数据集 |
 | `universe` | `"all_a"` 可交易过滤 |
 | `as_of` | PIT 截止日：过滤 `announce_date <= as_of`，并对同一科目取当时生效的那一版 |
 | `items` | 财报科目 code 列表 |

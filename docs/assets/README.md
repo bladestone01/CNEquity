@@ -8,7 +8,7 @@ PyPI uses the short `README.pypi.md`, which points at absolute
 
 | File | Shows |
 |------|--------|
-| `architecture-overview.jpg` | Four-layer overview: sources → ASL Daily Pipeline → lake → consumers (bilingual) |
+| `architecture-overview.png` | Four-layer overview: sources → ASL Daily Pipeline → lake → consumers (bilingual) |
 
 ## Terminal screenshots
 

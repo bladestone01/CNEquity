@@ -14,11 +14,12 @@
 |------|------|
 | `--symbols` | 逗号分隔标的（默认茅台/平安银行/五粮液/宁德/中国平安） |
 | `--days` | 约多少个交易日的 `daily_bars`（默认 30） |
+| `--intraday` | 额外抓同一批标的的 1m 线（最多约 5 个交易日），打印一根完整会话 |
 | `--data-root` | 独立湖根目录（默认 `data/ashare-lake-demo`） |
 | `--trade-date` | 截至日 YYYY-MM-DD（默认今天 / 最近交易日） |
 | `--config-out` | 写出供后续 `asl query` 使用的小配置（默认 `configs/ashare-lake.demo.toml`） |
 
-流程：建目录 → 探测 TDX → 拉 instruments 并裁成 demo 宇宙 → 交易日历 → `daily_bars` + compact → 打印样例表。终端有分阶段进度与 INFO 日志。需要能访问 TDX；`allow_mock` 不会打开。
+流程：建目录 → 探测 TDX → 拉 instruments 并裁成 demo 宇宙 → 交易日历 → `daily_bars` + compact → 打印样例表；加 `--intraday` 时再跑 `minute_bars`。终端有分阶段进度与 INFO 日志。需要能访问 TDX；`allow_mock` 不会打开。
 
 ---
 
@@ -59,14 +60,26 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 
 ---
 
+## asl doctor
+
+环境与配置体检：`data.root` 是否绝对路径 / 可写、声明的依赖能否 import。不访问网络；无配置也能跑（新鲜安装）。有实质性风险时退出 1。
+
+| 选项 | 说明 |
+|------|------|
+| `--json` | 机器可读输出 |
+
+`asl doctor --fix` 已移除（只服务于已卸掉的 mini-racer 冲突修复）。
+
+---
+
 ## asl run daily
 
 | 选项 | 说明 |
 |------|------|
-| `--group` | `core` \| `capital` \| `signals` \| `fundamentals` \| `macro_risk` \| `research` |
+| `--group` | `core` \| `capital` \| `signals` \| `fundamentals` \| `macro_risk` \| `research` \| `intraday` |
 | `--backfill` | 强制 backfill 语义（慎用） |
 
-无 `--group` 时跑完整 `[job.daily.waves]` DAG。
+无 `--group` 时跑完整 `[job.daily.waves]` DAG。`intraday` 组不在默认调度里：需先开 `[minute_bars].enabled`，再 `asl run daily --group intraday`。
 
 成功或 `skipped_non_trading_day` 退出 0。
 
@@ -77,6 +90,16 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 单数据集 backfill。snapshot 且无 `backfill_source` 时拒绝。
 
 成功时自动 compact 当前 run。
+
+| 选项 | 说明 |
+|------|------|
+| `--start` / `--end` | 窗口（日内数据集拒绝早于源端视野的 `--start`） |
+| `--symbols` | 仅日内数据集：临时覆盖 `[minute_bars].scope`，并隐式开启抓取 |
+
+```bash
+asl backfill minute_bars_5m --start 2026-05-01 --end 2026-07-31 \
+  --symbols 600519.SH,000001.SZ
+```
 
 ### sector_bars
 
