@@ -829,6 +829,10 @@ def _st_from_names(instruments: pl.DataFrame) -> set[str] | None:
     if "name" not in instruments.columns or "symbol" not in instruments.columns:
         return None
     named = instruments.filter(pl.col("name").is_not_null())
+    if "asset_type" in named.columns:
+        # ST is a stock designation; an ETF that happens to carry those letters
+        # in its short name would otherwise read as an unlabeled ST name.
+        named = named.filter(pl.col("asset_type") == "stock")
     if named.is_empty():
         return None
     return set(

@@ -42,7 +42,6 @@ MONTHLY_STALE_DAYS: dict[str, int] = {
     "social_financing": 75,
     "lpr_1y": 45,
 }
-_DEFAULT_MONTHLY_STALE_DAYS = 75
 
 # A restatement past this is worth a look rather than routine revision noise.
 REVISION_MATERIAL_RELATIVE = 0.05
