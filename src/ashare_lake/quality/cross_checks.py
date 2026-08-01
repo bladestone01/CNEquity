@@ -805,3 +805,95 @@ def daily_bars_close_crosscheck_findings(
             "symbols": [sym for sym, _, _ in mismatched[:_SAMPLE]],
         }
     ]
+
+
+# --- ST label cross-check ----------------------------------------------------
+# Flag only once the disagreement is past what naming lag explains: a name
+# changes on the exchange the morning the label does, and `instruments` and
+# `trading_status` are captured by different steps in the same run, so one or
+# two names sitting on either side of that boundary is routine.
+ST_CROSSCHECK_MAX_DISAGREEMENT = 3
+
+
+def _st_from_names(instruments: pl.DataFrame) -> set[str] | None:
+    """Symbols whose exchange short name carries an ST / *ST prefix.
+
+    The short name is assigned by the exchange and travels with the security
+    down a completely different pipe than the risk-warning board listing —
+    ``instruments`` comes from the TDX binary protocol, ``trading_status`` from
+    EastMoney HTTP. That makes the two genuinely independent readings of the
+    same exchange fact, which is the property the retired AkShare union only
+    appeared to have: it queried the same push2 endpoint with the same filter
+    as the EastMoney adapter, so it could never disagree (issue #3 / #10).
+    """
+    if "name" not in instruments.columns or "symbol" not in instruments.columns:
+        return None
+    named = instruments.filter(pl.col("name").is_not_null())
+    if named.is_empty():
+        return None
+    return set(
+        named.filter(pl.col("name").str.replace_all(" ", "").str.to_uppercase().str.contains("ST"))
+        .get_column("symbol")
+        .to_list()
+    )
+
+
+def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]:
+    """``trading_status`` ST labels vs the ST prefix on the instrument's name.
+
+    Reads only curated data — both sides are already fetched by the daily run,
+    so this costs no requests. Measured on 2026-08-01 the two agreed exactly:
+    205 names each, symmetric difference 0.
+    """
+    status_root = config.curated_root / "trading_status"
+    if not dataset_has_parquet(status_root):
+        return []
+    instruments = _instruments_frame(config)
+    if instruments is None:
+        return []
+    by_name = _st_from_names(instruments)
+    if by_name is None:
+        return []
+
+    labeled = (
+        scan_parquet_root(status_root, partition_col="trade_date", end=trade_date)
+        .filter(pl.col("trade_date") == pl.lit(trade_date))
+        .filter(pl.col("status") == "st")
+        .select("symbol")
+        .unique()
+        .collect()
+    )
+    if labeled.is_empty():
+        # No ST rows for the day is a coverage question, not a disagreement —
+        # `trading_status_st_coverage` in audit.py already owns that.
+        return []
+    by_board = set(labeled.get_column("symbol").to_list())
+
+    # Only judge names the instrument list actually knows about; a symbol absent
+    # from `instruments` is a universe gap, not an ST disagreement.
+    known = set(instruments.get_column("symbol").to_list())
+    by_board &= known
+
+    board_only = sorted(by_board - by_name)
+    name_only = sorted(by_name - by_board)
+    total = len(board_only) + len(name_only)
+    if total <= ST_CROSSCHECK_MAX_DISAGREEMENT:
+        return []
+
+    return [
+        {
+            "dataset": "trading_status",
+            "severity": "warning",
+            "check": "st_label_crosscheck",
+            "message": (
+                f"ST labels disagree with instrument names on {trade_date.isoformat()}: "
+                f"{len(board_only)} labeled ST but not named ST, "
+                f"{len(name_only)} named ST but not labeled — one of the two feeds is "
+                "stale or the risk-warning board query changed shape"
+            ),
+            "trade_date": trade_date.isoformat(),
+            "labeled_not_named": len(board_only),
+            "named_not_labeled": len(name_only),
+            "symbols": (board_only + name_only)[:_SAMPLE],
+        }
+    ]

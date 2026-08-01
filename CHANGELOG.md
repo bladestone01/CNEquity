@@ -6,6 +6,45 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`st_label_crosscheck`** — `trading_status` ST labels vs the ST prefix on the
+  instrument's exchange short name. Both sides are already in curated, so it
+  costs no requests, and it is genuinely independent: the short name is assigned
+  by the exchange and arrives over the TDX binary protocol, while the
+  risk-warning board comes over EastMoney HTTP. This is the check the retired
+  AkShare union only appeared to be — that one queried the same push2 endpoint
+  with the same filter as the EastMoney adapter, so it could never disagree.
+  Measured 2026-08-01: 205 names on each side, symmetric difference 0.
+
+- **`macro_checks.py`** — freshness and revision tracking for the monthly macro
+  series (issue #10).
+
+  `macro_indicator_stale` catches a publisher that stops. Every run refetches
+  the full history and dedupes on `(indicator_id, obs_date)`, so a dead feed
+  looks exactly like a healthy one in curated — the old rows are still there and
+  no step fails. Only the lag between the newest observation and the run date
+  shows it. Thresholds are per indicator, set from measured publication rhythm
+  plus ~1.5 months, so a single missed release is what trips them.
+
+  `macro_value_revised` records restatements. Compact keeps the newest
+  `fetched_at` per key, so a revision silently replaces the earlier value. That
+  overwrite is deliberate — it is what let the bad `m2_yoy` history heal itself
+  without a migration script — so the check runs between fetch and write and
+  reports what changed rather than blocking it. curated still holds the latest
+  published value; the finding is the only record the earlier one existed.
+
+### Changed
+
+- `social_financing` carries a deliberately wide staleness threshold (135 days).
+  社会融资规模 is a PBOC statistic that MOFCOM republishes, and the copy runs
+  about two release cycles behind: on 2026-08-01 MOFCOM's newest month was
+  2026-04 while PBOC had published June on 2026-07-15. The values match (2026
+  Jan–Apr: 154,507亿 vs PBOC's 15.45万亿, differing only by rounding) — only the
+  timeliness lags. Documented rather than re-sourced; PBOC publishes HTML
+  releases with no stable JSON endpoint, so switching would trade a measured lag
+  for a more fragile parser.
+
 ### Fixed
 
 - **`m2_yoy` held M0 month-over-month growth, not M2 year-on-year.** The AkShare

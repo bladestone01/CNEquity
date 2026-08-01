@@ -16,6 +16,7 @@ from ashare_lake.quality.cross_checks import (
     adj_factor_reconciliation_findings,
     daily_bars_calendar_findings,
     daily_bars_close_crosscheck_findings,
+    st_label_crosscheck_findings,
     universe_survivorship_findings,
     valuation_bars_coverage_findings,
 )
@@ -25,6 +26,7 @@ from ashare_lake.quality.dataset_checks import (
     check_partition_fragmentation,
 )
 from ashare_lake.quality.intraday_checks import minute_bars_findings
+from ashare_lake.quality.macro_checks import macro_staleness_findings
 from ashare_lake.quality.source_diff import run_source_diffs
 from ashare_lake.quality.unit_checks import daily_bars_volume_unit_findings
 from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_root
@@ -227,6 +229,9 @@ def _collect_lake_findings(
     findings.extend(valuation_bars_coverage_findings(config, trade_date))
     findings.extend(adj_factor_reconciliation_findings(config, trade_date))
     findings.extend(universe_survivorship_findings(config, trade_date))
+    # Both sides already in curated — costs no requests (issue #10).
+    findings.extend(st_label_crosscheck_findings(config, trade_date))
+    findings.extend(macro_staleness_findings(config, trade_date))
     findings.extend(_unregistered_curated_dirs(config))
 
     for ds, pcol in PARTITION_COLS.items():
