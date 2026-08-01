@@ -58,6 +58,24 @@ class DatasetSpec:
         When False, an empty curated root is a warning (not an error) and does
         not alone make ``lake_health`` UNHEALTHY. Use for registered datasets
         whose source is not yet wired or is temporarily unavailable.
+    history_horizon_days:
+        Trading days of history the *source* still serves, counted back from
+        today. ``None`` (the default) means the source has no such limit and
+        history is bounded only by what has been backfilled.
+
+        This is a property of the vendor, not of this lake, and it is the
+        difference between "not fetched yet" and "can never be fetched". Asking
+        for 2016 intraday does not return less data, it returns none, and no
+        backfill source extends it — ``by_date`` alone would promise a decade.
+
+        The vendor caps a **bar count** per symbol, not a date: ~22,800 bars of
+        1m and ~23,568 of 5m. This field is that count divided by a full
+        session, so it holds for any instrument quoted every session — which is
+        every A-share stock, and what these datasets are for. An instrument
+        that only has bars on scattered days reaches proportionally further
+        back (162107.SZ, a barely-traded LOF, holds 3,216 5m bars spread over
+        67 days and so reaches 2012). Treat it as the guarantee for a normal
+        stock, not as a hard ceiling for every symbol.
     """
 
     name: str
@@ -75,10 +93,45 @@ class DatasetSpec:
     # so their inherent lag is not mistaken for a stuck pipeline.
     max_staleness_days: int = 1
     required: bool = True
+    history_horizon_days: int | None = None
+    # Calendar days of history one backfill sub-run may cover. None = one run
+    # for the whole window, which is what every daily-cadence dataset wants.
+    #
+    # Set it where a full window's staging would not fit in memory: compact
+    # reads *every* staging file of a run into one frame, so a 95-day
+    # full-market minute_bars seed (~123M rows) has to be drained in slices.
+    # Chunking also makes a killed sweep resumable at the last compacted slice
+    # instead of losing everything.
+    backfill_chunk_days: int | None = None
+    # Bar frequency for intraday datasets ("1m", "5m"), None for everything
+    # else. One dataset holds exactly one frequency, so this is also what marks
+    # a dataset as intraday — steps, audit checks and the reader all derive the
+    # set from here rather than each keeping its own list of names.
+    #
+    # It is one-per-dataset because ``history_horizon_days`` is one-per-dataset
+    # and the two disagree: TDX keeps 95 trading days of 1m but 491 of 5m. So
+    # is the watermark, and so is ``coverage_start``. A single dataset holding
+    # both frequencies could not answer "how far back does this go" truthfully
+    # for either of them.
+    intraday_frequency: str | None = None
 
     @property
     def query_date_col(self) -> str | None:
         return self.date_col or self.partition_col
+
+    def earliest_available(self, today: date, *, trading_days_per_year: int = 242) -> date | None:
+        """Rough calendar date before which the source serves nothing.
+
+        The horizon is counted in *trading* days because that is how the vendor
+        caps it (a fixed bar count), so it is converted with the usual ~242
+        sessions a year. Deliberately approximate and deliberately early: it
+        guards a CLI window, and refusing a window the source would in fact
+        have served is worse than fetching a few empty days.
+        """
+        if self.history_horizon_days is None:
+            return None
+        calendar_days = round(self.history_horizon_days * 365 / trading_days_per_year)
+        return date.fromordinal(max(1, today.toordinal() - calendar_days))
 
     def partition_for(self, d: date) -> str:
         """Directory value of the partition holding *d* for this dataset."""
@@ -101,6 +154,58 @@ _SPECS = [
     # L1 bars
     DatasetSpec("daily_bars", partition_col="trade_date"),
     DatasetSpec("index_bars", partition_col="trade_date", partition_granularity="year"),
+    # 1-minute bars. Day partitions: ~240 bars × the configured scope, which is
+    # 1.3M rows a day at full market — the top of the ≥1000 rows/day band, and
+    # ~30MB a partition. The schema draft once sketched
+    # frequency/trade_date/symbol_bucket; a second directory level buys nothing
+    # at that size and every partition-aware module here assumes exactly one.
+    #
+    # Opt-in (required=False): this is not on the default daily waves and a lake
+    # that never enabled it must not be judged unhealthy for holding no rows.
+    DatasetSpec(
+        "minute_bars",
+        partition_col="trade_date",
+        partition_granularity="day",
+        fetch_semantics="by_date",
+        required=False,
+        # Measured 2026-08-01 against 120.76.1.198:7709 — 22,800 bars for every
+        # symbol probed, across both exchanges and every liquidity band, so it
+        # is a server retention window rather than a per-symbol artefact.
+        history_horizon_days=95,
+        # ~7 trading days of full-market 1m per sub-run: ~9M rows staged, which
+        # compacts comfortably, against ~123M for the whole horizon at once.
+        backfill_chunk_days=10,
+        intraday_frequency="1m",
+    ),
+    # 5-minute bars — a separate dataset, not a `frequency` value inside
+    # minute_bars, because the horizon differs by 5× and a dataset carries one
+    # watermark and one coverage_start (see DatasetSpec.intraday_frequency).
+    #
+    # This is the only intraday frequency with real history: two years against
+    # 1m's four and a half months, at a fifth of the volume (~7MB a day at full
+    # market). For most research it is the more useful of the two, which is why
+    # it is registered rather than left as a resampling exercise.
+    #
+    # 15m/30m/60m are deliberately absent. TDX serves them over the same 491-day
+    # window, but they aggregate exactly from 5m (48 bars divide by 3, 6 and 12
+    # onto identical closing-minute boundaries), so storing them would be three
+    # more datasets holding a `group_by_dynamic` away from data already here.
+    DatasetSpec(
+        "minute_bars_5m",
+        partition_col="trade_date",
+        partition_granularity="day",
+        fetch_semantics="by_date",
+        required=False,
+        # Measured 2026-08-01: 23,568 bars = 491 trading days, back to
+        # 2024-07-23. 15m/30m/60m share exactly that window (7,856 / 3,928 /
+        # 1,964 bars), which is what says it is a time-based retention policy
+        # rather than a bar-count cap.
+        history_horizon_days=491,
+        # A fifth of 1m's row rate, so a slice five times as wide stages a
+        # comparable ~13M rows.
+        backfill_chunk_days=50,
+        intraday_frequency="5m",
+    ),
     # Domestic commodity futures main-continuous (东财主连) + narrow offshore
     # gold (Sina COMEX ``GC0.CMX``); not A-share equity.
     DatasetSpec(
@@ -262,6 +367,20 @@ def derived_dataset_names() -> frozenset[str]:
 
 def pit_dataset_names() -> frozenset[str]:
     return frozenset(s.name for s in DATASETS.values() if s.pit)
+
+
+def intraday_dataset_names() -> frozenset[str]:
+    return frozenset(s.name for s in DATASETS.values() if s.intraday_frequency)
+
+
+def intraday_datasets() -> dict[str, str]:
+    """``{frequency: dataset}`` for every registered intraday dataset.
+
+    The one place the mapping lives. Steps register from it, the config
+    validates against it, and audit iterates it, so adding a frequency is a
+    registry entry rather than an edit in four modules.
+    """
+    return {s.intraday_frequency: s.name for s in DATASETS.values() if s.intraday_frequency}
 
 
 def fetch_semantics(dataset: str) -> FetchSemantics:

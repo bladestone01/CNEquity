@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import click
@@ -10,7 +10,11 @@ import polars as pl
 import ashare_lake.steps  # noqa: F401 — register steps
 from ashare_lake.config import WaveConfig, load_config, validate_config, write_user_config
 from ashare_lake.derive.adj_factors import compute_adj_factors
-from ashare_lake.domain.datasets import fetch_semantics, get_dataset
+from ashare_lake.domain.datasets import (
+    fetch_semantics,
+    get_dataset,
+    intraday_dataset_names,
+)
 from ashare_lake.orchestrator.engine import JobEngine
 from ashare_lake.orchestrator.manifest import Manifest
 from ashare_lake.orchestrator.run_lock import RunLockError
@@ -91,12 +95,19 @@ def cli():
     show_default=True,
     help="Where to write the tiny demo config for follow-up `asl query`.",
 )
+@click.option(
+    "--intraday",
+    is_flag=True,
+    help="Also capture 1-minute bars for the same symbols (up to 5 sessions) "
+    "and print a session, so the bar_time convention is visible.",
+)
 def demo_cmd(
     symbols: str,
     days: int,
     data_root: str,
     trade_date_str: str | None,
     config_out: str,
+    intraday: bool,
 ):
     """Fetch a tiny real-source lake so you can see progress and results quickly.
 
@@ -112,6 +123,7 @@ def demo_cmd(
         data_root=Path(data_root),
         trade_date=td,
         config_out=Path(config_out),
+        intraday=intraday,
     )
 
 
@@ -534,8 +546,9 @@ def run_catchup(
     "start_str",
     default=None,
     help="Range start (YYYY-MM-DD) for date-walking backfills (margin_trading, "
-    "financial_statement_items period walk) and to narrow the sector_bars "
-    "kline window (default: 400 days back).",
+    "financial_statement_items period walk, minute_bars) and to narrow the "
+    "sector_bars kline window (default: 400 days back). Horizon-limited "
+    "datasets refuse a start older than what their source still serves.",
 )
 @click.option(
     "--end",
@@ -543,6 +556,14 @@ def run_catchup(
     default=None,
     help="Range end (YYYY-MM-DD) for date-walking backfills (margin_trading, "
     "financial_statement_items period walk) and sector_bars (default: today).",
+)
+@click.option(
+    "--symbols",
+    "symbols_str",
+    default=None,
+    help="Comma-separated symbols to restrict an intraday backfill to "
+    "(minute_bars, minute_bars_5m), overriding [minute_bars].scope for this "
+    "run only. Use it for a one-off pull without editing the config.",
 )
 @click.option(
     "--workers",
@@ -558,6 +579,7 @@ def backfill(
     force: bool,
     start_str: str | None,
     end_str: str | None,
+    symbols_str: str | None,
     workers: int,
 ):
     """Backfill a dataset."""
@@ -583,16 +605,69 @@ def backfill(
         if retry_failed and force:
             raise click.ClickException("Use either --retry-failed or --force, not both.")
         cfg._sector_bars_force = force
-    if start_str:
-        cfg._backfill_start = date.fromisoformat(start_str)
-    if end_str:
-        cfg._backfill_end = date.fromisoformat(end_str)
+    start_d = date.fromisoformat(start_str) if start_str else None
+    end_d = date.fromisoformat(end_str) if end_str else None
+    _guard_history_horizon(dataset, start_d)
+    if symbols_str:
+        symbols = [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
+        if not get_dataset(dataset).intraday_frequency:
+            raise click.ClickException(
+                f"--symbols only applies to intraday datasets "
+                f"({', '.join(sorted(intraday_dataset_names()))}); {dataset} takes its "
+                "universe from instruments."
+            )
+        # Enabling here too: a one-off `--symbols` pull should not also require
+        # flipping [minute_bars].enabled in the config first.
+        cfg.minute_bars_enabled = True
+        cfg.minute_bars_scope = "watchlist"
+        cfg.minute_bars_symbols = symbols
+        freq = get_dataset(dataset).intraday_frequency
+        if freq not in cfg.minute_bars_frequencies:
+            cfg.minute_bars_frequencies = [*cfg.minute_bars_frequencies, freq]
+        click.echo(f"[{dataset}] scope overridden for this run: {len(symbols)} symbol(s)", err=True)
+    if start_d:
+        cfg._backfill_start = start_d
+    if end_d:
+        cfg._backfill_end = end_d
     cfg._backfill_workers = workers
-    engine = JobEngine(cfg)
-    # Do not finish_run until after compact — otherwise a kill between the two
-    # leaves status=success with no compact batch, and `asl clean` cannot reclaim
-    # staging that never reached curated (same ordering as delisted CLI).
-    result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
+
+    chunk_days = get_dataset(dataset).backfill_chunk_days
+    if chunk_days and start_d and end_d:
+        result = _backfill_chunked(cfg, dataset, start_d, end_d, chunk_days)
+    else:
+        result = _backfill_once(cfg, dataset)
+    click.echo(json.dumps(result, indent=2, default=str))
+    if result["status"] != "success":
+        raise SystemExit(1)
+
+
+def _guard_history_horizon(dataset: str, start: date | None) -> None:
+    """Refuse a window the source cannot serve, instead of sweeping into nothing.
+
+    A horizon-limited source does not return *less* data for an older window,
+    it returns none — so without this an ``asl backfill minute_bars --start
+    2016-01-01`` spends hours producing an empty lake and reads as a bug in the
+    lake rather than a limit of the vendor.
+    """
+    spec = get_dataset(dataset)
+    earliest = spec.earliest_available(date.today())
+    if earliest is None or start is None or start >= earliest:
+        return
+    raise click.ClickException(
+        f"{dataset}: --start {start} is older than the source horizon. "
+        f"The vendor caps history per symbol at about {spec.history_horizon_days} "
+        f"trading days for an instrument quoted every session (back to about "
+        f"{earliest}), and no backfill source extends it. Re-run with "
+        f"--start {earliest} or later. "
+        "(A barely-traded instrument holds bars on fewer days and so reaches "
+        "further back. To pull those, narrow [minute_bars].scope to a watchlist "
+        "first — a full sweep at that start would spend hours on symbols that "
+        "have nothing there.)"
+    )
+
+
+def _finish_backfill_run(engine, result: dict) -> dict:
+    """Compact this run's staging, then close the run out."""
     run_id = result["run_id"]
     # Compact partial sweeps too. `compact` only ever drains the *current* run's
     # staging, so skipping it on a warning would strand every row the sweep did
@@ -601,8 +676,7 @@ def backfill(
     if result["status"] in ("success", "warning"):
         # Through the engine, not step_compact directly: the recorded compact
         # batch is what later lets `asl clean` release this run's staging.
-        compact_out = engine.run_step("compact", date.today(), run_id)
-        result["compact"] = compact_out
+        result["compact"] = engine.run_step("compact", date.today(), run_id)
     engine.manifest.finish_run(
         run_id,
         result["status"],
@@ -610,9 +684,63 @@ def backfill(
         rows_written=result.get("rows_written", 0),
         error_message="one or more steps failed" if result["status"] == "failed" else None,
     )
-    click.echo(json.dumps(result, indent=2, default=str))
-    if result["status"] != "success":
-        raise SystemExit(1)
+    return result
+
+
+def _backfill_once(cfg, dataset: str) -> dict:
+    engine = JobEngine(cfg)
+    # Do not finish_run until after compact — otherwise a kill between the two
+    # leaves status=success with no compact batch, and `asl clean` cannot reclaim
+    # staging that never reached curated (same ordering as delisted CLI).
+    result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
+    return _finish_backfill_run(engine, result)
+
+
+def _backfill_chunked(cfg, dataset: str, start: date, end: date, chunk_days: int) -> dict:
+    """Run the backfill as a sequence of compacted date slices.
+
+    One run for the whole window would stage more than compact can hold in
+    memory (it reads every staging file of a run into one frame). Slicing also
+    means a kill costs the current slice rather than the whole sweep: every
+    earlier slice is already in curated.
+    """
+    engine = JobEngine(cfg)
+    slices: list[dict] = []
+    status = "success"
+    rows_read = rows_written = 0
+    cursor = start
+    while cursor <= end:
+        slice_end = min(cursor + timedelta(days=chunk_days - 1), end)
+        cfg._backfill_start, cfg._backfill_end = cursor, slice_end
+        click.echo(f"[{dataset}] slice {cursor}..{slice_end}", err=True)
+        result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
+        result = _finish_backfill_run(engine, result)
+        rows_read += int(result.get("rows_read", 0))
+        rows_written += int(result.get("rows_written", 0))
+        slices.append(
+            {
+                "start": cursor,
+                "end": slice_end,
+                "status": result["status"],
+                "rows_written": result.get("rows_written", 0),
+            }
+        )
+        if result["status"] == "failed":
+            # Stop rather than press on: the slices already compacted are kept,
+            # and the window to resume from is the one printed here.
+            status = "failed"
+            break
+        if result["status"] == "warning":
+            status = "warning" if status == "success" else status
+        cursor = slice_end + timedelta(days=1)
+    return {
+        "dataset": dataset,
+        "status": status,
+        "rows_read": rows_read,
+        "rows_written": rows_written,
+        "slices": slices,
+        "resume_from": slices[-1]["start"] if status == "failed" and slices else None,
+    }
 
 
 @cli.command()

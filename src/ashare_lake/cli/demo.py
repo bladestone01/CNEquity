@@ -196,6 +196,82 @@ def _sample_query(cfg: Config, symbol: str) -> pl.DataFrame:
     )
 
 
+def _intraday_hint(summary: dict | None, cfg: Config, symbol: str) -> str:
+    """Follow-up snippet for the intraday leg, or nothing when it did not run."""
+    if summary is None:
+        return ""
+    return f"""
+  minutes = load("minute_bars", symbols=["{symbol}"], data_root="{cfg.data_root}")
+
+Intraday capture is opt-in in a real lake — see `[minute_bars]` in the config.
+The source keeps ~95 trading days of 1m and ~491 of 5m (minute_bars_5m), so
+there is no deep intraday history to backfill.
+"""
+
+
+def _run_intraday_demo(cfg: Config, engine, symbols: list[str], end: date, days: int) -> dict:
+    """Capture a few sessions of 1m bars and show the session shape.
+
+    Deliberately narrow: the point is to make the bar-time convention and the
+    240-bar session visible, not to seed anything. The source only keeps ~95
+    trading days of 1m, so the window is clamped to what the demo asks for.
+    """
+    from ashare_lake.adapters.tdx_protocol.minute_bars import bars_per_session
+
+    intraday_days = min(days, 5)
+    start = _start_for_days(cfg, end, intraday_days)
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_scope = "watchlist"
+    cfg.minute_bars_symbols = list(symbols)
+    cfg.minute_bars_frequencies = ["1m"]
+    cfg._backfill = True
+    cfg._backfill_start = start
+    cfg._backfill_end = end
+
+    result = engine.run_job(
+        "demo:intraday",
+        trade_date=end,
+        waves=[WaveConfig(name="intraday", parallel=False, steps=["minute_bars", "compact"])],
+        backfill=True,
+    )
+    if result.get("status") not in ("success", "warning"):
+        raise click.ClickException(f"minute_bars failed: {result}")
+
+    from ashare_lake.query.reader import load
+
+    bars = load("minute_bars", symbols=symbols, config=cfg)
+    if bars.is_empty():
+        raise click.ClickException("minute_bars returned no rows for the demo window")
+
+    expected = bars_per_session("1m")
+    per_day = (
+        bars.group_by("symbol", "trade_date")
+        .agg(pl.len().alias("bars"))
+        .sort("symbol", "trade_date")
+    )
+    full = per_day.filter(pl.col("bars") == expected).height
+    click.echo(
+        f"{bars.height} 1m bars over {per_day.height} symbol-day(s); "
+        f"{full}/{per_day.height} hold a full {expected}-bar session"
+    )
+    one = bars.filter(pl.col("symbol") == symbols[0]).sort("bar_time")
+    session = one.filter(pl.col("trade_date") == one["trade_date"].max())
+    with pl.Config(tbl_rows=6, tbl_cols=-1, fmt_str_lengths=24):
+        click.echo(
+            f"\n{symbols[0]} — first and last bars of {session['trade_date'][0]} "
+            "(bar_time is the CLOSING minute):\n"
+        )
+        cols = ["symbol", "bar_time", "open", "high", "low", "close", "volume"]
+        click.echo(pl.concat([session.head(3), session.tail(3)]).select(cols))
+    return {
+        "rows": bars.height,
+        "symbol_days": per_day.height,
+        "full_sessions": full,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
+
+
 def run_demo(
     *,
     symbols: list[str],
@@ -203,6 +279,7 @@ def run_demo(
     data_root: Path,
     trade_date: date | None = None,
     config_out: Path | None = None,
+    intraday: bool = False,
 ) -> dict:
     """Run the mini real-source demo. Returns a small summary dict."""
     _configure_logging()
@@ -213,7 +290,8 @@ def run_demo(
         raise click.ClickException("--days must be >= 1")
 
     config_out = config_out or Path("configs/ashare-lake.demo.toml")
-    _banner("1/6", f"Prepare demo lake at {data_root}")
+    steps = 7 if intraday else 6
+    _banner(f"1/{steps}", f"Prepare demo lake at {data_root}")
     _write_demo_toml(config_out, data_root)
     cfg = _demo_config(data_root, config_path=config_out.resolve())
     init_data_layout(cfg)
@@ -221,7 +299,7 @@ def run_demo(
     click.echo(f"config    = {config_out}")
     click.echo("Note: this is a SEPARATE lake from a full `asl init` — safe to wipe.")
 
-    _banner("2/6", "Probe TDX")
+    _banner(f"2/{steps}", "Probe TDX")
     try:
         _probe_tdx(cfg)
     except Exception as exc:
@@ -231,10 +309,10 @@ def run_demo(
             "`[tdx_protocol.hosts]` in the example config."
         ) from exc
 
-    _banner("3/6", "Instruments (demo universe)")
+    _banner(f"3/{steps}", "Instruments (demo universe)")
     kept = _write_demo_instruments(cfg, symbols)
 
-    _banner("4/6", "Trading calendar")
+    _banner(f"4/{steps}", "Trading calendar")
     engine = JobEngine(cfg)
     as_of = trade_date or date.today()
     # Seed calendar covers a wide range; backfill window is cheap (CSV/seed).
@@ -253,7 +331,7 @@ def run_demo(
     start = _start_for_days(cfg, end, days)
     click.echo(f"Demo window: {start.isoformat()} → {end.isoformat()} ({days} trading days target)")
 
-    _banner("5/6", f"daily_bars for {len(kept)} symbols")
+    _banner(f"5/{steps}", f"daily_bars for {len(kept)} symbols")
     cfg._backfill = True
     cfg._backfill_start = start
     cfg._backfill_end = end
@@ -272,7 +350,7 @@ def run_demo(
         f"rows_written≈{bars.get('rows_written', '?')}"
     )
 
-    _banner("6/6", "Sample result")
+    _banner(f"6/{steps}", "Sample result")
     sample_symbol = kept[0]
     try:
         sample = _sample_query(cfg, sample_symbol)
@@ -303,6 +381,11 @@ def run_demo(
             )
         )
 
+    intraday_summary = None
+    if intraday:
+        _banner(f"7/{steps}", f"minute_bars (1m) for {len(kept)} symbols")
+        intraday_summary = _run_intraday_demo(cfg, engine, kept, end, days)
+
     click.echo(
         f"""
 Demo lake ready under: {cfg.data_root}
@@ -320,7 +403,7 @@ Next:
 Python:
   from ashare_lake.query import load
   bars = load("daily_bars", symbols=["{sample_symbol}"], data_root="{cfg.data_root}")
-
+{_intraday_hint(intraday_summary, cfg, sample_symbol)}
 Full-market backfill (hours/days) is separate: `asl config init` then `asl init`.
 Do not reuse this demo data_root for production.
 """
@@ -334,4 +417,5 @@ Do not reuse this demo data_root for production.
         "sample_symbol": sample_symbol,
         "sample_rows": sample.height,
         "bars_run_id": bars.get("run_id"),
+        "intraday": intraday_summary,
     }
