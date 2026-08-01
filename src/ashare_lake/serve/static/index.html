@@ -1,12 +1,13 @@
 <!doctype html>
 <!--
-  Lake overview. Self-contained on purpose: no CDN, no build step, no external
+  Lake dashboard. Self-contained on purpose: no CDN, no build step, no external
   font — a lake often runs on an offline box or behind a proxy, and an external
   asset there is a page that does not load.
 
-  The charting library goes in when the heatmap needs zoom and drill-down; until
-  then a CSS grid renders the same cells and this file stays something you can
-  read.
+  Two views, routed on the hash: the tier overview (#/) and one dataset
+  (#/dataset/<name>). A charting library goes in when the heatmap needs zoom and
+  drill-down; until then SVG and a CSS grid draw the same marks and this file
+  stays something you can read.
 -->
 <html lang="zh">
 <head>
@@ -19,6 +20,12 @@
     --card: #fff; --fresh: #2f855a; --stale: #c05621; --empty: #a0a09a;
     --cell-covered: #4a9d6f; --cell-gap: #e0684f; --cell-outside: #edecea;
     --cell-cadence: #cfd8dc;
+    /* Categorical series, validated for this surface (light steps of the
+       reference palette): worst adjacent CVD ΔE 9.1, normal-vision 19.6.
+       Three sit under 3:1 contrast, so the legend and the totals table below
+       every chart are load-bearing, not decoration. */
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+    --series-4: #eda100; --series-5: #e87ba4; --series-other: #9a9a92;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -26,6 +33,10 @@
       --card: #1f1f23; --fresh: #68d391; --stale: #f6ad55; --empty: #5a5a55;
       --cell-covered: #3d7f5a; --cell-gap: #b8503c; --cell-outside: #2a2a2e;
       --cell-cadence: #3c4348;
+      /* Same eight hues stepped for the dark surface, validated as a set —
+         not an automatic flip of the light values. */
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+      --series-4: #c98500; --series-5: #d55181; --series-other: #6d6d66;
     }
   }
   * { box-sizing: border-box; }
@@ -36,6 +47,10 @@
   }
   main { max-width: 1180px; margin: 0 auto; }
   h1 { font-size: 1.35rem; margin: 0 0 .25rem; font-weight: 600; }
+  h2 { font-size: .95rem; margin: 2rem 0 .75rem; font-weight: 600; }
+  h3 { font-size: .8rem; margin: 1.5rem 0 .5rem; font-weight: 600; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .05em; }
+  a { color: inherit; }
   .sub { color: var(--muted); margin-bottom: 1.75rem; font-size: .85rem; }
   .banner {
     background: var(--card); border: 1px solid var(--stale); border-left-width: 3px;
@@ -45,9 +60,8 @@
   .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: .8rem .9rem; }
   .kpi .n { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
   .kpi .l { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
-  h2 { font-size: .95rem; margin: 2rem 0 .75rem; font-weight: 600; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
+  th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
   td.n, th.n { text-align: right; }
   .tier-row { cursor: pointer; }
@@ -58,6 +72,8 @@
   .empty, .na { background: var(--empty); }
   .members td { background: var(--card); font-size: .85rem; }
   .members table { margin: .25rem 0 .5rem; }
+  .ds-link { cursor: pointer; text-decoration: underline; text-decoration-style: dotted;
+             text-underline-offset: 3px; }
   .scroll { overflow-x: auto; }
   .grid-row { display: flex; align-items: center; gap: .5rem; margin-bottom: 2px; }
   .grid-name { flex: 0 0 190px; font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -67,38 +83,42 @@
   /* A non-daily source is meant to have holes; only a daily one's gap is a fault. */
   .cell.gc { background: var(--cell-cadence); }
   .cell.u { background: repeating-linear-gradient(45deg, var(--cell-outside), var(--cell-outside) 2px, transparent 2px, transparent 4px); }
-  .legend { color: var(--muted); font-size: .75rem; margin: .6rem 0 0; display: flex; gap: 1rem; flex-wrap: wrap; }
+  .legend { color: var(--muted); font-size: .75rem; margin: .6rem 0 0; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
   .legend span { display: flex; align-items: center; gap: .3rem; }
+  .swatch { width: .65rem; height: .65rem; border-radius: 2px; display: inline-block; }
   code { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: .05rem .3rem; font-size: .8rem; }
   .err { color: var(--stale); }
+  .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--line); margin: 1.5rem 0 1rem; }
+  .tab { padding: .45rem .9rem; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); }
+  .tab.on { color: var(--fg); border-bottom-color: var(--fg); font-weight: 600; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: .5rem 1.5rem; }
+  .fact { display: flex; justify-content: space-between; gap: 1rem; padding: .3rem 0; border-bottom: 1px solid var(--line); font-size: .85rem; }
+  /* nowrap: a long value (a four-column primary key) must not squeeze the
+     label into "主\n键". */
+  .fact .k { color: var(--muted); white-space: nowrap; }
+  .fact .v { text-align: right; font-variant-numeric: tabular-nums; }
+  .cmd { display: flex; align-items: center; gap: .6rem; margin-bottom: .35rem; font-size: .85rem; }
+  .cmd button { font: inherit; font-size: .75rem; cursor: pointer; border: 1px solid var(--line);
+                background: var(--card); color: var(--fg); border-radius: 4px; padding: .1rem .5rem; }
+  .cover { position: relative; height: 26px; background: var(--cell-outside); border-radius: 3px; overflow: hidden; }
+  .cover .fill { position: absolute; top: 0; bottom: 0; background: var(--cell-covered); }
+  .cover .horizon { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--stale); }
+  .muted { color: var(--muted); font-size: .8rem; }
+  svg text { fill: var(--muted); font-size: 10px; }
+  .bar:hover { opacity: .75; }
+  .back { font-size: .85rem; color: var(--muted); cursor: pointer; }
 </style>
 </head>
 <body>
 <main>
-  <h1>ashare-lake</h1>
-  <div class="sub" id="sub">加载中…</div>
-  <div id="banner"></div>
-  <div class="kpis" id="kpis"></div>
-
-  <h2>分层（点击展开数据集）</h2>
-  <div class="scroll"><table id="tiers"><tbody></tbody></table></div>
-
-  <h2>覆盖热力（最近 <span id="days">90</span> 个交易日）</h2>
-  <div class="scroll" id="heat"></div>
-  <p class="legend">
-    <span><i class="cell c"></i> 有分区覆盖</span>
-    <span><i class="cell g"></i> 日更源的缺口</span>
-    <span><i class="cell gc"></i> 非日更源的间隔（属其节奏）</span>
-    <span><i class="cell"></i> 覆盖区间外</span>
-    <span><i class="cell u"></i> 无分区（单文件 merge）</span>
-    <span>月/季/年分区的格子按其周期着色，不代表单日有行</span>
-  </p>
+  <div id="app"></div>
 </main>
 
 <script>
 const qs = new URLSearchParams(location.search);
 const TOKEN = qs.get("token");
 const DAYS = Number(qs.get("days") || 90);
+const app = document.getElementById("app");
 
 async function api(path) {
   const sep = path.includes("?") ? "&" : "?";
@@ -110,51 +130,70 @@ async function api(path) {
 
 const fmt = (n) => (n ?? 0).toLocaleString();
 const mb = (b) => !b ? "—" : b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : (b / 1e6).toFixed(0) + " MB";
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const href = (name) => `#/dataset/${encodeURIComponent(name)}`;
+
+// Identity, not rank: sources are slotted by name so a chart's colours do not
+// shuffle when one of them happens to grow. Past five, fold rather than cycle.
+const SERIES = ["--series-1", "--series-2", "--series-3", "--series-4", "--series-5"];
+function colorMap(sources) {
+  const sorted = [...new Set(sources)].sort();
+  const map = new Map();
+  sorted.forEach((s, i) => map.set(s, i < SERIES.length ? `var(${SERIES[i]})` : "var(--series-other)"));
+  return map;
+}
+
+// --- overview ---------------------------------------------------------------
 
 function kpi(n, label) {
   return `<div class="kpi"><div class="n">${n}</div><div class="l">${label}</div></div>`;
 }
 
-function renderHealth(h) {
-  document.getElementById("sub").textContent =
-    `最后交易日 ${h.anchor} · ${h.datasets} 个注册数据集 · 审计快照 ${h.audit_trade_date || "无"}`;
-
+async function renderOverview() {
+  const [h, tiers, datasets, hm] = await Promise.all([
+    api("/api/health"), api("/api/tiers"), api("/api/datasets"), api(`/api/heatmap?days=${DAYS}`),
+  ]);
   const sev = h.findings_by_severity || {};
-  document.getElementById("kpis").innerHTML = [
-    kpi(h.fresh, "fresh"),
-    kpi(`<span class="${h.stale ? "err" : ""}">${h.stale}</span>`, "stale"),
-    kpi(h.empty, "empty"),
-    kpi(fmt(h.rows), "行"),
-    kpi(mb(h.bytes), "体积"),
-    kpi(`<span class="${sev.error ? "err" : ""}">${sev.error || 0}</span> / ${sev.warning || 0}`, "error / warning"),
-  ].join("");
-
   const notes = [];
-  if (h.stats_stale) {
-    notes.push(`度量表过期（${h.stats_reason}）——已在后台重建，稍后刷新。`);
-  }
-  if (h.stale_datasets.length) {
-    notes.push(`STALE：<code>${h.stale_datasets.join("</code> <code>")}</code>`);
-  }
-  if (h.empty_required.length) {
-    notes.push(`必需但为空：<code>${h.empty_required.join("</code> <code>")}</code>`);
-  }
-  document.getElementById("banner").innerHTML = notes.length
-    ? `<div class="banner">${notes.join("<br>")}</div>` : "";
-}
+  if (h.stats_stale) notes.push(`度量表过期（${esc(h.stats_reason)}）——已在后台重建，稍后刷新。`);
+  if (h.stale_datasets.length) notes.push(`STALE：${h.stale_datasets.map((d) => `<code class="ds-link" data-ds="${esc(d)}">${esc(d)}</code>`).join(" ")}`);
+  if (h.empty_required.length) notes.push(`必需但为空：${h.empty_required.map((d) => `<code>${esc(d)}</code>`).join(" ")}`);
 
-function renderTiers(tiers, datasets) {
   const byTier = {};
   for (const d of datasets) (byTier[d.tier] ||= []).push(d);
+
+  app.innerHTML = `
+    <h1>ashare-lake</h1>
+    <div class="sub">最后交易日 ${h.anchor} · ${h.datasets} 个注册数据集 · 审计快照 ${h.audit_trade_date || "无"}</div>
+    ${notes.length ? `<div class="banner">${notes.join("<br>")}</div>` : ""}
+    <div class="kpis">
+      ${kpi(h.fresh, "fresh")}
+      ${kpi(`<span class="${h.stale ? "err" : ""}">${h.stale}</span>`, "stale")}
+      ${kpi(h.empty, "empty")}
+      ${kpi(fmt(h.rows), "行")}
+      ${kpi(mb(h.bytes), "体积")}
+      ${kpi(`<span class="${sev.error ? "err" : ""}">${sev.error || 0}</span> / ${sev.warning || 0}`, "error / warning")}
+    </div>
+    <h2>分层（点击展开数据集）</h2>
+    <div class="scroll"><table id="tiers"><tbody></tbody></table></div>
+    <h2>覆盖热力（最近 ${hm.days.length} 个交易日）</h2>
+    <div class="scroll" id="heat"></div>
+    <p class="legend">
+      <span><i class="cell c"></i> 有分区覆盖</span>
+      <span><i class="cell g"></i> 日更源的缺口</span>
+      <span><i class="cell gc"></i> 非日更源的间隔（属其节奏）</span>
+      <span><i class="cell"></i> 覆盖区间外</span>
+      <span><i class="cell u"></i> 无分区（单文件 merge）</span>
+      <span>月/季/年分区的格子按其周期着色，不代表单日有行</span>
+    </p>`;
 
   const body = document.querySelector("#tiers tbody");
   body.innerHTML = `<tr><th>分层</th><th class="n">数据集</th><th class="n">fresh</th>
     <th class="n">stale</th><th class="n">empty</th><th class="n">行</th><th class="n">体积</th></tr>`;
-
   for (const t of tiers) {
     const tr = document.createElement("tr");
     tr.className = "tier-row";
-    tr.innerHTML = `<td><span class="tier-tag">${t.tier}</span>${t.label}</td>
+    tr.innerHTML = `<td><span class="tier-tag">${t.tier}</span>${esc(t.label)}</td>
       <td class="n">${t.datasets}</td><td class="n">${t.fresh}</td>
       <td class="n ${t.stale ? "err" : ""}">${t.stale || ""}</td>
       <td class="n">${t.empty || ""}</td><td class="n">${fmt(t.rows)}</td><td class="n">${mb(t.bytes)}</td>`;
@@ -165,6 +204,16 @@ function renderTiers(tiers, datasets) {
     tr.onclick = () => { detail.style.display = detail.style.display === "none" ? "" : "none"; };
     body.append(tr, detail);
   }
+
+  const cls = (r) => ({ "#": "c", ".": r.cadence_days > 1 ? "gc" : "g", " ": "", "-": "u" });
+  document.getElementById("heat").innerHTML = hm.rows.map((r) => {
+    const m = cls(r);
+    const cells = [...r.cells].map((ch) => `<i class="cell ${m[ch] ?? ""}"></i>`).join("");
+    const cadence = r.cadence_days > 1 ? ` · 容忍 ${r.cadence_days} 天` : "";
+    return `<div class="grid-row" title="${esc(r.dataset)} · ${r.granularity || "merge"} · ${r.freshness}${cadence}">
+      <div class="grid-name ds-link" data-ds="${esc(r.dataset)}">${esc(r.dataset)}</div>
+      <div class="cells">${cells}</div></div>`;
+  }).join("");
 }
 
 function membersTable(rows) {
@@ -174,7 +223,7 @@ function membersTable(rows) {
     const cls = d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty";
     const cover = d.coverage_start ? `${d.coverage_start} → ${d.coverage_end}` : "—";
     const opt = d.required ? "" : " <span style='opacity:.6'>(可选)</span>";
-    return `<tr><td><span class="dot ${cls}"></span>${d.dataset}${opt}</td>
+    return `<tr><td><span class="dot ${cls}"></span><span class="ds-link" data-ds="${esc(d.dataset)}">${esc(d.dataset)}</span>${opt}</td>
       <td>${d.history_mode}</td><td>${d.granularity || "merge"}</td><td>${cover}</td>
       <td>${d.watermark || "—"}</td><td class="n">${fmt(d.row_count)}</td>
       <td class="n">${mb(d.bytes)}</td></tr>`;
@@ -182,32 +231,216 @@ function membersTable(rows) {
   return `<table>${head}${body}</table>`;
 }
 
-function renderHeatmap(hm) {
-  document.getElementById("days").textContent = hm.days.length;
-  const html = hm.rows.map((r) => {
-    // Only a daily source's hole is a fault; a quarterly one's is its cadence.
-    const gap = r.cadence_days > 1 ? "gc" : "g";
-    const cls = { "#": "c", ".": gap, " ": "", "-": "u" };
-    const cells = [...r.cells].map((ch) => `<i class="cell ${cls[ch] ?? ""}"></i>`).join("");
-    const cadence = r.cadence_days > 1 ? ` · 容忍 ${r.cadence_days} 天` : "";
-    return `<div class="grid-row" title="${r.dataset} · ${r.granularity || "merge"} · ${r.freshness}${cadence}">
-      <div class="grid-name">${r.dataset}</div><div class="cells">${cells}</div></div>`;
+// --- dataset detail ---------------------------------------------------------
+
+function stackedChart(series) {
+  const pts = series.points;
+  if (!pts.length) return `<p class="muted">没有溯源度量——先跑 <code>asl stats rebuild</code>。</p>`;
+
+  const periods = [...new Set(pts.map((p) => p.period_start))].sort();
+  const sources = [...new Set(pts.map((p) => p.source))].sort();
+  const colors = colorMap(sources);
+  const at = new Map(pts.map((p) => [`${p.period_start}|${p.source}`, p.row_count]));
+  const totals = periods.map((d) => sources.reduce((s, src) => s + (at.get(`${d}|${src}`) || 0), 0));
+  const peak = Math.max(...totals, 1);
+
+  const W = 1100, H = 190, PAD_L = 54, PAD_B = 22, PAD_T = 8;
+  const plotW = W - PAD_L - 8, plotH = H - PAD_B - PAD_T;
+  const bw = Math.max(1, plotW / periods.length - 2);   // 2px surface gap between bars
+
+  let bars = "";
+  periods.forEach((d, i) => {
+    const x = PAD_L + (i * plotW) / periods.length;
+    let y = PAD_T + plotH;
+    sources.forEach((src) => {
+      const v = at.get(`${d}|${src}`) || 0;
+      if (!v) return;
+      const hgt = (v / peak) * plotH;
+      y -= hgt;
+      // 2px gap between stacked segments so adjacent hues never touch.
+      const drawn = Math.max(1, hgt - 2);
+      bars += `<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}"
+        height="${drawn.toFixed(1)}" fill="${colors.get(src)}"><title>${d} · ${esc(src)} · ${fmt(v)} 行</title></rect>`;
+    });
+  });
+
+  const ticks = [0, peak / 2, peak].map((v, i) => {
+    const y = PAD_T + plotH - (v / peak) * plotH;
+    return `<line x1="${PAD_L}" x2="${W - 8}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/>
+            <text x="${PAD_L - 6}" y="${y + 3}" text-anchor="end">${v >= 1e6 ? (v / 1e6).toFixed(0) + "M" : fmt(Math.round(v))}</text>`;
   }).join("");
-  document.getElementById("heat").innerHTML = html;
+  const first = periods[0], last = periods[periods.length - 1];
+  const xLabels = `<text x="${PAD_L}" y="${H - 6}">${first}</text>
+                   <text x="${W - 8}" y="${H - 6}" text-anchor="end">${last}</text>`;
+
+  const legend = sources.map((s) =>
+    `<span><i class="swatch" style="background:${colors.get(s)}"></i>${esc(s)}</span>`).join("");
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"
+            aria-label="按 ${series.bucket} 分桶的 source 行数堆叠图">${ticks}${bars}${xLabels}</svg>
+    <p class="legend">${legend}<span class="muted">每点跨度：${series.bucket}</span></p>`;
 }
 
-(async () => {
-  try {
-    const [health, tiers, datasets, hm] = await Promise.all([
-      api("/api/health"), api("/api/tiers"), api("/api/datasets"), api(`/api/heatmap?days=${DAYS}`),
-    ]);
-    renderHealth(health);
-    renderTiers(tiers, datasets);
-    renderHeatmap(hm);
-  } catch (err) {
-    document.getElementById("sub").innerHTML = `<span class="err">加载失败：${err.message}</span>`;
+function coverageBar(d) {
+  if (!d.coverage_start) return `<p class="muted">尚无分区。</p>`;
+  const start = new Date(d.coverage_start).getTime();
+  const end = new Date(d.coverage_end).getTime();
+  const span = Math.max(end - start, 1);
+  const pct = (t) => Math.max(0, Math.min(100, ((t - start) / span) * 100));
+  let horizon = "";
+  if (d.earliest_available) {
+    const h = new Date(d.earliest_available).getTime();
+    if (h > start && h < end) {
+      horizon = `<div class="horizon" style="left:${pct(h)}%" title="源端历史天花板 ${d.earliest_available}"></div>`;
+    }
   }
-})();
+  return `<div class="cover"><div class="fill" style="left:0;right:0"></div>${horizon}</div>
+    <p class="legend"><span>${d.coverage_start}</span><span style="margin-left:auto">${d.coverage_end}</span></p>`;
+}
+
+function gapsNote(d) {
+  const g = d.gaps;
+  if (!g.total) return `<p class="muted">覆盖区间内无缺口。</p>`;
+  const cadence = d.max_staleness_days > 1
+    ? `　该源非日更（容忍 ${d.max_staleness_days} 天），间隔属其节奏。`
+    : "";
+  return `<p class="${d.max_staleness_days > 1 ? "muted" : "err"}">
+    ${g.total} 个 ${g.unit} 无分区${cadence}</p>
+    <p class="muted">${g.missing.slice(0, 12).map(esc).join("、")}${g.total > 12 ? " …" : ""}</p>`;
+}
+
+function stateTab(d, series, prov) {
+  const provTable = prov.length ? `<table>
+    <tr><th>source</th><th>data_version</th><th class="n">行</th><th>fetched_at 跨度</th></tr>
+    ${prov.map((p) => `<tr><td>${esc(p.source)}</td><td>${esc(p.data_version)}</td>
+      <td class="n">${fmt(p.row_count)}</td>
+      <td class="muted">${(p.fetched_at_min || "").slice(0, 10)} → ${(p.fetched_at_max || "").slice(0, 10)}</td></tr>`).join("")}
+    </table>` : `<p class="muted">无溯源度量。</p>`;
+
+  const findings = d.findings.length ? `<table>
+    <tr><th>severity</th><th>check</th><th>message</th></tr>
+    ${d.findings.map((f) => `<tr><td class="${f.severity === "error" ? "err" : ""}">${esc(f.severity)}</td>
+      <td>${esc(f.check)}</td><td>${esc(f.message)}</td></tr>`).join("")}</table>`
+    : `<p class="muted">上次审计没有该数据集的 findings。</p>`;
+
+  const batches = d.batches.length ? `<div class="scroll"><table>
+    <tr><th>状态</th><th>窗口</th><th class="n">写入</th><th class="n">重试</th><th>开始</th><th>错误</th></tr>
+    ${d.batches.map((b) => `<tr><td class="${b.status === "success" ? "" : "err"}">${esc(b.status)}</td>
+      <td class="muted">${esc(b.window_start || "—")} → ${esc(b.window_end || "—")}</td>
+      <td class="n">${fmt(b.rows_written)}</td><td class="n">${b.retry_count || ""}</td>
+      <td class="muted">${esc((b.started_at || "").slice(0, 19))}</td>
+      <td class="muted">${esc((b.error_message || "").slice(0, 90))}</td></tr>`).join("")}</table></div>`
+    : `<p class="muted">manifest 中没有该数据集的 batch。</p>`;
+
+  return `
+    <h3>覆盖</h3>${coverageBar(d)}${gapsNote(d)}
+    <h3>溯源分布（按时间）</h3>${stackedChart(series)}
+    <h3>溯源合计</h3>${provTable}
+    <h3>审计 findings</h3>${findings}
+    <h3>最近 batch</h3>${batches}`;
+}
+
+function fact(k, v) {
+  return `<div class="fact"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;
+}
+
+function metaTab(d) {
+  const yn = (b) => (b ? "是" : "否");
+  const contract = [
+    fact("分层", `${d.tier} ${esc(d.tier_label)}`),
+    fact("存储层", d.layer),
+    fact("分区键", d.partition_col ? `<code>${esc(d.partition_col)}</code>` : "—（单文件 merge）"),
+    fact("分区粒度", d.granularity || "—"),
+    fact("查询日期列", d.date_col ? `<code>${esc(d.date_col)}</code>` : "—"),
+    fact("主键", d.primary_key.map((c) => `<code>${esc(c)}</code>`).join(" ")),
+  ].join("");
+  const semantics = [
+    fact("fetch_semantics", d.fetch_semantics),
+    fact("history_mode", d.history_mode),
+    fact("PIT", yn(d.pit)),
+    fact("维护水位", yn(d.watermarked)),
+  ].join("");
+  const sources = [
+    fact("回填源", d.backfill_source ? esc(d.backfill_source) : "—"),
+    fact("源端历史视野", d.history_horizon_days ? `${d.history_horizon_days} 个交易日` : "无上限"),
+    fact("最早可得", d.earliest_available || "不受源端限制"),
+  ].join("");
+  const ops = [
+    fact("staleness 容忍", `${d.max_staleness_days} 天`),
+    fact("required", yn(d.required)),
+    fact("日内频率", d.intraday || "—"),
+    fact("回填分块", d.backfill_chunk_days ? `${d.backfill_chunk_days} 天`
+      : d.backfill_chunk_symbols ? `${d.backfill_chunk_symbols} 标的` : "—"),
+  ].join("");
+
+  const schema = `<div class="scroll"><table>
+    <tr><th>列</th><th>类型</th><th>主键</th></tr>
+    ${d.schema.map((c) => `<tr><td><code>${esc(c.column)}</code></td><td class="muted">${esc(c.dtype)}</td>
+      <td>${d.primary_key.includes(c.column) ? "✓" : ""}</td></tr>`).join("")}</table></div>`;
+
+  const cmds = d.commands.map((c, i) =>
+    `<div class="cmd"><code id="cmd${i}">${esc(c.cmd)}</code>
+      <button data-copy="cmd${i}">复制</button><span class="muted">${esc(c.why)}</span></div>`).join("");
+
+  return `
+    <h3>契约</h3><div class="facts">${contract}</div>
+    <h3>语义</h3><div class="facts">${semantics}</div>
+    <h3>来源</h3><div class="facts">${sources}</div>
+    <h3>运维</h3><div class="facts">${ops}</div>
+    <h3>Schema</h3>${schema}
+    <h3>命令</h3>${cmds}
+    <p class="muted">以上全部来自 <code>domain/datasets.py</code> 与 <code>domain/schemas.py</code>；面板不复制一份。</p>`;
+}
+
+async function renderDetail(name, tab) {
+  app.innerHTML = `<div class="sub">加载 ${esc(name)}…</div>`;
+  const [d, series, prov] = await Promise.all([
+    api(`/api/datasets/${encodeURIComponent(name)}`),
+    api(`/api/datasets/${encodeURIComponent(name)}/provenance/series`),
+    api(`/api/datasets/${encodeURIComponent(name)}/provenance`),
+  ]);
+  const cls = d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty";
+  app.innerHTML = `
+    <div class="back" id="back">← 返回总览</div>
+    <h1><span class="dot ${cls}"></span>${esc(d.dataset)}</h1>
+    <div class="sub">${d.tier} ${esc(d.tier_label)} · ${d.layer} · ${d.history_mode}
+      · 水位 ${d.watermark || "—"} · ${fmt(d.row_count)} 行 · ${mb(d.bytes)}
+      ${d.required ? "" : " · <span style='opacity:.7'>可选（required=false）</span>"}</div>
+    <div class="tabs">
+      <div class="tab ${tab === "meta" ? "" : "on"}" data-tab="state">状态</div>
+      <div class="tab ${tab === "meta" ? "on" : ""}" data-tab="meta">元数据</div>
+    </div>
+    <div id="tabbody">${tab === "meta" ? metaTab(d) : stateTab(d, series, prov)}</div>`;
+
+  document.getElementById("back").onclick = () => { location.hash = "#/"; };
+  app.querySelectorAll(".tab").forEach((el) => {
+    el.onclick = () => { location.hash = `#/dataset/${encodeURIComponent(name)}/${el.dataset.tab}`; };
+  });
+  app.querySelectorAll("button[data-copy]").forEach((b) => {
+    b.onclick = () => navigator.clipboard?.writeText(document.getElementById(b.dataset.copy).textContent);
+  });
+}
+
+// --- routing ----------------------------------------------------------------
+
+async function route() {
+  const m = location.hash.match(/^#\/dataset\/([^/]+)(?:\/(state|meta))?/);
+  try {
+    if (m) await renderDetail(decodeURIComponent(m[1]), m[2] || "state");
+    else await renderOverview();
+    window.scrollTo(0, 0);
+  } catch (err) {
+    app.innerHTML = `<h1>ashare-lake</h1><div class="sub err">加载失败：${esc(err.message)}</div>`;
+  }
+}
+
+// Delegated so it survives every re-render.
+document.addEventListener("click", (e) => {
+  const link = e.target.closest("[data-ds]");
+  if (link) { e.stopPropagation(); location.hash = href(link.dataset.ds); }
+});
+window.addEventListener("hashchange", route);
+route();
 </script>
 </body>
 </html>

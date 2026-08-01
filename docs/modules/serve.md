@@ -35,7 +35,10 @@
 | `GET /api/health` | 锚定交易日、fresh/stale/empty 计数、总行数与体积、findings 分级、度量表新鲜度 |
 | `GET /api/tiers` | L0–L8 汇总（数据集数、各状态计数、行数、体积、成员） |
 | `GET /api/datasets?tier=` | 逐数据集：注册表字段 + 覆盖 + 水位 + 度量 |
-| `GET /api/datasets/{name}/provenance` | 该数据集的 source × data_version 分布与 `fetched_at` 跨度 |
+| `GET /api/datasets/{name}` | 单数据集详情：注册表契约 + schema + 主键 + 缺口 + findings + 建议命令 + 最近 batch |
+| `GET /api/datasets/{name}/partitions` | 逐分区行数与体积序列 |
+| `GET /api/datasets/{name}/provenance` | source × data_version 合计与 `fetched_at` 跨度 |
+| `GET /api/datasets/{name}/provenance/series` | 同上但按时间分桶——source 分布**何时**变的 |
 | `GET /api/heatmap?days=` | 数据集 × 交易日覆盖网格 |
 | `GET /api/docs` | OpenAPI 页，由 handler 生成，不会与实现漂移 |
 
@@ -48,6 +51,27 @@
 每行还带 `cadence_days`（即 `max_staleness_days`）。缺口只对**日更**的源意味着落后：`northbound_holdings` 是季频的，它跨度内绝大多数交易日本来就没有分区，把那些画成故障会让每一行都在喊狼来了。页面据此把非日更源的间隔渲染成中性色。
 
 单元格字母表：`#` 有覆盖、`.` 缺口、空格 覆盖区间外、`-` 无分区（单文件 merge）。一行一个字符串而不是一万个 JSON 对象。
+
+### 详情页的两个 tab
+
+**状态**：覆盖条（含源端视野天花板）、缺口、溯源堆叠图、溯源合计表、审计 findings、最近 batch。
+**元数据**：契约（分层 / 分区键 / 粒度 / 主键 / schema）、语义（`fetch_semantics` / `history_mode` / PIT / 水位）、来源（回填源 / 视野 / 最早可得）、运维（容忍天数 / required / 分块 / 日内频率）、可复制的命令。
+
+全部来自 `domain/datasets.py` 与 `domain/schemas.py`——面板不复制一份。
+
+**缺口按数据集自己的周期计数**，不按天：一个年分区的数据集不会因为一个目录覆盖整年就"缺 364 天"，那样报会把真缺口淹掉。日粒度只算交易日——周末不是缺口。计数同样带 `max_staleness_days` 语境：`northbound_holdings` 是季频的，59 个交易日无分区属其节奏，页面用中性色而不是红色。
+
+### 两个不内联的东西
+
+`partitions_detail` 不进详情响应：daily_bars 一个就有 6202 条，而详情在每次切 tab 时都要加载，逐分区序列只有一张图用得上。走 `/partitions`。
+
+溯源序列**服务端分桶**：daily_bars 的 (日, source) 点有 11,324 个，一兆 JSON 画几百像素。桶宽逐级放大到序列装得下，并把选中的宽度（`bucket`）随响应返回——不告诉调用方它在看月度数据，坐标轴就没法诚实标注。
+
+### 图表
+
+分类色板取自 dataviz 参考实例的前 5 槽，两个模式都跑过校验器（最差相邻 CVD ΔE 9.1 light / 8.4 dark，正常视觉 19.6 / 19.3）。light 模式有三个槽低于 3:1 对比度，所以**图例与图下的合计表是必需的**，不是装饰。
+
+source 按名称字母序占槽，不按行数排名——一个源恰好长大了不该让整张图重新上色。超过 5 个折进中性色的「其他」，不循环取色。
 
 ---
 

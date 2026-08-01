@@ -59,6 +59,22 @@ class _Cached:
     at: float
 
 
+def _next_period_start(day: date, granularity: str) -> date:
+    """First day of the period after the one holding *day*."""
+    if granularity == "year":
+        return date(day.year + 1, 1, 1)
+    if granularity == "quarter":
+        quarter_end_month = 3 * ((day.month - 1) // 3) + 3
+        return (
+            date(day.year + 1, 1, 1)
+            if quarter_end_month == 12
+            else date(day.year, quarter_end_month + 1, 1)
+        )
+    if granularity == "month":
+        return date(day.year + 1, 1, 1) if day.month == 12 else date(day.year, day.month + 1, 1)
+    return day + timedelta(days=1)
+
+
 class LakeView:
     """Answers the dashboard's questions about one lake. Thread-safe."""
 
@@ -285,6 +301,198 @@ class LakeView:
             .sort("row_count", descending=True)
         )
         return rolled.to_dicts()
+
+    # --- one dataset -------------------------------------------------------
+
+    def partitions(self, dataset: str) -> list[dict]:
+        """Per-partition rows and bytes, oldest first — the size/volume series."""
+        stats = load_partition_stats(self.config)
+        if stats.is_empty():
+            return []
+        rows = stats.filter(pl.col("dataset") == dataset)
+        if rows.is_empty():
+            return []
+        return (
+            rows.sort("period_start", nulls_last=True)
+            .select("partition", "granularity", "period_start", "period_end", "row_count", "bytes")
+            .to_dicts()
+        )
+
+    def _gaps(self, spec, parts: list[dict]) -> dict:
+        """Periods inside the covered span that hold no partition.
+
+        Counted in the dataset's own period, not in days: a year-partitioned
+        dataset is not missing 364 days because one directory covers the year,
+        and reporting it that way would drown the real gaps.
+        """
+        dated = [p for p in parts if p["period_start"] is not None]
+        if len(dated) < 2:
+            return {"missing": [], "total": 0, "unit": spec.partition_granularity}
+
+        present = {p["partition"] for p in dated}
+        first, last = dated[0]["period_start"], max(p["period_end"] for p in dated)
+        missing: list[str] = []
+
+        if spec.partition_granularity == "day":
+            # Only sessions count as missing; a weekend is not a gap.
+            from ashare_lake.steps.common import _load_trading_calendar_df
+
+            calendar = _load_trading_calendar_df(self.config, start=first, end=last)
+            if calendar is None or calendar.is_empty():
+                return {"missing": [], "total": 0, "unit": "day"}
+            for day in calendar.filter(pl.col("is_trading")).sort("trade_date")["trade_date"]:
+                if day.isoformat() not in present:
+                    missing.append(day.isoformat())
+        else:
+            from ashare_lake.domain.partitions import partition_value
+
+            cursor = first
+            while cursor <= last:
+                value = partition_value(cursor, spec.partition_granularity)
+                if value not in present:
+                    missing.append(value)
+                cursor = _next_period_start(cursor, spec.partition_granularity)
+
+        return {
+            "missing": missing[:60],
+            "total": len(missing),
+            "unit": spec.partition_granularity,
+        }
+
+    def _commands(self, spec, freshness: str) -> list[dict]:
+        """What to run, and why. The dashboard names the fix; it does not run it."""
+        name = spec.name
+        out: list[dict] = []
+        if spec.layer == "derived":
+            out.append({"cmd": f"asl derive {name}", "why": "由 curated 重算"})
+        elif spec.backfill_source:
+            out.append(
+                {"cmd": f"asl backfill {name}", "why": f"专用历史源：{spec.backfill_source}"}
+            )
+        elif spec.fetch_semantics == "by_date":
+            out.append({"cmd": f"asl backfill {name}", "why": "按日期回补缺口"})
+        if freshness == "stale":
+            out.append({"cmd": "asl status", "why": "查看最近 run，再 asl retry --run-id"})
+        out.append({"cmd": f"asl stats show --dataset {name}", "why": "逐分区行数与体积"})
+        return out
+
+    def recent_batches(self, dataset: str, *, limit: int = 15) -> list[dict]:
+        """Latest manifest batches for this dataset, newest first.
+
+        stdlib sqlite3 on a read-only URI rather than DuckDB's sqlite_scanner:
+        that scanner is an autoloadable extension fetched from the network on
+        first use, which on an offline or proxied box turns the page into a
+        spinner. The manifest is small and WAL is already on, so a concurrent
+        run is not blocked by this read.
+        """
+        import sqlite3
+
+        path = self.config.manifest_path
+        if not path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            with conn:
+                rows = conn.execute(
+                    """SELECT run_id, batch_id, status, window_start, window_end, rows_written,
+                              retry_count, started_at, finished_at, error_message
+                       FROM ingestion_batches WHERE dataset = ?
+                       ORDER BY COALESCE(started_at, '') DESC LIMIT ?""",
+                    (dataset, limit),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error:
+            return []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def dataset_detail(self, dataset: str) -> dict:
+        """Everything the detail page shows, in one round trip."""
+        from ashare_lake.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
+
+        spec = DATASETS[dataset]
+        row = next(r for r in self._rows() if r["dataset"] == dataset)
+        parts = self.partitions(dataset)
+        findings = self._health_findings()
+        mine = [
+            f
+            for key in ("error_findings", "warning_findings")
+            for f in findings.get(key, [])
+            if f.get("dataset") == dataset
+        ]
+
+        return {
+            **row,
+            "layer": spec.layer,
+            "partition_col": spec.partition_col,
+            "max_staleness_days": spec.max_staleness_days,
+            "backfill_chunk_days": spec.backfill_chunk_days,
+            "backfill_chunk_symbols": getattr(spec, "backfill_chunk_symbols", None),
+            # The source's own floor, not this lake's backlog: earlier windows
+            # return nothing rather than less, and no backfill reaches past it.
+            "earliest_available": spec.earliest_available(date.today()),
+            "primary_key": PRIMARY_KEYS.get(dataset, []),
+            "schema": [
+                {"column": col, "dtype": str(dtype)}
+                for col, dtype in DATASET_SCHEMAS.get(dataset, {}).items()
+            ],
+            # The per-partition series is not inlined: daily_bars alone is 6,202
+            # rows, and the detail payload is loaded on every tab switch while
+            # the series is only needed for one chart. `/partitions` serves it.
+            "gaps": self._gaps(spec, parts),
+            "findings": mine,
+            "commands": self._commands(spec, row["freshness"]),
+            "batches": self.recent_batches(dataset),
+        }
+
+    def provenance_series(self, dataset: str, *, max_buckets: int = 400) -> dict:
+        """Source mix over time, bucketed to stay chartable.
+
+        The collapsed :meth:`provenance` answers "which sources are in here";
+        this answers "when did that change", which is where a routing switch or
+        a mis-attributed backfill actually becomes visible.
+
+        daily_bars alone has 11,324 (day, source) points — a megabyte of JSON to
+        draw a few hundred pixels. Buckets widen until the series fits, and the
+        chosen width is returned rather than applied silently: a caller that
+        does not know it is looking at months cannot label the axis honestly.
+        """
+        stats = load_provenance_stats(self.config)
+        partitions = load_partition_stats(self.config)
+        empty = {"bucket": "day", "points": []}
+        if stats.is_empty() or partitions.is_empty():
+            return empty
+        periods = partitions.filter(pl.col("dataset") == dataset).select(
+            "partition", "period_start"
+        )
+        rows = stats.filter(pl.col("dataset") == dataset)
+        if rows.is_empty() or periods.is_empty():
+            return empty
+
+        joined = rows.join(periods, on="partition", how="inner").filter(
+            pl.col("period_start").is_not_null()
+        )
+        if joined.is_empty():
+            return empty
+
+        for bucket, expr in (
+            ("day", pl.col("period_start")),
+            ("month", pl.col("period_start").dt.truncate("1mo")),
+            ("year", pl.col("period_start").dt.truncate("1y")),
+        ):
+            grouped = (
+                joined.with_columns(expr.alias("period_start"))
+                .group_by(["period_start", "source", "data_version"])
+                .agg(pl.col("row_count").sum())
+                .sort(["period_start", "source"])
+            )
+            if grouped.height <= max_buckets or bucket == "year":
+                return {"bucket": bucket, "points": grouped.to_dicts()}
+        return empty  # pragma: no cover — the year branch always returns
 
     def heatmap(self, *, days: int = 90) -> dict:
         """Coverage grid: one row per dataset, one cell per recent trading day.

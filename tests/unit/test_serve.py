@@ -126,6 +126,87 @@ def test_provenance_rejects_an_unregistered_dataset(client):
     assert client.get("/api/datasets/nope/provenance").status_code == 404
 
 
+# --- one dataset -------------------------------------------------------------
+
+
+def test_detail_carries_the_registry_contract(client):
+    d = client.get("/api/datasets/daily_bars").json()
+    assert d["primary_key"] == ["symbol", "trade_date"]
+    assert d["partition_col"] == "trade_date"
+    assert d["max_staleness_days"] == 1
+    columns = {c["column"]: c["dtype"] for c in d["schema"]}
+    assert columns["trade_date"] == "Date"
+    assert columns["source"] == "String"
+
+
+def test_detail_reports_the_source_floor_not_the_backlog(client):
+    """history_horizon_days is the vendor's floor; earlier windows return nothing."""
+    intraday = client.get("/api/datasets/minute_bars").json()
+    assert intraday["history_horizon_days"] == 95
+    assert intraday["earliest_available"] is not None
+
+    daily = client.get("/api/datasets/daily_bars").json()
+    assert daily["history_horizon_days"] is None
+    assert daily["earliest_available"] is None
+
+
+def test_detail_omits_the_partition_series(client):
+    """6,202 partitions must not ride along on every tab switch."""
+    assert "partitions_detail" not in client.get("/api/datasets/daily_bars").json()
+    series = client.get("/api/datasets/daily_bars/partitions").json()
+    assert len(series) == 2
+    assert {p["partition"] for p in series} == {"2026-07-30", "2026-07-31"}
+
+
+def test_gaps_are_counted_in_the_datasets_own_period(client):
+    """A year-partitioned dataset is not missing 364 days per directory."""
+    for name in ("daily_bars", "financial_statement_items", "corporate_actions"):
+        gaps = client.get(f"/api/datasets/{name}").json()["gaps"]
+        assert gaps["unit"] in {"day", "month", "quarter", "year"}
+        assert len(gaps["missing"]) <= 60
+        assert gaps["total"] >= len(gaps["missing"])
+
+
+def test_gaps_ignore_non_sessions(client):
+    """Only trading days count; the fixture's two sessions are adjacent."""
+    assert client.get("/api/datasets/daily_bars").json()["gaps"]["total"] == 0
+
+
+def test_detail_names_the_fix_without_offering_to_run_it(client):
+    commands = client.get("/api/datasets/daily_bars").json()["commands"]
+    assert commands
+    assert all(c["cmd"].startswith("asl ") and c["why"] for c in commands)
+
+
+def test_provenance_series_buckets_and_says_so(client):
+    body = client.get("/api/datasets/daily_bars/provenance/series").json()
+    assert body["bucket"] in {"day", "month", "year"}
+    assert {p["source"] for p in body["points"]} == {"tdx_protocol", "ths"}
+    assert sum(p["row_count"] for p in body["points"]) == 3
+
+
+def test_provenance_series_stays_chartable_on_a_long_history(config):
+    """11k daily points would be a megabyte of JSON to draw a few hundred px."""
+    from ashare_lake.serve.lake import LakeView
+
+    root = config.curated_root / "daily_bars"
+    for year in range(2001, 2027):
+        for month in (1, 7):
+            day = date(year, month, 1)
+            _write(root, f"trade_date={day}", [_row("600519.SH", day)])
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    series = LakeView(config).provenance_series("daily_bars", max_buckets=20)
+    assert series["bucket"] == "year"
+    assert len(series["points"]) <= 30
+
+
+def test_detail_and_series_reject_an_unregistered_dataset(client):
+    assert client.get("/api/datasets/nope").status_code == 404
+    assert client.get("/api/datasets/nope/partitions").status_code == 404
+    assert client.get("/api/datasets/nope/provenance/series").status_code == 404
+
+
 def test_heatmap_cells_are_one_char_per_day(client):
     body = client.get("/api/heatmap", params={"days": 5}).json()
     width = len(body["days"])

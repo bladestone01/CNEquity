@@ -89,12 +89,80 @@ class Dataset(BaseModel):
     partitions: int | None
 
 
+class Column(BaseModel):
+    column: str
+    dtype: str
+
+
+class PartitionStat(BaseModel):
+    partition: str | None
+    granularity: str | None
+    period_start: date | None
+    period_end: date | None
+    row_count: int
+    bytes: int
+
+
+class Gaps(BaseModel):
+    missing: list[str] = Field(description="Missing partition values, capped at 60.")
+    total: int
+    unit: str = Field(description="Counted in the dataset's own period, not in days.")
+
+
+class Command(BaseModel):
+    cmd: str
+    why: str
+
+
+class Batch(BaseModel):
+    run_id: str
+    batch_id: str
+    status: str
+    window_start: str | None
+    window_end: str | None
+    rows_written: int | None
+    retry_count: int | None
+    started_at: str | None
+    finished_at: str | None
+    error_message: str | None
+
+
+class DatasetDetail(Dataset):
+    partition_col: str | None
+    max_staleness_days: int
+    backfill_chunk_days: int | None
+    backfill_chunk_symbols: int | None
+    earliest_available: date | None = Field(
+        description="Source floor, not this lake's backlog: earlier windows return nothing."
+    )
+    primary_key: list[str]
+    schema_columns: list[Column] = Field(alias="schema")
+    gaps: Gaps
+    findings: list[dict]
+    commands: list[Command]
+    batches: list[Batch]
+
+
 class Provenance(BaseModel):
     source: str
     data_version: str
     row_count: int
     fetched_at_min: datetime | None
     fetched_at_max: datetime | None
+
+
+class ProvenancePoint(BaseModel):
+    """One (period, source, data_version) — the source mix as it moved."""
+
+    period_start: date
+    source: str
+    data_version: str
+    row_count: int
+
+
+class ProvenanceSeries(BaseModel):
+    bucket: str = Field(description="Width each point spans: day, month or year.")
+    points: list[ProvenancePoint]
 
 
 class HeatmapRow(BaseModel):
@@ -179,13 +247,31 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
     ) -> list[Dataset]:
         return [Dataset(**row) for row in view.datasets(tier=tier)]
 
-    @app.get("/api/datasets/{dataset}/provenance", response_model=list[Provenance])
-    def provenance(dataset: str, view: View) -> list[Provenance]:
+    def _known(dataset: str) -> None:
         from ashare_lake.domain.datasets import DATASETS
 
         if dataset not in DATASETS:
             raise HTTPException(404, f"unknown dataset {dataset!r}")
+
+    @app.get("/api/datasets/{dataset}", response_model=DatasetDetail)
+    def dataset_detail(dataset: str, view: View) -> DatasetDetail:
+        _known(dataset)
+        return DatasetDetail(**view.dataset_detail(dataset))
+
+    @app.get("/api/datasets/{dataset}/partitions", response_model=list[PartitionStat])
+    def dataset_partitions(dataset: str, view: View) -> list[PartitionStat]:
+        _known(dataset)
+        return [PartitionStat(**row) for row in view.partitions(dataset)]
+
+    @app.get("/api/datasets/{dataset}/provenance", response_model=list[Provenance])
+    def provenance(dataset: str, view: View) -> list[Provenance]:
+        _known(dataset)
         return [Provenance(**row) for row in view.provenance(dataset)]
+
+    @app.get("/api/datasets/{dataset}/provenance/series", response_model=ProvenanceSeries)
+    def provenance_series(dataset: str, view: View) -> ProvenanceSeries:
+        _known(dataset)
+        return ProvenanceSeries(**view.provenance_series(dataset))
 
     @app.get("/api/heatmap", response_model=Heatmap)
     def heatmap(
