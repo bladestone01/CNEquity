@@ -187,8 +187,6 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 
 ## 项目状态
 
-[0.4.0](CHANGELOG.md) — 当前主线；上 [PyPI](https://pypi.org/project/ashare-lake/) 后 `pip install -U ashare-lake`。作者自用数据层，每个交易日自动更新。Schema / `load()` 在 1.0 前可能变。
-
 个人项目：issue / PR 欢迎，响应尽力而为。[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)。文档中文为主；[CHANGELOG](CHANGELOG.md) 与 [ADR](docs/adr/) 为英文。
 
 ## 文档

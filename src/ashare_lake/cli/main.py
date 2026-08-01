@@ -279,10 +279,7 @@ def run():
     "--group",
     "group_name",
     default=None,
-    help=(
-        "Schedule group: core, capital, signals, fundamentals, "
-        "macro_risk, research, intraday"
-    ),
+    help=("Schedule group: core, capital, signals, fundamentals, macro_risk, research, intraday"),
 )
 @click.option(
     "--trade-date",

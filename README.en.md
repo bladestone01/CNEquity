@@ -223,11 +223,6 @@ More: [runbook](docs/operations/runbook.md) ·
 
 ## Project status
 
-[0.4.0](CHANGELOG.md) — current mainline; install from
-[PyPI](https://pypi.org/project/ashare-lake/) after the release is cut.
-Personal data layer, refreshed every trading day. Schema / `load()` may change
-before 1.0.
-
 Personal project: issues and PRs welcome, responses best-effort.
 [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md). Docs are
 Chinese-first; [CHANGELOG](CHANGELOG.md) and [ADRs](docs/adr/) stay in English.
