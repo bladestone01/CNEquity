@@ -215,20 +215,21 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
     symbols = context.get("symbols") or load_symbols(config)
     rl = config.tdx_rate_limit_spec()
 
-    # Supplement EM's ST list with AKShare's when enabled (robustness).
-    extra_st: set[str] = set()
-    if config.sources.get("akshare", False):
-        from ashare_lake.adapters.akshare.trading_status import fetch_st_symbols_akshare
-
-        extra_st = fetch_st_symbols_akshare(config=config)
-
+    # EastMoney is the only daily ST feed. An AkShare union used to sit here as a
+    # "second source", but `ak.stock_zh_a_st_em` requests the same push2 clist
+    # endpoint with the same `fs=m:0+f:4,m:1+f:4` filter that
+    # adapters/eastmoney/trading_status.py already queries — same vendor, same
+    # board, same filter — so it could only ever repeat this answer or fail. The
+    # push2 → push2delay failover in the EastMoney client is the real robustness
+    # here. The one genuinely independent ST reading, baostock's per-day `isST`,
+    # is a per-symbol sweep and stays where it is affordable: the `--backfill`
+    # path below. See issue #3.
     def _fetch(day: date):
         return fetch_trading_status(
             symbols,
             day,
             rate_limit=rl,
             allow_mock=config.tdx_allow_mock,
-            extra_st_symbols=extra_st,
         )
 
     df, _findings = fetch_incremental_daily(

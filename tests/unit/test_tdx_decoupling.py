@@ -21,7 +21,12 @@ except ModuleNotFoundError:
 
 import pytest
 
-RETIRED_PACKAGES = ("mootdx", "tdxpy", "py_mini_racer", "mini_racer")
+# `akshare` joined this list in the issue #3 cleanup: both call sites reached
+# endpoints the project already queries directly (the ST board via push2 clist,
+# PMI / 货币供应量 via the datacenter reports), so the wrapper only added a
+# parsing layer, 14 transitive dependencies, and the mini-racer install
+# friction. Re-adding an import would bring all three back.
+RETIRED_PACKAGES = ("mootdx", "tdxpy", "py_mini_racer", "mini_racer", "akshare")
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "ashare_lake"
 VENDORED = SRC_ROOT / "adapters" / "tdx_protocol" / "_wire"

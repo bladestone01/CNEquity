@@ -115,7 +115,7 @@ bars_15m = (
 |--------|--------|------|------|------|------|------|
 | instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 补 list_date；baostock 回填退市股（`asl backfill instruments`）；merge 保留退市 |
 | trading_calendar | trade_date | trade_date | by_date | ✓ | exchange_calendar | 种子 CSV 2016–2027 |
-| trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | + akshare ST；baostock ST 回填；派生停牌写月分区 |
+| trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST 回填；派生停牌写月分区 |
 
 ---
 
@@ -188,7 +188,7 @@ bars_15m = (
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 |
 |--------|--------|------|------|------|------|
-| macro_indicators | obs_date | indicator_id, obs_date | by_date | ✓ | eastmoney / akshare |
+| macro_indicators | obs_date | indicator_id, obs_date | by_date | ✓ | eastmoney / mofcom（社融） |
 | market_breadth | trade_date | trade_date, metric_id | by_date | ✓ | derived (daily_bars) |
 
 ---

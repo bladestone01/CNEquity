@@ -89,7 +89,6 @@ def _demo_config(data_root: Path, config_path: Path | None = None) -> Config:
             "sina": False,
             "cninfo": False,
             "baostock": False,
-            "akshare": False,
         },
         failover_enabled=False,
         daily_waves=[WaveConfig(name="demo", parallel=False, steps=["daily_bars", "compact"])],

@@ -3,9 +3,9 @@
 Exchanges publish no daily bar for a suspended stock, so a listed symbol with
 no bar on a trading day was suspended that day. This is authoritative and
 covers the whole bar history — filling the trading_status gap that free ST
-feeds (EastMoney / AKShare current-snapshot) cannot reach.
+feeds (EastMoney's current-snapshot ST board) cannot reach.
 
-Only sparse ``suspended`` rows are written; real daily rows (EM/AKShare) win on
+Only sparse ``suspended`` rows are written; real daily rows (EastMoney) win on
 any primary-key overlap.
 
 Optional ``start`` / ``end`` bound the calendar cross-join so a 2001→today

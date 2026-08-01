@@ -57,7 +57,7 @@
 
 ## 为什么内置协议实现
 
-原先依赖 `mootdx`（它又依赖 `tdxpy`）。两者同属一个作者，均于 2024 年后停止发布；`mootdx` 还锁死 `httpx<0.26`，并引入 `py-mini-racer`，与 `akshare` 的 `mini-racer` 争抢同一个 import 包。上游没有可修复的版本。
+原先依赖 `mootdx`（它又依赖 `tdxpy`）。两者同属一个作者，均于 2024 年后停止发布；`mootdx` 还锁死 `httpx<0.26`，并引入编译型 V8 绑定 `py-mini-racer`。上游没有可修复的版本。
 
 `_wire/` 从 tdxpy 裁剪出本项目实际用到的 5 个标准市场调用（1618 行 / 原 4929 行），砍掉本地文件 reader、财务爬虫、扩展市场与 pandas 依赖。TDX 线协议是冻结的传统二进制格式，内容是定长 `struct.unpack`，不随上游变动。
 

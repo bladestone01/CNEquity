@@ -14,8 +14,8 @@ from ashare_lake.domain.symbols import format_symbol, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
 
-# Risk-warning board (ST / *ST), same fs as akshare.stock_zh_a_st_em /
-# quote.eastmoney.com st_board. Do NOT use all-A market fs here.
+# Risk-warning board (ST / *ST), the fs behind quote.eastmoney.com st_board.
+# Do NOT use all-A market fs here.
 _ST_FS = "m:0+f:4,m:1+f:4"
 _SUSPEND_REPORT = "RPT_CUSTOM_SUSPEND_DATA_INTERFACE"
 _DATACENTER = "https://datacenter-web.eastmoney.com/api/data/v1/get"
@@ -41,7 +41,7 @@ def _fetch_st_symbols(client: EastMoneyClient) -> set[str]:
             page_size=_ST_PAGE_SIZE,
         )
     except Exception as exc:
-        # Non-fatal: caller still labels universe as normal (+ AKShare union).
+        # Non-fatal: caller still labels the universe, just without ST flags.
         logger.warning("EastMoney ST list failed: %s", exc)
         return set()
 
@@ -84,17 +84,12 @@ def fetch_trading_status_eastmoney(
     trade_date: date,
     *,
     client: EastMoneyClient | None = None,
-    extra_st_symbols: set[str] | None = None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
         client = EastMoneyClient(min_interval=0.3)
 
     st_set = _fetch_st_symbols(client)
-    if extra_st_symbols:
-        # Union a second ST source (e.g. AKShare) for robustness against a
-        # single feed missing names or failing.
-        st_set = st_set | extra_st_symbols
     suspended = _fetch_suspended_symbols(client, trade_date)
 
     rows = []

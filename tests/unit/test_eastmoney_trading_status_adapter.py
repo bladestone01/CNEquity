@@ -97,17 +97,17 @@ def test_fetch_trading_status_eastmoney_labels_suspended_st_and_normal(monkeypat
     assert rows["000001.SZ"]["is_trading"] is True
 
 
-def test_fetch_trading_status_eastmoney_unions_extra_st_symbols(monkeypatch):
-    monkeypatch.setattr(ts, "_fetch_st_symbols", lambda client: {"000002.SZ"})
-    monkeypatch.setattr(ts, "_fetch_suspended_symbols", lambda client, trade_date: set())
-    df = ts.fetch_trading_status_eastmoney(
-        ["000002.SZ", "000003.SZ"],
-        date(2024, 6, 28),
-        client=_FakeClient(),
-        extra_st_symbols={"000003.SZ"},
-    )
-    rows = {r["symbol"]: r["status"] for r in df.iter_rows(named=True)}
-    assert rows == {"000002.SZ": "st", "000003.SZ": "st"}
+def test_fetch_trading_status_eastmoney_takes_no_extra_st_source():
+    """The AkShare ST union is gone; EastMoney's own list is the daily feed.
+
+    `ak.stock_zh_a_st_em` queried the same push2 clist board with the same
+    `fs` filter as `_fetch_st_symbols`, so unioning it added a retry, not a
+    second opinion (issue #3). Guard the signature so it does not creep back.
+    """
+    import inspect
+
+    params = inspect.signature(ts.fetch_trading_status_eastmoney).parameters
+    assert "extra_st_symbols" not in params
 
 
 def test_fetch_trading_status_eastmoney_owns_and_closes_default_client(monkeypatch):

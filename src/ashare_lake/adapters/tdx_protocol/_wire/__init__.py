@@ -3,8 +3,8 @@
 Derived from tdxpy 0.2.7 (MIT, https://github.com/mootdx/tdxpy) — see
 LICENSE.tdxpy. Vendored rather than depended on because both tdxpy and its
 sibling mootdx were last released in 2024 and are no longer maintained, and
-mootdx additionally drags in `py-mini-racer`, which collides with akshare's
-`mini-racer` over the shared `py_mini_racer` import package.
+mootdx additionally drags in `py-mini-racer`, a compiled V8 binding this
+project has no use for.
 
 Only the five calls this project makes are kept, against tdxpy's 22. The
 extended market (`exhq`), local-file readers and the financial crawler are all

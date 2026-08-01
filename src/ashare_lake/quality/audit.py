@@ -192,7 +192,7 @@ def _collect_lake_findings(
             message = (
                 "trading_status has suspension history (from bar gaps) but no ST "
                 "labels yet; universe=all_a does not exclude ST names — run the "
-                "trading_status step with AKShare/EM ST enabled"
+                "trading_status step (EastMoney ST), or backfill from baostock"
             )
         elif st_gap:
             message = (

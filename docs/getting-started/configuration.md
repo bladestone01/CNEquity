@@ -60,11 +60,11 @@ asl config validate --config configs/ashare-lake.toml
 
 ## `[sources.<name>]`
 
-支持的 name：`eastmoney`、`cninfo`、`akshare`、`sina`、`baostock`。
+支持的 name：`eastmoney`、`cninfo`、`mofcom`、`sina`、`baostock`。
 
 | 键 | 说明 |
 |----|------|
-| `enabled` | 是否启用该源 |
+| `enabled` | 是否启用该源；缺省（配置中没有该 `[sources.<name>]` 段落）时按**关闭**处理 |
 | `min_interval_seconds` | 跨进程文件锁限速（见 `domain/rate_limit.py`） |
 | `proxy`（eastmoney） | 可选 HTTP(S) 代理 URL；用于海外访问 push2his。未设时仍可用环境变量 `HTTPS_PROXY` |
 | `batch_size` / `batch_rest_seconds`（baostock） | 全市场回填批次冷却，防 IP 黑名单 |
@@ -75,7 +75,7 @@ asl config validate --config configs/ashare-lake.toml
 |--------|------------------------|------|
 | eastmoney | 1.0 | 日更主源；裸 `EastMoneyClient()` 也默认 1.0s 进程内节流 |
 | cninfo | 1.0 | 公告/监管分页 POST |
-| akshare | 1.0 | 底层常打东财，勿低于 EM |
+| mofcom | 1.0 | 社融月度序列，每次运行一请求 |
 | sina | 0.3 | 复权因子；经 `adj_factors` 的 `wait_source` |
 | baostock | 1.0 + batch 50/45s | 历史市值/ST；禁止多进程并行扫 |
 

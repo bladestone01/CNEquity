@@ -6,7 +6,6 @@ import pytest
 import ashare_lake.steps  # noqa: F401
 from ashare_lake.adapters.eastmoney.consensus import fetch_analyst_consensus
 from ashare_lake.adapters.eastmoney.institutional import fetch_institutional_holdings
-from ashare_lake.adapters.macro.indicators import _akshare_rows
 from ashare_lake.config import Config
 from ashare_lake.derive.sentiment_scores import compute_sentiment_scores
 from ashare_lake.domain.schemas import validate_dataframe
@@ -174,12 +173,5 @@ def test_load_analyst_consensus(tmp_path):
     assert df.height == 1
 
 
-def test_akshare_import_available():
-    akshare = pytest.importorskip("akshare")
-    assert akshare is not None
-
-
-def test_akshare_macro_rows_returns_list():
-    pytest.importorskip("akshare")
-    rows = _akshare_rows(date(1900, 1, 1))
-    assert isinstance(rows, list)
+# AkShare is a retired package now; `test_tdx_decoupling.py` guards both the
+# import ban and the pyproject declaration for the whole retired set.

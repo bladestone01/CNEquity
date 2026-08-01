@@ -1,6 +1,6 @@
 """Baostock historical ST labels — backfill source for trading_status (C4).
 
-The daily ``trading_status`` step gets ST flags from EastMoney/AKShare, which
+The daily ``trading_status`` step gets ST flags from EastMoney, which
 only expose *today's* ST list — so ST labels in the lake start at the first live
 run (2026-07), leaving every earlier backtest window with survivorship /
 look-ahead bias (``universe="all_a"`` does not drop names that were ST then).
