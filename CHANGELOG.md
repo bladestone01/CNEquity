@@ -58,10 +58,35 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   carries the closing auction. Prices are unadjusted, like the daily bars;
   adjustment joins the day's factor at query time.
 
+- **`minute_bars_5m` — 5-minute bars, the only intraday frequency with real
+  history.** A separate dataset rather than a `frequency` value inside
+  `minute_bars`, because the source keeps 491 trading days of 5m against 95 of
+  1m, and a dataset carries one watermark, one `coverage_start` and one
+  horizon — holding both frequencies would make all three wrong for both. The
+  dataset↔frequency mapping is `DatasetSpec.intraday_frequency`, and the steps,
+  the audit checks and `load()`'s adjustable set are all derived from it, so
+  adding a frequency is one registry entry.
+
+  Configured together: `[minute_bars].frequencies = ["1m", "5m"]` shares one
+  scope across both. At a fifth of 1m's row rate it is ~6MB a day at full
+  market (1.5GB a year, against 8.4GB for 1m).
+
+  15m/30m/60m are deliberately **not** stored: they aggregate exactly from 5m
+  (48 bars divide by 3, 6 and 12 onto identical closing-minute boundaries —
+  verified against live data), so three more datasets would hold a
+  `group_by_dynamic` away from data already present. `docs/datasets/catalog.md`
+  carries the resampling snippet.
+
 - **`DatasetSpec.history_horizon_days` — how far back a source still serves.**
-  Measured 2026-08-01, TDX keeps 22,800 1-minute bars per symbol (95 trading
-  days) and 23,568 5-minute (491, about two years); uniform across exchanges
-  and liquidity, so it is server retention rather than a per-symbol artefact.
+  Measured 2026-08-01, TDX keeps 22,800 1-minute bars per symbol and 23,568
+  5-minute. The cap is a **bar count**, not a date: divided by a full session
+  that is 95 and 491 trading days, which holds for any instrument quoted every
+  session — every A-share stock, and what these datasets are for. An instrument
+  with bars on only scattered days reaches proportionally further back
+  (162107.SZ, a barely-traded LOF, holds 3,216 5m bars over 67 days and so
+  reaches 2012), so the field is the guarantee for a normal stock rather than a
+  hard ceiling for every symbol.
+
   An older window returns *nothing*, not less, and no backfill source extends
   it — `history_mode = by_date` alone would have promised a decade. Surfaced in
   `list_datasets()`, and `asl backfill` now refuses a `--start` before the
@@ -72,6 +97,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   into one frame, which a 95-day full-market `minute_bars` seed (~123M rows)
   would not survive; slicing also makes a killed sweep resumable at the last
   compacted slice rather than losing everything.
+
+- Intraday bars outside continuous trading are dropped at parse time. The
+  source really does emit them: 162107.SZ, a barely-traded LOF, returns a
+  13:00-labelled bar on days it did not trade, zero volume with a stale close
+  carried forward — padding, not a tradable minute (an active name emits none;
+  600519 over 2,400 bars, zero). Keeping them would put a phantom bar in every
+  gap check and skew any resampling that assumes fixed bar counts.
 
 - Intraday audit checks (`quality/intraday_checks.py`): `minute_bars_off_session`
   and `minute_bars_trade_date_mismatch` (error), `minute_bars_session_coverage`

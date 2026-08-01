@@ -15,6 +15,7 @@ from ashare_lake.domain.datasets import (
     DATASETS,
     curated_dataset_names,
     derived_dataset_names,
+    intraday_dataset_names,
     pit_dataset_names,
 )
 from ashare_lake.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS, validate_dataframe
@@ -39,6 +40,11 @@ DATE_COLUMNS: dict[str, str] = {
 }
 PIT_DATASETS = pit_dataset_names()
 PRICE_COLS = ("open", "high", "low", "close")
+# Datasets carrying per-share prices that adj_factors can adjust. Intraday
+# datasets come from the registry so a new frequency is adjustable the day it
+# is registered. index_bars is in because its `frequency` column made it a bar
+# dataset historically; its levels are not per-share, but that predates this.
+ADJUSTABLE_DATASETS = {"daily_bars", "index_bars"} | set(intraday_dataset_names())
 
 
 class ReaderError(ValueError):
@@ -326,12 +332,12 @@ def load(
         date_col = DATE_COLUMNS[dataset]
         df = apply_universe_filter(df, cfg, universe=universe, date_col=date_col)
 
-    # minute_bars joins on (symbol, trade_date) like the daily bars do: a
+    # Intraday datasets join on (symbol, trade_date) like the daily bars do: a
     # corporate action applies to a whole session, so every bar in a day shares
     # that day's factor. Intraday prices are stored unadjusted for the same
     # reason daily ones are — the factor series can be recomputed, a price
     # written adjusted cannot be undone.
-    if adjust and dataset in {"daily_bars", "index_bars", "minute_bars"}:
+    if adjust and dataset in ADJUSTABLE_DATASETS:
         df = _apply_adjustment(df, cfg, adjust, start_d, end_d, strict_adj=strict_adj)
 
     # Intraday rows sort by symbol then timestamp: trade_date alone would leave

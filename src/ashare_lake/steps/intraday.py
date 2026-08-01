@@ -14,9 +14,9 @@ from datetime import date, timedelta
 import polars as pl
 
 from ashare_lake.adapters.tdx_protocol.client import fetch_minute_bars, normalize_with_source
-from ashare_lake.adapters.tdx_protocol.minute_bars import FREQUENCIES, pages_for_window
+from ashare_lake.adapters.tdx_protocol.minute_bars import pages_for_window
 from ashare_lake.config import Config
-from ashare_lake.domain.datasets import get_dataset
+from ashare_lake.domain.datasets import get_dataset, intraday_datasets
 from ashare_lake.orchestrator.registry import register_step
 from ashare_lake.steps.common import incremental_window, load_symbols
 from ashare_lake.storage import StagingWriter
@@ -84,12 +84,12 @@ def resolve_scope(config: Config) -> list[str]:
     )
 
 
-def horizon_start(config: Config, today: date) -> date | None:
+def horizon_start(dataset: str, today: date) -> date | None:
     """Earliest date the source still serves, or None when unbounded."""
-    return get_dataset("minute_bars").earliest_available(today)
+    return get_dataset(dataset).earliest_available(today)
 
 
-def _window(config: Config, trade_date: date) -> tuple[date, date]:
+def _window(config: Config, dataset: str, trade_date: date) -> tuple[date, date]:
     """Fetch window, clamped to the source's retention horizon.
 
     Clamping rather than failing: a first run legitimately asks for more than
@@ -100,51 +100,57 @@ def _window(config: Config, trade_date: date) -> tuple[date, date]:
         end = getattr(config, "_backfill_end", None) or trade_date
         start = getattr(config, "_backfill_start", None) or (end - timedelta(days=365))
     else:
-        start = incremental_window(config, "minute_bars", trade_date)
+        start = incremental_window(config, dataset, trade_date)
         end = trade_date
 
-    earliest = horizon_start(config, trade_date)
+    earliest = horizon_start(dataset, trade_date)
     if earliest is not None and start < earliest:
         logger.warning(
-            "minute_bars: requested start %s is older than the source horizon "
+            "%s: requested start %s is older than the source horizon "
             "(~%s, %d trading days); clamping to %s",
+            dataset,
             start,
             earliest,
-            get_dataset("minute_bars").history_horizon_days,
+            get_dataset(dataset).history_horizon_days,
             earliest,
         )
         start = earliest
     return start, min(end, trade_date)
 
 
-@register_step(
-    "minute_bars",
-    group="intraday",
-    depends_on=["instruments"],
-)
-def step_minute_bars(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    """Capture intraday bars for the configured scope.
+def capture_intraday_bars(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    *,
+    dataset: str,
+    frequency: str,
+) -> dict:
+    """Capture *frequency* bars for the configured scope into *dataset*.
 
-    Never on the default daily waves. Full-market 1m is ~30MB a day and would
+    Never on the default daily waves. Full-market 1m is ~35MB a day and would
     change what `asl init` costs a user who never asked for it, so this runs
-    only when a config opts in and only over the scope that config names.
+    only when a config opts in, only over the scope that config names, and only
+    for the frequencies it lists.
     """
     if not config.minute_bars_enabled:
         return {
             "rows_read": 0,
             "rows_written": 0,
-            "note": "minute_bars disabled ([minute_bars].enabled = false)",
+            "note": "intraday capture disabled ([minute_bars].enabled = false)",
+        }
+    if frequency not in config.minute_bars_frequencies:
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "note": (
+                f"{frequency} not in [minute_bars].frequencies "
+                f"({', '.join(config.minute_bars_frequencies) or 'empty'})"
+            ),
         }
 
-    frequency = config.minute_bars_frequency
-    if frequency not in FREQUENCIES:
-        raise ValueError(
-            f"[minute_bars].frequency {frequency!r} is not supported "
-            f"(known: {', '.join(FREQUENCIES)})"
-        )
-
     symbols = resolve_scope(config)
-    start, end = _window(config, trade_date)
+    start, end = _window(config, dataset, trade_date)
     if start > end:
         return {"rows_read": 0, "rows_written": 0, "note": f"empty window {start}..{end}"}
 
@@ -155,7 +161,8 @@ def step_minute_bars(config: Config, trade_date: date, run_id: str, context: dic
     max_pages = pages_for_window(frequency, trading_days)
 
     logger.info(
-        "minute_bars: %d symbol(s) %s, %s..%s (~%d trading days, ≤%d page(s)/symbol)",
+        "%s: %d symbol(s) %s, %s..%s (~%d trading days, ≤%d page(s)/symbol)",
+        dataset,
         len(symbols),
         frequency,
         start,
@@ -184,11 +191,12 @@ def step_minute_bars(config: Config, trade_date: date, run_id: str, context: dic
         failed.extend(chunk_failed)
         if df.is_empty():
             continue
-        df = normalize_with_source(df, dataset="minute_bars")
-        writer.write_batch("minute_bars", run_id, f"minute-{index // _BATCH_SYMBOLS:04d}", df)
+        df = normalize_with_source(df, dataset=dataset)
+        writer.write_batch(dataset, run_id, f"intraday-{index // _BATCH_SYMBOLS:04d}", df)
         written += df.height
         logger.info(
-            "minute_bars: %d/%d symbols, %d rows staged",
+            "%s: %d/%d symbols, %d rows staged",
+            dataset,
             min(index + _BATCH_SYMBOLS, len(symbols)),
             len(symbols),
             written,
@@ -205,11 +213,11 @@ def step_minute_bars(config: Config, trade_date: date, run_id: str, context: dic
         result["context_updates"] = {
             "audit_findings": [
                 {
-                    "dataset": "minute_bars",
+                    "dataset": dataset,
                     "severity": "warning",
                     "check": "minute_bars_symbol_fetch",
                     "message": (
-                        f"{len(failed)}/{len(symbols)} symbol(s) returned no intraday "
+                        f"{len(failed)}/{len(symbols)} symbol(s) returned no {frequency} "
                         f"bars for {start}..{end} (e.g. {', '.join(failed[:5])})"
                     ),
                 }
@@ -217,10 +225,40 @@ def step_minute_bars(config: Config, trade_date: date, run_id: str, context: dic
         }
     if written == 0 and symbols:
         raise RuntimeError(
-            f"minute_bars: no rows for any of {len(symbols)} symbol(s) over {start}..{end} "
+            f"{dataset}: no rows for any of {len(symbols)} symbol(s) over {start}..{end} "
             "— check TDX reachability and that the window is inside the source horizon"
         )
     return result
+
+
+def _register_intraday_steps() -> None:
+    """One step per registered intraday dataset, named after the dataset.
+
+    Generated rather than written out so that adding a frequency stays a single
+    registry entry. The step name must equal the dataset name — `asl backfill
+    <dataset>` and the compact/watermark plumbing both key on that.
+    """
+    for frequency, dataset in sorted(intraday_datasets().items()):
+
+        def _step(
+            config: Config,
+            trade_date: date,
+            run_id: str,
+            context: dict,
+            *,
+            _dataset: str = dataset,
+            _frequency: str = frequency,
+        ) -> dict:
+            return capture_intraday_bars(
+                config, trade_date, run_id, dataset=_dataset, frequency=_frequency
+            )
+
+        _step.__name__ = f"step_{dataset}"
+        _step.__doc__ = f"Capture {frequency} bars for the configured scope (opt-in)."
+        register_step(dataset, group="intraday", depends_on=["instruments"])(_step)
+
+
+_register_intraday_steps()
 
 
 def _approx_trading_days(config: Config, start: date, end: date) -> int:

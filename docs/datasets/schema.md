@@ -21,7 +21,7 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 |---------|-----------|
 | daily_bars | `trade_date`（按日） |
 | index_bars | `trade_date`（按年） |
-| minute_bars | `trade_date`（按日） |
+| minute_bars / minute_bars_5m | `trade_date`（按日） |
 | trading_status | `trade_date`（按月） |
 | corporate_actions | `ex_date`（按年） |
 | adj_factors | `trade_date`（按日） |
@@ -40,7 +40,7 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 | trading_status | `(symbol, trade_date)` |
 | daily_bars | `(symbol, trade_date)` |
 | index_bars | `(symbol, trade_date, frequency)` |
-| minute_bars | `(symbol, trade_date, bar_time, frequency)` |
+| minute_bars / minute_bars_5m | `(symbol, trade_date, bar_time, frequency)` |
 | corporate_actions | `(symbol, ex_date, action_type)` |
 | adj_factors | `(symbol, trade_date, adjust_type)` |
 | fund_flow | `(symbol, trade_date)` |
@@ -124,7 +124,7 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 | sina | 股 | 供应商口径；不提供 `amount`，比值无法实测 |
 | eastmoney | 手 | **未独立验证**：`push2his` 在多数网络不可达，湖内东财行全是停牌占位零值；沿用 `commodity_bars` 已记录的「东财口径 = 手」（同一 endpoint 同一字段位）。若判断有误，`daily_bars_volume_unit` 会在第一批真实行落地时报错 |
 
-TDX 的单位**按频率而非按源**：日线（`frequency=9`）是手，同一 wire parser 出来的 1 分钟线是股（实测 600519 1m bar vol=59,700，amount=88,977,784，价格 ~1490 → 59,716 股）。未来的 `minute_bars` 不得复用日线的换算，minute↔daily 的成交量对账必须股对股。
+TDX 的单位**按频率而非按源**：日线（`frequency=9`）是手，同一 wire parser 出来的日内线是股（实测 600519 1m bar vol=59,700，amount=88,977,784，价格 ~1490 → 59,716 股）。`minute_bars` / `minute_bars_5m` 因此**不复用**日线的 ×100 换算；minute↔daily 的成交量对账必须股对股（实测 5 个交易日 × 3 只，1m/5m 汇总对日频比值精确为 1.0000）。
 
 **质量检查。** `quality/unit_checks.py` 的 `daily_bars_volume_unit` 按 **source 分组**计算 `amount / close / volume` 中位数，落在 [0.8, 1.25] 之外即报 `error`（观测到的中位数与 1.0 相差不到 0.1%，容差留了 ~200 倍余量）。分组是刻意的：混单位的一列中位数既不接近 1 也不接近 100，且一个坏 adapter 会被另外几个健康的源在全市场口径下淹没。两个盲区已记录在案——sina 无 `amount` 因而不可测；`index_bars` / `sector_bars` 的 `close` 是点位不是股价，恒等式在那里没有意义（健康数据也会给出 36 的比值），故不在范围内。
 
@@ -143,9 +143,14 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --appl
 
 **例外：`volume` 不是股。** index_bars / sector_bars 保留 TDX `index()` 调用返回的原值，未做换算——它与成分股加总在任何 100 的幂次上都对不上（000001.SH 实测：指数 amount 是沪市个股 amount 之和的 77%，但两边 volume 差约 300 倍，股/手两种读法都解释不了）。在这个单位被确证之前，按猜测缩放只会把断裂挪个地方。这两个数据集仍是 `data_version=v1`。
 
-#### minute_bars
+#### minute_bars / minute_bars_5m
 
-日内 K 线。**可选数据集**，默认关闭（`[minute_bars].enabled = false`），不在默认 daily wave 上。
+日内 K 线，两个数据集共用同一份 schema。**可选**，默认关闭（`[minute_bars].enabled = false`），不在默认 daily wave 上。
+
+| 数据集 | frequency | 一个交易日 bar 数 | 源端视野 | 全市场体积 |
+|--------|-----------|-----------------|---------|-----------|
+| `minute_bars` | `1m` | 240 | 95 个交易日 | 约 35MB/日、8.4GB/年 |
+| `minute_bars_5m` | `5m` | 48 | 491 个交易日（约 2 年） | 约 6MB/日、1.5GB/年 |
 
 | 列 | 类型 | 说明 |
 |--------|------|-------|
@@ -158,15 +163,21 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --appl
 | amount | float64 | 人民币元 |
 | source / data_version / fetched_at | | 溯源列 |
 
-**bar 语义。** 标签是 bar 的**收盘时刻**（右标签）：`09:31` 覆盖 09:30–09:31，`15:00` 含收盘集合竞价。一个完整交易日 1m 有 **240** 根（`09:31–11:30` 120 根 + `13:01–15:00` 120 根），午休无 bar。落在交易时段外的 bar 视为解码错误，adapter 直接丢弃，audit 的 `minute_bars_off_session` 会在它们进 curated 时报 error。
+**bar 语义。** 标签是 bar 的**收盘时刻**（右标签）：1m 的 `09:31` 覆盖 09:30–09:31，5m 的 `09:35` 覆盖 09:30–09:35；`15:00` 含收盘集合竞价。交易时段为 `09:31–11:30` + `13:01–15:00`，午休无 bar。
+
+落在时段外的 bar 一律丢弃。这不是形式主义：源端会给冷门标的补 **13:00** 的占位 bar（实测 `162107.SZ`，零成交量、close 沿用前值），而活跃股一根都没有（`600519` 查 2,400 根，0 根）。留着它们会在每个缺口检查里塞进一根幻影 bar。audit 的 `minute_bars_off_session` 会在它们进 curated 时报 error。
 
 **无成交分钟。** TDX 的 volume 打包浮点解码把原始 0 映射成 `2**-127`（≈5.88e-39）而非 0.0（见 `_wire/helper.get_volume`）。日内路径显式归零，`volume=0`、`amount=0`，与全湖的停牌约定一致。冷门股一天有几十个这样的分钟，停牌股则是一整个交易日。
 
-**历史视野（重要）。** 实测 2026-08-01：TDX 每个标的只保留 **22,800 根 1m（95 个交易日）**、**23,568 根 5m（491 个交易日，约 2 年）**，15m/30m/60m 同为 491 天。跨交易所、跨流动性完全一致，是服务端保留期。**更早的窗口返回的不是更少数据，而是没有数据**，且没有任何回填源能补深。`asl backfill minute_bars --start` 会直接拒绝越界窗口；`list_datasets()` 的 `history_horizon_days` 是程序化契约。
+**历史视野（重要）。** 实测 2026-08-01：TDX 每个标的保留 **22,800 根 1m** 与 **23,568 根 5m**。上限是**根数**而非日期——除以一个完整交易日（240 / 48 根）即为 95 / 491 个交易日，对每个交易日都有报价的标的成立。**更早的窗口返回的不是更少数据，而是没有数据**，且没有任何回填源能补深。完整机制与例外见 [catalog.md 历史视野](catalog.md)；`asl backfill` 会直接拒绝越界窗口，`list_datasets()` 的 `history_horizon_days` 是程序化契约。
 
-**为什么不按 `frequency` / `symbol_bucket` 分区。** 早期草图写的是三级分区。全市场 1m 单日约 1.3M 行、约 35MB（实测 26.9 B/行），正落在「≥1000 行/日 → 按日」区间，多加两级目录没有收益，而 compact / 分区裁剪 / 视图 / 碎片检查全部假设恰好一层。`frequency` 留在 schema 与主键里，所以将来加 5m 不是破坏性变更——但**加 5m 应当再注册一个数据集**，而不是混进同一个：两者视野不同（95 天 vs 491 天），而一个数据集只有一个水位和一个 `coverage_start`，混在一起会让两边都说谎。
+**为什么一个数据集只放一个频率。** 1m 视野 95 天、5m 视野 491 天，而一个数据集只有一个水位、一个 `coverage_start`、一个 `history_horizon_days`。混在一起，这三样对两个频率都是错的。`frequency` 仍在 schema 与主键里，所以两者共用同一份列定义、同一套质量检查。
 
-**容量。** 实测 26.9 B/行 zstd。全市场 1m ≈ 35MB/日、**8.4 GB/年**（作为对照：现有全部日频数据 2001–2026 共 468MB）。默认 `scope = "index:000300.SH"` 约 300 只，≈2MB/日、0.5GB/年。
+**15m / 30m / 60m 不入湖**：可从 5m 精确聚合（48 根分别被 3/6/12 整除，收盘分钟边界对齐），见 [catalog.md](catalog.md) 的示例代码。
+
+**为什么不按 `frequency` / `symbol_bucket` 分区。** 早期草图写的是三级分区。全市场 1m 单日约 1.3M 行、约 35MB（实测 26.9 B/行），正落在「≥1000 行/日 → 按日」区间，多加两级目录没有收益，而 compact / 分区裁剪 / 视图 / 碎片检查全部假设恰好一层。频率的隔离由数据集名承担，不由目录层级承担。
+
+**容量。** 实测 1m 26.9 B/行、5m 23.9 B/行（zstd）。全市场 1m ≈ 35MB/日、**8.4 GB/年**；5m ≈ 6MB/日、**1.5 GB/年**（作为对照：现有全部日频数据 2001–2026 共 468MB）。默认 `scope = "index:000300.SH"` 约 300 只，1m ≈2MB/日、0.5GB/年。
 
 #### commodity_bars
 

@@ -126,9 +126,14 @@ enabled = false
 #   "all" — the whole universe; opt in knowingly.
 scope = "index:000300.SH"
 symbols = []
-# 1m | 5m | 15m | 30m | 60m. One dataset holds one frequency: the horizons
-# differ (95 days vs 491) and a dataset carries a single watermark.
-frequency = "1m"
+# Which frequencies to capture. Each lands in its own dataset:
+#   "1m" -> minute_bars      (source keeps ~95 trading days)
+#   "5m" -> minute_bars_5m   (source keeps ~491, about 2 years)
+# Separate datasets because a dataset carries one watermark and one
+# coverage_start, and those two horizons differ by 5x. 5m is the only intraday
+# frequency with real history, and 15m/30m/60m aggregate from it exactly, so
+# they are not stored.
+frequencies = ["1m"]
 
 [failover]
 enabled = true
@@ -213,7 +218,7 @@ steps = ["institutional_holdings", "analyst_consensus",
 # [minute_bars] first, and read the horizon note there before expecting history.
 [job.daily.groups.intraday]
 at = "18:45"
-steps = ["minute_bars", "compact"]
+steps = ["minute_bars", "minute_bars_5m", "compact"]
 
 [job.init.phases]
 names = [

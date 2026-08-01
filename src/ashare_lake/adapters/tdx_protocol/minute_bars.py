@@ -46,6 +46,13 @@ FREQUENCIES: dict[str, tuple[int, int]] = {
 
 # Continuous-trading windows, as closing-minute labels. A bar at exactly 11:30
 # or 15:00 is the last of its half-session; 13:00 is not a bar (13:01 is).
+#
+# The 13:00 exclusion is not pedantry: the source really does emit bars there.
+# 162107.SZ, a barely-traded LOF, returns a 13:00-labelled bar on days it did
+# not trade, with zero volume and a stale close carried forward — padding, not
+# a tradable minute. An actively traded name emits none (600519 over 2,400 bars
+# checked, zero). Keeping them would put a phantom bar in every gap check and
+# skew any resampling that assumes fixed bar counts.
 SESSIONS: tuple[tuple[time, time], ...] = (
     (time(9, 31), time(11, 30)),
     (time(13, 1), time(15, 0)),

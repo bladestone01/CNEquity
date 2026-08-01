@@ -119,3 +119,28 @@ def test_validate_config_allows_multiprocess_on_windows(tmp_path, monkeypatch):
         daily_waves=[WaveConfig(name="core", parallel=True, steps=["instruments"])],
     )
     assert validate_config(cfg) == []
+
+
+def test_unknown_intraday_frequency_is_rejected(tmp_path):
+    """A frequency with no dataset has nowhere to put rows and no horizon to
+    declare, so it must fail validation rather than no-op at run time."""
+    cfg = Config(
+        data_root=tmp_path / "data",
+        workers=1,
+        daily_waves=[WaveConfig(name="w", parallel=False, steps=["instruments"])],
+        minute_bars_frequencies=["1m", "3m"],
+    )
+    errors = validate_config(cfg)
+    assert any("'3m' has no registered dataset" in e for e in errors)
+    assert not any("'1m'" in e for e in errors)
+
+
+def test_enabled_intraday_capture_needs_at_least_one_frequency(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        workers=1,
+        daily_waves=[WaveConfig(name="w", parallel=False, steps=["instruments"])],
+        minute_bars_enabled=True,
+        minute_bars_frequencies=[],
+    )
+    assert any("frequencies is empty" in e for e in validate_config(cfg))

@@ -1,6 +1,6 @@
 # 数据集目录
 
-ashare-lake 交付 **37 个注册数据集**（34 curated + 3 derived：`adj_factors`、`industry_index`、`delisting_events`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。其中 `minute_bars` 默认关闭，需在 `[minute_bars]` 显式开启。
+ashare-lake 交付 **38 个注册数据集**（35 curated + 3 derived：`adj_factors`、`industry_index`、`delisting_events`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。其中日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -59,14 +59,37 @@ ashare-lake 交付 **37 个注册数据集**（34 curated + 3 derived：`adj_fac
 
 `history_mode` 说的是**能不能**回补，这一项说的是**能回补多远**。取值为「源端还提供多少个交易日」，`None` = 源端无此限制，历史只受你回填了多少所限。
 
-| 数据集 | history_horizon_days | 含义 |
-|--------|---------------------|------|
-| minute_bars | **95** | TDX 每标的只留 22,800 根 1m。5m/15m/30m/60m 是 491 个交易日（约 2 年） |
+| 数据集 | history_horizon_days | 实测（2026-08-01） |
+|--------|---------------------|-------------------|
+| minute_bars（1m） | **95** | 22,800 根/标的，最早 2026-03-16 |
+| minute_bars_5m（5m） | **491** | 23,568 根/标的，最早 2024-07-23（约 2 年） |
 | 其余全部 | `None` | 源端不设上限 |
 
-这是**源的属性，不是本湖的待办**。更早的窗口返回的不是更少数据，而是没有数据，且没有回填源能补深——`by_date` 单独看会让人以为能回补十年。实测 2026-08-01，跨交易所、跨流动性一致（`600519.SH` / `000001.SZ` / `300750.SZ` / `688981.SH` / `603005.SH` 均为 95±1 天）。
+这是**源的属性，不是本湖的待办**。更早的窗口返回的不是更少数据，而是没有数据，且没有回填源能补深——`by_date` 单独看会让人以为能回补十年。
 
-`asl backfill minute_bars --start` 早于视野会直接报错而不是扫一整天返回空。程序化读法：`list_datasets()` 的 `history_horizon_days` 列。
+**机制是「每标的固定根数」，不是固定日期。** 1m 约 22,800 根、5m 约 23,568 根；除以一个完整交易日（240 / 48 根）就得到上表的天数。所以这个数字对**每个交易日都有报价的标的**成立——也就是所有正常 A 股，本数据集的服务对象。反过来，只在零星日子有 bar 的标的会按比例伸得更远：`162107.SZ`（几乎不成交的 LOF）只有 3,216 根 5m，散在 67 个交易日上，因而回溯到 2012 年。**把它当作正常个股的保证，而不是所有标的的硬上限。**
+
+活跃标的间高度一致：1m 实测 `600519.SH` / `000001.SZ` / `300750.SZ` / `688981.SH` / `603005.SH` 均为 95±1 天，跨交易所、跨流动性。
+
+`asl backfill minute_bars --start` 早于视野会直接报错而不是扫一整天返回空。要拉冷门标的的深历史，先把 `[minute_bars].scope` 收窄成 watchlist。程序化读法：`list_datasets()` 的 `history_horizon_days` 列。
+
+### 为什么没有 15m / 30m / 60m 数据集
+
+源端在同一个 491 天窗口内也提供它们，但**它们能从 5m 精确聚合**：48 根 5m 分别被 3 / 6 / 12 整除，且收盘分钟边界完全对齐（实测聚合得到 16 / 8 / 4 根，标签为 09:45…15:00 / 10:00…15:00 / 10:30…15:00）。存它们等于用三个数据集装一个 `group_by_dynamic` 就能得到的东西。
+
+```python
+from ashare_lake.query import load
+import polars as pl
+
+bars = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"])
+bars_15m = (
+    bars.sort("bar_time")
+    .group_by_dynamic("bar_time", every="15m", closed="right", group_by="symbol")
+    .agg(pl.col("open").first(), pl.col("high").max(),
+         pl.col("low").min(), pl.col("close").last(),
+         pl.col("volume").sum(), pl.col("amount").sum())
+)
+```
 
 ---
 
@@ -102,7 +125,8 @@ ashare-lake 交付 **37 个注册数据集**（34 curated + 3 derived：`adj_fac
 |--------|--------|------|------|------|------|------|
 | daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | tip 缺口东财 clist 路由进 curated；多日 kline；BJ→sina；snapshot 仍留 audit |
 | index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
-| minute_bars | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | **可选**，默认关；`[minute_bars]` 配置范围；**源端只有 95 个交易日 1m**（见下「历史视野」）；required=false |
+| minute_bars | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 1m。**可选**，默认关；`[minute_bars]` 配置范围；**源端只有 95 个交易日**（见下「历史视野」）；全市场约 35MB/日；required=false |
+| minute_bars_5m | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 5m。同上可选；**491 个交易日（约 2 年），是唯一有真历史的日内频率**；全市场约 6MB/日；required=false |
 | commodity_bars | trade_date | symbol, trade_date | by_date | ✓ | eastmoney+sina | 国内主连 + COMEX金 `GC0.CMX`；`asl backfill commodity_bars`；required=false |
 | adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`asl derive adj_factors` |
 | delisting_events | —（单文件 merge） | symbol | derived | — | sina | 每只退市股的结尾形态；`asl delisted backfill` 产出 |
@@ -206,7 +230,7 @@ ashare-lake 交付 **37 个注册数据集**（34 curated + 3 derived：`adj_fac
 |-----------|--------|
 | reference.py | instruments, trading_calendar, trading_status |
 | bars.py | daily_bars, index_bars |
-| intraday.py | minute_bars（可选；不在默认 wave 上，`asl run daily --group intraday`） |
+| intraday.py | minute_bars, minute_bars_5m（可选；不在默认 wave 上，`asl run daily --group intraday`） |
 | events.py | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | fundamentals.py | valuation_metrics, financial_statement_items |
 | capital.py | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades |

@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
@@ -158,6 +158,25 @@ def test_first_page_failure_always_raises():
 
     with pytest.raises(TdxMinuteBarsError, match="start=0"):
         fetch_minute_bars_paginated(Broken(), "600519.SH", date(2026, 7, 31), date(2026, 7, 31))
+
+
+def test_lunch_boundary_padding_bar_is_dropped():
+    """The source pads inactive instruments with a 13:00 bar.
+
+    Observed on 162107.SZ (a barely-traded LOF): a 13:00-labelled bar on days
+    it did not trade, zero volume, close carried forward. 13:01 is the first
+    real afternoon label, so 13:00 is padding — keeping it would put a phantom
+    bar in every gap check.
+    """
+    page = [
+        _bar(datetime(2026, 7, 31, 11, 30)),
+        _bar(datetime(2026, 7, 31, 13, 0), vol=0, volume=0, amount=0.0, close=1.0),
+        _bar(datetime(2026, 7, 31, 13, 1)),
+    ]
+    rows = fetch_minute_bars_paginated(
+        FakeClient([page]), "162107.SZ", date(2026, 7, 31), date(2026, 7, 31)
+    )
+    assert [r["bar_time"].time() for r in rows] == [time(11, 30), time(13, 1)]
 
 
 def test_no_trade_minute_stores_exact_zeros():

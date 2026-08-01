@@ -31,6 +31,7 @@ import polars as pl
 
 from ashare_lake.adapters.tdx_protocol.minute_bars import SESSIONS, bars_per_session
 from ashare_lake.config import Config
+from ashare_lake.domain.datasets import intraday_dataset_names
 from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
 # Window scanned back from the audit date — a few sessions is enough to catch a
@@ -59,14 +60,14 @@ RECONCILE_MIN_SYMBOL_DAYS = 20
 DAILY_BARS_SHARES_VERSION = "v2"
 
 
-def _scan_minute_bars(config: Config, start: date, end: date) -> pl.LazyFrame | None:
-    root = config.curated_root / "minute_bars"
+def _scan_intraday(config: Config, dataset: str, start: date, end: date) -> pl.LazyFrame | None:
+    root = config.curated_root / dataset
     if not dataset_has_parquet(root):
         return None
     return scan_parquet_root(root, partition_col="trade_date", start=start, end=end)
 
 
-def off_session_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:
+def off_session_findings(lf: pl.LazyFrame, dataset: str, start: date, end: date) -> list[dict]:
     """Bars whose timestamp is not a legal closing minute."""
     legal = pl.lit(False)
     for lo, hi in SESSIONS:
@@ -81,7 +82,7 @@ def off_session_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]
     examples = ", ".join(f"{r['symbol']}@{r['bar_time']}" for r in bad.iter_rows(named=True))
     return [
         {
-            "dataset": "minute_bars",
+            "dataset": dataset,
             "severity": "error",
             "check": "minute_bars_off_session",
             "message": (
@@ -93,7 +94,9 @@ def off_session_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]
     ]
 
 
-def trade_date_mismatch_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:
+def trade_date_mismatch_findings(
+    lf: pl.LazyFrame, dataset: str, start: date, end: date
+) -> list[dict]:
     """Rows whose partition date disagrees with their timestamp."""
     mismatched = lf.filter(pl.col("bar_time").dt.date() != pl.col("trade_date"))
     total = int(mismatched.select(pl.len()).collect().item())
@@ -106,7 +109,7 @@ def trade_date_mismatch_findings(lf: pl.LazyFrame, start: date, end: date) -> li
     )
     return [
         {
-            "dataset": "minute_bars",
+            "dataset": dataset,
             "severity": "error",
             "check": "minute_bars_trade_date_mismatch",
             "message": (
@@ -119,7 +122,7 @@ def trade_date_mismatch_findings(lf: pl.LazyFrame, start: date, end: date) -> li
     ]
 
 
-def session_coverage_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:
+def session_coverage_findings(lf: pl.LazyFrame, dataset: str, start: date, end: date) -> list[dict]:
     """Symbol-days holding materially fewer bars than a full session."""
     counts = lf.group_by("symbol", "trade_date", "frequency").agg(pl.len().alias("bars")).collect()
     if counts.is_empty():
@@ -145,7 +148,7 @@ def session_coverage_findings(lf: pl.LazyFrame, start: date, end: date) -> list[
         )
         findings.append(
             {
-                "dataset": "minute_bars",
+                "dataset": dataset,
                 "severity": "warning",
                 "check": "minute_bars_session_coverage",
                 "message": (
@@ -164,6 +167,7 @@ def session_coverage_findings(lf: pl.LazyFrame, start: date, end: date) -> list[
 def daily_reconciliation_findings(
     config: Config,
     lf: pl.LazyFrame,
+    dataset: str,
     start: date,
     end: date,
 ) -> list[dict]:
@@ -197,7 +201,7 @@ def daily_reconciliation_findings(
     if joined.height < RECONCILE_MIN_SYMBOL_DAYS:
         return [
             {
-                "dataset": "minute_bars",
+                "dataset": dataset,
                 "severity": "info",
                 "check": "minute_bars_daily_reconciliation",
                 "message": (
@@ -220,7 +224,7 @@ def daily_reconciliation_findings(
     )
     return [
         {
-            "dataset": "minute_bars",
+            "dataset": dataset,
             "severity": "warning",
             "check": "minute_bars_daily_reconciliation",
             "message": (
@@ -233,15 +237,16 @@ def daily_reconciliation_findings(
     ]
 
 
-def minute_bars_findings(
+def dataset_findings(
     config: Config,
+    dataset: str,
     trade_date: date,
     *,
     lookback_days: int = INTRADAY_CHECK_LOOKBACK_DAYS,
 ) -> list[dict]:
-    """Every intraday check, or nothing when the dataset is not in use."""
+    """Every intraday check for one dataset, or nothing when it is not in use."""
     start = trade_date - timedelta(days=lookback_days)
-    lf = _scan_minute_bars(config, start, trade_date)
+    lf = _scan_intraday(config, dataset, start, trade_date)
     if lf is None:
         return []
     cols = lf.collect_schema().names()
@@ -251,8 +256,26 @@ def minute_bars_findings(
         return []
 
     findings: list[dict] = []
-    findings.extend(off_session_findings(lf, start, trade_date))
-    findings.extend(trade_date_mismatch_findings(lf, start, trade_date))
-    findings.extend(session_coverage_findings(lf, start, trade_date))
-    findings.extend(daily_reconciliation_findings(config, lf, start, trade_date))
+    findings.extend(off_session_findings(lf, dataset, start, trade_date))
+    findings.extend(trade_date_mismatch_findings(lf, dataset, start, trade_date))
+    findings.extend(session_coverage_findings(lf, dataset, start, trade_date))
+    findings.extend(daily_reconciliation_findings(config, lf, dataset, start, trade_date))
+    return findings
+
+
+def minute_bars_findings(
+    config: Config,
+    trade_date: date,
+    *,
+    lookback_days: int = INTRADAY_CHECK_LOOKBACK_DAYS,
+) -> list[dict]:
+    """Every intraday check across every registered intraday dataset.
+
+    Iterates the registry rather than a hardcoded name, so a newly registered
+    frequency is audited without a second edit here — the failure mode this
+    avoids is a dataset that collects rows nothing ever checks.
+    """
+    findings: list[dict] = []
+    for dataset in sorted(intraday_dataset_names()):
+        findings.extend(dataset_findings(config, dataset, trade_date, lookback_days=lookback_days))
     return findings

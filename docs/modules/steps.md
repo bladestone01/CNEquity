@@ -16,7 +16,7 @@
 from ashare_lake.steps import reference, bars, events, ...  # noqa
 ```
 
-当前 **39 个**注册 step（36 采集 + 3 finalize）。
+当前 **40 个**注册 step（37 采集 + 3 finalize）。
 
 ---
 
@@ -39,13 +39,18 @@ from ashare_lake.steps import reference, bars, events, ...  # noqa
 
 ### intraday.py（L1，可选）
 
-| Step | 数据集 | Worker | 主源 |
-|------|--------|--------|------|
-| minute_bars | minute_bars | 否 | tdx_protocol |
+| Step | 数据集 | 频率 | 源端视野 | 全市场体积 |
+|------|--------|------|---------|-----------|
+| minute_bars | minute_bars | 1m | 95 个交易日 | 约 35MB/日、8.4GB/年 |
+| minute_bars_5m | minute_bars_5m | 5m | 491 个交易日（约 2 年） | 约 6MB/日、1.5GB/年 |
 
-`group="intraday"`，**不在默认 daily wave 上**，且 `[minute_bars].enabled` 默认 false——全市场 1m 约 35MB/日、8.4GB/年，不该落在没主动要它的用户头上。入口只有 `asl run daily --group intraday` 和 `asl backfill minute_bars`。
+两个 step 由 `_register_intraday_steps()` 从注册表生成——加一个频率是加一条 `DatasetSpec`，不是在四个模块里各改一处。
 
-范围由 `[minute_bars].scope` 决定：`index:<symbol>`（默认沪深300，约 300 只）/ `watchlist` / `all`。源端 1m 只有 95 个交易日——见 [catalog.md 历史视野](../datasets/catalog.md)。
+`group="intraday"`，**不在默认 daily wave 上**，且 `[minute_bars].enabled` 默认 false——不该把 8.4GB/年 落在没主动要它的用户头上。入口只有 `asl run daily --group intraday` 和 `asl backfill <dataset>`。
+
+一个数据集只放一个频率：视野差 5 倍，而一个数据集只有一个水位和一个 `coverage_start`，混在一起两边都会说谎。抓哪些频率由 `[minute_bars].frequencies` 列出；范围由 `[minute_bars].scope` 决定：`index:<symbol>`（默认沪深300，约 300 只）/ `watchlist` / `all`。
+
+**5m 是唯一有真历史的日内频率**，且 15m/30m/60m 可从它精确聚合——见 [catalog.md 历史视野](../datasets/catalog.md)。
 
 ### events.py（L2）
 

@@ -84,7 +84,10 @@ class Config:
     minute_bars_enabled: bool = False
     minute_bars_scope: str = "index:000300.SH"
     minute_bars_symbols: list[str] = field(default_factory=list)
-    minute_bars_frequency: str = "1m"
+    # Which frequencies to capture. Each lands in its own registered dataset
+    # (1m -> minute_bars, 5m -> minute_bars_5m) because their horizons differ:
+    # the source keeps 95 trading days of 1m against 491 of 5m.
+    minute_bars_frequencies: list[str] = field(default_factory=lambda: ["1m"])
     failover_enabled: bool = True
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
@@ -276,7 +279,7 @@ def load_config(path: str | Path) -> Config:
         minute_bars_enabled=bool(minute_raw.get("enabled", False)),
         minute_bars_scope=str(minute_raw.get("scope", "index:000300.SH")),
         minute_bars_symbols=list(minute_raw.get("symbols", [])),
-        minute_bars_frequency=str(minute_raw.get("frequency", "1m")),
+        minute_bars_frequencies=list(minute_raw.get("frequencies", ["1m"])),
         failover_enabled=bool(failover_raw.get("enabled", True)),
         failover_datasets=failover_datasets,
         config_path=config_path,
@@ -309,6 +312,20 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("[tdx_protocol].connect_timeout_sec must be >= 1")
     if not cfg.daily_waves:
         errors.append("job.daily.waves must define at least one wave")
+
+    # Each frequency must have a dataset to land in, or its rows would have
+    # nowhere to go and its horizon nowhere to be declared.
+    from ashare_lake.domain.datasets import intraday_datasets
+
+    known_frequencies = intraday_datasets()
+    for frequency in cfg.minute_bars_frequencies:
+        if frequency not in known_frequencies:
+            errors.append(
+                f"[minute_bars].frequencies: {frequency!r} has no registered dataset "
+                f"(available: {', '.join(sorted(known_frequencies))})"
+            )
+    if cfg.minute_bars_enabled and not cfg.minute_bars_frequencies:
+        errors.append("[minute_bars].enabled = true but frequencies is empty")
 
     referenced: list[tuple[str, str]] = []
     for wave in cfg.daily_waves:

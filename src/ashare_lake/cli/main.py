@@ -547,8 +547,9 @@ def run_catchup(
     "start_str",
     default=None,
     help="Range start (YYYY-MM-DD) for date-walking backfills (margin_trading, "
-    "financial_statement_items period walk) and to narrow the sector_bars "
-    "kline window (default: 400 days back).",
+    "financial_statement_items period walk, minute_bars) and to narrow the "
+    "sector_bars kline window (default: 400 days back). Horizon-limited "
+    "datasets refuse a start older than what their source still serves.",
 )
 @click.option(
     "--end",
@@ -629,10 +630,14 @@ def _guard_history_horizon(dataset: str, start: date | None) -> None:
         return
     raise click.ClickException(
         f"{dataset}: --start {start} is older than the source horizon. "
-        f"The vendor serves only ~{spec.history_horizon_days} trading days "
-        f"(back to about {earliest}); earlier bars do not exist at any depth "
-        "and no backfill source extends them. Re-run with "
-        f"--start {earliest} or later."
+        f"The vendor caps history per symbol at about {spec.history_horizon_days} "
+        f"trading days for an instrument quoted every session (back to about "
+        f"{earliest}), and no backfill source extends it. Re-run with "
+        f"--start {earliest} or later. "
+        "(A barely-traded instrument holds bars on fewer days and so reaches "
+        "further back. To pull those, narrow [minute_bars].scope to a watchlist "
+        "first — a full sweep at that start would spend hours on symbols that "
+        "have nothing there.)"
     )
 
 
