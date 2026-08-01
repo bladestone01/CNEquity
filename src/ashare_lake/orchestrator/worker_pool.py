@@ -108,7 +108,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             config=tdx_cfg,
             on_heartbeat=_heartbeat,
         )
-        df = normalize_with_source(df)
+        df = normalize_with_source(df, dataset=dataset)
         writer = StagingWriter(staging_root)
         writer.write_batch(dataset, run_id, batch_id, df)
         if manifest:
