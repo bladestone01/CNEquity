@@ -8,6 +8,40 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A single reconnect failure could take down an entire full-market intraday
+  sweep.** `fetch_minute_bars` opens a fresh TDX connection per 50-symbol
+  batch; run against the full market (7,747 symbols, ~155 reconnects), one
+  connect attempt hit a `socket.recv` timeout ~44 minutes in and the exception
+  propagated all the way out of the step, discarding every batch already
+  fetched (staged but never compacted, since compact only runs on a
+  success/warning step). A second full-market attempt got through the fetch
+  cleanly but returned zero rows for all 7,747 symbols — a TDX host degrading
+  under sustained connection churn rather than raising outright.
+
+  Fixed two ways. `client.py` now retries a failed connect once, against a
+  freshly re-probed server, before giving up (`_connect_with_retry`) — the
+  same "rotate server, don't hammer the dead one" pattern `fetch_index_bars`
+  already used. `steps/intraday.py` now catches a whole batch failing outright
+  and records its symbols as failed rather than letting the exception abort
+  the step — the same contract a single symbol's failure already had, just at
+  the batch grain. The batch size (`_BATCH_SYMBOLS`) also moved from 50 to 200,
+  cutting full-market reconnects roughly 4x, while staying small enough that a
+  killed run still loses minutes, not hours.
+
+- **No-trade bars stored a denormal turnover instead of zero.** TDX's packed-
+  float decoder maps a raw zero quantity to `2**-127` (~5.9e-39) rather than
+  `0.0`, so every suspended day landed in curated with that much `amount`
+  against `volume = 0` — 439,774 rows in the reference lake, contradicting the
+  documented suspension convention (`volume=0`, `amount=0`) and quietly making
+  `amount > 0` mean "was quoted" rather than "traded". `volume` escaped it
+  through `int()` truncation; `amount` is a float and kept it.
+
+  Fixed at the adapter boundary for both the daily and intraday paths
+  (`adapters/tdx_protocol/_decode.py`). Rows already written are cleaned by the
+  same `scripts/migrate_daily_bars_volume_v2.py` pass that does the v1→v2
+  volume rewrite. It matters more intraday, where an illiquid name has dozens
+  of no-trade minutes a day and a halted one has a full session of them.
+
 - **`daily_bars.volume` mixed two units in one column, off by exactly 100×.**
   The schema has always documented 股, but only `ths` and `baostock` wrote it:
   `tdx_protocol` passed TDX's native 手 straight through (median
@@ -28,6 +62,114 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   catches it if it is wrong.
 
 ### Added
+
+- **`minute_bars` dataset — intraday (1m) bars, opt-in.** Registered with a
+  schema, a primary key of `(symbol, trade_date, bar_time, frequency)`, day
+  partitions, a step (`steps/intraday.py`, `group="intraday"`), `load()`
+  support including `adjust="qfq"/"hfq"`, and four audit checks. Off by default
+  (`[minute_bars].enabled = false`) and never on the daily waves: full-market
+  1m is ~1.3M rows and ~35MB a day (8.4GB a year, against 468MB for the entire
+  daily lake 2001–2026), which must not become what `asl init` costs someone
+  who never asked for it. `[minute_bars].scope` defaults to `index:000300.SH`
+  (~300 names, ~2MB a day).
+
+  `bar_time` is the bar's **closing** minute, as TDX labels them: a full
+  session is 240 bars over 09:31–11:30 and 13:01–15:00, and the 15:00 bar
+  carries the closing auction. Prices are unadjusted, like the daily bars;
+  adjustment joins the day's factor at query time.
+
+- **`minute_bars_5m` — 5-minute bars, the only intraday frequency with real
+  history.** A separate dataset rather than a `frequency` value inside
+  `minute_bars`, because the source keeps 491 trading days of 5m against 95 of
+  1m, and a dataset carries one watermark, one `coverage_start` and one
+  horizon — holding both frequencies would make all three wrong for both. The
+  dataset↔frequency mapping is `DatasetSpec.intraday_frequency`, and the steps,
+  the audit checks and `load()`'s adjustable set are all derived from it, so
+  adding a frequency is one registry entry.
+
+  Configured together: `[minute_bars].frequencies = ["1m", "5m"]` shares one
+  scope across both. At a fifth of 1m's row rate it is ~6MB a day at full
+  market (1.5GB a year, against 8.4GB for 1m).
+
+  15m/30m/60m are deliberately **not** stored: they aggregate exactly from 5m
+  (48 bars divide by 3, 6 and 12 onto identical closing-minute boundaries —
+  verified against live data), so three more datasets would hold a
+  `group_by_dynamic` away from data already present. `docs/datasets/catalog.md`
+  carries the resampling snippet.
+
+- `asl demo --intraday`: adds a seventh step capturing 1m bars for the same
+  handful of symbols and printing a real session, so the closing-minute
+  labelling and the 240-bar shape are visible without building a lake.
+
+- `[minute_bars].fetch_workers`: concurrent TDX connections for the intraday
+  fetch, one per thread. It does **not** raise the request rate — the limiter
+  is cross-process and paces every request either way — it only stops one lane
+  idling on network latency. Measured over 40 symbols × 5 sessions: 4.50 req/s
+  at 1 worker against 10.13 at 4, which is the ceiling the 100ms limiter
+  already permits. Threads rather than the daily path's ProcessPool, so it
+  works on macOS too, where the fork-unsafe wire client pins `workers` to 1.
+
+  Left at 1 by default: the measurement is a two-minute burst, not a five-hour
+  sweep. `docs/operations/runbook.md` carries the disk and wall-clock numbers
+  for a full-market decision.
+
+- **`DatasetSpec.history_horizon_days` — how far back a source still serves.**
+  Measured 2026-08-01, TDX keeps 22,800 1-minute bars per symbol and 23,568
+  5-minute. The cap is a **bar count**, not a date: divided by a full session
+  that is 95 and 491 trading days, which holds for any instrument quoted every
+  session — every A-share stock, and what these datasets are for. An instrument
+  with bars on only scattered days reaches proportionally further back
+  (162107.SZ, a barely-traded LOF, holds 3,216 5m bars over 67 days and so
+  reaches 2012), so the field is the guarantee for a normal stock rather than a
+  hard ceiling for every symbol.
+
+  An older window returns *nothing*, not less, and no backfill source extends
+  it — `history_mode = by_date` alone would have promised a decade. Surfaced in
+  `list_datasets()`, and `asl backfill` now refuses a `--start` before the
+  horizon instead of sweeping for hours into an empty lake.
+
+- `DatasetSpec.backfill_chunk_days`: backfills for datasets that declare it run
+  as a sequence of compacted date slices. `compact` reads a whole run's staging
+  into one frame, which a 95-day full-market `minute_bars` seed (~123M rows)
+  would not survive; slicing also makes a killed sweep resumable at the last
+  compacted slice rather than losing everything.
+
+- **A single intraday bar's volume is not reproducible; the day's total is.**
+  Fetching the same settled window twice returns different `volume`/`amount`
+  for ~0.6% of bars (257 of 43,920 over 40 symbols × 5 sessions). It is
+  boundary attribution, not corruption: a trade sitting on a minute edge lands
+  either side depending on when the server aggregated, and the neighbour
+  compensates exactly — across all 183 symbol-days in that sample the daily
+  volume totals were identical and the amount totals matched to 0.00e+00
+  relative. Documented in `docs/datasets/schema.md`, because a factor that
+  reads absolute per-bar quantities needs to know.
+
+  Unrelated to concurrency: two *serial* fetches disagreed on more rows (435)
+  than a serial and a threaded one did (181).
+
+- Intraday bars outside continuous trading are dropped at parse time. The
+  source really does emit them: 162107.SZ, a barely-traded LOF, returns a
+  13:00-labelled bar on days it did not trade, zero volume with a stale close
+  carried forward — padding, not a tradable minute (an active name emits none;
+  600519 over 2,400 bars, zero). Keeping them would put a phantom bar in every
+  gap check and skew any resampling that assumes fixed bar counts.
+
+- `asl backfill <intraday dataset> --symbols A,B`: restrict a one-off intraday
+  backfill without editing the config — it overrides `[minute_bars].scope` for
+  that run and enables capture, so pulling a few names does not mean flipping
+  config flags first. Rejected for non-intraday datasets, which take their
+  universe from `instruments`.
+
+- Intraday audit checks (`quality/intraday_checks.py`): `minute_bars_off_session`
+  and `minute_bars_trade_date_mismatch` (error), `minute_bars_session_coverage`
+  and `minute_bars_daily_reconciliation` (warning). The reconciliation compares
+  both volume and turnover against `daily_bars`: `volume` is the column with a
+  unit history and so catches a conversion slip, while `amount` is yuan from
+  every source and so cannot be wrong for a unit reason — a break there means
+  the wrong bars, not the wrong scale. A session that quietly loses
+  40 of its 240 bars still has rows on every trading day and passes every
+  dataset-level check the lake already runs; the daily reconciliation is the
+  only one that compares the series against independently fetched data.
 
 - `daily_bars_volume_unit` audit check (`quality/unit_checks.py`): flags, per
   source, any median `amount / close / volume` outside [0.8, 1.25], so an

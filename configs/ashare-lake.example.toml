@@ -111,6 +111,37 @@ use_snownlp = false
 # HTTP stock_news fallback cap (primary news channel is curated news_headlines).
 news_symbol_limit = 50
 
+[minute_bars]
+# Intraday bars. Off by default and NOT on the daily waves: full-market 1m is
+# ~1.3M rows and ~30MB a day (6-8GB a year, several times the whole daily lake),
+# which would change what `asl init` costs someone who never asked for it.
+#
+# HISTORY HORIZON. TDX keeps ~95 trading days of 1m and ~491 (about 2 years) of
+# 5m and coarser. That is the vendor's retention, not this lake's backlog: an
+# older window returns nothing, and no backfill source extends it. `asl backfill
+# minute_bars --start` refuses a window that starts before the horizon.
+enabled = false
+# "index:<symbol>" — that index's latest constituents (~300 names for 沪深300,
+#   about 2MB a day at 1m). "watchlist" — exactly the symbols listed below.
+#   "all" — the whole universe; opt in knowingly.
+scope = "index:000300.SH"
+symbols = []
+# Which frequencies to capture. Each lands in its own dataset:
+#   "1m" -> minute_bars      (source keeps ~95 trading days)
+#   "5m" -> minute_bars_5m   (source keeps ~491, about 2 years)
+# Separate datasets because a dataset carries one watermark and one
+# coverage_start, and those two horizons differ by 5x. 5m is the only intraday
+# frequency with real history, and 15m/30m/60m aggregate from it exactly, so
+# they are not stored.
+frequencies = ["1m"]
+# Concurrent TDX connections for the intraday fetch. This does NOT raise the
+# request rate — the limiter is cross-process and paces every request either
+# way — it only stops one lane idling on network latency between calls.
+# Measured on 40 symbols x 5 sessions: 4.50 req/s at 1, 10.13 at 4, which is
+# the ceiling the 100ms limiter already allows. Left at 1 by default: the
+# measurement is a two-minute burst, not a five-hour sweep.
+fetch_workers = 1
+
 [failover]
 enabled = true
 
@@ -189,6 +220,12 @@ at = "18:30"
 steps = ["institutional_holdings", "analyst_consensus",
   "hot_rank", "sector_bars", "sector_fund_flow", "news_headlines", "flash_news_wire",
   "sentiment_scores", "compact"]
+
+# Not scheduled by anything: `asl run daily --group intraday` only. Enable
+# [minute_bars] first, and read the horizon note there before expecting history.
+[job.daily.groups.intraday]
+at = "18:45"
+steps = ["minute_bars", "minute_bars_5m", "compact"]
 
 [job.init.phases]
 names = [

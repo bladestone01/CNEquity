@@ -78,6 +78,21 @@ class Config:
     adj_factors_types: list[str] = field(default_factory=lambda: ["hfq"])
     sentiment_use_snownlp: bool = False
     sentiment_news_symbol_limit: int = 50
+    # Intraday capture is off by default and scoped when on. Full market 1m is
+    # ~1.3M rows and ~30MB a day (6-8GB a year, several times the whole daily
+    # lake), so the default scope is an index rather than every symbol.
+    minute_bars_enabled: bool = False
+    minute_bars_scope: str = "index:000300.SH"
+    minute_bars_symbols: list[str] = field(default_factory=list)
+    # Which frequencies to capture. Each lands in its own registered dataset
+    # (1m -> minute_bars, 5m -> minute_bars_5m) because their horizons differ:
+    # the source keeps 95 trading days of 1m against 491 of 5m.
+    minute_bars_frequencies: list[str] = field(default_factory=lambda: ["1m"])
+    # Concurrent TDX connections for intraday capture. 1 = one connection,
+    # today's behaviour. This does NOT raise the request rate — the limiter
+    # is cross-process and paces every request regardless — it only stops a
+    # single lane idling on network latency between calls.
+    minute_bars_fetch_workers: int = 1
     failover_enabled: bool = True
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
@@ -227,6 +242,7 @@ def load_config(path: str | Path) -> Config:
             )
         )
 
+    minute_raw = raw.get("minute_bars", {})
     init_raw = raw.get("job", {}).get("init", {})
     phases_block = init_raw.get("phases", init_raw)
     init_phases = list(phases_block.get("names", init_raw.get("names", [])))
@@ -265,6 +281,11 @@ def load_config(path: str | Path) -> Config:
         adj_factors_types=list(adj_raw.get("adjust_types", ["hfq"])),
         sentiment_use_snownlp=bool(sentiment_raw.get("use_snownlp", False)),
         sentiment_news_symbol_limit=int(sentiment_raw.get("news_symbol_limit", 50)),
+        minute_bars_enabled=bool(minute_raw.get("enabled", False)),
+        minute_bars_scope=str(minute_raw.get("scope", "index:000300.SH")),
+        minute_bars_symbols=list(minute_raw.get("symbols", [])),
+        minute_bars_frequencies=list(minute_raw.get("frequencies", ["1m"])),
+        minute_bars_fetch_workers=int(minute_raw.get("fetch_workers", 1)),
         failover_enabled=bool(failover_raw.get("enabled", True)),
         failover_datasets=failover_datasets,
         config_path=config_path,
@@ -297,6 +318,22 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("[tdx_protocol].connect_timeout_sec must be >= 1")
     if not cfg.daily_waves:
         errors.append("job.daily.waves must define at least one wave")
+
+    # Each frequency must have a dataset to land in, or its rows would have
+    # nowhere to go and its horizon nowhere to be declared.
+    from ashare_lake.domain.datasets import intraday_datasets
+
+    known_frequencies = intraday_datasets()
+    for frequency in cfg.minute_bars_frequencies:
+        if frequency not in known_frequencies:
+            errors.append(
+                f"[minute_bars].frequencies: {frequency!r} has no registered dataset "
+                f"(available: {', '.join(sorted(known_frequencies))})"
+            )
+    if cfg.minute_bars_enabled and not cfg.minute_bars_frequencies:
+        errors.append("[minute_bars].enabled = true but frequencies is empty")
+    if cfg.minute_bars_fetch_workers < 1:
+        errors.append("[minute_bars].fetch_workers must be >= 1")
 
     referenced: list[tuple[str, str]] = []
     for wave in cfg.daily_waves:

@@ -16,7 +16,7 @@ sys.modules[_spec.name] = migrate
 _spec.loader.exec_module(migrate)
 
 
-def _frame(rows: list[tuple[str, int, str]]) -> pl.DataFrame:
+def _frame(rows: list[tuple[str, int, str]], *, amount: float = 500_000.0) -> pl.DataFrame:
     return pl.DataFrame(
         [
             {
@@ -24,7 +24,7 @@ def _frame(rows: list[tuple[str, int, str]]) -> pl.DataFrame:
                 "trade_date": date(2024, 6, 28),
                 "close": 12.5,
                 "volume": volume,
-                "amount": 500_000.0,
+                "amount": amount,
                 "source": source,
                 "data_version": version,
             }
@@ -42,7 +42,7 @@ def test_rescales_only_the_lot_sources():
             ("baostock", 40_000, "v1"),
         ]
     )
-    out, rescaled, restamped = migrate.migrate_frame(df)
+    out, rescaled, restamped, _ = migrate.migrate_frame(df)
     assert out["volume"].to_list() == [40_000, 40_000, 40_000, 40_000]
     assert out["data_version"].to_list() == ["v2"] * 4
     assert (rescaled, restamped) == (2, 4)
@@ -50,16 +50,33 @@ def test_rescales_only_the_lot_sources():
 
 def test_leaves_v2_rows_alone_so_a_rerun_is_a_no_op():
     df = _frame([("tdx_protocol", 40_000, "v2")])
-    out, rescaled, restamped = migrate.migrate_frame(df)
+    out, rescaled, restamped, _ = migrate.migrate_frame(df)
     assert out["volume"].to_list() == [40_000]
     assert (rescaled, restamped) == (0, 0)
 
 
 def test_second_pass_over_migrated_data_changes_nothing():
-    once, _, _ = migrate.migrate_frame(_frame([("tdx_protocol", 400, "v1"), ("ths", 40_000, "v1")]))
-    twice, rescaled, restamped = migrate.migrate_frame(once)
+    once, *_ = migrate.migrate_frame(_frame([("tdx_protocol", 400, "v1"), ("ths", 40_000, "v1")]))
+    twice, rescaled, restamped, _ = migrate.migrate_frame(once)
     assert twice.equals(once)
     assert (rescaled, restamped) == (0, 0)
+
+
+def test_denormal_no_trade_amount_is_snapped_to_zero():
+    # TDX decodes a raw-zero quantity to 2**-127, so every suspended day landed
+    # with 5.9e-39 yuan of turnover instead of the zero the schema promises —
+    # 439,774 rows across the reference lake.
+    df = _frame([("tdx_protocol", 0, "v1")], amount=2.0**-127)
+    out, _, _, dezeroed = migrate.migrate_frame(df)
+    assert out["amount"].to_list() == [0.0]
+    assert dezeroed == 1
+
+
+def test_real_amounts_survive_the_migration():
+    df = _frame([("tdx_protocol", 400, "v1")], amount=500_000.0)
+    out, _, _, dezeroed = migrate.migrate_frame(df)
+    assert out["amount"].to_list() == [500_000.0]
+    assert dezeroed == 0
 
 
 def test_fetched_at_is_not_restamped():
@@ -68,7 +85,7 @@ def test_fetched_at_is_not_restamped():
     df = _frame([("tdx_protocol", 400, "v1")]).with_columns(
         pl.lit("2024-06-28T09:00:00Z").alias("fetched_at")
     )
-    out, _, _ = migrate.migrate_frame(df)
+    out, *_ = migrate.migrate_frame(df)
     assert out["fetched_at"].to_list() == ["2024-06-28T09:00:00Z"]
 
 

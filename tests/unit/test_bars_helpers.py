@@ -77,3 +77,53 @@ def test_sweep_stock_bars_planned_abort_streak(monkeypatch):
     )
     assert len(failed) == 10  # aborts after 10 consecutive
     assert calls["n"] == 10
+
+
+def test_daily_bars_no_trade_amount_is_exactly_zero():
+    """A suspended day must store amount=0, not the decoder's denormal.
+
+    TDX's packed-float decoder maps a raw zero to 2**-127 (~5.9e-39).
+    ``int()`` hid it on ``volume``; ``amount`` is a float and kept it, so
+    ``amount > 0`` came to mean "was quoted" rather than "traded".
+    """
+    from ashare_lake.adapters.tdx_protocol.bars import _parse_bar_rows
+
+    denormal = 2.0**-127
+    pdf = pl.DataFrame(
+        [
+            {
+                "date": date(2024, 6, 28),
+                "open": 12.5,
+                "high": 12.5,
+                "low": 12.5,
+                "close": 12.5,
+                "vol": denormal,
+                "amount": denormal,
+            }
+        ]
+    )
+    rows = _parse_bar_rows(pdf, "600519.SH", date(2024, 6, 1), date(2024, 6, 30))
+    assert rows[0]["volume"] == 0
+    assert rows[0]["amount"] == 0.0
+
+
+def test_daily_bars_real_quantities_are_untouched_by_the_zero_snap():
+    from ashare_lake.adapters.tdx_protocol.bars import _parse_bar_rows
+
+    pdf = pl.DataFrame(
+        [
+            {
+                "date": date(2024, 6, 28),
+                "open": 12.5,
+                "high": 12.5,
+                "low": 12.5,
+                "close": 12.5,
+                "vol": 400,
+                "amount": 500_000.0,
+            }
+        ]
+    )
+    rows = _parse_bar_rows(pdf, "600519.SH", date(2024, 6, 1), date(2024, 6, 30))
+    # 400 手 → 40,000 股 at the adapter boundary; amount unchanged.
+    assert rows[0]["volume"] == 40_000
+    assert rows[0]["amount"] == 500_000.0

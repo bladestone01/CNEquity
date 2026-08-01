@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import click
 import polars as pl
+import pytest
 from click.testing import CliRunner
 
 from ashare_lake.cli.main import cli
@@ -196,3 +198,177 @@ def test_probe_tdx_closes_its_client():
         demo_mod._probe_tdx(object())
 
     closer.assert_called_once_with(client)
+
+
+def _minute_frame(symbols: list[str], day: date, bars: int = 240) -> pl.DataFrame:
+    """A synthetic full session, right-labelled like the real source."""
+    from datetime import datetime, timedelta
+
+    from ashare_lake.adapters.tdx_protocol.minute_bars import in_session
+
+    stamps: list[datetime] = []
+    stamp = datetime(day.year, day.month, day.day, 9, 31)
+    while len(stamps) < bars:
+        if in_session(stamp):
+            stamps.append(stamp)
+        stamp += timedelta(minutes=1)
+    rows = [
+        {
+            "symbol": sym,
+            "trade_date": day,
+            "bar_time": s,
+            "frequency": "1m",
+            "open": 10.0,
+            "high": 10.0,
+            "low": 10.0,
+            "close": 10.0,
+            "volume": 100,
+            "amount": 1000.0,
+        }
+        for sym in symbols
+        for s in stamps
+    ]
+    return with_provenance(pl.DataFrame(rows), source="tdx_protocol", data_version="v1")
+
+
+def test_asl_demo_intraday_offline(tmp_path, monkeypatch):
+    """`asl demo --intraday` adds a 7th step and prints a real session."""
+    symbols = ["600519.SH", "000001.SZ"]
+    monkeypatch.setattr("ashare_lake.cli.demo._probe_tdx", lambda cfg: None)
+    monkeypatch.setattr(
+        "ashare_lake.adapters.tdx_protocol.client.fetch_instruments",
+        lambda **kwargs: _inst_frame(symbols),
+    )
+    monkeypatch.setattr(
+        "ashare_lake.adapters.tdx_protocol.client.normalize_with_source",
+        lambda df: df,
+    )
+
+    def fake_calendar(config, trade_date, run_id, context):
+        from ashare_lake.storage.atomic import write_parquet_atomic
+
+        rows = []
+        d = date(2024, 5, 1)
+        while d <= date(2024, 6, 28):
+            rows.append(
+                {
+                    "trade_date": d,
+                    "is_trading": d.weekday() < 5,
+                    "source": "seed",
+                    "data_version": "v1",
+                    "fetched_at": "2024-06-28T00:00:00+00:00",
+                }
+            )
+            d = date.fromordinal(d.toordinal() + 1)
+        df = validate_dataframe(pl.DataFrame(rows), "trading_calendar")
+        out = config.curated_root / "trading_calendar" / "trade_date=2024"
+        out.mkdir(parents=True, exist_ok=True)
+        write_parquet_atomic(out / "part-000.parquet", df)
+        return {"rows_read": df.height, "rows_written": df.height}
+
+    def fake_daily_bars(config, trade_date, run_id, context):
+        from ashare_lake.storage import StagingWriter
+
+        start = getattr(config, "_backfill_start", date(2024, 6, 1))
+        end = getattr(config, "_backfill_end", trade_date)
+        df = validate_dataframe(_bars_frame(symbols, start, end), "daily_bars")
+        StagingWriter(config.staging_root).write_batch("daily_bars", run_id, "batch-0", df)
+        return {"rows_read": df.height, "rows_written": df.height}
+
+    def fake_minute_bars(config, trade_date, run_id, context):
+        from ashare_lake.storage import StagingWriter
+
+        # The demo must have configured the watchlist scope before we ran.
+        assert config.minute_bars_enabled
+        assert config.minute_bars_scope == "watchlist"
+        df = validate_dataframe(_minute_frame(symbols, date(2024, 6, 28)), "minute_bars")
+        StagingWriter(config.staging_root).write_batch("minute_bars", run_id, "batch-0", df)
+        return {"rows_read": df.height, "rows_written": df.height}
+
+    def fake_compact(config, trade_date, run_id, context):
+        from ashare_lake.storage.parquet import compact_dataset
+
+        total = 0
+        for dataset in ("daily_bars", "minute_bars"):
+            total += compact_dataset(config.staging_root, config.curated_root, dataset, run_id)
+        return {"rows_read": total, "rows_written": total}
+
+    names = ("trading_calendar", "daily_bars", "minute_bars", "compact")
+    originals = {name: STEP_REGISTRY[name] for name in names}
+    STEP_REGISTRY["trading_calendar"] = StepEntry(fn=fake_calendar, group="core")
+    STEP_REGISTRY["daily_bars"] = StepEntry(fn=fake_daily_bars, group="core", requires_workers=True)
+    STEP_REGISTRY["minute_bars"] = StepEntry(fn=fake_minute_bars, group="intraday")
+    STEP_REGISTRY["compact"] = StepEntry(fn=fake_compact, group="finalize")
+    try:
+        data_root = tmp_path / "demo-lake"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "demo",
+                "--intraday",
+                "--symbols",
+                ",".join(symbols),
+                "--days",
+                "10",
+                "--data-root",
+                str(data_root),
+                "--config-out",
+                str(tmp_path / "demo.toml"),
+                "--trade-date",
+                "2024-06-28",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Seven steps rather than six, and the session shape is reported.
+        assert "[7/7] minute_bars" in result.output
+        assert "hold a full 240-bar session" in result.output
+        assert "bar_time is the CLOSING minute" in result.output
+        assert 'load("minute_bars"' in result.output
+        assert list((data_root / "curated" / "minute_bars").glob("**/*.parquet"))
+    finally:
+        STEP_REGISTRY.update(originals)
+
+
+def test_asl_demo_without_intraday_stays_six_steps(tmp_path, monkeypatch):
+    """The default demo must not fetch intraday bars or mention them."""
+    from ashare_lake.cli import demo as demo_mod
+
+    called = []
+    monkeypatch.setattr(demo_mod, "_run_intraday_demo", lambda *a, **k: called.append(1) or {})
+    assert demo_mod._intraday_hint(None, None, "600519.SH") == ""
+    assert called == []
+
+
+def test_run_intraday_demo_raises_when_the_step_fails(tmp_path):
+    from ashare_lake.cli.demo import _run_intraday_demo
+    from ashare_lake.config import Config
+
+    cfg = Config(data_root=tmp_path / "lake")
+    for sub in ("staging", "curated", "meta", "derived"):
+        (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
+
+    class FailingEngine:
+        def run_job(self, *a, **k):
+            return {"status": "failed"}
+
+    with pytest.raises(click.ClickException, match="minute_bars failed"):
+        _run_intraday_demo(cfg, FailingEngine(), ["600519.SH"], date(2024, 6, 28), days=5)
+
+
+def test_run_intraday_demo_raises_when_no_rows_come_back(tmp_path, monkeypatch):
+    from ashare_lake.cli.demo import _run_intraday_demo
+    from ashare_lake.config import Config
+
+    cfg = Config(data_root=tmp_path / "lake")
+    for sub in ("staging", "curated", "meta", "derived"):
+        (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
+
+    class SucceedingEngine:
+        def run_job(self, *a, **k):
+            return {"status": "success"}
+
+    monkeypatch.setattr(
+        "ashare_lake.query.reader.load", lambda *a, **k: pl.DataFrame({"symbol": []})
+    )
+    with pytest.raises(click.ClickException, match="returned no rows"):
+        _run_intraday_demo(cfg, SucceedingEngine(), ["600519.SH"], date(2024, 6, 28), days=5)

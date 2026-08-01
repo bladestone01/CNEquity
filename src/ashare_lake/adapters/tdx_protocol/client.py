@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from concurrent.futures import as_completed as _as_completed
 from datetime import date, timedelta
@@ -195,6 +196,33 @@ def _quotes_client(config: Config | None = None):
 def quotes_client_factory(config: Config | None = None):
     """Callable factory for corporate_actions xdxr (one client per batch)."""
     return lambda: _quotes_client(config)
+
+
+# A cold TCP handshake to a TDX host occasionally times out under sustained
+# load rather than failing outright — measured on a full-market intraday
+# seed (7,747 symbols, 50-per-batch), which reconnects on every batch and hit
+# a `socket.recv` timeout during setup after ~44 minutes and ~600 prior
+# reconnects. One retry, against a re-probed server, clears this without
+# escalating all the way to a failed batch.
+_CONNECT_RETRY_ATTEMPTS = 2
+_CONNECT_RETRY_BACKOFF_SEC = 2.0
+
+
+def _connect_with_retry(config: Config | None = None):
+    """``_quotes_client``, retrying once (with a fresh server) on failure."""
+    last_exc: Exception | None = None
+    for attempt in range(_CONNECT_RETRY_ATTEMPTS):
+        try:
+            return _quotes_client(config)
+        except Exception as exc:  # noqa: BLE001 — retried, then re-raised as-is
+            last_exc = exc
+            if attempt + 1 < _CONNECT_RETRY_ATTEMPTS:
+                # The cached server just failed us; re-probe rather than
+                # retrying the same one straight into the same timeout.
+                reset_tdx_server_cache()
+                time.sleep(_CONNECT_RETRY_BACKOFF_SEC)
+    assert last_exc is not None
+    raise last_exc
 
 
 # TDX market ids: 0=Shenzhen, 1=Shanghai (not "SH"/"SZ" strings).
@@ -451,6 +479,162 @@ def fetch_daily_bars(
     finally:
         _close_quotes_client(client)
     return _fail_or_mock("daily_bars", reason, allow_mock, _mock_bars(symbols, start, end))
+
+
+def fetch_minute_bars(
+    symbols: list[str],
+    start: date,
+    end: date,
+    *,
+    frequency: str = "1m",
+    rate_limit: RateLimitSpec | None = None,
+    backfill: bool = False,
+    config: Config | None = None,
+    on_heartbeat: Callable[[], None] | None = None,
+    max_pages: int | None = None,
+    workers: int = 1,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Intraday bars for *symbols*, one TDX session for the whole batch.
+
+    Returns ``(frame, failed_symbols)``. A symbol that fails does not fail the
+    batch — with hundreds of symbols and a per-symbol horizon walk, one bad code
+    must not cost the run every other one — so the failures ride alongside the
+    frame rather than inside it.
+
+    ``workers`` > 1 splits the symbols across that many threads, each with its
+    own TDX connection. It does **not** raise the request rate: the limiter in
+    ``wait_spec`` is cross-process and still paces every request, so the ceiling
+    is unchanged and the threads only stop us idling on network latency between
+    calls. Measured on 48 symbols: 2.35 req/s serial against 8.70 at 4 threads,
+    approaching the 10 req/s the 100ms limiter already permits.
+
+    Threads rather than the daily path's ProcessPool: the wire client is not
+    fork-safe (which is why macOS is pinned to ``workers = 1`` there), but one
+    client per thread is fine, so this works on every platform.
+
+    No mock path. The daily fetch has one because the daily lake must keep
+    building in tests and demos when TDX is unreachable; ``minute_bars`` is
+    opt-in and empty by default, so a fabricated intraday series would buy
+    nothing and could be mistaken for a real 240-bar session.
+    """
+    from ashare_lake.adapters.tdx_protocol.minute_bars import fetch_minute_bars_paginated
+
+    def _fetch_one(client, sym: str) -> list[dict]:
+        return fetch_minute_bars_paginated(
+            client,
+            sym,
+            start,
+            end,
+            frequency=frequency,
+            rate_limit=rate_limit,
+            backfill=backfill,
+            on_page=on_heartbeat,
+            max_pages=max_pages,
+        )
+
+    rows: list[dict] = []
+    failed: list[str] = []
+    clients: list = []
+    lanes = max(1, min(int(workers), len(symbols))) if symbols else 1
+    try:
+        # Held for the whole batch, as every TDX caller does: it keeps other
+        # steps out of the protocol while we run. Inside it we own TDX, so the
+        # extra connections below are ours alone and each is touched by exactly
+        # one thread — which is the property the lock's comment is about.
+        with TDX_SESSION_LOCK:
+            if lanes == 1:
+                clients = [_connect_with_retry(config)]
+                for sym in symbols:
+                    if on_heartbeat is not None:
+                        on_heartbeat()
+                    try:
+                        rows.extend(_fetch_one(clients[0], sym))
+                    except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                        logger.warning("%s failed for %s: %s", frequency, sym, exc)
+                        failed.append(sym)
+            else:
+                rows, failed = _fetch_threaded(
+                    symbols, lanes, config, _fetch_one, clients, on_heartbeat, frequency
+                )
+    except ImportError as exc:
+        raise TdxSourceError("minute_bars: TDX wire client unavailable") from exc
+    except Exception as exc:
+        reset_tdx_server_cache()
+        raise TdxSourceError(f"minute_bars: TDX fetch failed: {exc}") from exc
+    finally:
+        for client in clients:
+            _close_quotes_client(client)
+
+    df = pl.DataFrame(rows) if rows else pl.DataFrame(schema=_MINUTE_BARS_FETCH_SCHEMA)
+    return df, failed
+
+
+def _fetch_threaded(
+    symbols: list[str],
+    lanes: int,
+    config: Config | None,
+    fetch_one: Callable[[object, str], list[dict]],
+    clients: list,
+    on_heartbeat: Callable[[], None] | None,
+    frequency: str,
+) -> tuple[list[dict], list[str]]:
+    """Run *fetch_one* over *symbols* on *lanes* threads, one client each.
+
+    Symbols are dealt round-robin rather than in contiguous blocks so a lane
+    cannot draw a run of illiquid names and finish minutes after the others.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    for _ in range(lanes):
+        clients.append(_connect_with_retry(config))
+
+    heartbeat_lock = threading.Lock()
+
+    def _beat() -> None:
+        if on_heartbeat is None:
+            return
+        # The manifest heartbeat writes to SQLite; serialise the callback so
+        # concurrent lanes cannot interleave inside it.
+        with heartbeat_lock:
+            on_heartbeat()
+
+    def _lane(index: int) -> tuple[list[dict], list[str]]:
+        client = clients[index]
+        lane_rows: list[dict] = []
+        lane_failed: list[str] = []
+        for sym in symbols[index::lanes]:
+            _beat()
+            try:
+                lane_rows.extend(fetch_one(client, sym))
+            except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                logger.warning("%s failed for %s: %s", frequency, sym, exc)
+                lane_failed.append(sym)
+        return lane_rows, lane_failed
+
+    rows: list[dict] = []
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=lanes) as pool:
+        for lane_rows, lane_failed in pool.map(_lane, range(lanes)):
+            rows.extend(lane_rows)
+            failed.extend(lane_failed)
+    return rows, failed
+
+
+# Fetch-side shape (pre-provenance), so an all-failed batch still returns a
+# frame the writer can validate instead of a schema-less empty one.
+_MINUTE_BARS_FETCH_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "bar_time": pl.Datetime(time_unit="us"),
+    "frequency": pl.Utf8,
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    "volume": pl.Int64,
+    "amount": pl.Float64,
+}
 
 
 def fetch_index_bars(
