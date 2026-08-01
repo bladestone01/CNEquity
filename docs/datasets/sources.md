@@ -179,6 +179,8 @@
 | cninfo | HTTP | announcement_index | — | 仅按需 |
 | baostock | TCP | 退市标的、历史 ST、估值回补 | — | 仅 `--backfill` |
 | pboc | HTTP | 社会融资规模增量（`macro_indicators`） | — | 失败仅告警；取全量序列，下次运行补回 |
+| nbs | HTTP | **仅审计**：PMI 发布稿，对照 `macro_indicators` | — | 缺省关闭；不可达时静默跳过 |
+| exchange | HTTP | **仅审计**：上交所/深交所上市列表，对照 ST 标签 | — | 缺省关闭；不可达时静默跳过 |
 
 > **AkShare 已不再被任何适配器调用**（[issue #3](https://github.com/rootSunc/ashare-lake/issues/3)）。
 > 它此前的两个调用点分别指向本项目已经直连的端点：ST 集合走的是同一个东财

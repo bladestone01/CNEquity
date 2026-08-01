@@ -13,6 +13,8 @@ adapters/
 ├── cninfo/               巨潮资讯
 ├── baostock/             证券宝（估值 / ST / 退市回填）
 ├── pboc/                 中国人民银行（社融）
+├── nbs/                  国家统计局（PMI 对照）
+├── exchange/             上交所 / 深交所（ST 名单对照）
 ├── ths/                  同花顺（板块 K 线等回填）
 ├── sw/                   申万行业分类历史
 ├── cni/                  国证指数成分历史
@@ -41,6 +43,8 @@ adapters/
 | baostock | [baostock.md](baostock.md) | valuation 回填, ST 历史, 退市股 |
 | cninfo | [cninfo.md](cninfo.md) | announcement_index, regulatory_events |
 | pboc | [pboc.md](pboc.md) | macro_indicators（社会融资规模增量） |
+| nbs | [../quality.md](../quality.md) | 制造业 PMI 发布稿，供 `macro_pmi_vs_nbs` 对照 |
+| exchange | [../quality.md](../quality.md) | 交易所上市列表，供 `st_labels_vs_exchange` 对照 |
 | macro | [macro.md](macro.md) | macro_indicators |
 | calendar | [calendar.md](calendar.md) | trading_calendar 种子 |
 | ths / sw / cni | （无独立页）见 [逐源限制](../../datasets/sources.md) | sector_bars / industry_members / index_constituents 回填 |

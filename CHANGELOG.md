@@ -8,6 +8,39 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Publisher cross-checks (`quality/authority_checks.py`).** Every other check
+  reasons about the lake's internal consistency, so none of them can see a
+  vendor publishing on time, in the right shape, with a wrong number — exactly
+  the shape of the `m2_yoy` defect. These two reach the publisher:
+
+  - `macro_pmi_vs_nbs` — 制造业 PMI against the 国家统计局 release
+  - `st_labels_vs_exchange` — ST designations against the SSE / SZSE listings
+
+  Both are gated on their `[sources.*]` flag, **defaulting off** when the
+  section is absent, so an offline lake and the unit suite never touch the
+  network. Results also land in `meta/quality/source_diffs/authority-{date}.json`
+  even when everything agrees: a findings file records only disagreement, which
+  cannot distinguish "checked, agreed" from "never checked".
+
+  The NBS *query API* is deliberately not used — `data.stats.gov.cn/easyquery.htm`
+  answers 403 (WAF `UrlACL`) from non-mainland egress while the release pages
+  answer normally, so building on it would leave the check silently dead for the
+  users least able to diagnose it. The release sentence is parsed instead.
+
+  Both directions of the ST comparison run over the **shared universe**. The
+  exchanges carry a company until formal delisting while a quote feed drops it
+  when it stops trading: on 2026-08-01 SSE designated two names ST that neither
+  EastMoney nor TDX still listed. Restricting only one side left that as a
+  permanent shortfall consuming most of the tolerance. SSE's 主板/科创板
+  downloads also exclude the risk-warning board — five ST symbols were missing
+  from both — so `stockType=10` is used.
+
+  M2 is not covered: the PBOC publishes 货币供应量 as levels only and revised
+  the M1 caliber from 2025-01, so a derived year-on-year figure would report
+  drift that is an artefact of our own arithmetic. EastMoney's M2 was verified
+  against the PBOC release by hand instead.
+
+
 - **`st_label_crosscheck`** — `trading_status` ST labels vs the ST prefix on the
   instrument's exchange short name. Both sides are already in curated, so it
   costs no requests, and it is genuinely independent: the short name is assigned

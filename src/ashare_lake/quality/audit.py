@@ -12,6 +12,7 @@ from ashare_lake.adapters.calendar.exchange_calendar import (
 )
 from ashare_lake.config import Config
 from ashare_lake.domain.datasets import PARTITION_COLS, curated_dataset_names
+from ashare_lake.quality.authority_checks import run_authority_checks
 from ashare_lake.quality.cross_checks import (
     adj_factor_reconciliation_findings,
     daily_bars_calendar_findings,
@@ -232,6 +233,10 @@ def _collect_lake_findings(
     # Both sides already in curated — costs no requests (issue #10).
     findings.extend(st_label_crosscheck_findings(config, trade_date))
     findings.extend(macro_staleness_findings(config, trade_date))
+    # Reaches the statistics bureau and the exchanges; gated on [sources.nbs]
+    # and [sources.exchange] so an offline lake (and every unit test) stays off
+    # the network.
+    findings.extend(run_authority_checks(config, trade_date))
     findings.extend(_unregistered_curated_dirs(config))
 
     for ds, pcol in PARTITION_COLS.items():

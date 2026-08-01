@@ -13,6 +13,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from ashare_lake.adapters.pboc import _tables
 from ashare_lake.adapters.pboc import social_financing as sf
 
 # Layout of a real workbook: bilingual title, an explicit unit line, a header
@@ -36,7 +37,7 @@ def _workbook(rows: list[list], *, extra: list[list] | None = None) -> bytes:
 
 def test_months_parse_to_month_end():
     content = _workbook([["2026.01", 72185], ["2026.02", 23837]])
-    assert sf.parse_workbook(content) == [
+    assert _tables.parse_month_column(content, 1) == [
         {"obs_date": date(2026, 1, 31), "value": 72185.0},
         {"obs_date": date(2026, 2, 28), "value": 23837.0},
     ]
@@ -45,7 +46,7 @@ def test_months_parse_to_month_end():
 def test_october_is_not_read_as_january():
     """`.xlsx` stores the month as a float, so 2026.10 arrives as 2026.1."""
     content = _workbook([[2026.01, 72185], [2026.10, 8680]])
-    assert sf.parse_workbook(content) == [
+    assert _tables.parse_month_column(content, 1) == [
         {"obs_date": date(2026, 1, 31), "value": 72185.0},
         {"obs_date": date(2026, 10, 31), "value": 8680.0},
     ]
@@ -53,7 +54,9 @@ def test_october_is_not_read_as_january():
 
 def test_unpublished_months_are_skipped_not_zeroed():
     content = _workbook([["2026.06", 33645], ["2026.07", None], ["2026.08", None]])
-    assert sf.parse_workbook(content) == [{"obs_date": date(2026, 6, 30), "value": 33645.0}]
+    assert _tables.parse_month_column(content, 1) == [
+        {"obs_date": date(2026, 6, 30), "value": 33645.0}
+    ]
 
 
 def test_a_percentage_table_in_the_same_sheet_is_excluded():
@@ -72,7 +75,7 @@ def test_a_percentage_table_in_the_same_sheet_is_excluded():
             ["2017.02", 100],
         ],
     )
-    parsed = sf.parse_workbook(content)
+    parsed = _tables.parse_month_column(content, 1)
     assert parsed == [{"obs_date": date(2017, 1, 31), "value": 37720.0}]
     assert all(row["value"] != 100.0 for row in parsed)
 
@@ -80,7 +83,7 @@ def test_a_percentage_table_in_the_same_sheet_is_excluded():
 def test_rows_before_any_unit_declaration_are_ignored():
     buf = io.BytesIO()
     pd.DataFrame([["2026.01", 999]]).to_excel(buf, header=False, index=False)
-    assert sf.parse_workbook(buf.getvalue()) == []
+    assert _tables.parse_month_column(buf.getvalue(), 1) == []
 
 
 # --- year discovery and vintage precedence -----------------------------------
@@ -94,17 +97,21 @@ _INDEX = """
 
 def test_year_sections_accept_either_quote_style():
     """The site mixes single- and double-quoted attributes on one page."""
-    assert sf.year_sections(_INDEX) == {
-        2026: f"{sf.BASE}/diaochatongjisi/116219/116319/2026ntjsj/index.html",
-        2020: f"{sf.BASE}/diaochatongjisi/116219/116319/3959050/index.html",
+    assert _tables.year_sections(_INDEX) == {
+        2026: f"{_tables.BASE}/diaochatongjisi/116219/116319/2026ntjsj/index.html",
+        2020: f"{_tables.BASE}/diaochatongjisi/116219/116319/3959050/index.html",
     }
 
 
 def _patch_pipeline(monkeypatch, per_year: dict[int, list[list]]):
     monkeypatch.setattr(
-        sf, "year_sections", lambda *a, **k: {y: f"{sf.BASE}/{y}/index.html" for y in per_year}
+        _tables,
+        "year_sections",
+        lambda *a, **k: {y: f"{_tables.BASE}/{y}/index.html" for y in per_year},
     )
-    monkeypatch.setattr(sf, "_workbook_url", lambda section: section.replace("index.html", "wb"))
+    monkeypatch.setattr(
+        _tables, "workbook_url", lambda section, **kw: section.replace("index.html", "wb")
+    )
 
     class _Resp:
         def __init__(self, content):
@@ -114,7 +121,7 @@ def _patch_pipeline(monkeypatch, per_year: dict[int, list[list]]):
         year = int(url.rstrip("/wb").rsplit("/", 1)[-1])
         return _Resp(_workbook(per_year[year]))
 
-    monkeypatch.setattr(sf, "_client", lambda: type("C", (), {"get": staticmethod(_fake_get)}))
+    monkeypatch.setattr(_tables, "get_bytes", lambda url: _fake_get(url).content)
 
 
 def test_a_later_workbook_supersedes_an_earlier_vintage(monkeypatch):
@@ -139,14 +146,13 @@ def test_a_later_workbook_supersedes_an_earlier_vintage(monkeypatch):
 
 def test_one_unreachable_year_does_not_lose_the_rest(monkeypatch):
     _patch_pipeline(monkeypatch, {2025: [["2025.01", 1.0]], 2026: [["2026.01", 2.0]]})
-    original = sf._workbook_url
 
-    def _flaky(section):
+    def _flaky(section, **kw):
         if "2025" in section:
             raise RuntimeError("timeout")
-        return original(section)
+        return section.replace("index.html", "wb")
 
-    monkeypatch.setattr(sf, "_workbook_url", _flaky)
+    monkeypatch.setattr(_tables, "workbook_url", _flaky)
     rows = sf.fetch_social_financing(start_year=2015)
     assert [r["obs_date"] for r in rows] == [date(2026, 1, 31)]
 
@@ -155,7 +161,7 @@ def test_unreachable_index_degrades_to_empty(monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("network down")
 
-    monkeypatch.setattr(sf, "year_sections", _boom)
+    monkeypatch.setattr(_tables, "year_sections", _boom)
     assert sf.fetch_social_financing() == []
 
 
