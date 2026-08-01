@@ -175,6 +175,7 @@ def capture_intraday_bars(
     rate_limit = config.tdx_rate_limit_spec()
     written = 0
     failed: list[str] = []
+    with_rows: set[str] = set()
 
     for index in range(0, len(symbols), _BATCH_SYMBOLS):
         chunk = symbols[index : index + _BATCH_SYMBOLS]
@@ -187,10 +188,12 @@ def capture_intraday_bars(
             backfill=getattr(config, "_backfill", False),
             config=config,
             max_pages=max_pages,
+            workers=config.minute_bars_fetch_workers,
         )
         failed.extend(chunk_failed)
         if df.is_empty():
             continue
+        with_rows.update(df["symbol"].unique().to_list())
         df = normalize_with_source(df, dataset=dataset)
         writer.write_batch(dataset, run_id, f"intraday-{index // _BATCH_SYMBOLS:04d}", df)
         written += df.height
@@ -202,13 +205,26 @@ def capture_intraday_bars(
             written,
         )
 
+    # A symbol can come back empty without failing: a name suspended for the
+    # whole window genuinely has no intraday bars. That is the right answer, but
+    # it is indistinguishable from a silent fetch hole unless the count is
+    # reported, so record both rather than only the failures.
     result: dict = {
         "rows_read": written,
         "rows_written": written,
         "symbols": len(symbols),
+        "symbols_with_rows": len(with_rows),
         "failed_symbols": len(failed),
         "note": f"{frequency} {start}..{end} scope={config.minute_bars_scope}",
     }
+    silent = len(symbols) - len(with_rows) - len(failed)
+    if silent > 0:
+        logger.info(
+            "%s: %d symbol(s) returned no bars without erroring "
+            "(suspended for the whole window, or never traded it)",
+            dataset,
+            silent,
+        )
     if failed:
         result["context_updates"] = {
             "audit_findings": [

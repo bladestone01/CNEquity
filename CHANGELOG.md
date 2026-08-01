@@ -77,6 +77,22 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   `group_by_dynamic` away from data already present. `docs/datasets/catalog.md`
   carries the resampling snippet.
 
+- `asl demo --intraday`: adds a seventh step capturing 1m bars for the same
+  handful of symbols and printing a real session, so the closing-minute
+  labelling and the 240-bar shape are visible without building a lake.
+
+- `[minute_bars].fetch_workers`: concurrent TDX connections for the intraday
+  fetch, one per thread. It does **not** raise the request rate — the limiter
+  is cross-process and paces every request either way — it only stops one lane
+  idling on network latency. Measured over 40 symbols × 5 sessions: 4.50 req/s
+  at 1 worker against 10.13 at 4, which is the ceiling the 100ms limiter
+  already permits. Threads rather than the daily path's ProcessPool, so it
+  works on macOS too, where the fork-unsafe wire client pins `workers` to 1.
+
+  Left at 1 by default: the measurement is a two-minute burst, not a five-hour
+  sweep. `docs/operations/runbook.md` carries the disk and wall-clock numbers
+  for a full-market decision.
+
 - **`DatasetSpec.history_horizon_days` — how far back a source still serves.**
   Measured 2026-08-01, TDX keeps 22,800 1-minute bars per symbol and 23,568
   5-minute. The cap is a **bar count**, not a date: divided by a full session
@@ -97,6 +113,19 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   into one frame, which a 95-day full-market `minute_bars` seed (~123M rows)
   would not survive; slicing also makes a killed sweep resumable at the last
   compacted slice rather than losing everything.
+
+- **A single intraday bar's volume is not reproducible; the day's total is.**
+  Fetching the same settled window twice returns different `volume`/`amount`
+  for ~0.6% of bars (257 of 43,920 over 40 symbols × 5 sessions). It is
+  boundary attribution, not corruption: a trade sitting on a minute edge lands
+  either side depending on when the server aggregated, and the neighbour
+  compensates exactly — across all 183 symbol-days in that sample the daily
+  volume totals were identical and the amount totals matched to 0.00e+00
+  relative. Documented in `docs/datasets/schema.md`, because a factor that
+  reads absolute per-bar quantities needs to know.
+
+  Unrelated to concurrency: two *serial* fetches disagreed on more rows (435)
+  than a serial and a threaded one did (181).
 
 - Intraday bars outside continuous trading are dropped at parse time. The
   source really does emit them: 162107.SZ, a barely-traded LOF, returns a

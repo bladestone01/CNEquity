@@ -217,3 +217,94 @@ def test_pages_for_window_covers_the_whole_window():
     assert pages_for_window("1m", 95) == 30
     assert pages_for_window("5m", 491) == 31
     assert pages_for_window("1m", 1) == 2
+
+
+class RecordingQuotes:
+    """A fake TDX client that records which thread used it."""
+
+    instances: list["RecordingQuotes"] = []
+
+    def __init__(self):
+        self.symbols: list[str] = []
+        self.threads: set = set()
+        RecordingQuotes.instances.append(self)
+
+    def bars(self, symbol, frequency, market, start, offset):
+        import threading
+
+        self.symbols.append(symbol)
+        self.threads.add(threading.get_ident())
+        if start:  # single page per symbol
+            return []
+        return [_bar(datetime(2026, 7, 31, 9, 31)), _bar(datetime(2026, 7, 31, 9, 32))]
+
+
+def _patch_client(monkeypatch):
+    from ashare_lake.adapters.tdx_protocol import client as client_mod
+
+    RecordingQuotes.instances = []
+    monkeypatch.setattr(client_mod, "_quotes_client", lambda config: RecordingQuotes())
+    monkeypatch.setattr(client_mod, "_close_quotes_client", lambda c: None)
+    return client_mod
+
+
+def test_threaded_fetch_uses_one_client_per_lane(monkeypatch):
+    client_mod = _patch_client(monkeypatch)
+    symbols = [f"60000{i}.SH" for i in range(8)]
+
+    df, failed = client_mod.fetch_minute_bars(
+        symbols, date(2026, 7, 31), date(2026, 7, 31), workers=4
+    )
+
+    # One connection per lane, never shared: the wire client is not thread-safe.
+    assert len(RecordingQuotes.instances) == 4
+    for inst in RecordingQuotes.instances:
+        assert len(inst.threads) == 1
+    assert df.height == 16
+    assert failed == []
+    # Every symbol fetched exactly once across all lanes.
+    fetched = sorted(s for inst in RecordingQuotes.instances for s in inst.symbols)
+    assert fetched == sorted(s.split(".")[0] for s in symbols)
+
+
+def test_threaded_fetch_deals_symbols_round_robin(monkeypatch):
+    client_mod = _patch_client(monkeypatch)
+    symbols = [f"60000{i}.SH" for i in range(8)]
+    client_mod.fetch_minute_bars(symbols, date(2026, 7, 31), date(2026, 7, 31), workers=4)
+
+    # Round-robin, not contiguous blocks: a lane must not be able to draw a run
+    # of illiquid names and finish long after the others.
+    lanes = [inst.symbols for inst in RecordingQuotes.instances]
+    assert sorted(lanes) == [
+        ["600000", "600004"],
+        ["600001", "600005"],
+        ["600002", "600006"],
+        ["600003", "600007"],
+    ]
+
+
+def test_worker_count_never_exceeds_the_symbol_count(monkeypatch):
+    client_mod = _patch_client(monkeypatch)
+    client_mod.fetch_minute_bars(["600519.SH"], date(2026, 7, 31), date(2026, 7, 31), workers=8)
+    # One symbol must not open eight connections.
+    assert len(RecordingQuotes.instances) == 1
+
+
+def test_single_worker_keeps_the_serial_path(monkeypatch):
+    client_mod = _patch_client(monkeypatch)
+    symbols = [f"60000{i}.SH" for i in range(4)]
+    df, _ = client_mod.fetch_minute_bars(symbols, date(2026, 7, 31), date(2026, 7, 31), workers=1)
+    assert len(RecordingQuotes.instances) == 1
+    assert df.height == 8
+
+
+def test_threaded_fetch_records_per_symbol_failures(monkeypatch):
+    client_mod = _patch_client(monkeypatch)
+    # A BJ symbol cannot be served at all; it must come back as a failure
+    # rather than killing its lane or the batch.
+    symbols = ["600000.SH", "920819.BJ", "600002.SH", "600003.SH"]
+    df, failed = client_mod.fetch_minute_bars(
+        symbols, date(2026, 7, 31), date(2026, 7, 31), workers=2
+    )
+    assert failed == ["920819.BJ"]
+    assert df.height == 6

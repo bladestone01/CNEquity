@@ -234,3 +234,30 @@ def test_backfill_window_is_clamped_to_the_source_horizon(cfg, monkeypatch):
     horizon = get_dataset("minute_bars").earliest_available(date(2026, 7, 31))
     assert seen["start"] == horizon
     assert date(2026, 7, 31) - seen["start"] < timedelta(days=200)
+
+
+def test_step_reports_symbols_that_returned_no_rows(cfg, monkeypatch):
+    """A suspended name legitimately has no bars — but the count must be visible.
+
+    Without it, "asked for 5,400, wrote 5,100" is indistinguishable from a
+    silent fetch hole. Measured on a real 60-symbol sweep: 4 symbols returned
+    nothing, all four suspended that day (volume=0 in daily_bars).
+    """
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_scope = "watchlist"
+    cfg.minute_bars_symbols = ["600519.SH", "000001.SZ", "600485.SH"]
+
+    def fetch(symbols, start, end, *, frequency, **kwargs):
+        live = [s for s in symbols if s != "600485.SH"]
+        return _fake_fetch()(live, start, end, frequency=frequency, **kwargs)
+
+    monkeypatch.setattr(intraday, "fetch_minute_bars", fetch)
+    result = capture_intraday_bars(
+        cfg, date(2026, 7, 31), "run-1", dataset="minute_bars", frequency="1m"
+    )
+
+    assert result["symbols"] == 3
+    assert result["symbols_with_rows"] == 2
+    assert result["failed_symbols"] == 0
+    # Silence is not an error: a suspended name must not fail the step.
+    assert "context_updates" not in result

@@ -134,6 +134,13 @@ symbols = []
 # frequency with real history, and 15m/30m/60m aggregate from it exactly, so
 # they are not stored.
 frequencies = ["1m"]
+# Concurrent TDX connections for the intraday fetch. This does NOT raise the
+# request rate — the limiter is cross-process and paces every request either
+# way — it only stops one lane idling on network latency between calls.
+# Measured on 40 symbols x 5 sessions: 4.50 req/s at 1, 10.13 at 4, which is
+# the ceiling the 100ms limiter already allows. Left at 1 by default: the
+# measurement is a two-minute burst, not a five-hour sweep.
+fetch_workers = 1
 
 [failover]
 enabled = true

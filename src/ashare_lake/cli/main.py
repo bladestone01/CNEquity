@@ -91,12 +91,19 @@ def cli():
     show_default=True,
     help="Where to write the tiny demo config for follow-up `asl query`.",
 )
+@click.option(
+    "--intraday",
+    is_flag=True,
+    help="Also capture 1-minute bars for the same symbols (up to 5 sessions) "
+    "and print a session, so the bar_time convention is visible.",
+)
 def demo_cmd(
     symbols: str,
     days: int,
     data_root: str,
     trade_date_str: str | None,
     config_out: str,
+    intraday: bool,
 ):
     """Fetch a tiny real-source lake so you can see progress and results quickly.
 
@@ -112,6 +119,7 @@ def demo_cmd(
         data_root=Path(data_root),
         trade_date=td,
         config_out=Path(config_out),
+        intraday=intraday,
     )
 
 

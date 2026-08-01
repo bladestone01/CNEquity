@@ -17,6 +17,17 @@ daily K is 手 and the daily adapter multiplies by 100, but intraday bars off th
 same parser are already 股 (600519 1m bar vol=59,700 against amount=88,977,784
 at ~1490 → 59,716 shares). Applying the daily conversion would inflate every
 row by 100×. See :mod:`ashare_lake.domain.units`.
+
+**A single minute's volume is not reproducible; the day's total is.** Fetching
+the same settled window twice returns different ``volume``/``amount`` for ~0.6%
+of bars (measured: 257 of 43,920 over 40 symbols × 5 sessions). It is boundary
+attribution, not corruption — a trade sitting on a minute edge lands either
+side depending on when the server aggregated, and the neighbour compensates
+exactly: across all 183 symbol-days in that sample the daily volume totals were
+identical and the amount totals matched to 0.00e+00 relative. Sums are exact;
+one minute's share count is not. This is a property of the source, unrelated
+to concurrency — two *serial* fetches disagreed more (435 rows) than a serial
+and a threaded one did (181).
 """
 
 from __future__ import annotations
