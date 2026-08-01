@@ -75,10 +75,10 @@ def test_stalled_publisher_is_flagged(tmp_path):
     assert f["lag_days"] == (date(2026, 8, 1) - date(2026, 1, 31)).days
 
 
-def test_social_financing_tolerates_the_mofcom_republication_lag(tmp_path):
-    """MOFCOM copies the PBOC release about two months late — measured, not assumed.
+def test_social_financing_tolerates_the_pboc_release_cadence(tmp_path):
+    """The PBOC publishes 社融 mid-following-month — measured, not assumed.
 
-    On 2026-08-01 its newest month was 2026-04, which must not be a finding or
+    On 2026-08-01 its newest month was 2026-06, which must not be a finding or
     the check cries wolf every single day.
     """
     cfg = _lake(
@@ -86,15 +86,15 @@ def test_social_financing_tolerates_the_mofcom_republication_lag(tmp_path):
         [
             {
                 "indicator_id": "social_financing",
-                "obs_date": date(2026, 4, 30),
-                "value": 6245.0,
-                "source": "mofcom",
+                "obs_date": date(2026, 6, 30),
+                "value": 33645.0,
+                "source": "pboc",
             }
         ],
     )
     assert macro_staleness_findings(cfg, date(2026, 8, 1)) == []
-    # ...but a further two months of silence is not routine.
-    assert MONTHLY_STALE_DAYS["social_financing"] < (date(2026, 10, 1) - date(2026, 4, 30)).days
+    # ...but missing a further release cycle is not routine.
+    assert MONTHLY_STALE_DAYS["social_financing"] < (date(2026, 10, 1) - date(2026, 6, 30)).days
     assert macro_staleness_findings(cfg, date(2026, 10, 1))
 
 

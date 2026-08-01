@@ -68,8 +68,8 @@ def test_example_config_validates(monkeypatch):
     # EastMoney pacing is a floor, not a fixed value: push2his bans bursty
     # overseas IPs, so the example config may raise it further.
     assert cfg.source_intervals["eastmoney"] >= 1.0
-    # MOFCOM feeds social_financing; one request per run, but keep it paced.
-    assert cfg.source_intervals["mofcom"] >= 1.0
+    # PBOC feeds social_financing; an index fetch plus a workbook per year.
+    assert cfg.source_intervals["pboc"] >= 1.0
     # AkShare is retired — shipping a [sources.akshare] section would advertise
     # a source no adapter reads (issue #3).
     assert "akshare" not in cfg.sources

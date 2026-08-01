@@ -12,7 +12,7 @@ adapters/
 ├── sina/                 新浪（复权因子 / BJ / 外盘窄集）
 ├── cninfo/               巨潮资讯
 ├── baostock/             证券宝（估值 / ST / 退市回填）
-├── mofcom/               商务部数据中心（社融）
+├── pboc/                 中国人民银行（社融）
 ├── ths/                  同花顺（板块 K 线等回填）
 ├── sw/                   申万行业分类历史
 ├── cni/                  国证指数成分历史
@@ -40,7 +40,7 @@ adapters/
 | sina | [sina.md](sina.md) | adj_factors；BJ / 部分外盘 |
 | baostock | [baostock.md](baostock.md) | valuation 回填, ST 历史, 退市股 |
 | cninfo | [cninfo.md](cninfo.md) | announcement_index, regulatory_events |
-| mofcom | [macro.md](macro.md) | macro_indicators（社会融资规模增量） |
+| pboc | [pboc.md](pboc.md) | macro_indicators（社会融资规模增量） |
 | macro | [macro.md](macro.md) | macro_indicators |
 | calendar | [calendar.md](calendar.md) | trading_calendar 种子 |
 | ths / sw / cni | （无独立页）见 [逐源限制](../../datasets/sources.md) | sector_bars / industry_members / index_constituents 回填 |

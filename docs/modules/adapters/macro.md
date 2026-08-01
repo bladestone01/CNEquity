@@ -24,7 +24,7 @@
 | `lpr_1y` | 1 年期 LPR | 月 | `eastmoney` | `RPTA_WEB_RATE` |
 | `pmi_manufacturing` | 制造业 PMI | 月 | `eastmoney` | `RPT_ECONOMY_PMI` |
 | `m2_yoy` | M2 同比增长（%） | 月 | `eastmoney` | `RPT_ECONOMY_CURRENCY_SUPPLY` |
-| `social_financing` | 社会融资规模增量 | 月 | `mofcom` | [mofcom 适配器](mofcom.md) |
+| `social_financing` | 社会融资规模增量 | 月 | `pboc` | [pboc 适配器](pboc.md) |
 
 PMI 与 M2 曾经走 AkShare。它的两个包装函数请求的正是上表里同一个东财
 datacenter 端点，所以直连没有换发布方，只是去掉了一层解析，并接上本项目自己的
@@ -42,7 +42,7 @@ datacenter 端点，所以直连没有换发布方，只是去掉了一层解析
 ## 溯源
 
 行级 `source` 由适配器写入，不取 step 的统一值：东财行为 `eastmoney`，
-社融行为 `mofcom`。`with_provenance` 只在缺列时填充，故适配器的标注会保留。
+社融行为 `pboc`。`with_provenance` 只在缺列时填充，故适配器的标注会保留。
 
 ---
 

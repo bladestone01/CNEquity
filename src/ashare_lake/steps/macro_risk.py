@@ -34,7 +34,7 @@ def step_macro_indicators(config: Config, trade_date: date, run_id: str, context
         run_id,
         "macro_indicators",
         _fetch,
-        # The adapter stamps `source` per row (EastMoney and MOFCOM both feed
+        # The adapter stamps `source` per row (EastMoney and the PBOC both feed
         # this dataset), and with_provenance keeps a pre-set column. This value
         # only applies to the empty-frame case.
         source="eastmoney",

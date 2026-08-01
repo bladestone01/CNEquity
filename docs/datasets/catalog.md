@@ -188,7 +188,7 @@ bars_15m = (
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 |
 |--------|--------|------|------|------|------|
-| macro_indicators | obs_date | indicator_id, obs_date | by_date | ✓ | eastmoney / mofcom（社融） |
+| macro_indicators | obs_date | indicator_id, obs_date | by_date | ✓ | eastmoney / pboc（社融） |
 | market_breadth | trade_date | trade_date, metric_id | by_date | ✓ | derived (daily_bars) |
 
 ---

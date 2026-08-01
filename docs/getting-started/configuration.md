@@ -60,7 +60,7 @@ asl config validate --config configs/ashare-lake.toml
 
 ## `[sources.<name>]`
 
-支持的 name：`eastmoney`、`cninfo`、`mofcom`、`sina`、`baostock`。
+支持的 name：`eastmoney`、`cninfo`、`pboc`、`sina`、`baostock`。
 
 | 键 | 说明 |
 |----|------|
@@ -75,7 +75,7 @@ asl config validate --config configs/ashare-lake.toml
 |--------|------------------------|------|
 | eastmoney | 1.0 | 日更主源；裸 `EastMoneyClient()` 也默认 1.0s 进程内节流 |
 | cninfo | 1.0 | 公告/监管分页 POST |
-| mofcom | 1.0 | 社融月度序列，每次运行一请求 |
+| pboc | 1.0 | 社融月度序列，索引一次 + 每年一个工作簿 |
 | sina | 0.3 | 复权因子；经 `adj_factors` 的 `wait_source` |
 | baostock | 1.0 + batch 50/45s | 历史市值/ST；禁止多进程并行扫 |
 

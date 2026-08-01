@@ -6,9 +6,11 @@ Two failure modes that curated data alone does not surface.
 on ``(indicator_id, obs_date)``, so a feed that quietly stops publishing looks
 exactly like a feed that is up to date — the old rows are still there and no
 step fails. Only the distance between the newest observation and the run date
-gives it away. This is not hypothetical: 社融 is republished by MOFCOM roughly
-two months behind the PBOC release it copies, which was invisible until
-measured.
+gives it away. This is not hypothetical: 社融 used to be read from MOFCOM, whose
+copy ran two release cycles behind the PBOC original and still carried a
+superseded 2026-04 value. Nothing in the lake showed it until the lag was
+measured — which is why the series is now read from the PBOC directly and why
+this check exists.
 
 **Revision.** Macro series get restated. Compact keeps the newest ``fetched_at``
 per key, so a restatement silently replaces the earlier value with no record
@@ -31,13 +33,13 @@ from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_roo
 _SAMPLE = 8
 
 # Publication lag past which a monthly series is called stale, per indicator.
-# These are the *observed* lags plus headroom, not aspirations: PMI lands on the
-# last day of its own month, M2 mid-following-month, and MOFCOM's 社融 copy runs
-# about two releases behind the PBOC original.
+# These are the *observed* lags plus roughly one release cycle of headroom, not
+# aspirations: PMI lands on the last day of its own month, while M2 and 社融 are
+# both PBOC releases landing mid-following-month.
 MONTHLY_STALE_DAYS: dict[str, int] = {
     "pmi_manufacturing": 45,
     "m2_yoy": 75,
-    "social_financing": 135,
+    "social_financing": 75,
     "lpr_1y": 45,
 }
 _DEFAULT_MONTHLY_STALE_DAYS = 75

@@ -1,1 +1,1 @@
-"""Macro indicator adapters (EastMoney datacenter + MOFCOM)."""
+"""Macro indicator adapters (EastMoney datacenter + PBOC)."""

@@ -36,14 +36,28 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- `social_financing` carries a deliberately wide staleness threshold (135 days).
-  社会融资规模 is a PBOC statistic that MOFCOM republishes, and the copy runs
-  about two release cycles behind: on 2026-08-01 MOFCOM's newest month was
-  2026-04 while PBOC had published June on 2026-07-15. The values match (2026
-  Jan–Apr: 154,507亿 vs PBOC's 15.45万亿, differing only by rounding) — only the
-  timeliness lags. Documented rather than re-sourced; PBOC publishes HTML
-  releases with no stable JSON endpoint, so switching would trade a measured lag
-  for a more fragile parser.
+- **`social_financing` now comes from the PBOC, not MOFCOM.** 社会融资规模 is a
+  PBOC statistic; MOFCOM republished it two release cycles late *and* served a
+  superseded vintage — 2026-04 as 6245 after the PBOC had revised it to 6238.
+  Summing the PBOC series for 2026 Jan–Apr gives 154,500, exactly the 15.45万亿
+  the PBOC states in prose, against the republisher's 154,507. A backup that
+  quietly carries stale values is not a safe backup (ADR-0003), so the MOFCOM
+  adapter is removed rather than kept as failover.
+
+  The PBOC publishes this as an Excel attachment with bilingual headers and an
+  explicit `单位：亿元人民币`, not as prose — pandas/openpyxl/xlrd are already
+  dependencies for the Shenwan and CNI workbooks. Coverage improves from 136
+  months ending 2026-04 to 138 ending 2026-06, and the staleness threshold
+  tightens from 135 days to 75, matching `m2_yoy` since both are mid-month PBOC
+  releases.
+
+  Two parsing traps the live data exposed, both covered by tests: the 2019
+  workbook stacks a percentage table (`单位：%`) under the 亿元 one and both have
+  a month column, so parsing follows each table's own unit declaration; and
+  `.xlsx` stores the month as a float, where October arrives as `2026.1` and
+  only formats back correctly at two decimals. Year workbooks also overlap with
+  different vintages — 2019 restates 2017 under the 完善后 caliber — so years
+  are read newest-first and the later publication wins.
 
 ### Fixed
 

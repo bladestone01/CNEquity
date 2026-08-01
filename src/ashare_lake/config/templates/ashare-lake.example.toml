@@ -82,8 +82,9 @@ min_interval_seconds = 20.0
 enabled = true
 min_interval_seconds = 1.0
 
-# 商务部数据中心 — publishes 社会融资规模增量 (macro_indicators).
-[sources.mofcom]
+# 中国人民银行 调查统计司 — publishes 社会融资规模增量 (macro_indicators).
+# One index fetch plus one workbook per year, so pace it politely.
+[sources.pboc]
 enabled = true
 min_interval_seconds = 1.0
 
