@@ -1234,6 +1234,85 @@ def catalog(config_path: str):
     click.echo(json.dumps(entries, indent=2))
 
 
+@cli.group()
+def stats():
+    """Lake measurement tables under meta/stats (rows, bytes, source mix)."""
+
+
+@stats.command("rebuild")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--dataset",
+    "dataset_names",
+    multiple=True,
+    help="Rebuild only these datasets (repeatable). Other datasets keep their rows.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print the result as JSON.")
+def stats_rebuild(config_path: str, dataset_names: tuple[str, ...], as_json: bool):
+    """Recompute partition_stats / provenance_stats from curated and derived."""
+    from ashare_lake.storage.stats import rebuild_stats
+
+    cfg = _cfg(config_path)
+    try:
+        result = rebuild_stats(cfg, datasets=list(dataset_names) or None)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        click.echo(json.dumps(result.as_dict(), indent=2, default=str))
+        return
+    click.echo(
+        f"{len(result.datasets)} dataset(s), {result.partitions} partition(s), "
+        f"{result.rows:,} row(s), {result.files} file(s), "
+        f"{result.bytes / 1e6:.1f}MB in {result.elapsed_seconds:.1f}s"
+    )
+    if result.empty:
+        click.echo(f"no parquet yet: {', '.join(sorted(result.empty))}")
+
+
+@stats.command("show")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--dataset", default=None, help="Per-partition detail for one dataset.")
+@click.option("--by-source", is_flag=True, help="Group by source / data_version instead.")
+def stats_show(config_path: str, dataset: str | None, by_source: bool):
+    """Summarise the stats tables. Run `asl stats rebuild` first."""
+    from ashare_lake.storage.stats import (
+        load_partition_stats,
+        load_provenance_stats,
+        load_summary,
+    )
+
+    cfg = _cfg(config_path)
+    summary = load_summary(cfg)
+    if summary is None:
+        raise click.ClickException("no stats yet — run `asl stats rebuild`")
+
+    df = load_provenance_stats(cfg) if by_source else load_partition_stats(cfg)
+    if dataset:
+        df = df.filter(pl.col("dataset") == dataset)
+        if df.is_empty():
+            raise click.ClickException(f"no stats rows for dataset {dataset!r}")
+    elif by_source:
+        df = df.group_by(["dataset", "source", "data_version"]).agg(
+            pl.col("row_count").sum(),
+            pl.col("fetched_at_min").min(),
+            pl.col("fetched_at_max").max(),
+        )
+    else:
+        df = df.group_by("dataset").agg(
+            pl.len().alias("partitions"),
+            pl.col("row_count").sum(),
+            pl.col("file_count").sum().alias("files"),
+            pl.col("bytes").sum(),
+            pl.col("period_start").min(),
+            pl.col("period_end").max(),
+        )
+
+    click.echo(f"generated_at: {summary.get('generated_at')}  run: {summary.get('latest_run_id')}")
+    with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
+        click.echo(df.sort(df.columns[:2]))
+
+
 @cli.command()
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option("--sql", default="SELECT COUNT(*) AS n FROM daily_bars")

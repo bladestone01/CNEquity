@@ -15,6 +15,7 @@
 | `instruments.py` | instruments 合并 compact，保留退市股 |
 | `state.py` | `StateStore` — `meta/state/{dataset}.json` 水位（跨平台文件锁） |
 | `atomic.py` | 写临时文件 → rename |
+| `stats.py` | `rebuild_stats()` — `meta/stats/` 行数 / 字节 / 溯源分布度量表 |
 | `source_snapshots.py` | `SnapshotStore` — failover 备源落地 |
 | `staging_cleanup.py` | `clean_staging()` — `asl clean` |
 
@@ -76,6 +77,19 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, backups/, meta/locks/
 ## atomic.py
 
 防止 compact 中途崩溃留下半截 Parquet：先写 `.tmp` 再 `os.replace`。
+
+---
+
+## stats.py
+
+`rebuild_stats(config, datasets=None)` → `meta/stats/partition_stats.parquet` + `provenance_stats.parquet` + `stats-latest.json`。
+
+- 一个数据集一次 scan（`include_file_paths`），不是一分区一次：日分区的十年是 ~4000 个目录，4000 个查询计划比 1 个贵得多
+- 分区值从 polars 回传的路径反推目录名，而不是用传入路径做键——scan 解析后两者拼写不必相同
+- 根目录下的散落 parquet 记为 `partition=null`：merge 式数据集（instruments / delisting_events）本来如此，分区数据集则是异常，两种情况行数都不会被漏计
+- `--dataset` 局部重建会保留其它数据集的行（`_merge`）
+
+字段与设计取舍见 [CLI 参考 · asl stats](../reference/cli.md#asl-stats)。
 
 ---
 

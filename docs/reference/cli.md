@@ -233,7 +233,51 @@ asl derive trading_status --start 2001-01-01 --end 2001-12-31
 
 ## asl catalog
 
-JSON 列出 curated 各数据集文件数与行数。
+JSON 列出 curated 各数据集文件数与行数。每次都全扫；固定的度量走 `asl stats`。
+
+---
+
+## asl stats
+
+湖的自我度量表，写到 `meta/stats/`。`list_datasets()` 只看目录名，答不了「这个分区有多少行、多大、谁写的」——那些在这里。
+
+产物：
+
+| 文件 | 粒度 | 列 |
+|------|------|-----|
+| `partition_stats.parquet` | dataset + partition | `granularity`、`period_start/end`、`row_count`、`file_count`、`bytes` |
+| `provenance_stats.parquet` | dataset + partition + source + data_version | `row_count`、`fetched_at_min/max` |
+| `stats-latest.json` | — | `generated_at`、`latest_run_id`、汇总数 |
+
+两张表而不是一张：`bytes` / `file_count` 是目录的属性，`row_count` 按源拆分，把文件级数字挂到细粒度上会让它看起来可加，而加起来是重复计数。
+
+不含 `tier` / `layer` / `history_mode`：那些在 `domain/datasets.py`，写进数据文件的副本只会过期。
+
+用 parquet 而非 duckdb 文件：写入是「临时文件 + 原子 rename」，读端零阻塞；duckdb 文件要独占写锁，会让 `asl serve` 和夜间跑批互相挡路。
+
+### asl stats rebuild
+
+| 选项 | 说明 |
+|------|------|
+| `--dataset` | 只重建这些数据集（可重复）；**其余数据集保留原有行**，不会被删 |
+| `--json` | 结果输出 JSON |
+
+全量重建：参考湖（1.5GB / 6600 万行 / 21k 分区）约 6 秒——只读 `source`、`data_version`、`fetched_at` 三列。增量刷新是可行的（跑批动过的分区可以从 `ingestion_batches.window_start/window_end` 反推），但没到需要的规模。
+
+`meta/stats` 不会自动刷新。挂在跑批后面：
+
+```bash
+asl run daily && asl stats rebuild
+```
+
+### asl stats show
+
+| 选项 | 说明 |
+|------|------|
+| `--dataset` | 单个数据集的逐分区明细 |
+| `--by-source` | 改看 source / data_version 分布 |
+
+无 stats 时报错并提示先 `asl stats rebuild`。
 
 ---
 
