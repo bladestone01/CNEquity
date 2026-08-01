@@ -144,3 +144,13 @@ def test_enabled_intraday_capture_needs_at_least_one_frequency(tmp_path):
         minute_bars_frequencies=[],
     )
     assert any("frequencies is empty" in e for e in validate_config(cfg))
+
+
+def test_fetch_workers_below_one_is_rejected(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        workers=1,
+        daily_waves=[WaveConfig(name="w", parallel=False, steps=["instruments"])],
+        minute_bars_fetch_workers=0,
+    )
+    assert any("fetch_workers must be >= 1" in e for e in validate_config(cfg))

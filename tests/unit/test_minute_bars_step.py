@@ -261,3 +261,88 @@ def test_step_reports_symbols_that_returned_no_rows(cfg, monkeypatch):
     assert result["failed_symbols"] == 0
     # Silence is not an error: a suspended name must not fail the step.
     assert "context_updates" not in result
+
+
+def test_scope_index_symbol_not_present_in_constituents_data(cfg):
+    # index_constituents has data, just not for the requested index — distinct
+    # from the "dataset is empty" case, which points at a different fix.
+    _write_constituents(cfg, "000300.SH", ["600519.SH"], date(2026, 7, 31))
+    cfg.minute_bars_scope = "index:000905.SH"
+    with pytest.raises(MinuteBarsScopeError, match="holds no rows for '000905.SH'"):
+        resolve_scope(cfg)
+
+
+def test_empty_window_is_reported_not_fetched(cfg, monkeypatch):
+    # A misconfigured window (start after end) must not reach the fetcher at
+    # all — there is nothing honest it could return for it.
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_scope = "watchlist"
+    cfg.minute_bars_symbols = ["600519.SH"]
+    cfg._backfill = True
+    cfg._backfill_start = date(2026, 8, 5)
+    cfg._backfill_end = date(2026, 8, 1)
+
+    called = []
+    monkeypatch.setattr(intraday, "fetch_minute_bars", lambda *a, **k: called.append(1))
+    result = capture_intraday_bars(
+        cfg, date(2026, 8, 1), "run-1", dataset="minute_bars", frequency="1m"
+    )
+    assert result["rows_written"] == 0
+    assert "empty window" in result["note"]
+    assert called == []
+
+
+def test_registered_step_delegates_with_its_own_dataset_and_frequency(cfg, monkeypatch):
+    """The generated per-dataset step closure, not the helper it wraps.
+
+    Guards the late-binding default-argument pattern in
+    ``_register_intraday_steps``: without ``_dataset``/``_frequency`` bound as
+    defaults, every generated step would silently call through with whichever
+    dataset the loop last saw.
+    """
+    import ashare_lake.steps  # noqa: F401 — register steps
+    from ashare_lake.orchestrator.registry import STEP_REGISTRY
+
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_scope = "watchlist"
+    cfg.minute_bars_symbols = ["600519.SH"]
+    cfg.minute_bars_frequencies = ["5m"]
+    monkeypatch.setattr(intraday, "fetch_minute_bars", _fake_fetch())
+
+    step_fn = STEP_REGISTRY["minute_bars_5m"].fn
+    result = step_fn(cfg, date(2026, 7, 31), "run-1", {})
+
+    assert result["rows_written"] > 0
+    staged = pl.read_parquet(
+        StagingWriter(cfg.staging_root).list_run_files("minute_bars_5m", "run-1")
+    )
+    assert staged["frequency"].unique().to_list() == ["5m"]
+
+
+def test_approx_trading_days_uses_the_real_calendar_when_available(cfg):
+    from ashare_lake.steps.intraday import _approx_trading_days
+
+    start, end = date(2026, 7, 27), date(2026, 7, 31)
+    rows = [
+        {
+            "trade_date": d,
+            "is_trading": d.weekday() < 5,
+            "source": "seed",
+            "data_version": "v1",
+            "fetched_at": "2026-07-31T00:00:00+00:00",
+        }
+        for d in (start + timedelta(days=i) for i in range((end - start).days + 1))
+    ]
+    df = with_provenance(
+        pl.DataFrame(rows).drop("source", "data_version", "fetched_at"),
+        source="seed",
+        data_version="v1",
+    )
+    out = cfg.curated_root / "trading_calendar" / "trade_date=2026"
+    out.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(out / "part-0.parquet")
+
+    # 2026-07-27..31 is Mon-Fri: 5 real trading days. The 5/7 fallback would
+    # give 4 for this same window, so a wrong (fallback) answer here is
+    # distinguishable from the real-calendar one being exercised.
+    assert _approx_trading_days(cfg, start, end) == 5

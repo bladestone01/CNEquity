@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import click
 import polars as pl
+import pytest
 from click.testing import CliRunner
 
 from ashare_lake.cli.main import cli
@@ -335,3 +337,38 @@ def test_asl_demo_without_intraday_stays_six_steps(tmp_path, monkeypatch):
     monkeypatch.setattr(demo_mod, "_run_intraday_demo", lambda *a, **k: called.append(1) or {})
     assert demo_mod._intraday_hint(None, None, "600519.SH") == ""
     assert called == []
+
+
+def test_run_intraday_demo_raises_when_the_step_fails(tmp_path):
+    from ashare_lake.cli.demo import _run_intraday_demo
+    from ashare_lake.config import Config
+
+    cfg = Config(data_root=tmp_path / "lake")
+    for sub in ("staging", "curated", "meta", "derived"):
+        (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
+
+    class FailingEngine:
+        def run_job(self, *a, **k):
+            return {"status": "failed"}
+
+    with pytest.raises(click.ClickException, match="minute_bars failed"):
+        _run_intraday_demo(cfg, FailingEngine(), ["600519.SH"], date(2024, 6, 28), days=5)
+
+
+def test_run_intraday_demo_raises_when_no_rows_come_back(tmp_path, monkeypatch):
+    from ashare_lake.cli.demo import _run_intraday_demo
+    from ashare_lake.config import Config
+
+    cfg = Config(data_root=tmp_path / "lake")
+    for sub in ("staging", "curated", "meta", "derived"):
+        (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
+
+    class SucceedingEngine:
+        def run_job(self, *a, **k):
+            return {"status": "success"}
+
+    monkeypatch.setattr(
+        "ashare_lake.query.reader.load", lambda *a, **k: pl.DataFrame({"symbol": []})
+    )
+    with pytest.raises(click.ClickException, match="returned no rows"):
+        _run_intraday_demo(cfg, SucceedingEngine(), ["600519.SH"], date(2024, 6, 28), days=5)

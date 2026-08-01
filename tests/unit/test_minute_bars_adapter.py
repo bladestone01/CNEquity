@@ -5,6 +5,7 @@ import pytest
 from ashare_lake.adapters.tdx_protocol.minute_bars import (
     FREQUENCIES,
     TdxMinuteBarsError,
+    _parse_stamp,
     bars_per_session,
     category_for,
     fetch_minute_bars_paginated,
@@ -308,3 +309,177 @@ def test_threaded_fetch_records_per_symbol_failures(monkeypatch):
     )
     assert failed == ["920819.BJ"]
     assert df.height == 6
+
+
+def test_parse_stamp_falls_back_to_the_datetime_string():
+    # Missing the decoded int components entirely; only the formatted string
+    # the parser also emits is usable.
+    row = {"datetime": "2026-07-31 09:31"}
+    assert _parse_stamp(row) == datetime(2026, 7, 31, 9, 31)
+
+
+def test_parse_stamp_returns_none_when_nothing_parses():
+    assert _parse_stamp({}) is None
+    assert _parse_stamp({"datetime": ""}) is None
+    assert _parse_stamp({"datetime": "not-a-timestamp"}) is None
+
+
+def test_off_session_only_page_yields_no_rows():
+    # Every bar on the page lands at lunch; nothing survives the session
+    # filter, so the sweep must report an empty result, not crash on it.
+    page = [_bar(datetime(2026, 7, 31, 12, 15)), _bar(datetime(2026, 7, 31, 12, 20))]
+    rows = fetch_minute_bars_paginated(
+        FakeClient([page]), "600519.SH", date(2026, 7, 31), date(2026, 7, 31)
+    )
+    assert rows == []
+
+
+def test_fetch_stops_on_an_empty_but_not_none_page():
+    # A full page followed by an explicitly empty (not exception-raising) page:
+    # the sweep must stop cleanly rather than treat `[]` as a failure.
+    full_page = (_session(date(2026, 7, 31)) * 4)[:800]
+    client = FakeClient([full_page, []])
+    rows = fetch_minute_bars_paginated(client, "600519.SH", date(2026, 7, 30), date(2026, 7, 31))
+    assert len(client.calls) == 2
+    assert len(rows) > 0
+
+
+def test_on_page_fires_once_per_page_transition():
+    full_page = (_session(date(2026, 7, 31)) * 4)[:800]
+    short_page = _session(date(2026, 7, 30), count=10)
+    client = FakeClient([full_page, short_page])
+    calls: list[int] = []
+    fetch_minute_bars_paginated(
+        client, "600519.SH", date(2026, 7, 30), date(2026, 7, 31), on_page=lambda: calls.append(1)
+    )
+    # Two pages were fetched, so the "moving to the next page" callback fires
+    # exactly once — never on the page that ends the sweep.
+    assert len(calls) == 1
+
+
+class _RaisesAfterFirstPage:
+    """A page failure partway through a sweep — not the first page."""
+
+    def __init__(self, first_page: list[dict]):
+        self.first_page = first_page
+        self.calls = 0
+
+    def bars(self, symbol, frequency, market, start, offset):
+        self.calls += 1
+        if self.calls == 1:
+            return self.first_page
+        raise ConnectionError("host reset")
+
+
+def test_midsweep_failure_keeps_rows_already_collected_when_not_backfill():
+    full_page = (_session(date(2026, 7, 31)) * 4)[:800]
+    client = _RaisesAfterFirstPage(full_page)
+    # backfill=False (the daily-run default): a later page's failure must not
+    # discard what the sweep already has, and must not raise past the caller.
+    rows = fetch_minute_bars_paginated(
+        client, "600519.SH", date(2020, 1, 1), date(2026, 7, 31), backfill=False
+    )
+    assert client.calls == 2
+    assert len(rows) > 0
+
+
+def test_midsweep_failure_raises_when_backfill():
+    # A backfill needs a complete series or an honest failure, not a silently
+    # truncated one — same contract as the daily bars pagination.
+    full_page = (_session(date(2026, 7, 31)) * 4)[:800]
+    client = _RaisesAfterFirstPage(full_page)
+    with pytest.raises(TdxMinuteBarsError):
+        fetch_minute_bars_paginated(
+            client, "600519.SH", date(2020, 1, 1), date(2026, 7, 31), backfill=True
+        )
+
+
+def test_single_worker_calls_heartbeat_before_each_symbol(monkeypatch):
+    client_mod = _patch_client(monkeypatch)
+    symbols = [f"60000{i}.SH" for i in range(3)]
+    beats: list[int] = []
+    client_mod.fetch_minute_bars(
+        symbols,
+        date(2026, 7, 31),
+        date(2026, 7, 31),
+        workers=1,
+        on_heartbeat=lambda: beats.append(1),
+    )
+    assert len(beats) == len(symbols)
+
+
+def test_single_worker_records_a_raised_symbol_without_failing_the_batch(monkeypatch):
+    from ashare_lake.adapters.tdx_protocol import client as client_mod
+
+    class Flaky:
+        def bars(self, symbol, frequency, market, start, offset):
+            if symbol == "000001" and start == 0:
+                raise RuntimeError("bad symbol")
+            return []
+
+    monkeypatch.setattr(client_mod, "_quotes_client", lambda config: Flaky())
+    monkeypatch.setattr(client_mod, "_close_quotes_client", lambda c: None)
+
+    df, failed = client_mod.fetch_minute_bars(
+        ["600519.SH", "000001.SZ"], date(2026, 7, 31), date(2026, 7, 31), workers=1
+    )
+    assert failed == ["000001.SZ"]
+    assert df.is_empty()
+
+
+def test_wire_client_unavailable_raises_a_named_error(monkeypatch):
+    from ashare_lake.adapters.tdx_protocol import client as client_mod
+
+    def _boom(config):
+        raise ImportError("no wire module")
+
+    monkeypatch.setattr(client_mod, "_quotes_client", _boom)
+    with pytest.raises(client_mod.TdxSourceError, match="unavailable"):
+        client_mod.fetch_minute_bars(["600519.SH"], date(2026, 7, 31), date(2026, 7, 31))
+
+
+def test_general_fetch_failure_resets_server_cache_and_raises(monkeypatch):
+    from ashare_lake.adapters.tdx_protocol import client as client_mod
+
+    reset_calls = []
+    monkeypatch.setattr(client_mod, "reset_tdx_server_cache", lambda: reset_calls.append(1))
+
+    def _boom(config):
+        raise RuntimeError("host unreachable")
+
+    monkeypatch.setattr(client_mod, "_quotes_client", _boom)
+    with pytest.raises(client_mod.TdxSourceError, match="TDX fetch failed"):
+        client_mod.fetch_minute_bars(["600519.SH"], date(2026, 7, 31), date(2026, 7, 31))
+    # A dead server must not stay cached for the next batch to retry against.
+    assert reset_calls == [1]
+
+
+def test_threaded_fetch_calls_heartbeat_once_per_symbol(monkeypatch):
+    client_mod = _patch_client(monkeypatch)
+    symbols = [f"60000{i}.SH" for i in range(6)]
+    beats: list[int] = []
+    client_mod.fetch_minute_bars(
+        symbols,
+        date(2026, 7, 31),
+        date(2026, 7, 31),
+        workers=3,
+        on_heartbeat=lambda: beats.append(1),
+    )
+    # Lanes share one lock around the callback; the total must still be exact
+    # even though multiple threads call it concurrently.
+    assert len(beats) == len(symbols)
+
+
+def test_unparseable_row_is_skipped_without_breaking_the_page():
+    # A row neither the fast int-component path nor the string fallback can
+    # parse (garbage, or a wire decode glitch) must be dropped silently,
+    # not crash the rest of a perfectly good page.
+    page = [
+        _bar(datetime(2026, 7, 31, 9, 31)),
+        {"datetime": "garbage", "open": 1, "high": 1, "low": 1, "close": 1, "vol": 1, "amount": 1},
+        _bar(datetime(2026, 7, 31, 9, 32)),
+    ]
+    rows = fetch_minute_bars_paginated(
+        FakeClient([page]), "600519.SH", date(2026, 7, 31), date(2026, 7, 31)
+    )
+    assert [r["bar_time"].time() for r in rows] == [time(9, 31), time(9, 32)]

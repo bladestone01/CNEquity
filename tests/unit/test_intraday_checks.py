@@ -8,7 +8,9 @@ from ashare_lake.config import Config
 from ashare_lake.domain.schemas import with_provenance
 from ashare_lake.quality.intraday_checks import (
     RECONCILE_MIN_SYMBOL_DAYS,
+    dataset_findings,
     minute_bars_findings,
+    session_coverage_findings,
 )
 
 TRADE_DATE = date(2026, 7, 31)
@@ -253,3 +255,74 @@ def test_reconciliation_catches_an_amount_only_break(cfg):
     ]
     assert [f["metric"] for f in findings] == ["amount"]
     assert findings[0]["median_ratio"] == pytest.approx(4.0)
+
+
+def test_session_coverage_on_an_empty_lazyframe_is_a_no_op(cfg):
+    schema = {
+        "symbol": pl.Utf8,
+        "trade_date": pl.Date,
+        "bar_time": pl.Datetime("us"),
+        "frequency": pl.Utf8,
+    }
+    empty = pl.DataFrame(schema=schema).lazy()
+    assert session_coverage_findings(empty, "minute_bars", TRADE_DATE, TRADE_DATE) == []
+
+
+def test_session_coverage_skips_an_unrecognized_frequency(cfg):
+    # Data carrying a frequency the registry does not know (corrupt row, or a
+    # dataset serving a frequency this version predates) must not crash the
+    # check — it has no session size to compare against, so it is skipped.
+    rows = _minute_rows(["600519.SH"], [TRADE_DATE], 10)
+    for row in rows:
+        row["frequency"] = "3m"
+    _write_minute_bars(cfg, rows)
+    lf = pl.scan_parquet(str(cfg.curated_root / "minute_bars" / "**" / "*.parquet"))
+    assert session_coverage_findings(lf, "minute_bars", TRADE_DATE, TRADE_DATE) == []
+
+
+def test_reconciliation_skips_amount_when_daily_amount_is_zero(cfg):
+    # amount_ratio is null wherever daily_amount is 0 (division would be
+    # meaningless); an all-null column must be skipped, not reported as 0/0.
+    symbols = [f"60000{i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
+    _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=100))
+    _write_daily_bars(
+        cfg,
+        [
+            {
+                "symbol": s,
+                "trade_date": TRADE_DATE,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 240 * 100,  # agrees with the minutes
+                "amount": 0.0,  # unusable — must not produce a ratio at all
+            }
+            for s in symbols
+        ],
+    )
+    findings = [
+        f
+        for f in minute_bars_findings(cfg, TRADE_DATE)
+        if f["check"] == "minute_bars_daily_reconciliation"
+    ]
+    assert findings == []
+
+
+def test_dataset_findings_ignores_a_dataset_missing_required_columns(cfg):
+    # A schema this check cannot reason about (e.g. a partial write, or a
+    # future column set this version predates) must be skipped, not crash.
+    out = cfg.curated_root / "minute_bars" / f"trade_date={TRADE_DATE.isoformat()}"
+    out.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [TRADE_DATE]}).write_parquet(
+        out / "part-merged.parquet"
+    )
+    assert dataset_findings(cfg, "minute_bars", TRADE_DATE) == []
+
+
+def test_dataset_findings_ignores_data_outside_the_lookback_window(cfg):
+    # Real rows exist, just not inside the window this audit run looks at —
+    # partition pruning returns a typed-but-empty frame, not None.
+    old_day = TRADE_DATE - timedelta(days=30)
+    _write_minute_bars(cfg, _minute_rows(["600519.SH"], [old_day], 240))
+    assert dataset_findings(cfg, "minute_bars", TRADE_DATE, lookback_days=7) == []

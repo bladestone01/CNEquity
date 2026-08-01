@@ -177,3 +177,65 @@ def test_symbols_flag_is_rejected_for_non_intraday_datasets(tmp_path, monkeypatc
     )
     assert result.exit_code != 0
     assert "only applies to intraday datasets" in result.output
+
+
+def test_chunked_backfill_keeps_a_warning_status_across_later_successes(monkeypatch):
+    class WarnsSecond(FakeEngine):
+        def _status(self, index):
+            return "warning" if index == 2 else "success"
+
+    monkeypatch.setattr(cli_main, "JobEngine", WarnsSecond)
+    cfg = type("Cfg", (), {})()
+
+    result = cli_main._backfill_chunked(
+        cfg, "minute_bars", date(2026, 7, 1), date(2026, 7, 25), chunk_days=10
+    )
+    # A warning does not stop the sweep, and a later success must not paper
+    # over the earlier warning.
+    assert result["status"] == "warning"
+    assert len(result["slices"]) == 3
+
+
+def test_cli_backfill_takes_the_chunked_path_when_both_dates_given(monkeypatch):
+    import types
+
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
+    cfg = types.SimpleNamespace()
+    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        _backfill_argv("minute_bars", "--start", "2026-07-01", "--end", "2026-07-25"),
+    )
+    assert result.exit_code == 0, result.output
+    engine = FakeEngine.instances[0]
+    # Sliced into chunk_days=10 windows by the real command, not just by the
+    # helper in isolation — confirms --start/--end actually reach the chunked
+    # path rather than falling through to a single unsliced run.
+    assert engine.windows == [
+        (date(2026, 7, 1), date(2026, 7, 10)),
+        (date(2026, 7, 11), date(2026, 7, 20)),
+        (date(2026, 7, 21), date(2026, 7, 25)),
+    ]
+
+
+def test_cli_backfill_exits_nonzero_when_the_result_is_not_success(monkeypatch):
+    import types
+
+    from click.testing import CliRunner
+
+    class AllFail(FakeEngine):
+        def _status(self, index):
+            return "failed"
+
+    monkeypatch.setattr(cli_main, "JobEngine", AllFail)
+    cfg = types.SimpleNamespace()
+    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        _backfill_argv("minute_bars", "--start", "2026-07-01", "--end", "2026-07-10"),
+    )
+    assert result.exit_code == 1
