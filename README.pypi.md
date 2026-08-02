@@ -1,4 +1,4 @@
-# ASL — 本地可日更的 A 股研究湖
+# ASL · ashare-lake — 本地可日更的 A 股研究湖
 
 **别再每次重拉、自己拼复权了。** 一行命令，把能日更的 A 股研究湖落到本地。取数工具给你现在，湖给你历史。
 
@@ -79,4 +79,4 @@ roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 - [文档](https://github.com/rootSunc/ashare-lake/tree/main/docs)
 - [Changelog](https://github.com/rootSunc/ashare-lake/blob/main/CHANGELOG.md)
 
-代码 MIT。落盘行情 / 公告仍受上游条款约束——本包不附带、也不再分发数据湖。
+代码 Apache-2.0。落盘行情 / 公告仍受上游条款约束——本包不附带、也不再分发数据湖。

@@ -9,13 +9,13 @@ description = "Self-hosted A-share Parquet data lake with multi-source ingest an
 # Short PyPI page (absolute links only). GitHub keeps README.md / README.en.md.
 readme = "README.pypi.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "ashare-lake Contributors" }]
 keywords = ["a-share", "stock", "data-engineering", "parquet", "duckdb"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Financial and Insurance Industry",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
   "Operating System :: MacOS",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
@@ -92,6 +92,9 @@ Issues = "https://github.com/rootSunc/ashare-lake/issues"
 
 [project.scripts]
 asl = "ashare_lake.cli.main:cli"
+
+[tool.setuptools]
+license-files = ["LICENSE*", "NOTICE"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

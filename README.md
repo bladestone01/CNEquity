@@ -1,11 +1,11 @@
-<h1 align="center">ASL</h1>
+<h1 align="center">ASL · ashare-lake</h1>
 <p align="center"><b>本地可日更的 A 股研究湖</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/ashare-lake/"><img src="https://img.shields.io/pypi/v/ashare-lake.svg" alt="PyPI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="README.en.md"><img src="https://img.shields.io/badge/docs-English-lightgrey.svg" alt="English"></a>
 </p>
 
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <b>39 个数据集 · 9 大类</b> · <b>日线回溯约 2001</b> · <b>6 个 MCP 工具</b> · <b>行级溯源</b> · <b>零 token / 零积分 / 零注册</b> · <b>MIT</b>
+  <b>39 个数据集 · 9 大类</b> · <b>日线回溯约 2001</b> · <b>6 个 MCP 工具</b> · <b>行级溯源</b> · <b>零 token / 零积分 / 零注册</b>
 </p>
 
 ## 为什么要一个湖
@@ -189,7 +189,7 @@ asl sources   # 14 个上游主机健康度（探测在 CLI，展示在 serve）
 源端只保留约 95 个交易日的 1m、491 个交易日的 5m——是供应商保留期，不是本湖待办。
 
 **Q：这些数据能商用 / 再分发吗？**  
-代码 MIT，**落盘行情和公告不是**。见 [legal](docs/legal-and-data-sources.md)。
+代码 Apache-2.0，**落盘行情和公告不是**。见 [legal](docs/legal-and-data-sources.md)。
 
 更多：[排障](docs/operations/troubleshooting.md) · 完整 [FAQ 与运维](docs/operations/runbook.md)。
 
@@ -199,7 +199,7 @@ asl sources   # 14 个上游主机健康度（探测在 CLI，展示在 serve）
 
 完整索引：[docs/README.md](docs/README.md)。常用：[MCP](docs/reference/mcp.md) · [安装](docs/getting-started/installation.md) · [数据集目录](docs/datasets/catalog.md) · [CLI](docs/reference/cli.md)。
 
-代码 [MIT](LICENSE)。落盘数据受上游条款约束；仓库不附带数据湖，也不授予再分发权。
+代码 [Apache-2.0](LICENSE)。落盘数据受上游条款约束；仓库不附带数据湖，也不授予再分发权。
 
 ---
 

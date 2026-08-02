@@ -1,11 +1,11 @@
-<h1 align="center">ASL</h1>
+<h1 align="center">ASL · ashare-lake</h1>
 <p align="center"><b>A local, daily-refreshable A-share research lake</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/ashare-lake/"><img src="https://img.shields.io/pypi/v/ashare-lake.svg" alt="PyPI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/文档-中文-lightgrey.svg" alt="中文"></a>
 </p>
 
@@ -18,7 +18,7 @@
 <p align="center">
   <b>39 datasets · 9 categories</b> · <b>daily bars back to ~2001</b> ·
   <b>6 MCP tools</b> · <b>row-level provenance</b> ·
-  <b>no tokens / no credits / no signup</b> · <b>MIT</b>
+  <b>no tokens / no credits / no signup</b>
 </p>
 
 ## Why a lake
@@ -221,7 +221,7 @@ The vendor keeps ~95 trading days of 1m and ~491 of 5m — vendor retention, not
 this lake's backlog.
 
 **Q: Can I redistribute the data commercially?**
-Code is MIT. **Bars and filings on disk are not.** See
+Code is Apache-2.0. **Bars and filings on disk are not.** See
 [legal](docs/legal-and-data-sources.md).
 
 More: [troubleshooting](docs/operations/troubleshooting.md) ·
@@ -239,7 +239,7 @@ Full index: [docs/README.md](docs/README.md). Common entry points:
 [catalog](docs/datasets/catalog.md) ·
 [CLI](docs/reference/cli.md).
 
-Code is [MIT](LICENSE). Landed market data remains under upstream terms; this
+Code is [Apache-2.0](LICENSE). Landed market data remains under upstream terms; this
 repo ships no data lake and grants no redistribution rights.
 
 ---

@@ -6,6 +6,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **License: MIT → Apache License 2.0.** Project source is now under
+  [Apache-2.0](LICENSE); third-party notices (including vendored tdxpy, still
+  MIT) live in [NOTICE](NOTICE). Landed market data remains outside the
+  software license — see [legal](docs/legal-and-data-sources.md).
+
 ### Added
 
 - **`asl mcp`: the lake as an MCP server, read-only, over stdio.** Six tools cut
