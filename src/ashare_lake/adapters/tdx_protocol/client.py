@@ -621,8 +621,102 @@ def _fetch_threaded(
     return rows, failed
 
 
+def fetch_trade_ticks_batch(
+    symbols: list[str],
+    sessions: list[date],
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    config: Config | None = None,
+    on_heartbeat: Callable[[], None] | None = None,
+    workers: int = 1,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Transaction records for every (symbol, session) pair, one TDX session.
+
+    Returns ``(frame, failed)`` where a failure is a ``"symbol@date"`` label —
+    the unit of failure is a symbol-*day*, not a symbol, because a session is
+    fetched whole or not at all and one bad day must not discard the rest of a
+    symbol's history.
+
+    Threads rather than the daily path's ProcessPool, for the same reason as
+    the minute bars: the wire client is not fork-safe, but one client per
+    thread is fine. Symbols are dealt round-robin so a lane cannot draw a run
+    of illiquid names and finish early while another is still walking Moutai.
+
+    No mock path. The dataset is opt-in and empty by default, so fabricated
+    ticks would buy nothing and could be mistaken for a real session.
+    """
+    from ashare_lake.adapters.tdx_protocol.trade_ticks import fetch_trade_ticks
+
+    def _lane(client, lane_symbols: list[str], beat) -> tuple[list[dict], list[str]]:
+        lane_rows: list[dict] = []
+        lane_failed: list[str] = []
+        for sym in lane_symbols:
+            for session in sessions:
+                beat()
+                try:
+                    lane_rows.extend(fetch_trade_ticks(client, sym, session, rate_limit=rate_limit))
+                except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                    logger.warning("trade_ticks failed for %s on %s: %s", sym, session, exc)
+                    lane_failed.append(f"{sym}@{session}")
+        return lane_rows, lane_failed
+
+    rows: list[dict] = []
+    failed: list[str] = []
+    clients: list = []
+    lanes = max(1, min(int(workers), len(symbols))) if symbols else 1
+    try:
+        with TDX_SESSION_LOCK:
+            if lanes == 1:
+                clients = [_connect_with_retry(config)]
+                rows, failed = _lane(clients[0], symbols, on_heartbeat or (lambda: None))
+            else:
+                import threading
+                from concurrent.futures import ThreadPoolExecutor
+
+                for _ in range(lanes):
+                    clients.append(_connect_with_retry(config))
+                # The manifest heartbeat writes to SQLite; serialise it so
+                # concurrent lanes cannot interleave inside it.
+                heartbeat_lock = threading.Lock()
+
+                def _beat() -> None:
+                    if on_heartbeat is None:
+                        return
+                    with heartbeat_lock:
+                        on_heartbeat()
+
+                with ThreadPoolExecutor(max_workers=lanes) as pool:
+                    results = pool.map(
+                        lambda i: _lane(clients[i], symbols[i::lanes], _beat), range(lanes)
+                    )
+                    for lane_rows, lane_failed in results:
+                        rows.extend(lane_rows)
+                        failed.extend(lane_failed)
+    except ImportError as exc:
+        raise TdxSourceError("trade_ticks: TDX wire client unavailable") from exc
+    except Exception as exc:
+        reset_tdx_server_cache()
+        raise TdxSourceError(f"trade_ticks: TDX fetch failed: {exc}") from exc
+    finally:
+        for client in clients:
+            _close_quotes_client(client)
+
+    df = pl.DataFrame(rows) if rows else pl.DataFrame(schema=_TRADE_TICKS_FETCH_SCHEMA)
+    return df, failed
+
+
 # Fetch-side shape (pre-provenance), so an all-failed batch still returns a
 # frame the writer can validate instead of a schema-less empty one.
+_TRADE_TICKS_FETCH_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "tick_seq": pl.Int32,
+    "trade_time": pl.Datetime(time_unit="us"),
+    "price": pl.Float64,
+    "volume": pl.Int64,
+    "direction": pl.Utf8,
+}
+
 _MINUTE_BARS_FETCH_SCHEMA = {
     "symbol": pl.Utf8,
     "trade_date": pl.Date,

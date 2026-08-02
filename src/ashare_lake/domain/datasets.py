@@ -106,6 +106,21 @@ class DatasetSpec:
         back (162107.SZ, a barely-traded LOF, holds 3,216 5m bars spread over
         67 days and so reaches 2012). Treat it as the guarantee for a normal
         stock, not as a hard ceiling for every symbol.
+
+        Use ``history_floor_date`` instead when the source's edge is a *date*
+        rather than a count — the two are different mechanisms and only one of
+        them moves with today.
+    history_floor_date:
+        Earliest date the source serves, as a fixed calendar date. Wins over
+        ``history_horizon_days`` when both are set.
+
+        The distinction matters because a rolling count and a fixed floor
+        diverge every day. TDX serves ``trade_ticks`` back to exactly
+        2024-01-02 for *every* symbol, across both exchanges and every
+        liquidity band (measured 2026-08-02; 2023-12-28 is empty). Expressing
+        that as "624 trading days" would be true on the day it was measured and
+        wrong the day after: ``earliest_available`` would walk the floor
+        forward and refuse windows the source still happily serves.
     """
 
     name: str
@@ -125,6 +140,7 @@ class DatasetSpec:
     max_staleness_days: int = 1
     required: bool = True
     history_horizon_days: int | None = None
+    history_floor_date: date | None = None
     # Calendar days of history one backfill sub-run may cover. None = one run
     # for the whole window, which is what every daily-cadence dataset wants.
     #
@@ -161,12 +177,17 @@ class DatasetSpec:
     def earliest_available(self, today: date, *, trading_days_per_year: int = 242) -> date | None:
         """Rough calendar date before which the source serves nothing.
 
-        The horizon is counted in *trading* days because that is how the vendor
-        caps it (a fixed bar count), so it is converted with the usual ~242
-        sessions a year. Deliberately approximate and deliberately early: it
-        guards a CLI window, and refusing a window the source would in fact
-        have served is worse than fetching a few empty days.
+        Two mechanisms, and they must not be confused. A fixed
+        ``history_floor_date`` is a date the vendor keeps back to and does not
+        move as today does — it is returned as-is. ``history_horizon_days`` is
+        a per-symbol retention *count*, expressed in trading days because that
+        is how the vendor caps it, and converted with the usual ~242 sessions a
+        year. Deliberately approximate and deliberately early: it guards a CLI
+        window, and refusing a window the source would in fact have served is
+        worse than fetching a few empty days.
         """
+        if self.history_floor_date is not None:
+            return self.history_floor_date
         if self.history_horizon_days is None:
             return None
         calendar_days = round(self.history_horizon_days * 365 / trading_days_per_year)
@@ -250,6 +271,36 @@ _SPECS = [
         # 4.7M rows per sub-run — comparable compact memory to 1m's chunk.
         backfill_chunk_symbols=200,
         intraday_frequency="5m",
+    ),
+    # Transaction records (分笔). Not tick data: A-share Level-1 is a 3-second
+    # snapshot, so a record aggregates 6–33 real trades (measured) and a
+    # session holds ~2,700 on average, ~4,800 at most.
+    #
+    # Deliberately *not* `intraday_frequency`. That field means "one bar
+    # frequency", and every consumer of it — the audit's session-shape checks,
+    # the reader's adjustment set, `asl backfill --symbols` — assumes a
+    # `bar_time` column and a bar count per session. This dataset has neither,
+    # and inheriting those code paths would give it checks that silently pass
+    # on the wrong column. It carries its own step group and its own checks.
+    DatasetSpec(
+        "trade_ticks",
+        tier="L1",
+        partition_col="trade_date",
+        partition_granularity="day",
+        fetch_semantics="by_date",
+        required=False,
+        # A *date*, not a rolling count — see DatasetSpec.history_floor_date.
+        # Measured 2026-08-02: every symbol probed serves back to exactly
+        # 2024-01-02 and no further, which is ~624 trading days and growing.
+        # The edge landing on a calendar boundary suggests the retention may be
+        # year-granular rather than a fixed date, so re-measure each January
+        # with scripts/probe_trade_ticks.py.
+        history_floor_date=date(2024, 1, 2),
+        # By-date requests, so date chunks are the cheap axis — the exact
+        # opposite of the minute bars above, where the wire always walks from
+        # today's tip and a date slice re-fetches everything newer than it.
+        # 5 days × 200 symbols × ~2,700 rows ≈ 2.7M rows per sub-run.
+        backfill_chunk_days=5,
     ),
     # Domestic commodity futures main-continuous (东财主连) + narrow offshore
     # gold (Sina COMEX ``GC0.CMX``); not A-share equity.

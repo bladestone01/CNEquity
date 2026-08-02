@@ -87,8 +87,46 @@ def test_example_config_validates(monkeypatch):
         # Defined but deliberately unscheduled — `asl run daily --group
         # intraday` is the only way in, and [minute_bars].enabled gates it.
         "intraday",
+        # Ticks get their own group rather than a fourth step in `intraday`,
+        # so enabling minute bars cannot drag transaction records along.
+        "ticks",
     }
     assert cfg.minute_bars_enabled is False
+    assert cfg.trade_ticks_enabled is False
+
+
+def test_example_config_ships_a_tick_scope_that_cannot_sweep_the_market(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    root = Path(__file__).resolve().parents[2]
+    cfg = load_config(root / "configs" / "ashare-lake.example.toml")
+    assert cfg.trade_ticks_scope == "watchlist"
+    assert cfg.trade_ticks_max_symbols == 200
+
+
+def test_validate_config_rejects_scope_all_for_ticks(tmp_path):
+    # 'all' is refused at validation rather than at run time: finding out that
+    # a full-market tick sweep is ~9,600 requests twenty minutes in is too late.
+    path = tmp_path / "c.toml"
+    path.write_text(
+        '[data]\nroot = "/tmp/lake"\n\n'
+        '[[job.daily.waves]]\nname = "w"\nsteps = ["instruments"]\n\n'
+        '[trade_ticks]\nscope = "all"\n',
+        encoding="utf-8",
+    )
+    errors = validate_config(load_config(path))
+    assert any("scope = 'all' is not supported" in e for e in errors)
+
+
+def test_validate_config_rejects_an_empty_tick_watchlist(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text(
+        '[data]\nroot = "/tmp/lake"\n\n'
+        '[[job.daily.waves]]\nname = "w"\nsteps = ["instruments"]\n\n'
+        '[trade_ticks]\nenabled = true\nscope = "watchlist"\nsymbols = []\n',
+        encoding="utf-8",
+    )
+    errors = validate_config(load_config(path))
+    assert any("symbols is empty" in e for e in errors)
 
 
 def test_validate_config_rejects_multiprocess_on_darwin(tmp_path, monkeypatch):

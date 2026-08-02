@@ -93,6 +93,21 @@ class Config:
     # is cross-process and paces every request regardless — it only stops a
     # single lane idling on network latency between calls.
     minute_bars_fetch_workers: int = 4
+    # Transaction records (分笔) get their own block rather than riding on
+    # [minute_bars]. Both are opt-in intraday capture, but they are different
+    # decisions by an order of magnitude: enabling 1m for an index is ~2MB a
+    # day, enabling ticks for the whole market is ~60MB a day and ~20 minutes
+    # of wire time. One switch must not turn on both.
+    trade_ticks_enabled: bool = False
+    # No 'all'. The guard is `trade_ticks_max_symbols` below, and a scope that
+    # cannot be counted before it is resolved would slip past it.
+    trade_ticks_scope: str = "watchlist"
+    trade_ticks_symbols: list[str] = field(default_factory=list)
+    # Hard ceiling on the resolved scope. A CSI300 scope resolves to ~300 and
+    # therefore fails here until the user raises this deliberately — the
+    # friction is the point, because the cost is theirs to accept.
+    trade_ticks_max_symbols: int = 200
+    trade_ticks_fetch_workers: int = 4
     failover_enabled: bool = True
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
@@ -243,6 +258,7 @@ def load_config(path: str | Path) -> Config:
         )
 
     minute_raw = raw.get("minute_bars", {})
+    ticks_raw = raw.get("trade_ticks", {})
     init_raw = raw.get("job", {}).get("init", {})
     phases_block = init_raw.get("phases", init_raw)
     init_phases = list(phases_block.get("names", init_raw.get("names", [])))
@@ -286,6 +302,11 @@ def load_config(path: str | Path) -> Config:
         minute_bars_symbols=list(minute_raw.get("symbols", [])),
         minute_bars_frequencies=list(minute_raw.get("frequencies", ["1m"])),
         minute_bars_fetch_workers=int(minute_raw.get("fetch_workers", 4)),
+        trade_ticks_enabled=bool(ticks_raw.get("enabled", False)),
+        trade_ticks_scope=str(ticks_raw.get("scope", "watchlist")),
+        trade_ticks_symbols=list(ticks_raw.get("symbols", [])),
+        trade_ticks_max_symbols=int(ticks_raw.get("max_symbols", 200)),
+        trade_ticks_fetch_workers=int(ticks_raw.get("fetch_workers", 4)),
         failover_enabled=bool(failover_raw.get("enabled", True)),
         failover_datasets=failover_datasets,
         config_path=config_path,
@@ -334,6 +355,28 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("[minute_bars].enabled = true but frequencies is empty")
     if cfg.minute_bars_fetch_workers < 1:
         errors.append("[minute_bars].fetch_workers must be >= 1")
+
+    scope = (cfg.trade_ticks_scope or "").strip()
+    if scope == "all":
+        # Rejected here rather than at run time: a full-market tick sweep is
+        # ~9,600 requests and ~60MB a day, and finding that out twenty minutes
+        # into a run is finding out too late.
+        errors.append(
+            "[trade_ticks].scope = 'all' is not supported — a full-market tick sweep "
+            "is ~9,600 requests and ~60MB per session. Use 'watchlist' or "
+            "'index:<symbol>', and raise [trade_ticks].max_symbols deliberately."
+        )
+    elif scope and scope != "watchlist" and not scope.startswith("index:"):
+        errors.append(
+            f"[trade_ticks].scope {scope!r} is not understood "
+            "(expected 'watchlist' or 'index:<symbol>')"
+        )
+    if cfg.trade_ticks_enabled and scope == "watchlist" and not cfg.trade_ticks_symbols:
+        errors.append("[trade_ticks].scope = 'watchlist' but symbols is empty")
+    if cfg.trade_ticks_max_symbols < 1:
+        errors.append("[trade_ticks].max_symbols must be >= 1")
+    if cfg.trade_ticks_fetch_workers < 1:
+        errors.append("[trade_ticks].fetch_workers must be >= 1")
 
     referenced: list[tuple[str, str]] = []
     for wave in cfg.daily_waves:

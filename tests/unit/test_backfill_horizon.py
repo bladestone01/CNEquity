@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -228,7 +229,7 @@ def test_symbols_flag_overrides_scope_for_intraday(tmp_path, monkeypatch):
     assert "5m" in cfg.minute_bars_frequencies
 
 
-def test_symbols_flag_is_rejected_for_non_intraday_datasets(tmp_path, monkeypatch):
+def test_symbols_flag_is_rejected_for_datasets_without_a_configured_scope(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "_cfg", lambda _p: object())
 
     from click.testing import CliRunner
@@ -237,7 +238,55 @@ def test_symbols_flag_is_rejected_for_non_intraday_datasets(tmp_path, monkeypatc
         cli_main.cli, _backfill_argv("daily_bars", "--symbols", "600519.SH")
     )
     assert result.exit_code != 0
-    assert "only applies to intraday datasets" in result.output
+    assert "only applies to datasets with a configured scope" in result.output
+
+
+def test_symbols_flag_points_each_dataset_at_its_own_config_block():
+    """The override must not write minute_bars keys for a trade_ticks run.
+
+    It used to: the flag was hardcoded to `cfg.minute_bars_*`, so a
+    `--symbols` tick pull silently scoped the wrong dataset and then fetched
+    nothing.
+    """
+    from ashare_lake.config import Config
+
+    cfg = Config(data_root=Path("/tmp/lake"))
+    cli_main._override_scope(cfg, "trade_ticks", ["600519.SH", "000001.SZ"])
+    assert cfg.trade_ticks_enabled is True
+    assert cfg.trade_ticks_scope == "watchlist"
+    assert cfg.trade_ticks_symbols == ["600519.SH", "000001.SZ"]
+    assert cfg.minute_bars_enabled is False
+
+    cli_main._override_scope(cfg, "minute_bars_5m", ["600519.SH"])
+    assert cfg.minute_bars_enabled is True
+    assert cfg.minute_bars_symbols == ["600519.SH"]
+    assert "5m" in cfg.minute_bars_frequencies
+
+
+def test_symbols_flag_lifts_the_tick_ceiling_for_a_hand_typed_list():
+    """The ceiling stops an unnoticed sweep, not a list the user just typed."""
+    from ashare_lake.config import Config
+
+    cfg = Config(data_root=Path("/tmp/lake"))
+    cfg.trade_ticks_max_symbols = 2
+    cli_main._override_scope(cfg, "trade_ticks", ["600519.SH", "000001.SZ", "300750.SZ"])
+    assert cfg.trade_ticks_max_symbols == 3
+
+
+def test_tick_horizon_guard_does_not_suggest_narrowing_the_scope():
+    """A fixed floor has no narrower scope that reaches further back.
+
+    The minute-bar message tells you to narrow the watchlist, because there the
+    limit is a per-symbol bar count and an illiquid name does reach deeper.
+    Repeating that advice here would send someone editing a setting that cannot
+    help them.
+    """
+    with pytest.raises(cli_main.click.ClickException) as excinfo:
+        cli_main._guard_history_horizon("trade_ticks", date(2023, 1, 1))
+    message = str(excinfo.value)
+    assert "history floor" in message
+    assert "narrow" not in message
+    assert "2024-01-02" in message
 
 
 def test_chunked_backfill_keeps_a_warning_status_across_later_successes(monkeypatch):

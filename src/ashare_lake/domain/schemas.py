@@ -77,6 +77,38 @@ MINUTE_BARS_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# Transaction records (分笔). Not tick data — A-share Level-1 is a 3-second
+# snapshot, so one row aggregates however many real trades landed in one frame
+# (6–33 on average, measured). See adapters/tdx_protocol/trade_ticks.py.
+TRADE_TICKS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    # Position in the session, ascending in time, dense from 0. This is the
+    # identity of a row: the wire timestamp has no seconds, so up to twenty
+    # records share a `trade_time` and it cannot key anything. Safe as a key
+    # because a settled session is frozen — refetched twice, 4,308 rows came
+    # back identical field for field.
+    "tick_seq": pl.Int32,
+    # Minute precision. The seconds are always :00 — they are not truncated
+    # from a finer timestamp, the protocol never carried them.
+    "trade_time": pl.Datetime(time_unit="us"),
+    "price": pl.Float64,
+    # 股, like every other dataset (ashare_lake.domain.units). The wire reports
+    # 手; the adapter multiplies by 100, which reconciliation against
+    # daily_bars confirms rather than assumes.
+    "volume": pl.Int64,
+    # buy / sell / neutral / after_hours. TDX's own tick-rule inference, not an
+    # exchange field. `after_hours` is the 15:05–15:30 fixed-price session and
+    # is *not* in the exchange's daily volume — exclude it before reconciling.
+    # No `amount`: the source does not carry one, and a stored price × volume
+    # would look like a fact while being an approximation (one representative
+    # price stands for every trade folded into the frame).
+    "direction": pl.Utf8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 # Domestic commodity futures main-continuous daily bars (东财主连).
 # symbol = {ROOT}0.{EXCH} e.g. AU0.SHF / I0.DCE — not A-share .SH/.SZ.
 COMMODITY_BARS_SCHEMA = {
@@ -531,6 +563,7 @@ DATASET_SCHEMAS = {
     "index_bars": {**DAILY_BARS_SCHEMA, "frequency": pl.Utf8},
     "minute_bars": MINUTE_BARS_SCHEMA,
     "minute_bars_5m": MINUTE_BARS_SCHEMA,
+    "trade_ticks": TRADE_TICKS_SCHEMA,
     "commodity_bars": COMMODITY_BARS_SCHEMA,
     "corporate_actions": CORPORATE_ACTIONS_SCHEMA,
     "adj_factors": ADJ_FACTORS_SCHEMA,
@@ -572,6 +605,9 @@ PRIMARY_KEYS = {
     "index_bars": ["symbol", "trade_date", "frequency"],
     "minute_bars": ["symbol", "trade_date", "bar_time", "frequency"],
     "minute_bars_5m": ["symbol", "trade_date", "bar_time", "frequency"],
+    # Not trade_time: it has no seconds, so a busy minute holds twenty records
+    # sharing one. tick_seq is the only thing that separates them.
+    "trade_ticks": ["symbol", "trade_date", "tick_seq"],
     "commodity_bars": ["symbol", "trade_date"],
     "corporate_actions": ["symbol", "ex_date", "action_type"],
     "adj_factors": ["symbol", "trade_date", "adjust_type"],

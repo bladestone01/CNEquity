@@ -29,6 +29,7 @@ from ashare_lake.quality.dataset_checks import (
 from ashare_lake.quality.intraday_checks import minute_bars_findings
 from ashare_lake.quality.macro_checks import macro_staleness_findings
 from ashare_lake.quality.source_diff import run_source_diffs
+from ashare_lake.quality.tick_checks import trade_ticks_findings
 from ashare_lake.quality.unit_checks import daily_bars_volume_unit_findings
 from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from ashare_lake.query.universe import (
@@ -222,6 +223,7 @@ def _collect_lake_findings(
     findings.extend(daily_bars_volume_unit_findings(config, trade_date))
     # No-ops on a lake that never enabled intraday capture.
     findings.extend(minute_bars_findings(config, trade_date))
+    findings.extend(trade_ticks_findings(config, trade_date))
     # Reaches an external vendor for ~12 quotes; gated on [sources.sina] so a
     # lake without it (and every unit test) stays offline.
     findings.extend(

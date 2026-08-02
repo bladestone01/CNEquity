@@ -13,4 +13,5 @@ from ashare_lake.steps import (  # noqa: F401
     research,
     rotation,
     structure,
+    ticks,
 )

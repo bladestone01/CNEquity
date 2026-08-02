@@ -17,6 +17,8 @@
 | `hosts.py` | 内置兜底行情主机列表 |
 | `_wire/` | 内置的 TDX 线协议实现（源自 tdxpy，MIT，见 `LICENSE.tdxpy`） |
 | `bars.py` | 分页日线/指数 K 线 |
+| `minute_bars.py` | 日内 K 线（从 tip 往回翻页） |
+| `trade_ticks.py` | 分笔（按交易日整段组装） |
 | `corporate_actions.py` | 每股 xdxr → corporate_actions 行 |
 | `__init__.py` | 导出 |
 
@@ -44,14 +46,44 @@
 | `fetch_index_bars(cfg, symbol, start, end, frequency)` | 指数 K 线 |
 | `fetch_corporate_actions(cfg, symbol)` | 除权除息 |
 | `fetch_trading_status(cfg)` | 停牌列表（辅助） |
+| `fetch_minute_bars(...)` | 日内 K 线批量 |
+| `fetch_trade_ticks_batch(symbols, sessions, ...)` | 分笔批量（失败单位是 symbol-**day**） |
 
 ---
 
 ## 分页与限制
 
-- TDX 协议单次最多约 **800** 条 K 线（`_wire.MAX_PAGE`）
+三种数据、三套分页参数，别混：
+
+| 调用 | 单页上限 | `start` 的含义 | 终止条件 |
+|------|---------|---------------|---------|
+| `get_security_bars` / `get_index_bars` | **800**（`MAX_PAGE`） | 从最新往回的偏移 | 短页 / 走到窗口起点 |
+| `get_history_transaction_data`（`0x0fb5`） | **2000**（`MAX_TICK_PAGE`） | 从当日**最后一条**往回的偏移 | 短页 |
+| `get_transaction_data`（`0x0fc5`，当日） | **1800** | 同上 | 短页 |
+
+分笔两条命令的上限**不是同一个数**：历史 2000，当日请求 2000 也只返回 1800。两者都能走完一整天——
+实测 `600519.SH` 2026-07-31 历史路径 `2000+2000+308`、当日路径 `1800+1800+708`，都等于 4,308 条。
+
 - `bars.py` 循环分页；失败即暴露，不静默截断
 - 日更增量：检测水位后早停，避免每日翻全历史
+- `trade_ticks.py` 更严：一个交易日**要么完整、要么整段作废**。因为 `tick_seq` 是落盘后才编的位置序号，
+  半天数据会让空洞之后每一行的身份错位
+
+---
+
+## 分笔的三个坑（都已实测踩过）
+
+移植自上游 tdxpy 时修掉的问题，以及一个上游没有的：
+
+1. **价格标度不是常数。** 上游硬编码 ÷100（个股系数）。基金是 0.001：实测 `510300.SH` 用 ÷100 会让成交额对账变成 **10.004**，
+   `159915.SZ` 的 3.368 元读成 33.68。`price_divisor()` 按 `SECURITY_COEFFICIENT` 取，未知前缀**报错而不回落**。
+2. **除数而非乘数。** `0.01` 没有精确的 double，`135060 * 0.01 = 1350.6000000000001`；`135060 / 100` 与字面量同值。
+   改用除法后，连续竞价最后一笔价格与 `daily_bars.close` **浮点精确相等**。
+3. **`_decode.decoded_quantity` 不适用于分笔。** 那个 2⁻¹²⁷ 非规格化零的坑在 `helper.get_volume`（K 线专用浮点解码）；
+   分笔的 `vol` / `direction` 走 `helper.get_price`，是普通变长**整数**解码。用了反而会把整数悄悄变成浮点。
+
+另有两处上游缺陷已在移植时修正：`GetTransactionData` 用同一个 `num` 同时装记录总数与本帧笔数（变量名遮蔽），
+`GetHistoryTransactionData` 的 `date` 类型判断写成了 `type(date) is (type(date) is str)`——恒为 False。
 
 ---
 
@@ -71,6 +103,8 @@
 |--------|------|
 | daily_bars | **主源** |
 | corporate_actions | 回填主源；日更时东财为主、TDX 写 snapshot |
+| minute_bars / minute_bars_5m | **唯一源**（无备源） |
+| trade_ticks | **唯一源**，且[有意不设备源](../../datasets/sources.md#trade_ticks) |
 
 ---
 

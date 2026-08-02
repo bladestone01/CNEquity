@@ -1,6 +1,6 @@
 # 数据集目录
 
-ashare-lake 交付 **38 个注册数据集**（35 curated + 3 derived：`adj_factors`、`industry_index`、`delisting_events`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。其中日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启。
+ashare-lake 交付 **39 个注册数据集**（36 curated + 3 derived：`adj_factors`、`industry_index`、`delisting_events`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。其中日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -15,7 +15,7 @@ ashare-lake 交付 **38 个注册数据集**（35 curated + 3 derived：`adj_fac
 | 层次 | 说明 | 代表数据集 |
 |------|------|------------|
 | **L0** 基础参考 | Universe、日历、交易状态 | instruments, trading_calendar, trading_status |
-| **L1** 行情 | 未复权价量 + 复权因子 + 可选分钟/商品 + 退市形态 | daily_bars, index_bars, minute_bars*, minute_bars_5m*, commodity_bars*, adj_factors, delisting_events |
+| **L1** 行情 | 未复权价量 + 复权因子 + 可选分钟/分笔/商品 + 退市形态 | daily_bars, index_bars, minute_bars*, minute_bars_5m*, trade_ticks*, commodity_bars*, adj_factors, delisting_events |
 | **L2** 公司事件 | 除权除息、公告、预约披露 | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | **L3** 基本面 | 财报、估值、一致预期 | financial_statement_items, valuation_metrics, analyst_consensus |
 | **L4** 资金面 | 北向、融资、主力 | fund_flow, northbound_*, margin_trading, dragon_tiger, block_trades, institutional_holdings |
@@ -59,23 +59,76 @@ ashare-lake 交付 **38 个注册数据集**（35 curated + 3 derived：`adj_fac
 
 `trading_status` 的 ST/停牌覆盖目前从约 2016 起（`daily_bars` 已到 2001）；audit `trading_status_coverage_start` 会报缺口——**不要**假定 2001 起 `universe="all_a"` 已剔除历史 ST。
 
-### 历史视野（history_horizon_days）
+### `trade_ticks` 是什么，不是什么
 
-`history_mode` 说的是**能不能**回补，这一项说的是**能回补多远**。取值为「源端还提供多少个交易日」，`None` = 源端无此限制，历史只受你回填了多少所限。
+**不是逐笔成交。** A 股 Level-1 是**每 3 秒一帧的快照**，通达信的「分笔」是这个快照的聚合结果。
+实测：当日接口带的「本帧成交笔数」字段，`600519.SH` 均值 **6.3 笔**、`000001.SZ` 均值 **33.4 笔**（最大 1217）。
+一个交易日因此最多约 4,800 条（14,400 交易秒 ÷ 3），实测全市场随机 40 只均值 **2,721 条**。
+
+由此带来三条必须知道的口径：
+
+| 项 | 实情 |
+|----|------|
+| 时间戳 | **只到分钟**，秒位恒为 `00`。不是被截断的，是协议从来没带过秒 |
+| 主键 | 因此是 `(symbol, trade_date, tick_seq)`——同一分钟可以有 20 条记录时间戳完全相同 |
+| `direction` | 通达信按 tick rule **推断**的方向，不是交易所字段；四个取值 `buy` / `sell` / `neutral` / `after_hours` |
+
+`after_hours` 是 15:05–15:30 的盘后固定价格成交，价格恒等于当日最后成交价，且**不计入交易所当日成交量**——
+与日频对账前必须先剔除它（含它 1.000363，剔除后 1.000000）。
+
+**没有 `amount` 列。** 源端不提供；`price × volume` 可以自己算，但要知道它是近似：
+一帧里多笔不同价成交被合并成一个代表价。实测这个失真在 ±0.03% 以内。
+
+合规边界见 [legal-and-data-sources](../legal-and-data-sources.md)：这**不是**交易所 Level-2，没有逐笔委托，没有十档。
+
+### 历史视野：两种机制，不要混
+
+`history_mode` 说的是**能不能**回补，这一节说的是**能回补多远**。源端的限制有两种，形状完全不同：
+
+**（一）每标的固定根数**（`history_horizon_days`）——分钟线是这种。取值为「源端还提供多少个交易日」，随今天滚动。
 
 | 数据集 | history_horizon_days | 实测（2026-08-01） |
 |--------|---------------------|-------------------|
 | minute_bars（1m） | **95** | 22,800 根/标的，最早 2026-03-16 |
 | minute_bars_5m（5m） | **491** | 23,568 根/标的，最早 2024-07-23（约 2 年） |
-| 其余全部 | `None` | 源端不设上限 |
+
+**（二）固定日期底**（`history_floor_date`）——分笔是这种。**不随今天滚动**，所以视野是逐日**变长**的。
+
+| 数据集 | history_floor_date | 实测（2026-08-02） |
+|--------|-------------------|-------------------|
+| trade_ticks | **2024-01-02** | 所测每一只标的都是同一天；2023-12-28 为空 |
+
+两者的区别不是学术问题：把固定底写成滚动天数，`earliest_available()` 会每天往前漂，几个月后就把源端还愿意提供的数据挡在门外。
+
+`trade_ticks` 的底落在自然年边界上，所以保留策略**可能是按自然年**而非固定日期——
+`scripts/probe_trade_ticks.py` 留着就是为了**每年 1 月复测一次**。
+
+| 其余全部 | 两者皆 `None` | 源端不设上限 |
 
 这是**源的属性，不是本湖的待办**。更早的窗口返回的不是更少数据，而是没有数据，且没有回填源能补深——`by_date` 单独看会让人以为能回补十年。
 
-**机制是「每标的固定根数」，不是固定日期。** 1m 约 22,800 根、5m 约 23,568 根；除以一个完整交易日（240 / 48 根）就得到上表的天数。所以这个数字对**每个交易日都有报价的标的**成立——也就是所有正常 A 股，本数据集的服务对象。反过来，只在零星日子有 bar 的标的会按比例伸得更远：`162107.SZ`（几乎不成交的 LOF）只有 3,216 根 5m，散在 67 个交易日上，因而回溯到 2012 年。**把它当作正常个股的保证，而不是所有标的的硬上限。**
+**分钟线的机制是「每标的固定根数」，不是固定日期。** 1m 约 22,800 根、5m 约 23,568 根；除以一个完整交易日（240 / 48 根）就得到上表的天数。所以这个数字对**每个交易日都有报价的标的**成立——也就是所有正常 A 股，本数据集的服务对象。反过来，只在零星日子有 bar 的标的会按比例伸得更远：`162107.SZ`（几乎不成交的 LOF）只有 3,216 根 5m，散在 67 个交易日上，因而回溯到 2012 年。**把它当作正常个股的保证，而不是所有标的的硬上限。**
 
 活跃标的间高度一致：1m 实测 `600519.SH` / `000001.SZ` / `300750.SZ` / `688981.SH` / `603005.SH` 均为 95±1 天，跨交易所、跨流动性。
 
 `asl backfill minute_bars --start` 早于视野会直接报错而不是扫一整天返回空。要拉冷门标的的深历史，先把 `[minute_bars].scope` 收窄成 watchlist。程序化读法：`list_datasets()` 的 `history_horizon_days` 列。
+
+`asl backfill trade_ticks --start` 同样会拦，但文案不同：分笔的底对所有标的一致，**没有哪个更窄的范围能拉到更早的数据**。
+
+### `trade_ticks` 的容量（实测）
+
+按 symbol-session 计：约 **1.85 次请求**、约 **2,721 行**；落盘约 **8.4 字节/行**（含溯源列，zstd）。
+
+| 范围 | 请求/日 | 行数/日 | 落盘/日 | 一年（242 日） |
+|------|--------|--------|--------|--------------|
+| watchlist 200 只 | ~500 | ~54 万 | **~4.5 MB** | ~1.1 GB |
+| 全市场 5,197 只 | ~9,600 | ~1,410 万 | **~119 MB** | ~29 GB |
+
+串行实测 1.70 req/s（受网络延迟限制，非限速器）；4 线程可到约 8.7 req/s，则 watchlist 约 1 分钟/日、全市场约 20 分钟/日。
+**首次把 200 只拉满全部历史约 312,000 次请求、10–11 小时。**
+
+配置里 `[trade_ticks].max_symbols` 默认 200 就是为此：`index:000300.SH` 解析出约 300 只会直接报错，
+要跑得自己把上限调高——这一步摩擦是故意的。`scope = "all"` 不支持，配置校验期就会拒绝。
 
 ### 为什么没有 15m / 30m / 60m 数据集
 
@@ -133,6 +186,7 @@ bars_15m = (
 | minute_bars_5m | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 5m。同上可选；**491 个交易日（约 2 年），是唯一有真历史的日内频率**；全市场约 6MB/日；required=false |
 
 两个日内数据集共用一组质量检查：主键重复（通用 `pk_unique`）、时段外 bar、`trade_date` 与 `bar_time` 不一致、会话缺口，以及**与日频的成交量+成交额双向对账**。
+| trade_ticks | trade_date | symbol, trade_date, tick_seq | by_date | ✓ | tdx_protocol | 分笔。**可选**，默认关；`[trade_ticks]` 独立配置；**不是逐笔成交**（见下）；源端回溯至 **2024-01-02**；watchlist 200 只约 7MB/日；required=false |
 | commodity_bars | trade_date | symbol, trade_date | by_date | ✓ | eastmoney+sina | 国内主连 + COMEX金 `GC0.CMX`；`asl backfill commodity_bars`；required=false |
 | adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`asl derive adj_factors` |
 | delisting_events | —（单文件 merge） | symbol | derived | — | sina | 每只退市股的结尾形态；`asl delisted backfill` 产出 |
