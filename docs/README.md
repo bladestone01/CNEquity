@@ -34,11 +34,12 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install ashare-lake`
 
 - [数据集目录](datasets/catalog.md) · [Schema](datasets/schema.md)
 - [查询指南](datasets/query-guide.md) · [逐源限制](datasets/sources.md)
-- [CLI](reference/cli.md) · [Python API](reference/python-api.md)
+- [CLI](reference/cli.md) · [Python API](reference/python-api.md) · [MCP（接给 AI agent）](reference/mcp.md)
 
 ## 运维
 
 - [Runbook](operations/runbook.md) · [脚本说明](operations/scripts.md) · [故障排查](operations/troubleshooting.md)
+- [数据源健康度](operations/source-health.md)（`asl sources` + `asl serve /source-health`）
 
 ## 架构
 

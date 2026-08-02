@@ -35,6 +35,25 @@
 | `--resume` | 续跑最近未完成 init |
 | `--run-id` | 续跑指定 init run（隐含 resume） |
 | `--keep-going` | phase 失败后继续后续 phase |
+| `--profile full\|quick` | 回填多少历史。`quick` = 最近 3 年，`full`（默认）= 各 step 自己的起点（`daily_bars` 为 2016-01-01） |
+| `--since YYYY-MM-DD` | 显式指定历史起点，覆盖 `--profile` |
+| `--quiet` | 只留 warning 及以上，不打逐批进度 |
+
+**默认会打进度。** 全市场回填是几十个批次、可能跑几小时；之前它一声不吭直到最后吐 JSON，和卡死没法区分——而看起来卡死的进程会被 kill 掉，白扔已经跑完的几小时。现在每个批次一行：
+
+```
+14:22:07 INFO ...worker_pool: daily_bars 12/54 batches · 1,043,882 rows · 18m04s elapsed · ~1h03m left
+```
+
+**`quick` 是更浅，不是更窄。** 全市场标的一个不少，只是每只少几年。按标的裁剪会把这个湖本来要修掉的幸存者偏差直接建进去，而且一个缺席的标的看起来和「这只票从没交易过」一模一样；少几年的历史则由 `coverage_start` 如实记录。
+
+窗口会写进 run metadata，`--resume` 自动沿用——否则几天后从新进程续跑会默认回到全深度，去抓你当初特意跳过的年份。
+
+之后加深不必重跑 init：
+
+```bash
+asl backfill daily_bars --start 2016-01-01 --end <你的 coverage_start>
+```
 
 退出：result `status != success` 时退出 1。
 
@@ -79,6 +98,7 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 | `--group` | `core` \| `capital` \| `signals` \| `fundamentals` \| `macro_risk` \| `research` \| `intraday` |
 | `--backfill` | 强制 backfill 语义（慎用） |
 | `--stale-only` | 只重抓仍落后于最后交易日的数据集（与 `--group` 互斥） |
+| `--quiet` | 只留 warning 及以上，不打逐步进度 |
 
 ### --stale-only：当天的第二次机会
 
@@ -353,6 +373,57 @@ asl stats refresh
 |------|------|
 | `--dataset` | on-demand 数据集名 |
 | `--symbol` | 如 `600519.SH` |
+
+---
+
+## asl mcp
+
+把这个湖接给 AI agent（MCP over stdio）。只读，和 `asl serve` 同样的边界。
+
+| 选项 | 说明 |
+|------|------|
+| `--config` | 配置文件路径，**建议绝对路径**（客户端从哪个目录拉起进程不确定） |
+| `--live` | 湖里没有的，现拉现给、不落盘。只支持 `resolve_symbol` 与未复权日线，其余工具明确拒绝 |
+
+不用手敲：由 MCP 客户端拉起并在管道上讲 JSON-RPC。三条路按手上有什么选：
+
+```bash
+asl demo                                   # 没湖想先试试：30 秒真数据
+claude mcp add ashare-lake -- asl mcp --config /abs/path/ashare-lake.toml
+claude mcp add ashare-lake -- asl mcp --config /abs/path/ashare-lake.toml --live
+```
+
+`--live` **默认关，永不自动推断**：湖坏了的用户必须拿到 `no parquet data` 去修，而不是悄悄拿到一份来自别处、看起来差不多的答案。每次调用最多 50 个标的 / 800 天，且必须显式给 `symbols`。每条响应带 `origin: "lake" | "live"`。
+
+6 个工具（`describe_lake` / `resolve_symbol` / `query_bars` / `query_fundamentals` / `query_dataset` / `run_sql`）、口径随响应返回、`run_sql` 只收单条 SELECT：见 [MCP 参考](mcp.md)。
+
+---
+
+## asl sources
+
+探测本湖依赖的公开数据源。每个源发**一个**请求，断言响应体（不是状态行），串行且尊重各源限速。
+
+| 选项 | 说明 |
+|------|------|
+| `--config` | 配置文件路径（探测不读湖，但要用里面的限速与超时） |
+| `--vantage` | 这次探测从哪个出口发出：`cn` / `overseas` / 任意标签（默认 `local`） |
+| `--only` | 逗号分隔的 probe key，默认全部；传空串则一个都不测 |
+| `--out` | JSON 报告路径。默认写进湖里的 `meta/source_health/<vantage>.json`，也就是 `asl serve` 读的位置 |
+
+```bash
+asl sources --vantage cn
+asl serve                    # → http://127.0.0.1:8787/source-health
+```
+
+**探测在 CLI，展示在 serve。** 面板只读，不会替你去请求十几个第三方主机——和它不触发采集是同一个理由。多次探测（不同 `--vantage`）会并排显示，不合并。
+
+**`--vantage` 要认真填。** 好几个源在 WAF 层拒绝非大陆出口，同一主机同一秒可以大陆绿、海外红，两个都是真的。没有这个标签的报告无法解读。
+
+**源挂了不影响退出码。** 源变红是这条命令的输出而不是它的失败。
+
+状态五档：`ok` 可用 · `empty` 空响应 · `blocked` 被拒 · `down` 不可达 · `skipped` 未探测。`empty` 单独一档是因为它看起来比失败健康、实际更危险（回填静默截断）。
+
+口径、加新源的方法见 [数据源健康度](../operations/source-health.md)。
 
 ---
 

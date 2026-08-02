@@ -27,10 +27,52 @@ DuckDB / Polars / `load()`.
   every trading day
 - **Stable research semantics:** adjust · universe · PIT; 39 registered datasets;
   daily bars back to ~2001
+- **Serves AI agents:** `asl mcp` exposes the whole lake as MCP tools, with the
+  query contract travelling in the responses
 
 CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay
 downstream) · opt-in intraday data (1m / 5m bars, transaction records; all off
 by default) · read-only dashboard `asl serve`
+
+<p align="center">
+  <a href="#why-a-lake-rather-than-fetching-on-demand">Why a lake</a> ·
+  <a href="#data-in-30-seconds">30 seconds</a> ·
+  <a href="#what-you-can-ask-it">What you can ask</a> ·
+  <a href="#why-not-just-akshare--tushare">vs. the alternatives</a> ·
+  <a href="#self-hosted-daily-lake">Self-hosted lake</a> ·
+  <a href="#serve-it-to-an-ai-agent">AI agents</a> ·
+  <a href="#datasets">Datasets</a> ·
+  <a href="#faq">FAQ</a>
+</p>
+
+## Why a lake, rather than fetching on demand
+
+<p align="center">
+  <img src="docs/assets/survivorship-gap.svg" alt="Same basket, same dates — the only difference is whether the delisted names are still in it" width="820" />
+</p>
+
+The same equal-weight buy-and-hold, the same start and end dates. The only
+difference is **whether the names that later delisted are still in the basket**.
+Use "the stocks that exist today" as a historical universe — which is all a
+current-roster vendor can give you — and the 2016–2021 five-year return goes
+from **5.9% to 12.0%**, twice what it was.
+
+That is a floor, not an estimate: delisted names are carried to their last
+printed bar (usually before a long suspension, well above what a holder
+recovered), only names with an exact adjustment factor are counted, and this
+lake's own delisted coverage may still be incomplete. All three shrink the
+measured gap rather than widen it.
+
+The point is that the error **is not visible**. Those names are not zero, they
+are absent, so nothing in the output looks wrong. That is why delisted names,
+adjustment factors and PIT are first-class here rather than a 40th dataset on a
+coverage list.
+
+Reproduce it on your own lake:
+
+```bash
+python scripts/survivorship_gap.py --svg docs/assets/survivorship-gap.svg
+```
 
 ## Data in ~30 seconds
 
@@ -74,6 +116,31 @@ Commands work on macOS / Linux / Windows (PowerShell or cmd). Venv and
 schedulers: [installation](docs/getting-started/installation.md) /
 [runbook](docs/operations/runbook.md).
 
+## What you can ask it
+
+Once the lake is built, these are one-liners. **The ★ rows are impossible
+without a local history** — not unimplemented, impossible: an on-demand HTTP
+call cannot produce a series it was never given.
+
+| What you want to know | How you get it |
+|--|--|
+| How much Moutai returned over five years, adjusted | `load("daily_bars", symbols=[...], adjust="hfq")` |
+| ★ Where Moutai's PE sits in its own five-year distribution | `SELECT quantile_cont(pe_ttm, 0.5) FROM valuation_metrics WHERE symbol=…` |
+| ★ This factor's IC in 2018, with no look-ahead | `load("financial_statement_items", as_of="2018-04-30")` |
+| ★ What the last 60 sessions looked like for stocks that delisted | `delisting_events` + `daily_bars` (delisted names are still here) |
+| ★ Equal-weight market return, free of survivorship bias | `scripts/survivorship_gap.py` (the chart above) |
+| Who was on today's dragon-tiger list, and who was buying | `load("dragon_tiger", start=…, end=…)` |
+| How this name's margin balance has moved | `load("margin_trading", symbols=[…])` |
+| Whether anything unlocks in the next three months | `load("share_unlock_schedule", start=…)` |
+| Which sectors money went into today | `load("sector_fund_flow")` |
+| ★ How Shenwan classified the market in 2021 | `load("industry_members")` (monthly revision history, 2020+) |
+| ★ Who was in CSI 300 three years ago | `load("index_constituents")` (CNI rebalance history) |
+| Today's filings | `load("announcement_index", as_of=…)` |
+
+With [`asl mcp`](#serve-it-to-an-ai-agent) wired up, you ask these in plain
+language — the query contract (adjustment, PIT, which series have no history)
+comes back with the data, so you are not re-explaining it every turn.
+
 ## Why not just AkShare / Tushare
 
 AkShare / efinance answer “how do I fetch?”; Tushare answers “cloud wide tables”;
@@ -107,6 +174,17 @@ asl config init --data-root /Users/you/ashare-lake
 asl init          # layout + first backfill
 asl run daily     # every trading day afterwards (no intraday data)
 asl status
+```
+
+**Start shallow.** `asl init --profile quick` backfills only the last three
+years, with the full cross-section. It is *shallower, never narrower* — filtering
+symbols would build the bias in the chart above straight into the lake, while
+fewer years is recorded honestly by `coverage_start`. Deepening later does not
+mean re-running init:
+
+```bash
+asl init --profile quick                    # or --since 2019-01-01
+asl backfill daily_bars --start 2016-01-01 --end <your coverage_start>
 ```
 
 ```python
@@ -215,6 +293,102 @@ because a second copy is a copy that drifts.
 Binding to a non-loopback address requires `--token`. Details:
 [serve module docs](docs/modules/serve.md).
 
+## Serve it to an AI agent
+
+`asl serve` shows the lake to a person; `asl mcp` shows it to a model. Same
+read-only stance — ingestion stays on the CLI, where a person runs it.
+
+**Three ways in, depending on what you already have:**
+
+```bash
+# 1. You have a lake — the full contract: adjustment, universe, PIT, provenance
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml
+
+# 2. No lake, just trying it — 30 seconds of real data (5 names x 30 sessions)
+asl demo
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/configs/ashare-lake.demo.toml
+
+# 3. No lake at all — fetched live, never written to disk
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml --live
+```
+
+Use an **absolute** `--config` path: an MCP client starts the process from a
+directory of its own choosing, and a relative one resolves somewhere else.
+
+**Option 3 costs you something, and the cost is stated in every response.**
+Live data has no adjustment factors, no universe filter, no point-in-time
+cutoff and no write-time validation, so it serves `resolve_symbol` and
+unadjusted daily bars only — every other tool refuses and says why. Each
+payload carries `origin: "live"` and a warning, so the model does not spend
+lake-grade confidence on it. Correct return series, historical percentiles and
+look-ahead-free fundamentals need a lake; see [the chart above](#why-a-lake-rather-than-fetching-on-demand).
+
+**Six tools, not 39.** An agent picks from a flat list every turn, so one tool
+per dataset would spend most of the context window on names it will not call.
+These are cut by question shape, and the dataset becomes an argument:
+
+| Tool | What it is for |
+|--|--|
+| `describe_lake` | What is here, how far back, and the rules that make an answer correct |
+| `resolve_symbol` | "茅台" → `600519.SH`, delisted names included |
+| `query_bars` | Daily / index / minute bars, with `adjust` and `universe` |
+| `query_fundamentals` | Statement items; `as_of` is **required** |
+| `query_dataset` | Any other dataset |
+| `run_sql` | One read-only DuckDB SELECT, for aggregation across datasets |
+
+**The contract travels in the responses, not in the docs** — a model does not
+read `docs/`. Bars without `adjust` come back with a warning; bars with it
+report how many rows had no factor and silently used 1.0; `query_fundamentals`
+refuses to default `as_of` and says why. Every payload carries `total` /
+`truncated`, so a page of 200 out of 4,300 rows cannot be averaged and reported
+as the market's.
+
+`run_sql` accepts exactly one SELECT, decided by DuckDB's own parser rather than
+a regex — the lake ingests `news_headlines` and `flash_news_wire`, vendor text
+nobody here wrote, so SQL reaching the tool can be shaped by ingested content.
+
+Questions this answers that a fetch-on-demand toolkit structurally cannot: "the
+percentile of Moutai's PE over the last five years", "this factor's IC in 2018,
+without look-ahead", "what the last 60 sessions looked like for stocks that
+delisted". Not *not built yet* — **impossible without a lake**.
+
+**No new dependencies**: the stdio JSON-RPC loop is hand-written, because the
+official `mcp` SDK resolves to 15 additional packages including a second HTTP
+stack. Details: [MCP reference](docs/reference/mcp.md).
+
+## Source health: `asl sources`
+
+Is EastMoney blocking you today? Did Shenwan's certificate expire again? These
+sources are not this project's: AkShare, every fetch-on-demand skill, and your
+own scraper all hit the same dozen endpoints, and when one changes there is
+nowhere to look it up — you spend an afternoon suspecting your own code first.
+This lake sweeps them every trading day anyway, so one extra request per source
+answers it.
+
+```bash
+asl sources --vantage cn     # probe once; the report lands in meta/source_health/
+asl serve                    # -> http://127.0.0.1:8787/source-health
+```
+
+**Probing is a CLI action, viewing is the dashboard.** The dashboard is
+read-only and will not reach out to a dozen third-party hosts on your behalf —
+the same reason it does not trigger ingestion.
+
+Three rules make the table trustworthy:
+
+- **HTTP 200 is not "up".** EastMoney answers a challenge page with 200, Sina
+  answers an empty array with 200. Every probe asserts on the *payload*, and
+  `empty` is its own status — it looks healthier than a failure and is worse,
+  because it truncates a backfill silently.
+- **`blocked` is not `down`.** Several sources refuse non-mainland egress at the
+  WAF, so the same host can be green from Shanghai and red from Virginia at the
+  same second. `--vantage` records which egress a report came from, and vantages
+  are rendered side by side, never merged.
+- **One probe is not an SLA.** One request per source, run serially — a health
+  check should not cause the outage it exists to observe.
+
+Details and how to add a source: [source health](docs/operations/source-health.md).
+
 ## Datasets
 
 All **39** registered datasets (36 curated + 3 derived; kept in sync with
@@ -271,6 +445,68 @@ More: [runbook](docs/operations/runbook.md) ·
 > Getting-started docs are Chinese-first; this English README is the short path.
 > Full index: [docs/](docs/README.md).
 
+## FAQ
+
+**Q: How long does `asl init` take, and how much disk?**
+A full backfill is hours and multiple GB. If you do not want to wait,
+`asl init --profile quick` fetches only the last three years — for the *full*
+cross-section. Filtering symbols instead would build the survivorship bias in
+the chart above straight into the lake, and a missing name looks exactly like a
+name that never traded, where fewer years is recorded honestly by
+`coverage_start`. Deepen later with `asl backfill daily_bars --start 2016-01-01`;
+no need to re-run init.
+
+**Q: Why store only back-adjusted factors and derive forward-adjusted at query time?**
+Forward-adjusted prices move with "today" — compute one now and again next week
+and the same 2015 bar has different numbers. What lands on disk has to be
+immutable, so only hfq is stored and qfq is derived in `load(adjust="qfq")` as
+`hfq_factor / hfq_anchor` ([ADR-0004](docs/adr/0004-store-hfq-derive-qfq-at-query.md)).
+A price written adjusted cannot be undone; a factor series can be recomputed.
+
+**Q: Does `universe="all_a"` already exclude historical ST names?**
+**No.** `trading_status` covers ST/suspension from roughly 2016, while
+`daily_bars` reaches 2001. Windows before that are not ST-filtered, so a long
+backtest includes ST names in its early cross-sections. `asl audit` reports the
+gap as `trading_status_coverage_start` — do not assume it is clean.
+
+**Q: EastMoney is returning 403 / resetting connections. Now what?**
+Run `asl sources --only eastmoney_push2,eastmoney_push2his` first — if that is
+red too, it is not your code. The EastMoney hosts
+(push2 / push2his / datacenter) share one WAF and go dark together, and
+`push2his` is the most sensitive to non-mainland egress (this project ships
+Chrome TLS impersonation and CDN stickiness for it). Bars on the daily path come
+from TDX, which is a different protocol and a different blast radius.
+
+**Q: baostock stops responding partway through a sweep.**
+The free tier's binding constraint is cumulative volume, not spacing: measured,
+about 43 queries in a session earns a blacklist with a ~40 minute cooldown. The
+defaults (`batch_size=20`, `batch_rest_seconds=120`) carried 1,658 symbols of
+valuation history without a single block. Do not raise them for speed.
+
+**Q: Why can't I get minute bars from two years ago?**
+The vendor keeps about **95** trading days of 1m and **491** of 5m. That is the
+vendor's retention, not this lake's backlog — an earlier window returns nothing,
+not less, and no backfill source extends it. `asl backfill minute_bars --start`
+refuses a window before the horizon instead of scanning a day for nothing.
+15m/30m/60m are not stored because they aggregate from 5m exactly.
+
+**Q: Why was AkShare dropped after v0.3?**
+It wraps the same public EastMoney / THS / Sina APIs this project already called
+directly, so it bought a parsing layer, 14 transitive packages and a mini-racer
+collision rather than a second source. Everything is direct HTTP now, and the
+TDX binary client is vendored (mootdx upstream is dormant; the protocol is not).
+
+**Q: Why is `workers` pinned to 1 on macOS?**
+The TDX client is not fork-safe and a ProcessPool dies with BrokenProcessPool,
+so `asl config init` writes `workers = 1` there. Windows uses spawn and does not
+have that problem — its default of 1 is merely conservative, and you can raise
+it once `asl doctor` is clean. The Linux template ships 8.
+
+**Q: Can I redistribute the data commercially?**
+The code is MIT. **The bars and filings on disk are not** — they remain subject
+to their upstream terms. This repo ships no data lake and grants no
+redistribution right. See [legal](docs/legal-and-data-sources.md).
+
 ## Project status
 
 Personal project: issues and PRs welcome, responses best-effort.
@@ -285,6 +521,7 @@ Full index: [docs/README.md](docs/README.md). Common entry points:
 [catalog](docs/datasets/catalog.md) ·
 [runbook](docs/operations/runbook.md) ·
 [CLI](docs/reference/cli.md) ·
+[MCP](docs/reference/mcp.md) ·
 [serve dashboard](docs/modules/serve.md).
 
 ## License
