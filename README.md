@@ -6,10 +6,17 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![English](https://img.shields.io/badge/docs-English-lightgrey.svg)](README.en.md)
 
-[English](README.en.md)
+**别再每次重拉、自己拼复权了。** 一行命令把能按天自动更新的 A 股研究湖落到本地 Parquet——多源进同一契约，行级可溯源，用 DuckDB / Polars / `load()` 直接查。
 
-**别再每次重拉、自己拼复权了。** 一行命令把能按天自动更新的 A 股研究湖落到本地 Parquet——多源进同一契约，行级可溯源。
+<p align="center">
+  <img src="docs/assets/asl-serve.png" alt="asl serve 总览：FRESH/STALE/EMPTY 计数、按分层的行数与体积、250 个交易日的覆盖热力图" width="860" />
+</p>
+
+<p align="center">
+  <b>39 个数据集</b> · <b>日线回溯约 2001</b> · <b>行级溯源</b> · <b>一条命令起湖</b> · <b>只读面板</b> · <b>MIT</b>
+</p>
 
 - **真数上手**：`pip install` → `asl demo`，几分钟出可复权日线
 - **日更能挂着跑**：水位 / 失败重试 / 质量审计；作者自用每天自动跑
@@ -19,13 +26,13 @@ CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号�
 
 ## 30 秒拿到真数
 
-需要能访问 **TDX 行情主机**（大陆出口更稳）。5 只流动性股票 × 约 30 个交易日；独立目录，**不会**变成全市场湖。demo 只落日线——下面表里的其它数据集要走自建湖。
-
 ```bash
 pip install ashare-lake
 asl demo
 # 可选：asl demo --intraday   # 再看一根完整 1m 会话
 ```
+
+5 只流动性股票 × 约 30 个交易日，落到独立目录，**不会**变成全市场湖；demo 只落日线，其它数据集走下面的自建湖。需要能访问 **TDX 行情主机**（大陆出口更稳）——不通先 `asl servers test`，或 `asl demo --symbols 600519.SH,000001.SZ --days 10`。
 
 <p align="center">
   <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
@@ -51,15 +58,27 @@ asl query --config configs/ashare-lake.demo.toml --sql "
   <img src="docs/assets/asl-query.png" alt="asl query：带 source 溯源列的日线" width="720" />
 </p>
 
-TDX 不通时先 `asl servers test`。也可 `asl demo --symbols 600519.SH,000001.SZ --days 10`。
-
 macOS / Linux / Windows（PowerShell、cmd）命令通用；venv 与调度见 [installation](docs/getting-started/installation.md) / [runbook](docs/operations/runbook.md)。
+
+## 为什么不是 AkShare / Tushare
+
+AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」；Qlib / vn.py 解决「研究/交易平台」。
+**ashare-lake** 专做中间层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖。
+
+| 你在意什么 | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
+|--|--|--|--|--|--|
+| 本地可续跑的数据底座 | **湖 + 日更编排**（水位 / 重试 / audit） | 只拉到内存，编排自管 | 云端积分，非自建湖 | 会话拉数，无湖 | 绑在平台数据子系统里 |
+| 数据从哪来、能否复查 | **行级溯源** + 写前 schema 校验 | 通常无统一契约 | 平台字段 | 无湖契约 | 视模块 |
+| 多源交叉核验 | **主源 curated + 备源 snapshot**，可 diff，不静默顶替 | 单次单源调用 | 单平台 | 单源 | 视配置 |
+| 研究口径是否稳定 | **`load()` 契约**：复权组合 / universe / PIT `as_of` | 自己拼 | 自己拼 | 自己拼 | 平台口径 |
+| 源挂了会怎样 | **fail batch**，暴露问题，可按批 retry | 看调用方 | 看平台 | 看调用方 | 视模块 |
+| 能否单独当研究数据底座 | **能**（湖 + 日更 + `load()`） | 否，还需自建落盘/编排 | 云端表，非自建湖 | 否，会话拉数 | 能，但绑平台 |
+
+逐条展开见 [comparison](docs/comparison.md)。
 
 ## 自建日更湖
 
 首次 `asl init` 会回填（耗时长、占磁盘）；之后日常增量 + 读取。`load()` 默认读 cwd 下 `configs/ashare-lake.toml` 的 `data.root`。
-
-**默认不含任何日内数据。** `asl init` / `asl run daily` 只跑日频与基本面等主路径；1m / 5m 分钟线与分笔都要显式开启（见下两节）。
 
 ```bash
 pip install ashare-lake
@@ -101,47 +120,24 @@ asl query --sql "
 
 无 extras：`pip install ashare-lake` 装齐运行时数据源。全量回填后建议按 [回填验收](docs/operations/runbook.md#回填完成验收) 再挂调度。
 
-### 可选：分钟线（1m / 5m）
+### 可选：日内数据（分钟线 / 分笔）
 
-默认关闭，也**不在** `asl run daily` 里——全市场 1m 约 35MB/日、8.4GB/年。TDX 约只留 **95** 个交易日的 1m、**491** 个交易日的 5m；更早窗口为空，无法靠回填拉长。磁盘与耗时见 [runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
+**默认全关，也不在 `asl run daily` 里。** 三个数据集各有独立配置节和独立调度组，不会因为跑日更被顺带打开：
 
-在 `configs/ashare-lake.toml` 里打开：
+| 数据集 | 源端视野 | 容量 | 打开方式 |
+|--|--|--|--|
+| `minute_bars`（1m） | 约 **95** 个交易日 | 全市场约 35MB/日、8.4GB/年 | `[minute_bars]` + `--group intraday` |
+| `minute_bars_5m`（5m） | 约 **491** 个交易日（唯一有较长历史的频率） | 全市场约 6MB/日 | 同上 |
+| `trade_ticks`（分笔） | 固定底 **2024-01-02**（不随今天滚动，视野逐日变长） | watchlist 200 只约 4.5MB/日、1 分钟 | `[trade_ticks]` + `--group ticks` |
+
+**分笔不是逐笔成交。** A 股 Level-1 是每 3 秒一帧的快照，通达信的「分笔」是这一帧内所有成交的聚合——实测一条记录平均合并 6–33 笔真实成交，时间戳只到分钟，所以行的身份是 `tick_seq` 而不是时间戳。能做方向拆分和大单结构，做不了订单流不平衡。完整口径见 [catalog](docs/datasets/catalog.md#trade_ticks-是什么不是什么)。
 
 ```toml
 [minute_bars]
 enabled = true
 scope = "index:000300.SH"     # 或 watchlist / all
-frequencies = ["1m", "5m"]    # 5m 是唯一有较长历史的频率
-```
+frequencies = ["1m", "5m"]
 
-```bash
-# 一次性种子（可续跑；--symbols 可只拉几只、不必改配置）
-asl backfill minute_bars_5m --start 2024-08-01 --end 2026-07-31
-asl backfill minute_bars --start 2026-05-01 --symbols 600519.SH,000001.SZ
-
-# 日更：单独一组，不要塞进默认 daily
-asl run daily --group intraday
-```
-
-```python
-from ashare_lake.query import load
-
-m5 = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"], adjust="hfq")
-```
-
-### 可选：分笔（trade_ticks）
-
-**先说清楚它不是什么：不是逐笔成交。** A 股 Level-1 是每 3 秒一帧的快照，通达信的「分笔」是这一帧里所有成交的聚合——
-实测一条记录平均合并 **6–33 笔**真实成交，所以一个交易日最多约 4,800 条。没有逐笔委托，没有十档。
-时间戳只到**分钟**（协议从来没带过秒），所以行的身份是 `tick_seq`（当日时间升序的序号），不是时间戳。
-
-能做的：主动买卖方向拆分、按单帧成交量分档看大单结构、开盘竞价与尾盘异动的 3 秒粒度刻画。
-做不了的：真正的逐笔重构、订单流不平衡、任何依赖委托队列的东西。
-
-默认关闭、独立配置节、不在任何默认调度上。源端回溯到 **2024-01-02**（固定日历底，不随今天滚动，所以视野逐日变长）。
-按 symbol-session 约 1.85 次请求、2,700 行，落盘约 8.4 字节/行——200 只的 watchlist 约 1 分钟、4.5MB 一天。
-
-```toml
 [trade_ticks]
 enabled = true
 scope = "watchlist"           # 或 index:<symbol>；不支持 all
@@ -150,30 +146,22 @@ max_symbols = 200             # 硬上限，解析出的范围超了直接报错
 ```
 
 ```bash
-asl backfill trade_ticks --symbols 600519.SH,000001.SZ --start 2026-07-01 --end 2026-07-31
-asl run daily --group ticks   # 日更：又一个单独的组
+asl backfill minute_bars_5m --start 2024-08-01 --end 2026-07-31
+asl backfill trade_ticks --symbols 600519.SH --start 2026-07-01 --end 2026-07-31
+asl run daily --group intraday    # 日更：各走各的组
+asl run daily --group ticks
 ```
 
-```python
-ticks = load("trade_ticks", start="2026-07-20", symbols=["600519.SH"], adjust="hfq")
-# direction: buy / sell / neutral / after_hours
-# after_hours 是 15:05–15:30 盘后固定价格成交，不计入交易所当日成交量——与日频对账前要剔除
-```
-
-口径、容量与质量检查见 [数据集目录](docs/datasets/catalog.md)，合规边界见 [许可与数据源](docs/legal-and-data-sources.md)。
+磁盘与耗时见 [runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m)，合规边界见 [许可与数据源](docs/legal-and-data-sources.md)。
 
 ## 看一眼湖：`asl serve`
 
-只读面板，不写湖。覆盖、新鲜度、来源构成、审计 findings、跑批记录都在这里；跑批、重试、清理仍然只在 CLI。
+只读面板，不写湖。覆盖、新鲜度、来源构成、审计 findings、跑批记录都在这里（就是最上面那张图）；跑批、重试、清理仍然只在 CLI。
 
 ```bash
 asl serve                      # http://127.0.0.1:8787
 asl serve --port 9000 --config configs/ashare-lake.toml
 ```
-
-<p align="center">
-  <img src="docs/assets/asl-serve.png" alt="asl serve 总览：FRESH/STALE/EMPTY 计数、按分层的行数与体积、250 个交易日的覆盖热力图" width="860" />
-</p>
 
 热力图按**数据集自己的周期**计缺口，不按天——年分区的数据集不会因为一个目录覆盖整年就报「缺 364 天」。
 
@@ -186,23 +174,6 @@ asl serve --port 9000 --config configs/ashare-lake.toml
 元数据全部来自 `domain/datasets.py` 与 `domain/schemas.py`——面板不自己存一份契约，不然就有第二份会漂移的契约。
 
 绑到非 loopback 地址必须给 `--token`。细节见 [serve 模块文档](docs/modules/serve.md)。
-
-## 架构
-
-<p align="center">
-  <img src="docs/assets/architecture-overview.png" alt="ashare-lake 架构：数据源 → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
-</p>
-
-落盘布局（日更湖的 `data.root` 下）：
-
-```
-{data_root}/
-  curated/   {dataset}/{partition}=v/part-*.parquet
-  derived/   adj_factors/...
-  staging/   本次 run 原始落地（compact 后可清理）
-  meta/      manifest、quality findings、水位、on-demand 缓存
-  duckdb/    ashare-lake.duckdb
-```
 
 ## 有什么数据
 
@@ -223,19 +194,22 @@ asl serve --port 9000 --config configs/ashare-lake.toml
 
 另有 **on-demand**（不进 curated 主路径）：`stock_news`、`research_reports` 等，见 [catalog](docs/datasets/catalog.md)。
 
-## 定位：与同类差异
+## 架构
 
-AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」；Qlib / vn.py 解决「研究/交易平台」。  
-**ashare-lake** 专做中间层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖。详见 [comparison](docs/comparison.md)。
+<p align="center">
+  <img src="docs/assets/architecture-overview.png" alt="ashare-lake 架构：数据源 → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+</p>
 
-| 你在意什么 | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
-|--|--|--|--|--|--|
-| 本地可续跑的数据底座 | **湖 + 日更编排**（水位 / 重试 / audit） | 只拉到内存，编排自管 | 云端积分，非自建湖 | 会话拉数，无湖 | 绑在平台数据子系统里 |
-| 数据从哪来、能否复查 | **行级溯源** + 写前 schema 校验 | 通常无统一契约 | 平台字段 | 无湖契约 | 视模块 |
-| 多源交叉核验 | **主源 curated + 备源 snapshot**，可 diff，不静默顶替 | 单次单源调用 | 单平台 | 单源 | 视配置 |
-| 研究口径是否稳定 | **`load()` 契约**：复权组合 / universe / PIT `as_of` | 自己拼 | 自己拼 | 自己拼 | 平台口径 |
-| 源挂了会怎样 | **fail batch**，暴露问题，可按批 retry | 看调用方 | 看平台 | 看调用方 | 视模块 |
-| 能否单独当研究数据底座 | **能**（湖 + 日更 + `load()`） | 否，还需自建落盘/编排 | 云端表，非自建湖 | 否，会话拉数 | 能，但绑平台 |
+落盘布局（日更湖的 `data.root` 下）：
+
+```
+{data_root}/
+  curated/   {dataset}/{partition}=v/part-*.parquet
+  derived/   adj_factors/...
+  staging/   本次 run 原始落地（compact 后可清理）
+  meta/      manifest、quality findings、水位、on-demand 缓存
+  duckdb/    ashare-lake.duckdb
+```
 
 ## 已知限制
 
@@ -257,3 +231,9 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 ## 许可
 
 代码 [MIT](LICENSE)。落盘行情 / 公告仍受上游条款约束；仓库不附带数据湖，也不授予再分发权 [legal](docs/legal-and-data-sources.md)。
+
+---
+
+如果它省了你搭数据底座的时间，点个 ⭐ 让更多做 A 股研究的人看到。
+
+[![Star History Chart](https://api.star-history.com/svg?repos=rootSunc/ashare-lake&type=Date)](https://star-history.com/#rootSunc/ashare-lake&Date)

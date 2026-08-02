@@ -6,13 +6,21 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-
-[中文](README.md)
+[![中文](https://img.shields.io/badge/文档-中文-lightgrey.svg)](README.md)
 
 **Stop re-fetching and hand-rolling adjust factors.** One install drops an
 A-share research lake you can refresh automatically every trading day onto
 local Parquet — many sources, one contract, row-level provenance, query with
 DuckDB / Polars / `load()`.
+
+<p align="center">
+  <img src="docs/assets/asl-serve.png" alt="asl serve overview: FRESH/STALE/EMPTY counts, rows and bytes by tier, a 250-session coverage heatmap" width="860" />
+</p>
+
+<p align="center">
+  <b>39 datasets</b> · <b>daily bars back to ~2001</b> · <b>row-level provenance</b> ·
+  <b>one command to stand up a lake</b> · <b>read-only dashboard</b> · <b>MIT</b>
+</p>
 
 - **Real data in minutes:** `pip install` → `asl demo` (not a mock)
 - **Daily jobs that stay up:** watermarks / retry / audit; the author runs it
@@ -26,16 +34,17 @@ by default) · read-only dashboard `asl serve`
 
 ## Data in ~30 seconds
 
-Needs reachability to **TDX quote hosts** (mainland egress is more reliable).
-Five liquid names × ~30 trading days. Separate data root — **not** a
-full-market lake. The demo lands daily bars only; everything else in the
-catalog needs the self-hosted path below.
-
 ```bash
 pip install ashare-lake
 asl demo
 # optional: asl demo --intraday   # also print one full 1m session
 ```
+
+Five liquid names × ~30 trading days, landed in a separate data root — **not** a
+full-market lake. The demo lands daily bars only; everything else in the catalog
+goes through the self-hosted path below. Needs reachability to **TDX quote
+hosts** (mainland egress is more reliable) — if it is down, try
+`asl servers test`, or `asl demo --symbols 600519.SH,000001.SZ --days 10`.
 
 <p align="center">
   <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
@@ -61,22 +70,33 @@ asl query --config configs/ashare-lake.demo.toml --sql "
   <img src="docs/assets/asl-query.png" alt="asl query: DuckDB SQL with provenance source column" width="720" />
 </p>
 
-If TDX is down, try `asl servers test`. Or
-`asl demo --symbols 600519.SH,000001.SZ --days 10`.
-
 Commands work on macOS / Linux / Windows (PowerShell or cmd). Venv and
 schedulers: [installation](docs/getting-started/installation.md) /
 [runbook](docs/operations/runbook.md).
+
+## Why not just AkShare / Tushare
+
+AkShare / efinance answer “how do I fetch?”; Tushare answers “cloud wide tables”;
+Qlib / vn.py answer “research / trading platform”.
+**ashare-lake** owns the middle layer: many sources into one contract, as a
+resumable, provenance-tagged, auditable local Parquet lake.
+
+| What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
+|--|--|--|--|--|--|
+| Local, resumable data base | **Lake + daily jobs** (watermarks / retry / audit) | In-memory fetch; you own orchestration | Cloud credits, not a self-hosted lake | Session fetch, no lake | Tied to platform data subsystem |
+| Provenance / auditability | **Row-level provenance** + write-time schema checks | Usually no shared contract | Platform fields | No lake contract | Varies |
+| Cross-source validation | **Primary curated + backup snapshots**, diffable, never silent replace | One call, one source | One vendor | One source | Varies |
+| Stable research semantics | **`load()` contract**: adjust / universe / PIT `as_of` | DIY | DIY | DIY | Platform semantics |
+| When a source fails | **Fail the batch**, surface it, retry by batch | Up to caller | Up to vendor | Up to caller | Varies |
+| Standalone research data base? | **Yes** (lake + daily jobs + `load()`) | No — you still build landing/orchestration | Cloud tables, not self-hosted | No — session fetch | Yes, but platform-tied |
+
+Point by point: [comparison](docs/comparison.md) (Chinese).
 
 ## Self-hosted daily lake
 
 First `asl init` backfills (slow, multi-GB). Afterwards: incremental + read.
 `load()` reads `data.root` from `configs/ashare-lake.toml` under the cwd by
 default.
-
-**No intraday data by default.** `asl init` / `asl run daily` cover the
-daily / fundamentals path only; 1m / 5m bars and transaction records each need
-enabling explicitly (next two subsections).
 
 ```bash
 pip install ashare-lake
@@ -122,57 +142,31 @@ No extras: `pip install ashare-lake` brings every runtime source. After the
 initial backfill, run the [acceptance checks](docs/operations/runbook.md)
 before wiring a scheduler.
 
-### Optional: minute bars (1m / 5m)
+### Optional: intraday data (minute bars / transaction records)
 
-Off by default, and **not** part of plain `asl run daily` — full-market 1m is
-~35MB/day and ~8.4GB/year. TDX keeps ~**95** trading days of 1m and ~**491** of
-5m; older windows return nothing. Costs:
-[runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m).
+**All off by default, and none of them ride on `asl run daily`.** Each has its
+own config block and its own scheduling group, so a daily run never switches
+them on by accident:
 
-In `configs/ashare-lake.toml`:
+| Dataset | Source horizon | Cost | How to enable |
+|--|--|--|--|
+| `minute_bars` (1m) | ~**95** trading days | ~35MB/day, ~8.4GB/year full-market | `[minute_bars]` + `--group intraday` |
+| `minute_bars_5m` (5m) | ~**491** trading days (the only frequency with real history) | ~6MB/day full-market | same |
+| `trade_ticks` | fixed floor **2024-01-02** (does not roll with today, so the horizon grows) | ~4.5MB/day and ~1 minute for a 200-name watchlist | `[trade_ticks]` + `--group ticks` |
+
+**Transaction records are not individual trades.** A-share Level-1 is a
+3-second snapshot, so one TDX record aggregates every trade in that frame —
+measured, 6–33 real trades on average. Timestamps have minute precision, so a
+row is identified by `tick_seq` rather than by its time. Good for direction
+splits and large-order structure; not for order-flow imbalance. Full semantics:
+[catalog](docs/datasets/catalog.md#trade_ticks-是什么不是什么).
 
 ```toml
 [minute_bars]
 enabled = true
 scope = "index:000300.SH"     # or watchlist / all
-frequencies = ["1m", "5m"]    # 5m is the only frequency with real history
-```
+frequencies = ["1m", "5m"]
 
-```bash
-# One-off seed (resumable; --symbols pulls a few names without editing config)
-asl backfill minute_bars_5m --start 2024-08-01 --end 2026-07-31
-asl backfill minute_bars --start 2026-05-01 --symbols 600519.SH,000001.SZ
-
-# Daily refresh: separate group, do not fold into default daily
-asl run daily --group intraday
-```
-
-```python
-from ashare_lake.query import load
-
-m5 = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"], adjust="hfq")
-```
-
-### Optional: transaction records (trade_ticks)
-
-**Say the limitation first: these are not individual trades.** A-share Level-1
-is a 3-second snapshot, so one TDX "分笔" record aggregates every trade in that
-frame — measured, **6-33 real trades** on average, capping a session near 4,800
-records. No order-by-order feed, no order book. The timestamp has **minute**
-precision (the protocol never carried seconds), so a row is identified by
-`tick_seq`, its position in the session, rather than by its time.
-
-What it supports: buy/sell direction splits, large-order structure by
-per-frame volume, 3-second resolution on the opening auction and the close.
-What it does not: true tick reconstruction, order-flow imbalance, anything
-needing the order queue.
-
-Off by default, its own config block, on no schedule. The source reaches back
-to **2024-01-02** — a fixed calendar floor that does not roll with today, so
-the horizon grows. About 1.85 requests and 2,700 rows per symbol-session at
-~8.4 bytes a row: a 200-name watchlist is roughly a minute and 4.5MB a day.
-
-```toml
 [trade_ticks]
 enabled = true
 scope = "watchlist"           # or index:<symbol>; "all" is refused
@@ -181,33 +175,26 @@ max_symbols = 200             # hard ceiling, checked before any request
 ```
 
 ```bash
-asl backfill trade_ticks --symbols 600519.SH,000001.SZ --start 2026-07-01 --end 2026-07-31
-asl run daily --group ticks   # daily refresh: again its own group
+asl backfill minute_bars_5m --start 2024-08-01 --end 2026-07-31
+asl backfill trade_ticks --symbols 600519.SH --start 2026-07-01 --end 2026-07-31
+asl run daily --group intraday    # daily refresh: each in its own group
+asl run daily --group ticks
 ```
 
-```python
-ticks = load("trade_ticks", start="2026-07-20", symbols=["600519.SH"], adjust="hfq")
-# direction: buy / sell / neutral / after_hours
-# after_hours is 15:05-15:30 fixed-price trading and is NOT in the exchange's
-# daily volume — exclude it before reconciling against daily_bars
-```
-
-Semantics, capacity and quality checks: [catalog](docs/datasets/catalog.md).
+Disk and runtime:
+[runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m).
 Compliance boundary: [legal and data sources](docs/legal-and-data-sources.md).
 
 ## Look at the lake: `asl serve`
 
 A read-only dashboard. Coverage, freshness, source mix, audit findings and run
-history live here; running, retrying and cleaning stay with the CLI.
+history live here (that is the screenshot at the top); running, retrying and
+cleaning stay with the CLI.
 
 ```bash
 asl serve                      # http://127.0.0.1:8787
 asl serve --port 9000 --config configs/ashare-lake.toml
 ```
-
-<p align="center">
-  <img src="docs/assets/asl-serve.png" alt="asl serve overview: FRESH/STALE/EMPTY counts, rows and bytes by tier, a 250-session coverage heatmap" width="860" />
-</p>
 
 The heatmap counts gaps in **each dataset's own period**, not in days — a
 year-partitioned dataset is not reported as "missing 364 days" because one
@@ -227,23 +214,6 @@ because a second copy is a copy that drifts.
 
 Binding to a non-loopback address requires `--token`. Details:
 [serve module docs](docs/modules/serve.md).
-
-## Architecture
-
-<p align="center">
-  <img src="docs/assets/architecture-overview.png" alt="ashare-lake architecture: sources → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
-</p>
-
-On-disk layout under the daily lake's `data.root`:
-
-```
-{data_root}/
-  curated/   {dataset}/{partition}=v/part-*.parquet
-  derived/   adj_factors/...
-  staging/   raw landing per run (cleanable after compact)
-  meta/      manifest, quality findings, watermarks, on-demand cache
-  duckdb/    ashare-lake.duckdb
-```
 
 ## Datasets
 
@@ -266,22 +236,22 @@ All **39** registered datasets (36 curated + 3 derived; kept in sync with
 
 **On-demand** (not on the curated daily path): `stock_news`, `research_reports`, etc. — see [catalog](docs/datasets/catalog.md).
 
-## Positioning: peers
+## Architecture
 
-AkShare / efinance answer “how do I fetch?”; Tushare answers “cloud wide tables”;
-Qlib / vn.py answer “research / trading platform”.
-**ashare-lake** owns the middle layer: many sources into one contract, as a
-resumable, provenance-tagged, auditable local Parquet lake.
-Details: [comparison](docs/comparison.md) (Chinese).
+<p align="center">
+  <img src="docs/assets/architecture-overview.png" alt="ashare-lake architecture: sources → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
+</p>
 
-| What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
-|--|--|--|--|--|--|
-| Local, resumable data base | **Lake + daily jobs** (watermarks / retry / audit) | In-memory fetch; you own orchestration | Cloud credits, not a self-hosted lake | Session fetch, no lake | Tied to platform data subsystem |
-| Provenance / auditability | **Row-level provenance** + write-time schema checks | Usually no shared contract | Platform fields | No lake contract | Varies |
-| Cross-source validation | **Primary curated + backup snapshots**, diffable, never silent replace | One call, one source | One vendor | One source | Varies |
-| Stable research semantics | **`load()` contract**: adjust / universe / PIT `as_of` | DIY | DIY | DIY | Platform semantics |
-| When a source fails | **Fail the batch**, surface it, retry by batch | Up to caller | Up to vendor | Up to caller | Varies |
-| Standalone research data base? | **Yes** (lake + daily jobs + `load()`) | No — you still build landing/orchestration | Cloud tables, not self-hosted | No — session fetch | Yes, but platform-tied |
+On-disk layout under the daily lake's `data.root`:
+
+```
+{data_root}/
+  curated/   {dataset}/{partition}=v/part-*.parquet
+  derived/   adj_factors/...
+  staging/   raw landing per run (cleanable after compact)
+  meta/      manifest, quality findings, watermarks, on-demand cache
+  duckdb/    ashare-lake.duckdb
+```
 
 ## Known limitations
 
@@ -322,3 +292,10 @@ Full index: [docs/README.md](docs/README.md). Common entry points:
 Code is [MIT](LICENSE). Market data and announcements you land locally remain
 subject to upstream terms; this repo ships no data and grants no redistribution
 rights [legal](docs/legal-and-data-sources.md).
+
+---
+
+If it saved you the work of building a data base layer, a ⭐ helps other A-share
+researchers find it.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=rootSunc/ashare-lake&type=Date)](https://star-history.com/#rootSunc/ashare-lake&Date)
