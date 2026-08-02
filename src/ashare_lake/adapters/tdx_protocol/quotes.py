@@ -13,9 +13,12 @@ itself or does not want.
 
 from __future__ import annotations
 
+from datetime import date
+
 from ashare_lake.adapters.tdx_protocol._wire import (
     CATEGORY_DAILY,
     MAX_PAGE,
+    MAX_TICK_PAGE,
     TdxWireClient,
 )
 
@@ -126,6 +129,42 @@ class Quotes:
             min(int(offset), MAX_PAGE),
         )
         return _with_volume(rows)
+
+    def ticks(
+        self,
+        symbol: str,
+        market: int | None = None,
+        start: int = 0,
+        offset: int = MAX_TICK_PAGE,
+    ) -> list[dict]:
+        """Same-session transaction records. ``start=0`` is the newest block."""
+        mkt = market_for_stock(symbol) if market is None else int(market)
+        rows = self._client.get_transaction_data(
+            mkt, str(symbol), int(start), min(int(offset), MAX_TICK_PAGE)
+        )
+        return _with_volume(rows or [])
+
+    def ticks_history(
+        self,
+        symbol: str,
+        on_date: date | int,
+        market: int | None = None,
+        start: int = 0,
+        offset: int = MAX_TICK_PAGE,
+    ) -> list[dict]:
+        """Transaction records for a past session.
+
+        ``price_raw`` is left as the protocol's integer: the 1/100 scale that
+        turns it into yuan holds for A-share stocks and not for funds or bonds
+        (``_wire.constants.SECURITY_COEFFICIENT``), and this facade does not
+        know which it was handed.
+        """
+        mkt = market_for_stock(symbol) if market is None else int(market)
+        stamp = int(on_date.strftime("%Y%m%d")) if isinstance(on_date, date) else int(on_date)
+        rows = self._client.get_history_transaction_data(
+            mkt, str(symbol), int(start), min(int(offset), MAX_TICK_PAGE), stamp
+        )
+        return _with_volume(rows or [])
 
     def xdxr(self, symbol: str, market: int | None = None) -> list[dict]:
         mkt = market_for_stock(symbol) if market is None else int(market)

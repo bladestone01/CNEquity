@@ -27,6 +27,9 @@ from ashare_lake.adapters.tdx_protocol._wire.parser.setup_commands import (
     SetupCmd2,
     SetupCmd3,
 )
+from ashare_lake.adapters.tdx_protocol._wire.parser.std.get_history_transaction_data import (
+    GetHistoryTransactionDataCmd,
+)
 from ashare_lake.adapters.tdx_protocol._wire.parser.std.get_index_bars import GetIndexBarsCmd
 from ashare_lake.adapters.tdx_protocol._wire.parser.std.get_security_bars import (
     GetSecurityBarsCmd,
@@ -35,6 +38,9 @@ from ashare_lake.adapters.tdx_protocol._wire.parser.std.get_security_count impor
     GetSecurityCountCmd,
 )
 from ashare_lake.adapters.tdx_protocol._wire.parser.std.get_security_list import GetSecurityList
+from ashare_lake.adapters.tdx_protocol._wire.parser.std.get_transaction_data import (
+    GetTransactionDataCmd,
+)
 from ashare_lake.adapters.tdx_protocol._wire.parser.std.get_xdxr_info import GetXdXrInfo
 from ashare_lake.adapters.tdx_protocol._wire.socket_client import BaseSocketClient, last_ack_time
 
@@ -56,9 +62,15 @@ CATEGORY_DAILY = 9
 # TDX refuses more than 800 rows per response; asking for more silently truncates.
 MAX_PAGE = 800
 
+# Transaction records page separately from bars, and deeper. The value comes
+# from `TDXParams.MAX_TRANSACTION_COUNT`, which had sat unreferenced since the
+# vendoring — public write-ups disagree between 1000 and 2000, so treat it as
+# an upper bound to request and read the returned row count, not as a promise.
+MAX_TICK_PAGE = TDXParams.MAX_TRANSACTION_COUNT
+
 
 class TdxWireClient(BaseSocketClient):
-    """The five standard-market calls the lake needs, and nothing else."""
+    """The standard-market calls the lake needs, and nothing else."""
 
     def setup(self):
         SetupCmd1(self.client).call_api()
@@ -87,6 +99,22 @@ class TdxWireClient(BaseSocketClient):
     def get_security_list(self, market: int, start: int):
         cmd = GetSecurityList(self.client, lock=self.lock)
         cmd.setParams(market, start)
+        return cmd.call_api()
+
+    @last_ack_time
+    def get_transaction_data(self, market: int, code: str, start: int, count: int):
+        """Same-session transaction records, newest block first (start=0)."""
+        cmd = GetTransactionDataCmd(self.client, lock=self.lock)
+        cmd.setParams(market, code, int(start), min(int(count), MAX_TICK_PAGE))
+        return cmd.call_api()
+
+    @last_ack_time
+    def get_history_transaction_data(
+        self, market: int, code: str, start: int, count: int, date: int
+    ):
+        """Transaction records for a past session; ``date`` is an int yyyymmdd."""
+        cmd = GetHistoryTransactionDataCmd(self.client, lock=self.lock)
+        cmd.setParams(market, code, int(start), min(int(count), MAX_TICK_PAGE), int(date))
         return cmd.call_api()
 
     @last_ack_time
