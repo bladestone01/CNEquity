@@ -254,6 +254,10 @@ class LakeView:
                     "tier_label": TIER_LABELS[spec.tier],
                     "required": spec.required,
                     "intraday": spec.intraday_frequency,
+                    # What one row covers. Carried separately from `intraday`
+                    # because trade_ticks is intraday without being bars, and
+                    # keying the catalog on `intraday` alone showed it as daily.
+                    "row_grain": spec.row_grain,
                     "granularity": spec.partition_granularity if spec.partition_col else None,
                     "freshness": self._freshness_of(row, anchor),
                 }

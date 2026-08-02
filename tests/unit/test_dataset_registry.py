@@ -133,3 +133,33 @@ def test_is_stale_respects_per_dataset_tolerance():
     # None / unknown handled
     assert is_stale("daily_bars", None, anchor) is False
     assert is_stale("nope", date(2026, 7, 1), anchor) is True  # default tol=1
+
+
+def test_row_grain_agrees_with_intraday_frequency_wherever_both_are_set():
+    """The descriptive field and the behavioural one must not drift apart.
+
+    `intraday_frequency` drives fetch, checks and the reader; `row_grain` only
+    describes what a row covers. A dataset holding 5m bars that advertises "1m"
+    would be a catalog lying about its own contents.
+    """
+    from ashare_lake.domain.datasets import DATASETS
+
+    for spec in DATASETS.values():
+        if spec.intraday_frequency:
+            assert spec.row_grain == spec.intraday_frequency, spec.name
+
+
+def test_every_intraday_dataset_declares_a_row_grain():
+    """Including the one that carries no `intraday_frequency` on purpose.
+
+    trade_ticks omits `intraday_frequency` so it cannot inherit bar-shaped
+    checks (see its DatasetSpec). Without `row_grain` it would then be
+    indistinguishable from a daily dataset in the catalog and the dashboard,
+    which is the confusion this pair of fields exists to avoid.
+    """
+    from ashare_lake.domain.datasets import DATASETS
+
+    assert DATASETS["trade_ticks"].row_grain == "tick"
+    assert DATASETS["trade_ticks"].intraday_frequency is None
+    assert DATASETS["minute_bars"].row_grain == "1m"
+    assert DATASETS["daily_bars"].row_grain is None

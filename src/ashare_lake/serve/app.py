@@ -97,6 +97,14 @@ class Dataset(BaseModel):
     pit: bool
     required: bool
     intraday: str | None
+    row_grain: str | None = Field(
+        default=None,
+        description=(
+            "What one row covers when finer than a day: '1m', '5m', 'tick'. "
+            "Descriptive only. Set even where `intraday` is null — trade_ticks "
+            "is intraday without holding bars."
+        ),
+    )
     has_data: bool
     coverage_start: date | None
     coverage_end: date | None

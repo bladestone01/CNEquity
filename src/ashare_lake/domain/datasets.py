@@ -169,6 +169,22 @@ class DatasetSpec:
     # both frequencies could not answer "how far back does this go" truthfully
     # for either of them.
     intraday_frequency: str | None = None
+    # What one row covers, when that is finer than a trading day: "1m", "5m",
+    # "tick". Purely descriptive — nothing fetches, checks or reads differently
+    # because of it, which is exactly why `trade_ticks` can carry it while
+    # deliberately leaving `intraday_frequency` unset.
+    #
+    # The two exist separately because they answer different questions.
+    # `intraday_frequency` means "this dataset holds bars at this frequency",
+    # and every consumer of it assumes a `bar_time` column and a bar count per
+    # session. Transaction records have neither, so inheriting those code paths
+    # would give them checks that pass on the wrong column. But a reader
+    # scanning the catalog still needs to see that this is intraday data, and
+    # without this field the dashboard showed it a dash — indistinguishable
+    # from a daily dataset.
+    #
+    # Where both are set they must agree; `test_dataset_registry` enforces it.
+    row_grain: str | None = None
 
     @property
     def query_date_col(self) -> str | None:
@@ -241,6 +257,7 @@ _SPECS = [
         # Tip-paged: chunk by symbol, not by date (see backfill_chunk_symbols).
         backfill_chunk_symbols=200,
         intraday_frequency="1m",
+        row_grain="1m",
     ),
     # 5-minute bars — a separate dataset, not a `frequency` value inside
     # minute_bars, because the horizon differs by 5× and a dataset carries one
@@ -271,6 +288,7 @@ _SPECS = [
         # 4.7M rows per sub-run — comparable compact memory to 1m's chunk.
         backfill_chunk_symbols=200,
         intraday_frequency="5m",
+        row_grain="5m",
     ),
     # Transaction records (分笔). Not tick data: A-share Level-1 is a 3-second
     # snapshot, so a record aggregates 6–33 real trades (measured) and a
@@ -301,6 +319,9 @@ _SPECS = [
         # today's tip and a date slice re-fetches everything newer than it.
         # 5 days × 200 symbols × ~2,700 rows ≈ 2.7M rows per sub-run.
         backfill_chunk_days=5,
+        # Intraday, but not a bar frequency — see DatasetSpec.row_grain for why
+        # this is not `intraday_frequency`.
+        row_grain="tick",
     ),
     # Domestic commodity futures main-continuous (东财主连) + narrow offshore
     # gold (Sina COMEX ``GC0.CMX``); not A-share equity.

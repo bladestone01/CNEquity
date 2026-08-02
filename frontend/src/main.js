@@ -204,6 +204,19 @@ function stateTab(d, prov) {
 
 const fact = (k, v) => `<div class="fact"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;
 
+/** What one row covers.
+ *
+ * Was keyed on `intraday`, the bar-frequency field — which `trade_ticks`
+ * deliberately leaves unset so it cannot inherit bar-shaped checks. That
+ * printed a dash, making intraday transaction records look like a daily
+ * dataset. `row_grain` is set for all three intraday datasets.
+ */
+function grainText(d) {
+  if (d.row_grain === "tick") return "分笔（3 秒快照聚合，非 bar）";
+  if (d.row_grain) return `${esc(d.row_grain)} bar`;
+  return "日";
+}
+
 function metaTab(d) {
   const yn = (b) => (b ? "是" : "否");
   const contract = [
@@ -228,7 +241,7 @@ function metaTab(d) {
   const ops = [
     fact("staleness 容忍", `${d.max_staleness_days} 天`),
     fact("required", yn(d.required)),
-    fact("日内频率", d.intraday || "—"),
+    fact("行粒度", grainText(d)),
     fact(
       "回填分块",
       d.backfill_chunk_days
