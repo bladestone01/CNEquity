@@ -6,12 +6,23 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-03
+
 ### Changed
 
 - **License: MIT → Apache License 2.0.** Project source is now under
   [Apache-2.0](LICENSE); third-party notices (including vendored tdxpy, still
   MIT) live in [NOTICE](NOTICE). Landed market data remains outside the
   software license — see [legal](docs/legal-and-data-sources.md).
+- **README hero rebranded to ASL · ashare-lake.** Shorter pitch, survivorship
+  chart and demo up front; cropped serve scorecard and architecture diagram in
+  their own sections. No upgrade step for existing lakes.
+- **`asl servers test` and `asl push2his` are off the top-level command list.**
+  Both keep working — they are in the quickstart and in runbooks — but `servers
+  test` is now an alias for `asl sources --only tdx_protocol`, which asserts that
+  real bars came back rather than that a socket opened, and `push2his` debugs one
+  CDN host. They were competing for attention with the commands that make up the
+  pipeline's actual state machine.
 
 ### Added
 
@@ -141,15 +152,6 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   checks and the reader and which `trade_ticks` deliberately leaves unset; with
   only the latter, intraday transaction records were displayed as a daily
   dataset. The dataset panel's 日内频率 fact is now 行粒度.
-
-### Changed
-
-- **`asl servers test` and `asl push2his` are off the top-level command list.**
-  Both keep working — they are in the quickstart and in runbooks — but `servers
-  test` is now an alias for `asl sources --only tdx_protocol`, which asserts that
-  real bars came back rather than that a socket opened, and `push2his` debugs one
-  CDN host. They were competing for attention with the commands that make up the
-  pipeline's actual state machine.
 
 ### Fixed
 
@@ -510,6 +512,7 @@ First public release of the self-hosted A-share Parquet data layer.
 - TLS verify on by default for HTTP clients
 - Project URLs point at `rootSunc/ashare-lake`
 
+[0.5.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.5.0
 [0.4.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.4.0
 [0.3.1]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.1
 [0.3.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.0
