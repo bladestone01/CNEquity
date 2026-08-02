@@ -11,7 +11,19 @@ async function api(path) {
   const sep = path.includes("?") ? "&" : "?";
   const url = TOKEN ? `${path}${sep}token=${encodeURIComponent(TOKEN)}` : path;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  if (!res.ok) {
+    // Surface what the server said. A 422 here is usually a real contract
+    // message ("requires as_of= for point-in-time queries"), and showing the
+    // status code instead throws away the one useful part.
+    let detail = `${path} → ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch {
+      /* not JSON — keep the status line */
+    }
+    throw new Error(detail);
+  }
   return res.json();
 }
 
@@ -248,6 +260,106 @@ function metaTab(d) {
     <p class="muted">以上全部来自 <code>domain/datasets.py</code> 与 <code>domain/schemas.py</code>；面板不复制一份。</p>`;
 }
 
+// --- data tab ---------------------------------------------------------------
+
+const KIND_LABEL = {
+  trading_day: "交易日",
+  event_day: "事件日",
+  period: "周期",
+  report_period: "报告期",
+  none: "",
+};
+
+/**
+ * The date control is chosen by the server's `kind`, not assumed.
+ *
+ * The registry spans twelve date columns in four shapes; a calendar widget over
+ * `report_period` would invite a query the column cannot answer, and one over a
+ * sparse event column would mostly offer days with nothing behind them. Only
+ * values that exist are listed.
+ */
+function dataControls(d, dates) {
+  const picker =
+    dates.kind === "none"
+      ? ""
+      : `<label>${KIND_LABEL[dates.kind]}
+        <select id="q-period">${dates.values
+          .map((v) => `<option value="${esc(v)}">${esc(v)}</option>`)
+          .join("")}</select></label>`;
+  const symbol = `<label>标的 <input id="q-symbol" placeholder="600519.SH" size="12"></label>`;
+  // PIT datasets have no default "current" view — load() refuses without a
+  // cutoff, on purpose. Seed it with today so the tab opens on something, and
+  // say what it means.
+  const asOf = d.pit
+    ? `<label title="PIT：只保留在该日之前已披露的事实，并取当时现行的那一版">
+         as_of <input id="q-asof" type="date" value="${new Date().toISOString().slice(0, 10)}"></label>`
+    : "";
+  const adjust = d.adjustable
+    ? `<label>复权 <select id="q-adjust">
+         <option value="">不复权</option><option value="hfq">hfq</option>
+         <option value="qfq">qfq</option></select></label>`
+    : "";
+  const note = dates.note ? `<p class="muted">${esc(dates.note)}</p>` : "";
+  return `<div class="controls">${picker}${symbol}${asOf}${adjust}
+    <button id="q-run">查询</button></div>${note}`;
+}
+
+function rowTable(page, primaryKey) {
+  if (!page.rows.length) return '<p class="muted">没有匹配的行。</p>';
+  const head = page.columns
+    .map((c) => `<th${primaryKey.includes(c) ? ' class="pk"' : ""}>${esc(c)}</th>`)
+    .join("");
+  const body = page.rows
+    .map((r) => `<tr>${r.map((v) => `<td>${v === null ? '<span class="muted">null</span>' : esc(v)}</td>`).join("")}</tr>`)
+    .join("");
+  const shown = `${page.offset + 1}–${page.offset + page.rows.length} / ${fmt(page.total)}`;
+  return `<div class="scroll"><table class="rows"><tr>${head}</tr>${body}</table></div>
+    <div class="controls">
+      <button id="q-prev" ${page.offset === 0 ? "disabled" : ""}>上一页</button>
+      <button id="q-next" ${page.offset + page.limit >= page.total ? "disabled" : ""}>下一页</button>
+      <span class="muted">${shown}</span>
+    </div>`;
+}
+
+async function dataTab(d, host) {
+  const enc = encodeURIComponent(d.dataset);
+  const dates = await api(`/api/datasets/${enc}/dates`);
+  host.innerHTML = `${dataControls(d, dates)}<div id="q-out"></div>`;
+
+  const state = { offset: 0 };
+  const out = document.getElementById("q-out");
+
+  async function run() {
+    const params = new URLSearchParams();
+    const period = document.getElementById("q-period")?.value;
+    const symbol = document.getElementById("q-symbol")?.value.trim();
+    const asOf = document.getElementById("q-asof")?.value;
+    const adjust = document.getElementById("q-adjust")?.value;
+    if (period) params.set("period", period);
+    if (symbol) params.set("symbol", symbol);
+    if (asOf) params.set("as_of", asOf);
+    if (adjust) params.set("adjust", adjust);
+    params.set("offset", String(state.offset));
+    out.innerHTML = '<p class="muted">查询中…</p>';
+    try {
+      const page = await api(`/api/datasets/${enc}/rows?${params}`);
+      out.innerHTML = rowTable(page, d.primary_key);
+      const prev = document.getElementById("q-prev");
+      const next = document.getElementById("q-next");
+      if (prev) prev.onclick = () => { state.offset = Math.max(0, state.offset - page.limit); run(); };
+      if (next) next.onclick = () => { state.offset += page.limit; run(); };
+    } catch (err) {
+      out.innerHTML = `<p class="err">${esc(err.message)}</p>`;
+    }
+  }
+
+  document.getElementById("q-run").onclick = () => {
+    state.offset = 0;
+    run();
+  };
+  run();
+}
+
 async function renderDetail(name, tab) {
   app.innerHTML = `<div class="sub">加载 ${esc(name)}…</div>`;
   const enc = encodeURIComponent(name);
@@ -264,14 +376,22 @@ async function renderDetail(name, tab) {
       · 水位 ${d.watermark || "—"} · ${fmt(d.row_count)} 行 · ${mb(d.bytes)}
       ${d.required ? "" : " · <span style='opacity:.7'>可选（required=false）</span>"}</div>
     <div class="tabs">
-      <div class="tab ${tab === "meta" ? "" : "on"}" data-tab="state">状态</div>
-      <div class="tab ${tab === "meta" ? "on" : ""}" data-tab="meta">元数据</div>
+      ${["state", "meta", "data"]
+        .map(
+          (t) =>
+            `<div class="tab ${tab === t ? "on" : ""}" data-tab="${t}">${
+              { state: "状态", meta: "元数据", data: "数据" }[t]
+            }</div>`,
+        )
+        .join("")}
     </div>
-    <div id="tabbody">${tab === "meta" ? metaTab(d) : stateTab(d, prov)}</div>`;
+    <div id="tabbody">${tab === "meta" ? metaTab(d) : tab === "data" ? "" : stateTab(d, prov)}</div>`;
 
-  if (tab !== "meta") {
+  if (tab === "state") {
     provenanceSeries(document.getElementById("prov"), series);
     document.getElementById("provnote").textContent = `每点跨度：${series.bucket}`;
+  } else if (tab === "data") {
+    await dataTab(d, document.getElementById("tabbody"));
   }
 
   document.getElementById("back").onclick = () => {
@@ -291,7 +411,7 @@ async function renderDetail(name, tab) {
 
 async function route() {
   disposeAll();
-  const m = location.hash.match(/^#\/dataset\/([^/]+)(?:\/(state|meta))?/);
+  const m = location.hash.match(/^#\/dataset\/([^/]+)(?:\/(state|meta|data))?/);
   try {
     if (m) await renderDetail(decodeURIComponent(m[1]), m[2] || "state");
     else await renderOverview();

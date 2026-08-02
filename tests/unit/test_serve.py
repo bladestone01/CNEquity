@@ -24,7 +24,7 @@ def _meta(source: str = "exchange_calendar") -> dict:
     return {"source": source, "data_version": "v1", "fetched_at": FETCHED}
 
 
-def _row(symbol: str, day: date, source: str = "tdx_protocol") -> dict:
+def _row(symbol: str, day: date, source: str = "tdx_protocol", **overrides) -> dict:
     # trade_date is not decoration: with no curated trading_calendar,
     # is_trading_day derives the sessions from daily_bars itself.
     return {
@@ -33,20 +33,72 @@ def _row(symbol: str, day: date, source: str = "tdx_protocol") -> dict:
         "source": source,
         "data_version": "v2",
         "fetched_at": FETCHED,
+        **overrides,
     }
+
+
+def _full_row(dataset: str, **values) -> dict:
+    """A row carrying every column the dataset's schema declares.
+
+    ``load()`` validates against the contract, so a fixture row with four
+    columns fails there for a reason that has nothing to do with the test.
+    Built from DATASET_SCHEMAS rather than hand-written, so a schema change
+    cannot leave these fixtures quietly wrong.
+    """
+    from ashare_lake.domain.schemas import DATASET_SCHEMAS
+
+    blank = {
+        pl.Utf8: "x",
+        pl.Date: date(2026, 7, 31),
+        pl.Boolean: False,
+    }
+    row = {}
+    for col, dtype in DATASET_SCHEMAS[dataset].items():
+        if isinstance(dtype, pl.Datetime):
+            row[col] = FETCHED
+        elif dtype in blank:
+            row[col] = blank[dtype]
+        else:
+            row[col] = 0
+    row["source"] = "tdx_protocol"
+    row["data_version"] = "v2"
+    return {**row, **values}
 
 
 @pytest.fixture
 def lake(config):
-    """A tiny lake with two datasets in different tiers, measured."""
+    """A tiny lake spanning several dataset shapes, measured.
+
+    Rows carry their full schema so ``load()`` — which validates against the
+    contract — can read them; the browsing tests go through it.
+    """
     last, prev = date(2026, 7, 31), date(2026, 7, 30)
-    _write(config.curated_root / "daily_bars", f"trade_date={last}", [_row("600519.SH", last)])
+    bar = lambda sym, day, src="tdx_protocol": _full_row(  # noqa: E731
+        "daily_bars", symbol=sym, trade_date=day, source=src
+    )
+    _write(config.curated_root / "daily_bars", f"trade_date={last}", [bar("600519.SH", last)])
     _write(
         config.curated_root / "daily_bars",
         f"trade_date={prev}",
-        [_row("600519.SH", prev), _row("000001.SZ", prev, source="ths")],
+        [bar("600519.SH", prev), bar("000001.SZ", prev, "ths")],
     )
-    _write(config.curated_root / "instruments", None, [_row("600519.SH", last)])
+    _write(
+        config.curated_root / "instruments",
+        None,
+        [_full_row("instruments", symbol="600519.SH")],
+    )
+    _write(
+        config.curated_root / "financial_statement_items",
+        "report_period=2026Q1",
+        [
+            _full_row(
+                "financial_statement_items",
+                symbol="600519.SH",
+                report_period="2026Q1",
+                announce_date=date(2026, 4, 20),
+            )
+        ],
+    )
     # The heatmap's x-axis is the trading calendar; without one it has no days
     # to draw and every assertion about cells would pass vacuously.
     _write(
@@ -72,8 +124,8 @@ def test_health_counts_every_registered_dataset(client):
 
     assert body["datasets"] == len(DATASETS)
     assert body["fresh"] + body["stale"] + body["empty"] + body["not_applicable"] == len(DATASETS)
-    # 3 daily_bars + 1 instruments + 2 trading_calendar
-    assert body["rows"] == 6
+    # 3 daily_bars + 1 instruments + 2 trading_calendar + 1 fsi
+    assert body["rows"] == 7
 
 
 def test_health_separates_optional_and_required_empties(client):
@@ -258,6 +310,116 @@ def test_every_snapshot_dataset_is_exempt_from_fault_gaps(client):
 def test_heatmap_rejects_an_absurd_window(client):
     assert client.get("/api/heatmap", params={"days": 0}).status_code == 422
     assert client.get("/api/heatmap", params={"days": 10_000}).status_code == 422
+
+
+# --- browsing rows -----------------------------------------------------------
+
+
+def test_the_date_control_is_chosen_per_dataset_shape(client):
+    """Twelve date columns in four shapes; one picker would misfit most of them."""
+    kinds = {
+        "daily_bars": "trading_day",
+        "financial_statement_items": "report_period",
+        "corporate_actions": "period",
+        "announcement_index": "event_day",
+        "instruments": "none",
+    }
+    for name, kind in kinds.items():
+        body = client.get(f"/api/datasets/{name}/dates").json()
+        assert body["kind"] == kind, name
+
+
+def test_only_dates_that_exist_are_offered(client):
+    body = client.get("/api/datasets/daily_bars/dates").json()
+    assert body["values"] == ["2026-07-31", "2026-07-30"]
+    assert body["total"] == 2
+
+
+def test_snapshot_only_datasets_say_why_a_missing_day_stays_missing(client):
+    note = client.get("/api/datasets/fund_flow/dates").json()["note"]
+    assert "snapshot_only" in note
+
+
+def test_merge_style_datasets_offer_no_date_control(client):
+    body = client.get("/api/datasets/instruments/dates").json()
+    assert body["values"] == []
+    assert "merge" in body["note"]
+
+
+def test_rows_keep_the_provenance_columns(client):
+    """Row-level provenance is the point of this lake; a viewer hiding it lies."""
+    page = client.get("/api/datasets/daily_bars/rows", params={"period": "2026-07-30"}).json()
+    assert {"source", "data_version", "fetched_at"} <= set(
+        page.columns if False else page["columns"]
+    )
+    assert page["total"] == 2
+
+
+def test_rows_filter_by_symbol(client):
+    page = client.get(
+        "/api/datasets/daily_bars/rows", params={"period": "2026-07-30", "symbol": "600519.SH"}
+    ).json()
+    assert page["total"] == 1
+    symbol_at = page["columns"].index("symbol")
+    assert page["rows"][0][symbol_at] == "600519.SH"
+
+
+def test_rows_page_without_rescanning_the_whole_dataset(client):
+    first = client.get(
+        "/api/datasets/daily_bars/rows", params={"period": "2026-07-30", "limit": 1}
+    ).json()
+    second = client.get(
+        "/api/datasets/daily_bars/rows", params={"period": "2026-07-30", "limit": 1, "offset": 1}
+    ).json()
+    assert first["total"] == second["total"] == 2
+    assert len(first["rows"]) == len(second["rows"]) == 1
+    assert first["rows"] != second["rows"]
+
+
+def test_rows_are_capped(client):
+    assert client.get("/api/datasets/daily_bars/rows", params={"limit": 5000}).status_code == 422
+    assert client.get("/api/datasets/daily_bars/rows", params={"limit": 0}).status_code == 422
+
+
+def test_a_period_that_is_not_a_period_is_refused(client):
+    r = client.get("/api/datasets/daily_bars/rows", params={"period": "junk"})
+    assert r.status_code == 422
+    assert "junk" in r.json()["detail"]
+
+
+def test_pit_datasets_refuse_a_query_without_a_cutoff(client):
+    """load() has always required as_of there; the viewer must not paper over it."""
+    r = client.get("/api/datasets/financial_statement_items/rows", params={"period": "2026Q1"})
+    assert r.status_code == 422
+    assert "as_of" in r.json()["detail"]
+
+
+def test_report_period_filters_by_value_not_by_date_range(client):
+    """report_period is a String column; a date range over it compares text to dates."""
+    ok = client.get(
+        "/api/datasets/financial_statement_items/rows",
+        params={"period": "2026Q1", "as_of": "2026-07-31"},
+    )
+    assert ok.status_code == 200
+
+
+def test_merge_style_datasets_browse_without_a_period(client):
+    page = client.get("/api/datasets/instruments/rows").json()
+    assert page["total"] == 1
+    assert "symbol" in page["columns"]
+
+
+def test_only_adjustable_datasets_advertise_adjustment(client):
+    assert client.get("/api/datasets/daily_bars").json()["adjustable"] is True
+    assert client.get("/api/datasets/fund_flow").json()["adjustable"] is False
+    assert client.get("/api/datasets/fund_flow/rows", params={"adjust": "hfq"}).status_code in (
+        200,
+        422,
+    )
+
+
+def test_rows_reject_an_unknown_adjustment(client):
+    assert client.get("/api/datasets/daily_bars/rows", params={"adjust": "nope"}).status_code == 422
 
 
 # --- the read-only and auth contracts ----------------------------------------

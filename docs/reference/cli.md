@@ -251,7 +251,7 @@ JSON 列出 curated 各数据集文件数与行数。每次都全扫；固定的
 asl serve
 ```
 
-页面在 `/`，单数据集在 `#/dataset/<name>`（状态 / 元数据两个 tab），OpenAPI 在 `/api/docs`（由 handler 生成，不会与实现漂移）。
+页面在 `/`，单数据集在 `#/dataset/<name>`（状态 / 元数据 / 数据 三个 tab），OpenAPI 在 `/api/docs`（由 handler 生成，不会与实现漂移）。
 
 **面板不写湖。** 没有端点会跑批、重试或清理——那些留给 CLI。唯一的例外是 `meta/stats` 会在后台按需重建，因为它是湖的缓存而不是湖的一部分。
 

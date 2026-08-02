@@ -25,13 +25,20 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import polars as pl
 
 from ashare_lake.config import Config
-from ashare_lake.domain.datasets import DATASETS, TIER_LABELS, TIERS, is_stale
+from ashare_lake.domain.datasets import (
+    DATASETS,
+    TIER_LABELS,
+    TIERS,
+    history_mode_for,
+    is_stale,
+)
+from ashare_lake.domain.partitions import parse_partition
 from ashare_lake.storage.stats import (
     load_partition_stats,
     load_provenance_stats,
@@ -57,6 +64,15 @@ CELL_UNPARTITIONED = "-"
 class _Cached:
     value: Any
     at: float
+
+
+def _jsonable(value: Any) -> Any:
+    """Cell values as JSON, without inventing a type the column does not have."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _gap_meaning(spec) -> str:
@@ -434,6 +450,7 @@ class LakeView:
     def dataset_detail(self, dataset: str) -> dict:
         """Everything the detail page shows, in one round trip."""
         from ashare_lake.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
+        from ashare_lake.query.reader import ADJUSTABLE_DATASETS
 
         spec = DATASETS[dataset]
         row = next(r for r in self._rows() if r["dataset"] == dataset)
@@ -456,6 +473,9 @@ class LakeView:
             # The source's own floor, not this lake's backlog: earlier windows
             # return nothing rather than less, and no backfill reaches past it.
             "earliest_available": spec.earliest_available(date.today()),
+            # Whether load() can join adj_factors — the data tab only offers the
+            # 复权 control where it means something.
+            "adjustable": dataset in ADJUSTABLE_DATASETS,
             "primary_key": PRIMARY_KEYS.get(dataset, []),
             "schema": [
                 {"column": col, "dtype": str(dtype)}
@@ -514,6 +534,123 @@ class LakeView:
             if grouped.height <= max_buckets or bucket == "year":
                 return {"bucket": bucket, "points": grouped.to_dicts()}
         return empty  # pragma: no cover — the year branch always returns
+
+    # --- browsing rows -----------------------------------------------------
+
+    def date_options(self, dataset: str, *, limit: int = 400) -> dict:
+        """What the date control may offer, and which control that should be.
+
+        There is no single picker: the registry uses twelve different date
+        columns across four shapes, and a calendar widget over ``report_period``
+        would invite a query the column cannot answer.
+
+        Only values that exist are offered. A day with no partition is not
+        selectable, which is the honest version of the ``snapshot_only`` warning
+        — those datasets accumulate one stamped reading per run, and a day
+        nobody ran can never be given one.
+        """
+        spec = DATASETS[dataset]
+        parts = self.partitions(dataset)
+        if spec.partition_col is None:
+            return {
+                "kind": "none",
+                "column": spec.query_date_col,
+                "granularity": None,
+                "values": [],
+                "total": 0,
+                "note": "单文件 merge：只有当前状态，没有按日期取数的概念。",
+            }
+
+        values = [p["partition"] for p in reversed(parts) if p["partition"] is not None]
+        if spec.partition_col == "report_period":
+            kind = "report_period"
+        elif spec.partition_granularity == "day" and spec.partition_col == "trade_date":
+            kind = "trading_day"
+        elif spec.partition_granularity == "day":
+            kind = "event_day"
+        else:
+            kind = "period"
+
+        note = None
+        if history_mode_for(spec) == "snapshot_only":
+            note = (
+                "snapshot_only：每个 run 落一份当日快照。没跑的那天没有快照，"
+                "而且补不出来——重放会伪造行。列表里只有真实存在的日期。"
+            )
+        elif spec.partition_granularity != "day":
+            note = f"按 {spec.partition_granularity} 分区：选一个周期取回它整段的行。"
+
+        return {
+            "kind": kind,
+            "column": spec.query_date_col,
+            "granularity": spec.partition_granularity,
+            "values": values[:limit],
+            "total": len(values),
+            "note": note,
+        }
+
+    def rows(
+        self,
+        dataset: str,
+        *,
+        period: str | None = None,
+        symbol: str | None = None,
+        as_of: date | None = None,
+        adjust: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict:
+        """A page of actual rows, with the provenance columns kept.
+
+        ``source`` / ``data_version`` / ``fetched_at`` are not dropped to make
+        room: row-level provenance is the point of this lake, and a viewer that
+        hides it teaches you it is not there.
+
+        Reads through ``query.reader.load`` so the dashboard sees exactly what
+        ``load()`` gives a researcher — adjustment, PIT collapsing and all —
+        rather than a second, subtly different read path.
+        """
+        from ashare_lake.query.reader import ReaderError, load
+
+        spec = DATASETS[dataset]
+        kwargs: dict[str, Any] = {"config": self.config}
+
+        if period:
+            part = parse_partition(period)
+            if spec.partition_col == "report_period":
+                # A String column: the period *is* the value, and a date range
+                # over it would compare text to dates.
+                pass
+            elif part is None:
+                raise ValueError(f"{period!r} is not a period for {dataset}")
+            else:
+                kwargs["start"], kwargs["end"] = part.start, part.end
+        if symbol:
+            kwargs["symbols"] = [symbol]
+        if as_of:
+            kwargs["as_of"] = as_of
+        if adjust:
+            kwargs["adjust"] = adjust
+
+        try:
+            frame = load(dataset, **kwargs)
+        except ReaderError as exc:
+            raise ValueError(str(exc)) from exc
+
+        if period and spec.partition_col == "report_period":
+            frame = frame.filter(pl.col("report_period") == period)
+
+        total = frame.height
+        page = frame.slice(offset, limit)
+        return {
+            "columns": page.columns,
+            "rows": [
+                [None if v is None else _jsonable(v) for v in row] for row in page.iter_rows()
+            ],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
 
     def heatmap(self, *, days: int = 90) -> dict:
         """Coverage grid: one row per dataset, one cell per recent trading day.

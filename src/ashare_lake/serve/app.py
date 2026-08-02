@@ -136,12 +136,33 @@ class DatasetDetail(Dataset):
     earliest_available: date | None = Field(
         description="Source floor, not this lake's backlog: earlier windows return nothing."
     )
+    adjustable: bool = Field(description="load() can join adj_factors for this dataset.")
     primary_key: list[str]
     schema_columns: list[Column] = Field(alias="schema")
     gaps: Gaps
     findings: list[dict]
     commands: list[Command]
     batches: list[Batch]
+
+
+class DateOptions(BaseModel):
+    kind: str = Field(
+        description="Which control fits: trading_day, event_day, period, "
+        "report_period, or none for a merge-style dataset."
+    )
+    column: str | None
+    granularity: str | None
+    values: list[str] = Field(description="Only values that exist, newest first.")
+    total: int
+    note: str | None
+
+
+class RowPage(BaseModel):
+    columns: list[str]
+    rows: list[list[object | None]]
+    total: int = Field(description="Rows matching the filter, before paging.")
+    offset: int
+    limit: int
 
 
 class Provenance(BaseModel):
@@ -270,6 +291,43 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
     def dataset_partitions(dataset: str, view: View) -> list[PartitionStat]:
         _known(dataset)
         return [PartitionStat(**row) for row in view.partitions(dataset)]
+
+    @app.get("/api/datasets/{dataset}/dates", response_model=DateOptions)
+    def dataset_dates(dataset: str, view: View) -> DateOptions:
+        _known(dataset)
+        return DateOptions(**view.date_options(dataset))
+
+    @app.get("/api/datasets/{dataset}/rows", response_model=RowPage)
+    def dataset_rows(
+        dataset: str,
+        view: View,
+        period: Annotated[
+            str | None, Query(description="A value from /dates — a day or a period.")
+        ] = None,
+        symbol: Annotated[str | None, Query(description="e.g. 600519.SH")] = None,
+        as_of: Annotated[date | None, Query(description="PIT cutoff on announce_date.")] = None,
+        adjust: Annotated[str | None, Query(pattern="^(hfq|qfq)$")] = None,
+        # Capped rather than unbounded: this endpoint is a viewer, and a full
+        # market-day of a wide dataset is not something to hand back by accident.
+        # Bulk extraction is `load()` in Python, not a paging URL.
+        limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> RowPage:
+        _known(dataset)
+        try:
+            return RowPage(
+                **view.rows(
+                    dataset,
+                    period=period,
+                    symbol=symbol,
+                    as_of=as_of,
+                    adjust=adjust,
+                    limit=limit,
+                    offset=offset,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/datasets/{dataset}/provenance", response_model=list[Provenance])
     def provenance(dataset: str, view: View) -> list[Provenance]:
