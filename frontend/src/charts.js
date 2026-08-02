@@ -1,0 +1,248 @@
+// ECharts, registered piece by piece rather than pulled in whole: the prebuilt
+// bundle is 1.1MB and half of it is chart types this dashboard never draws.
+import * as echarts from "echarts/core";
+import { BarChart, HeatmapChart } from "echarts/charts";
+import {
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+  VisualMapComponent,
+} from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
+
+echarts.use([
+  BarChart,
+  HeatmapChart,
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+  VisualMapComponent,
+  CanvasRenderer,
+]);
+
+const css = (name) =>
+  getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/** Chart-wide text and axis tokens, read from the page so both themes follow. */
+function tokens() {
+  return {
+    ink: css("--fg"),
+    muted: css("--muted"),
+    line: css("--line"),
+    surface: css("--card"),
+    covered: css("--cell-covered"),
+    gap: css("--cell-gap"),
+    cadence: css("--cell-cadence"),
+    outside: css("--cell-outside"),
+    series: [1, 2, 3, 4, 5].map((i) => css(`--series-${i}`)),
+    other: css("--series-other"),
+  };
+}
+
+const charts = new Map();
+
+/** Mount (or replace) a chart on *el*, keeping one instance per element. */
+function mount(el, option) {
+  const existing = charts.get(el);
+  if (existing) existing.dispose();
+  const chart = echarts.init(el, null, { renderer: "canvas" });
+  chart.setOption(option);
+  charts.set(el, chart);
+  return chart;
+}
+
+export function disposeAll() {
+  for (const chart of charts.values()) chart.dispose();
+  charts.clear();
+}
+
+window.addEventListener("resize", () => {
+  for (const chart of charts.values()) chart.resize();
+});
+
+// --- coverage heatmap --------------------------------------------------------
+
+// The cell alphabet the API sends, mapped to the codes visualMap pieces on.
+const CELL_CODE = { " ": 0, "#": 1, ".": 2, "-": 4 };
+
+/**
+ * Dataset x trading-day coverage.
+ *
+ * `.` splits into two codes on the row's `gap_meaning`. The server decides
+ * which — whether a hole is a fault or the dataset's shape is a question about
+ * fetch semantics and cadence, and that lives in the registry, not here.
+ */
+export function heatmap(el, data) {
+  const t = tokens();
+  const days = data.days;
+  const rows = data.rows;
+  const points = [];
+  rows.forEach((row, y) => {
+    [...row.cells].forEach((ch, x) => {
+      let code = CELL_CODE[ch] ?? 0;
+      if (code === 2 && row.gap_meaning === "cadence") code = 3;
+      points.push([x, y, code]);
+    });
+  });
+
+  const labels = {
+    0: "覆盖区间外",
+    1: "有分区覆盖",
+    2: "缺口（日更 by_date 源真的少了一天）",
+    3: "属其形态的间隔（非日更，或 snapshot 无法诚实补全）",
+    4: "无分区（单文件 merge）",
+  };
+
+  // Show ~90 days at a time however long the window is, so the cells keep a
+  // legible size instead of collapsing into a smear.
+  const windowEnd = 100;
+  const windowStart = Math.max(0, 100 - (90 / Math.max(days.length, 1)) * 100);
+
+  el.style.height = `${Math.max(220, rows.length * 15 + 90)}px`;
+  return mount(el, {
+    animation: false,
+    grid: { left: 200, right: 20, top: 10, bottom: 62, containLabel: false },
+    tooltip: {
+      backgroundColor: t.surface,
+      borderColor: t.line,
+      textStyle: { color: t.ink, fontSize: 12 },
+      formatter: (p) => {
+        const row = rows[p.value[1]];
+        const cadence = row.cadence_days > 1 ? `<br>容忍 ${row.cadence_days} 天` : "";
+        return `<b>${row.dataset}</b><br>${days[p.value[0]]}<br>${labels[p.value[2]]}`
+          + `<br>粒度 ${row.granularity || "merge"}${cadence}`;
+      },
+    },
+    xAxis: {
+      type: "category",
+      data: days,
+      axisLine: { lineStyle: { color: t.line } },
+      axisTick: { show: false },
+      axisLabel: { color: t.muted, fontSize: 10, hideOverlap: true },
+      splitArea: { show: false },
+    },
+    yAxis: {
+      type: "category",
+      data: rows.map((r) => r.dataset),
+      inverse: true,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: t.muted, fontSize: 11 },
+    },
+    visualMap: {
+      type: "piecewise",
+      show: false,
+      pieces: [
+        { value: 0, color: t.outside },
+        { value: 1, color: t.covered },
+        { value: 2, color: t.gap },
+        { value: 3, color: t.cadence },
+        { value: 4, color: t.outside },
+      ],
+    },
+    dataZoom: [
+      { type: "inside", xAxisIndex: 0, start: windowStart, end: windowEnd },
+      {
+        type: "slider",
+        xAxisIndex: 0,
+        start: windowStart,
+        end: windowEnd,
+        height: 18,
+        bottom: 14,
+        borderColor: t.line,
+        fillerColor: "transparent",
+        handleStyle: { color: t.muted },
+        textStyle: { color: t.muted, fontSize: 10 },
+      },
+    ],
+    series: [
+      {
+        type: "heatmap",
+        data: points,
+        // 1px of surface between cells so adjacent states never bleed together.
+        itemStyle: { borderColor: t.surface, borderWidth: 1 },
+        progressive: 0,
+      },
+    ],
+  });
+}
+
+// --- provenance over time ----------------------------------------------------
+
+/**
+ * Source mix as it moved, stacked.
+ *
+ * Sources take colour slots by name, not by row count: a source that happens to
+ * grow must not repaint the chart. Past five they fold into one neutral
+ * "other" rather than cycling hues onto a sixth generated colour.
+ */
+export function provenanceSeries(el, data) {
+  const t = tokens();
+  const points = data.points;
+  if (!points.length) {
+    el.innerHTML = '<p class="muted">没有溯源度量——先跑 <code>asl stats rebuild</code>。</p>';
+    return null;
+  }
+
+  const periods = [...new Set(points.map((p) => p.period_start))].sort();
+  const named = [...new Set(points.map((p) => p.source))].sort();
+  const shown = named.slice(0, t.series.length);
+  const folded = named.slice(t.series.length);
+  const keys = folded.length ? [...shown, "其他"] : shown;
+
+  const bucket = new Map();
+  for (const p of points) {
+    const key = shown.includes(p.source) ? p.source : "其他";
+    bucket.set(`${p.period_start}|${key}`, (bucket.get(`${p.period_start}|${key}`) || 0) + p.row_count);
+  }
+
+  el.style.height = "230px";
+  return mount(el, {
+    animation: false,
+    grid: { left: 62, right: 16, top: 12, bottom: 48 },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      backgroundColor: t.surface,
+      borderColor: t.line,
+      textStyle: { color: t.ink, fontSize: 12 },
+      valueFormatter: (v) => (v ? v.toLocaleString() + " 行" : "—"),
+    },
+    legend: {
+      data: keys,
+      bottom: 0,
+      textStyle: { color: t.muted, fontSize: 11 },
+      itemWidth: 10,
+      itemHeight: 10,
+      icon: "roundRect",
+    },
+    xAxis: {
+      type: "category",
+      data: periods,
+      axisLine: { lineStyle: { color: t.line } },
+      axisTick: { show: false },
+      axisLabel: { color: t.muted, fontSize: 10, hideOverlap: true },
+    },
+    yAxis: {
+      type: "value",
+      splitLine: { lineStyle: { color: t.line } },
+      axisLabel: {
+        color: t.muted,
+        fontSize: 10,
+        formatter: (v) => (v >= 1e6 ? `${v / 1e6}M` : v >= 1e3 ? `${v / 1e3}k` : v),
+      },
+    },
+    series: keys.map((key, i) => ({
+      name: key,
+      type: "bar",
+      stack: "rows",
+      color: key === "其他" ? t.other : t.series[i],
+      // 2px of surface between stacked segments so adjacent hues never touch.
+      itemStyle: { borderColor: t.surface, borderWidth: 1 },
+      barMaxWidth: 40,
+      data: periods.map((d) => bucket.get(`${d}|${key}`) || 0),
+    })),
+  });
+}

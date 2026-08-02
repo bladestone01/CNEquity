@@ -223,11 +223,36 @@ def test_heatmap_marks_unpartitioned_datasets_apart_from_gaps(client):
     assert rows["instruments"]["granularity"] is None
 
 
-def test_heatmap_carries_cadence_so_gaps_can_be_read_honestly(client):
-    """A quarterly source's holes are its schedule, not a fault to colour red."""
+def test_heatmap_says_whether_a_gap_is_a_fault_or_the_datasets_shape(client):
+    """Only a daily by_date dataset can honestly be missing a day it should have."""
     rows = {r["dataset"]: r for r in client.get("/api/heatmap").json()["rows"]}
+
+    # Daily and replayable — a hole here is real.
+    assert rows["daily_bars"]["gap_meaning"] == "fault"
     assert rows["daily_bars"]["cadence_days"] == 1
+
+    # Quarterly: nearly every session in its span legitimately has no partition.
+    assert rows["northbound_holdings"]["gap_meaning"] == "cadence"
     assert rows["northbound_holdings"]["cadence_days"] == 100
+
+    # Snapshot: a day nobody ran has no snapshot and cannot be given one,
+    # because replaying it would forge rows.
+    for name in ("fund_flow", "sector_members", "industry_members"):
+        assert rows[name]["gap_meaning"] == "cadence", name
+
+
+def test_every_snapshot_dataset_is_exempt_from_fault_gaps(client):
+    """The rule is read off fetch_semantics, not a hand-kept list of names."""
+    from ashare_lake.domain.datasets import DATASETS
+
+    rows = {r["dataset"]: r for r in client.get("/api/heatmap").json()["rows"]}
+    for name, spec in DATASETS.items():
+        expected = (
+            "cadence"
+            if spec.fetch_semantics == "snapshot" or spec.max_staleness_days > 1
+            else "fault"
+        )
+        assert rows[name]["gap_meaning"] == expected, name
 
 
 def test_heatmap_rejects_an_absurd_window(client):
@@ -255,11 +280,27 @@ def test_a_token_is_required_when_one_is_configured(lake):
     assert client.get("/api/health", params={"token": "wrong"}).status_code == 401
 
 
-def test_the_page_is_served_and_self_contained(client):
+def test_the_page_reaches_nothing_outside_this_host(client):
+    """No CDN. A lake behind a proxy would render a page that never loads."""
     body = client.get("/").text
     assert "<title>ashare-lake</title>" in body
-    for external in ("http://", "https://", "//cdn", "<script src"):
+    for external in ("http://", "https://", "//cdn", 'src="//'):
         assert external not in body, f"page reaches outside for {external!r}"
+
+
+def test_the_bundle_ships_beside_the_page(client):
+    """The page is a shell; without the bundle it renders nothing at all."""
+    assert '<script src="/static/bundle.js"></script>' in client.get("/").text
+    bundle = client.get("/static/bundle.js")
+    assert bundle.status_code == 200
+    assert "javascript" in bundle.headers["content-type"]
+    # Proof it is the real build rather than a stub left behind.
+    assert len(bundle.content) > 100_000
+
+
+def test_static_serves_only_what_is_packaged(client):
+    assert client.get("/static/nope.js").status_code == 404
+    assert client.get("/static/../../pyproject.toml").status_code in (403, 404)
 
 
 def test_a_non_loopback_bind_demands_a_token():

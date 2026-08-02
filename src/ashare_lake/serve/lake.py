@@ -59,6 +59,27 @@ class _Cached:
     at: float
 
 
+def _gap_meaning(spec) -> str:
+    """Whether a missing day on this dataset is a fault or just its shape.
+
+    Two ways a hole is expected rather than wrong, and both would otherwise
+    paint most of the grid red:
+
+    * **Not daily.** ``northbound_holdings`` is quarterly, so nearly every
+      session inside its span legitimately has no partition.
+    * **Snapshot semantics.** A snapshot dataset accumulates one stamped
+      reading per run; a day nobody ran has no snapshot and *cannot* be given
+      one, because replaying it would forge rows. That is the whole reason
+      ``fetch_semantics`` exists — see ``domain/datasets.py``.
+
+    Only a ``by_date`` dataset on a daily cadence can be honestly said to be
+    missing a day it should have.
+    """
+    if spec.fetch_semantics == "snapshot" or spec.max_staleness_days > 1:
+        return "cadence"
+    return "fault"
+
+
 def _next_period_start(day: date, granularity: str) -> date:
     """First day of the period after the one holding *day*."""
     if granularity == "year":
@@ -553,11 +574,8 @@ class LakeView:
                     "tier": row["tier"],
                     "granularity": row["granularity"],
                     "freshness": row["freshness"],
-                    # A gap only means "behind" for a dataset that publishes
-                    # daily. northbound_holdings is quarterly, so most sessions
-                    # inside its span legitimately have no partition, and
-                    # drawing those as failures would cry wolf on every row.
                     "cadence_days": DATASETS[name].max_staleness_days,
+                    "gap_meaning": _gap_meaning(DATASETS[name]),
                     "cells": cells,
                 }
             )

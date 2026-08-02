@@ -1,0 +1,313 @@
+// Lake dashboard. Two views routed on the hash: the tier overview (#/) and one
+// dataset (#/dataset/<name>[/state|meta]).
+import { disposeAll, heatmap, provenanceSeries } from "./charts.js";
+
+const qs = new URLSearchParams(location.search);
+const TOKEN = qs.get("token");
+const DAYS = Number(qs.get("days") || 250);
+const app = document.getElementById("app");
+
+async function api(path) {
+  const sep = path.includes("?") ? "&" : "?";
+  const url = TOKEN ? `${path}${sep}token=${encodeURIComponent(TOKEN)}` : path;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
+}
+
+const fmt = (n) => (n ?? 0).toLocaleString();
+const mb = (b) => (!b ? "—" : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 1e6).toFixed(0)} MB`);
+const esc = (s) =>
+  String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// --- overview ---------------------------------------------------------------
+
+const kpi = (n, label) => `<div class="kpi"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+
+async function renderOverview() {
+  const [h, tiers, datasets, hm] = await Promise.all([
+    api("/api/health"),
+    api("/api/tiers"),
+    api("/api/datasets"),
+    api(`/api/heatmap?days=${DAYS}`),
+  ]);
+  const sev = h.findings_by_severity || {};
+  const notes = [];
+  if (h.stats_stale) notes.push(`度量表过期（${esc(h.stats_reason)}）——已在后台重建，稍后刷新。`);
+  if (h.stale_datasets.length) {
+    notes.push(
+      `STALE：${h.stale_datasets.map((d) => `<code class="ds-link" data-ds="${esc(d)}">${esc(d)}</code>`).join(" ")}`,
+    );
+  }
+  if (h.empty_required.length) {
+    notes.push(`必需但为空：${h.empty_required.map((d) => `<code>${esc(d)}</code>`).join(" ")}`);
+  }
+
+  const byTier = {};
+  for (const d of datasets) (byTier[d.tier] ||= []).push(d);
+
+  app.innerHTML = `
+    <h1>ashare-lake</h1>
+    <div class="sub">最后交易日 ${h.anchor} · ${h.datasets} 个注册数据集 · 审计快照 ${h.audit_trade_date || "无"}</div>
+    ${notes.length ? `<div class="banner">${notes.join("<br>")}</div>` : ""}
+    <div class="kpis">
+      ${kpi(h.fresh, "fresh")}
+      ${kpi(`<span class="${h.stale ? "err" : ""}">${h.stale}</span>`, "stale")}
+      ${kpi(h.empty, "empty")}
+      ${kpi(fmt(h.rows), "行")}
+      ${kpi(mb(h.bytes), "体积")}
+      ${kpi(`<span class="${sev.error ? "err" : ""}">${sev.error || 0}</span> / ${sev.warning || 0}`, "error / warning")}
+    </div>
+    <h2>分层（点击展开数据集）</h2>
+    <div class="scroll"><table id="tiers"><tbody></tbody></table></div>
+    <h2>覆盖热力（${hm.days.length} 个交易日，可拖拽缩放）</h2>
+    <div id="heat"></div>
+    <p class="legend">
+      <span><i class="swatch" style="background:var(--cell-covered)"></i> 有分区覆盖</span>
+      <span><i class="swatch" style="background:var(--cell-gap)"></i> 缺口（日更 by_date 源）</span>
+      <span><i class="swatch" style="background:var(--cell-cadence)"></i> 属其形态的间隔（非日更 / snapshot）</span>
+      <span><i class="swatch" style="background:var(--cell-outside)"></i> 覆盖区间外 / 无分区</span>
+      <span>月/季/年分区的格子按其周期着色，不代表单日有行</span>
+    </p>`;
+
+  const body = document.querySelector("#tiers tbody");
+  body.innerHTML = `<tr><th>分层</th><th class="n">数据集</th><th class="n">fresh</th>
+    <th class="n">stale</th><th class="n">empty</th><th class="n">行</th><th class="n">体积</th></tr>`;
+  for (const t of tiers) {
+    const tr = document.createElement("tr");
+    tr.className = "tier-row";
+    tr.innerHTML = `<td><span class="tier-tag">${t.tier}</span>${esc(t.label)}</td>
+      <td class="n">${t.datasets}</td><td class="n">${t.fresh}</td>
+      <td class="n ${t.stale ? "err" : ""}">${t.stale || ""}</td>
+      <td class="n">${t.empty || ""}</td><td class="n">${fmt(t.rows)}</td><td class="n">${mb(t.bytes)}</td>`;
+    const detail = document.createElement("tr");
+    detail.className = "members";
+    detail.style.display = "none";
+    detail.innerHTML = `<td colspan="7">${membersTable(byTier[t.tier] || [])}</td>`;
+    tr.onclick = () => {
+      detail.style.display = detail.style.display === "none" ? "" : "none";
+    };
+    body.append(tr, detail);
+  }
+
+  heatmap(document.getElementById("heat"), hm);
+}
+
+function membersTable(rows) {
+  const head = `<tr><th>数据集</th><th>语义</th><th>粒度</th><th>覆盖</th>
+    <th>水位</th><th class="n">行</th><th class="n">体积</th></tr>`;
+  const body = rows
+    .map((d) => {
+      const cls = d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty";
+      const cover = d.coverage_start ? `${d.coverage_start} → ${d.coverage_end}` : "—";
+      const opt = d.required ? "" : " <span style='opacity:.6'>(可选)</span>";
+      return `<tr><td><span class="dot ${cls}"></span><span class="ds-link" data-ds="${esc(d.dataset)}">${esc(d.dataset)}</span>${opt}</td>
+      <td>${d.history_mode}</td><td>${d.granularity || "merge"}</td><td>${cover}</td>
+      <td>${d.watermark || "—"}</td><td class="n">${fmt(d.row_count)}</td>
+      <td class="n">${mb(d.bytes)}</td></tr>`;
+    })
+    .join("");
+  return `<table>${head}${body}</table>`;
+}
+
+// --- dataset detail ---------------------------------------------------------
+
+function coverageBar(d) {
+  if (!d.coverage_start) return '<p class="muted">尚无分区。</p>';
+  const start = new Date(d.coverage_start).getTime();
+  const end = new Date(d.coverage_end).getTime();
+  const span = Math.max(end - start, 1);
+  let horizon = "";
+  if (d.earliest_available) {
+    const h = new Date(d.earliest_available).getTime();
+    if (h > start && h < end) {
+      const pct = ((h - start) / span) * 100;
+      horizon = `<div class="horizon" style="left:${pct}%" title="源端历史天花板 ${d.earliest_available}"></div>`;
+    }
+  }
+  return `<div class="cover"><div class="fill" style="left:0;right:0"></div>${horizon}</div>
+    <p class="legend"><span>${d.coverage_start}</span><span style="margin-left:auto">${d.coverage_end}</span></p>`;
+}
+
+function gapsNote(d) {
+  const g = d.gaps;
+  if (!g.total) return '<p class="muted">覆盖区间内无缺口。</p>';
+  const cadence =
+    d.max_staleness_days > 1 ? `　该源非日更（容忍 ${d.max_staleness_days} 天），间隔属其节奏。` : "";
+  return `<p class="${d.max_staleness_days > 1 ? "muted" : "err"}">${g.total} 个 ${g.unit} 无分区${cadence}</p>
+    <p class="muted">${g.missing.slice(0, 12).map(esc).join("、")}${g.total > 12 ? " …" : ""}</p>`;
+}
+
+function stateTab(d, prov) {
+  const provTable = prov.length
+    ? `<table>
+    <tr><th>source</th><th>data_version</th><th class="n">行</th><th>fetched_at 跨度</th></tr>
+    ${prov
+      .map(
+        (p) => `<tr><td>${esc(p.source)}</td><td>${esc(p.data_version)}</td>
+      <td class="n">${fmt(p.row_count)}</td>
+      <td class="muted">${(p.fetched_at_min || "").slice(0, 10)} → ${(p.fetched_at_max || "").slice(0, 10)}</td></tr>`,
+      )
+      .join("")}
+    </table>`
+    : '<p class="muted">无溯源度量。</p>';
+
+  const findings = d.findings.length
+    ? `<table>
+    <tr><th>severity</th><th>check</th><th>message</th></tr>
+    ${d.findings
+      .map(
+        (f) => `<tr><td class="${f.severity === "error" ? "err" : ""}">${esc(f.severity)}</td>
+      <td>${esc(f.check)}</td><td>${esc(f.message)}</td></tr>`,
+      )
+      .join("")}</table>`
+    : '<p class="muted">上次审计没有该数据集的 findings。</p>';
+
+  const batches = d.batches.length
+    ? `<div class="scroll"><table>
+    <tr><th>状态</th><th>窗口</th><th class="n">写入</th><th class="n">重试</th><th>开始</th><th>错误</th></tr>
+    ${d.batches
+      .map(
+        (b) => `<tr><td class="${b.status === "success" ? "" : "err"}">${esc(b.status)}</td>
+      <td class="muted">${esc(b.window_start || "—")} → ${esc(b.window_end || "—")}</td>
+      <td class="n">${fmt(b.rows_written)}</td><td class="n">${b.retry_count || ""}</td>
+      <td class="muted">${esc((b.started_at || "").slice(0, 19))}</td>
+      <td class="muted">${esc((b.error_message || "").slice(0, 90))}</td></tr>`,
+      )
+      .join("")}</table></div>`
+    : '<p class="muted">manifest 中没有该数据集的 batch。</p>';
+
+  return `
+    <h3>覆盖</h3>${coverageBar(d)}${gapsNote(d)}
+    <h3>溯源分布（按时间）</h3><div id="prov"></div><p class="muted" id="provnote"></p>
+    <h3>溯源合计</h3>${provTable}
+    <h3>审计 findings</h3>${findings}
+    <h3>最近 batch</h3>${batches}`;
+}
+
+const fact = (k, v) => `<div class="fact"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;
+
+function metaTab(d) {
+  const yn = (b) => (b ? "是" : "否");
+  const contract = [
+    fact("分层", `${d.tier} ${esc(d.tier_label)}`),
+    fact("存储层", d.layer),
+    fact("分区键", d.partition_col ? `<code>${esc(d.partition_col)}</code>` : "—（单文件 merge）"),
+    fact("分区粒度", d.granularity || "—"),
+    fact("查询日期列", d.date_col ? `<code>${esc(d.date_col)}</code>` : "—"),
+    fact("主键", d.primary_key.map((c) => `<code>${esc(c)}</code>`).join(" ")),
+  ].join("");
+  const semantics = [
+    fact("fetch_semantics", d.fetch_semantics),
+    fact("history_mode", d.history_mode),
+    fact("PIT", yn(d.pit)),
+    fact("维护水位", yn(d.watermarked)),
+  ].join("");
+  const sources = [
+    fact("回填源", d.backfill_source ? esc(d.backfill_source) : "—"),
+    fact("源端历史视野", d.history_horizon_days ? `${d.history_horizon_days} 个交易日` : "无上限"),
+    fact("最早可得", d.earliest_available || "不受源端限制"),
+  ].join("");
+  const ops = [
+    fact("staleness 容忍", `${d.max_staleness_days} 天`),
+    fact("required", yn(d.required)),
+    fact("日内频率", d.intraday || "—"),
+    fact(
+      "回填分块",
+      d.backfill_chunk_days
+        ? `${d.backfill_chunk_days} 天`
+        : d.backfill_chunk_symbols
+          ? `${d.backfill_chunk_symbols} 标的`
+          : "—",
+    ),
+  ].join("");
+
+  const schema = `<div class="scroll"><table>
+    <tr><th>列</th><th>类型</th><th>主键</th></tr>
+    ${d.schema
+      .map(
+        (c) => `<tr><td><code>${esc(c.column)}</code></td><td class="muted">${esc(c.dtype)}</td>
+      <td>${d.primary_key.includes(c.column) ? "✓" : ""}</td></tr>`,
+      )
+      .join("")}</table></div>`;
+
+  const cmds = d.commands
+    .map(
+      (c, i) => `<div class="cmd"><code id="cmd${i}">${esc(c.cmd)}</code>
+      <button data-copy="cmd${i}">复制</button><span class="muted">${esc(c.why)}</span></div>`,
+    )
+    .join("");
+
+  return `
+    <h3>契约</h3><div class="facts">${contract}</div>
+    <h3>语义</h3><div class="facts">${semantics}</div>
+    <h3>来源</h3><div class="facts">${sources}</div>
+    <h3>运维</h3><div class="facts">${ops}</div>
+    <h3>Schema</h3>${schema}
+    <h3>命令</h3>${cmds}
+    <p class="muted">以上全部来自 <code>domain/datasets.py</code> 与 <code>domain/schemas.py</code>；面板不复制一份。</p>`;
+}
+
+async function renderDetail(name, tab) {
+  app.innerHTML = `<div class="sub">加载 ${esc(name)}…</div>`;
+  const enc = encodeURIComponent(name);
+  const [d, series, prov] = await Promise.all([
+    api(`/api/datasets/${enc}`),
+    api(`/api/datasets/${enc}/provenance/series`),
+    api(`/api/datasets/${enc}/provenance`),
+  ]);
+  const cls = d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty";
+  app.innerHTML = `
+    <div class="back" id="back">← 返回总览</div>
+    <h1><span class="dot ${cls}"></span>${esc(d.dataset)}</h1>
+    <div class="sub">${d.tier} ${esc(d.tier_label)} · ${d.layer} · ${d.history_mode}
+      · 水位 ${d.watermark || "—"} · ${fmt(d.row_count)} 行 · ${mb(d.bytes)}
+      ${d.required ? "" : " · <span style='opacity:.7'>可选（required=false）</span>"}</div>
+    <div class="tabs">
+      <div class="tab ${tab === "meta" ? "" : "on"}" data-tab="state">状态</div>
+      <div class="tab ${tab === "meta" ? "on" : ""}" data-tab="meta">元数据</div>
+    </div>
+    <div id="tabbody">${tab === "meta" ? metaTab(d) : stateTab(d, prov)}</div>`;
+
+  if (tab !== "meta") {
+    provenanceSeries(document.getElementById("prov"), series);
+    document.getElementById("provnote").textContent = `每点跨度：${series.bucket}`;
+  }
+
+  document.getElementById("back").onclick = () => {
+    location.hash = "#/";
+  };
+  app.querySelectorAll(".tab").forEach((el) => {
+    el.onclick = () => {
+      location.hash = `#/dataset/${enc}/${el.dataset.tab}`;
+    };
+  });
+  app.querySelectorAll("button[data-copy]").forEach((b) => {
+    b.onclick = () => navigator.clipboard?.writeText(document.getElementById(b.dataset.copy).textContent);
+  });
+}
+
+// --- routing ----------------------------------------------------------------
+
+async function route() {
+  disposeAll();
+  const m = location.hash.match(/^#\/dataset\/([^/]+)(?:\/(state|meta))?/);
+  try {
+    if (m) await renderDetail(decodeURIComponent(m[1]), m[2] || "state");
+    else await renderOverview();
+    window.scrollTo(0, 0);
+  } catch (err) {
+    app.innerHTML = `<h1>ashare-lake</h1><div class="sub err">加载失败：${esc(err.message)}</div>`;
+  }
+}
+
+// Delegated so it survives every re-render.
+document.addEventListener("click", (e) => {
+  const link = e.target.closest("[data-ds]");
+  if (link) {
+    e.stopPropagation();
+    location.hash = `#/dataset/${encodeURIComponent(link.dataset.ds)}`;
+  }
+});
+window.addEventListener("hashchange", route);
+route();

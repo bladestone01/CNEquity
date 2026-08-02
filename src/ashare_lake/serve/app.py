@@ -23,6 +23,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ashare_lake.config import Config
@@ -170,9 +171,11 @@ class HeatmapRow(BaseModel):
     tier: str
     granularity: str | None
     freshness: str
-    cadence_days: int = Field(
-        description="Days this dataset may lag before it counts as stale. "
-        "Above 1 the source is not daily, so gaps are its cadence, not a fault."
+    cadence_days: int = Field(description="Days this dataset may lag before it counts as stale.")
+    gap_meaning: str = Field(
+        description="'fault' — a daily by_date dataset is genuinely missing a day. "
+        "'cadence' — the source is not daily, or is snapshot and a missed day "
+        "can never be filled honestly."
     )
     cells: str = Field(description="One char per day; see `legend`.")
 
@@ -221,6 +224,11 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
 
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
         return await call_next(request)
+
+    # Same-origin only: the bundle is packaged beside the page, never fetched
+    # from a CDN. `html=False` so a missing asset 404s rather than silently
+    # serving index.html as JavaScript.
+    app.mount("/static", StaticFiles(directory=STATIC_DIR, html=False), name="static")
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def index() -> HTMLResponse:

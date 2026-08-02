@@ -106,6 +106,7 @@ ashare_lake = [
     # lake often runs on an offline box or behind a proxy that would turn an
     # external asset into a page that does not load.
     "serve/static/*.html",
+    "serve/static/*.js",
     # MIT requires the notice to travel with every copy of the vendored code.
     "adapters/tdx_protocol/_wire/LICENSE.tdxpy",
 ]
