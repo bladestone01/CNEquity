@@ -186,8 +186,8 @@ STRINGS = {
     "zh": {
         "title": "等权持有 A 股：幸存者偏差有多大",
         "subtitle": "同一篮子、同一区间——唯一差别是后来退市的票还在不在里面。",
-        "complete": "完整宇宙（保留退市股）",
-        "survivors": "只留幸存者（按当前名单发数的源只能给你这个）",
+        "complete": "含退市股",
+        "survivors": "只留幸存者",
         "names": "{names} 只，其中 {delisted} 只后来退市",
         "footer": "退市股按最后一根真实 bar 计价，真实差距只会更大。"
         "由 scripts/survivorship_gap.py 生成",
@@ -195,8 +195,8 @@ STRINGS = {
         # GitHub serves the file to both.
         "font": "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', "
         "'Microsoft YaHei', 'Segoe UI', Helvetica, Arial, sans-serif",
-        # Chinese legend text is narrower per character; keep the two entries apart.
-        "legend_x": 260,
+        # Short legend labels; keep a clear gap between the two swatches.
+        "legend_x": 200,
     },
 }
 
