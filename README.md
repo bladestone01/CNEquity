@@ -1,22 +1,46 @@
-# A股数据湖
+<h1 align="center">ASL</h1>
+<p align="center"><b>本地可日更的 A 股研究湖</b></p>
 
-[![CI](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg)](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/rootSunc/ashare-lake/graph/badge.svg)](https://codecov.io/gh/rootSunc/ashare-lake)
-[![PyPI](https://img.shields.io/pypi/v/ashare-lake.svg)](https://pypi.org/project/ashare-lake/)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![English](https://img.shields.io/badge/docs-English-lightgrey.svg)](README.en.md)
+<p align="center">
+  <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/rootSunc/ashare-lake"><img src="https://codecov.io/gh/rootSunc/ashare-lake/graph/badge.svg" alt="codecov"></a>
+  <a href="https://pypi.org/project/ashare-lake/"><img src="https://img.shields.io/pypi/v/ashare-lake.svg" alt="PyPI"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="README.en.md"><img src="https://img.shields.io/badge/docs-English-lightgrey.svg" alt="English"></a>
+</p>
 
-**别再每次重拉、自己拼复权了。** 一行命令把能按天自动更新的 A 股研究湖落到本地 Parquet——多源进同一契约，行级可溯源，用 DuckDB / Polars / `load()` 直接查。
+<p align="center">
+  <b>别再每次重拉、自己拼复权了。</b> 一行命令，把能日更的 A 股研究湖落到本地。<br>
+  取数工具给你现在，湖给你历史。
+</p>
 
 <p align="center">
   <img src="docs/assets/asl-serve.png" alt="asl serve 总览：FRESH/STALE/EMPTY 计数、按分层的行数与体积、250 个交易日的覆盖热力图" width="860" />
 </p>
 
 <p align="center">
-  <b>39 个数据集</b> · <b>日线回溯约 2001</b> · <b>行级溯源</b> · <b>一条命令起湖</b> · <b>只读面板</b> · <b>MIT</b>
+  <b>39 个数据集 · 9 大类</b> · <b>日线回溯约 2001</b> · <b>6 个 MCP 工具</b> · <b>行级溯源</b> · <b>零 token / 零积分 / 零注册</b> · <b>MIT</b>
 </p>
+
+**三步上手**（②③ 需 TDX 行情主机可达，大陆出口更稳）：
+
+```bash
+pip install ashare-lake    # ① 装：所有数据源都不要注册、token、积分
+asl demo                   # ② 30 秒拿到可复权的真日线（5 只票 × 30 个交易日）
+claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.demo.toml"   # ③ 可选：接给 Claude Code
+```
+
+接上 ③ 之后，这些问题直接用中文问：
+
+- 「茅台过去五年复权后涨了多少？」
+- 「茅台现在的 PE 在自己五年历史里处于什么分位？」★
+- 「2018 年这个财报因子的 IC，别用未来数据。」★
+- 「过去三年退市的票，退市前 60 天什么形态？」★
+- 「今天哪些票上龙虎榜？未来三个月谁有解禁？」
+
+★ 的问题需要本地历史序列——现拉现给的工具（HTTP 封装、给 agent 的取数 skill）结构上答不了：一次临时调用变不出它从没拿到过的序列。**取数工具给你现在，湖给你历史**——这就是本项目存在的理由。
 
 - **真数上手**：`pip install` → `asl demo`，几分钟出可复权日线
 - **日更能挂着跑**：水位 / 失败重试 / 质量审计；作者自用每天自动跑
@@ -26,33 +50,15 @@
 CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号留给下游）· 可选日内数据（1m / 5m 分钟线、分笔，默认全关）· 只读面板 `asl serve`
 
 <p align="center">
-  <a href="#为什么要一个湖而不是每次现拉">为什么要湖</a> ·
   <a href="#30-秒拿到真数">30 秒上手</a> ·
   <a href="#能回答什么问题">能问什么</a> ·
-  <a href="#为什么不是-akshare--tushare">与同类差异</a> ·
-  <a href="#自建日更湖">自建日更湖</a> ·
   <a href="#接给-ai-agent">接给 AI agent</a> ·
+  <a href="#为什么要一个湖而不是每次现拉">为什么要湖</a> ·
+  <a href="#为什么不是-akshare--tushare--取数-skill">与同类差异</a> ·
   <a href="#有什么数据">数据集</a> ·
+  <a href="#自建日更湖">自建日更湖</a> ·
   <a href="#faq">FAQ</a>
 </p>
-
-## 为什么要一个湖，而不是每次现拉
-
-<p align="center">
-  <img src="docs/assets/survivorship-gap.zh.svg" alt="同一篮子、同一区间，唯一差别是退市股还在不在里面" width="820" />
-</p>
-
-同一个等权买入持有，同样的起止日期，唯一差别是**后来退市的票还在不在篮子里**。用「今天还在的股票」当历史股票池——几乎所有按当前名单发数的源只能给你这个——2016–2021 五年收益从 **5.9% 变成 12.0%**，虚高一倍。
-
-这是**下限**不是估计：退市股按最后一根真实 bar 计价（通常还在长期停牌之前，远高于持有人实际收回的），只统计有精确复权因子的标的，且本湖的退市覆盖也可能仍不全——三条都让测出来的差距变小而非变大。
-
-关键在于这类错误**看不出来**：那些票不是零，是不在，输出里没有一处显得不对。这就是为什么退市股、复权因子、PIT 在这里是一等公民，而不是覆盖面上的第 40 个数据集。
-
-在你自己的湖上复现：
-
-```bash
-python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.zh.svg
-```
 
 ## 30 秒拿到真数
 
@@ -100,7 +106,7 @@ macOS / Linux / Windows（PowerShell、cmd）命令通用；venv 与调度见 [i
 | ★ 茅台 PE 的历史分位数，现在在什么位置 | `SELECT quantile_cont(pe_ttm, 0.5) FROM valuation_metrics WHERE symbol=…` |
 | ★ 2018 年这个财报因子的 IC，别用未来数据 | `load("financial_statement_items", as_of="2018-04-30")` |
 | ★ 过去三年退市的票，退市前 60 天什么形态 | `delisting_events` + `daily_bars`（退市股仍在湖里） |
-| ★ 全市场等权收益，剔除幸存者偏差 | `scripts/survivorship_gap.py`（上面那张图） |
+| ★ 全市场等权收益，剔除幸存者偏差 | `scripts/survivorship_gap.py`（下面那张图） |
 | 今天哪些票上了龙虎榜，谁在买 | `load("dragon_tiger", start=…, end=…)` |
 | 这只票最近融资余额怎么变的 | `load("margin_trading", symbols=[…])` |
 | 未来三个月有没有解禁 | `load("share_unlock_schedule", start=…)` |
@@ -111,14 +117,73 @@ macOS / Linux / Windows（PowerShell、cmd）命令通用；venv 与调度见 [i
 
 接了 [`asl mcp`](#接给-ai-agent) 之后，这些直接对 agent 用中文问就行——口径（复权、PIT、快照无历史）随响应一起返回，不用你每次提醒它。
 
-## 为什么不是 AkShare / Tushare
+## 接给 AI agent
 
-AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」；Qlib / vn.py 解决「研究/交易平台」。
-**ashare-lake** 专做中间层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖。
+`asl serve` 把湖给人看，`asl mcp` 把湖给模型用。同样只读——采集仍然只在 CLI 上，由人来跑。
 
-| 你在意什么 | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
+**三条接入路径，按你手上有什么选：**
+
+```bash
+# ① 已经有湖 —— 完整口径：复权、universe、PIT、行级溯源
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml
+
+# ② 还没有湖，想先试试 —— 30 秒的真数据（5 只票 × 30 个交易日）
+asl demo
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/configs/ashare-lake.demo.toml
+
+# ③ 完全不想建湖 —— 现拉现给，不落盘
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml --live
+```
+
+`--config` **一定要绝对路径**：MCP 客户端从哪个目录拉起进程是不确定的，相对路径会解析到别的地方。
+
+**③ 是有代价的，而且代价写在每条响应里。** 现拉的数据没有复权因子、没有 universe 过滤、没有 PIT、没经过写前校验，所以它只支持 `resolve_symbol` 和未复权日线，其余工具会明确拒绝并说明原因；每条响应带 `origin: "live"` 和一段警告，agent 不会把它当成湖里的数据用。想要正确的收益序列、历史分位数、无未来函数的财报——那些需要湖，见[下面「为什么要一个湖」那张图](#为什么要一个湖而不是每次现拉)。
+
+**6 个工具，不是 39 个。** agent 每轮都要从平铺列表里选，按数据集给工具会让上下文里大半是它不会调的名字。这里按问题形状切，数据集降级成参数：
+
+| 工具 | 用途 |
+|--|--|
+| `describe_lake` | 湖里有什么、覆盖到哪、以及让答案正确的口径 |
+| `resolve_symbol` | 「茅台」→ `600519.SH`，含退市股 |
+| `query_bars` | 日线 / 指数 / 分钟线，带 `adjust`、`universe` |
+| `query_fundamentals` | 财报科目，**必须**给 `as_of` |
+| `query_dataset` | 其余任意数据集 |
+| `run_sql` | 单条只读 DuckDB SELECT，跨数据集聚合 |
+
+**口径写在响应里，不写在文档里**——模型不会去读 `docs/`。不带 `adjust` 的行情返回 warning；带了但缺因子会报「N/M 行 `adj_is_exact=false`」；不给 `as_of` 直接报错并解释为什么没有默认值。分页永远带 `total` / `truncated`，避免模型把 200 行的均值当全市场报出去。
+
+`run_sql` 只收一条 SELECT，用 DuckDB 自己的解析器判定而不是正则——湖里有 `news_headlines` / `flash_news_wire` 这类供应商文本，到达工具的 SQL 可能被湖里摄入的内容影响。
+
+它能答、而「取数 skill」类项目结构上答不了的问题：「茅台过去五年 PE 的分位数」「2018 年这个因子的 IC，别用未来数据」「过去三年退市的票退市前 60 天什么形态」——**没有湖就做不到**，临时 HTTP 调用变不出历史。
+
+**没有新增依赖**：stdio JSON-RPC 是手写的，官方 `mcp` SDK 会拉进 15 个包（含第二套 HTTP 栈）。细节见 [MCP 参考](docs/reference/mcp.md)。
+
+## 为什么要一个湖，而不是每次现拉
+
+<p align="center">
+  <img src="docs/assets/survivorship-gap.zh.svg" alt="同一篮子、同一区间，唯一差别是退市股还在不在里面" width="820" />
+</p>
+
+同一个等权买入持有，同样的起止日期，唯一差别是**后来退市的票还在不在篮子里**。用「今天还在的股票」当历史股票池——几乎所有按当前名单发数的源只能给你这个——2016–2021 五年收益从 **5.9% 变成 12.0%**，虚高一倍。
+
+这是**下限**不是估计：退市股按最后一根真实 bar 计价（通常还在长期停牌之前，远高于持有人实际收回的），只统计有精确复权因子的标的，且本湖的退市覆盖也可能仍不全——三条都让测出来的差距变小而非变大。
+
+关键在于这类错误**看不出来**：那些票不是零，是不在，输出里没有一处显得不对。这就是为什么退市股、复权因子、PIT 在这里是一等公民，而不是覆盖面上的第 40 个数据集。
+
+在你自己的湖上复现：
+
+```bash
+python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.zh.svg
+```
+
+## 为什么不是 AkShare / Tushare / 取数 skill
+
+AkShare / efinance 解决「怎么拉数」；给 agent 的取数 skill 解决「让 AI 会拉数」——两者同属**现拉层**，拿到的都是没有历史、没有复权口径、没有 PIT 的当下快照。Tushare 解决「云端宽表」；Qlib / vn.py 解决「研究/交易平台」。
+**ashare-lake** 专做中间层：多源进同一契约，落成可日更、可溯源、可审计的本地 Parquet 湖——`asl mcp` 给 agent 的是同样的对话入口，但答案来自湖。
+
+| 你在意什么 | **ashare-lake** | AkShare / efinance / 取数 skill | Tushare Pro | Baostock | Qlib / vn.py |
 |--|--|--|--|--|--|
-| 本地可续跑的数据底座 | **湖 + 日更编排**（水位 / 重试 / audit） | 只拉到内存，编排自管 | 云端积分，非自建湖 | 会话拉数，无湖 | 绑在平台数据子系统里 |
+| 本地可续跑的数据底座 | **湖 + 日更编排**（水位 / 重试 / audit） | 现拉进内存/上下文，编排自管 | 云端积分，非自建湖 | 会话拉数，无湖 | 绑在平台数据子系统里 |
 | 数据从哪来、能否复查 | **行级溯源** + 写前 schema 校验 | 通常无统一契约 | 平台字段 | 无湖契约 | 视模块 |
 | 多源交叉核验 | **主源 curated + 备源 snapshot**，可 diff，不静默顶替 | 单次单源调用 | 单平台 | 单源 | 视配置 |
 | 研究口径是否稳定 | **`load()` 契约**：复权组合 / universe / PIT `as_of` | 自己拼 | 自己拼 | 自己拼 | 平台口径 |
@@ -126,6 +191,25 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 | 能否单独当研究数据底座 | **能**（湖 + 日更 + `load()`） | 否，还需自建落盘/编排 | 云端表，非自建湖 | 否，会话拉数 | 能，但绑平台 |
 
 逐条展开见 [comparison](docs/comparison.md)。
+
+## 有什么数据
+
+下表覆盖注册表全部 **39** 个数据集（36 curated + 3 derived，与 `domain/datasets.py` 同步）。  
+英文名即 `load()` 的第一个参数；字段见 [schema](docs/datasets/schema.md)，编排与主源见 [catalog](docs/datasets/catalog.md)。
+
+| 类别 | 数据集（`load()` 名 · 中文） |
+|------|------------------------------|
+| 基础参考（3） | `instruments` 证券主数据 · `trading_calendar` 交易日历 · `trading_status` 交易状态（停复牌 / ST） |
+| 行情（8） | `daily_bars` 日线（未复权） · `index_bars` 指数日线 · `minute_bars` 1 分钟线（可选） · `minute_bars_5m` 5 分钟线（可选） · `trade_ticks` 分笔（可选，3 秒快照聚合非逐笔） · `commodity_bars` 商品期货主连（可选） · `adj_factors` 复权因子（派生） · `delisting_events` 退市事件（派生） |
+| 公司事件（3） | `corporate_actions` 公司行为（除权除息） · `announcement_index` 公告索引 · `earnings_disclosure_schedule` 业绩披露预约 |
+| 基本面 / 估值（3） | `financial_statement_items` 财务报表科目（PIT） · `valuation_metrics` 估值指标 · `analyst_consensus` 分析师一致预期 |
+| 资金面（7） | `fund_flow` 个股资金流 · `margin_trading` 融资融券 · `northbound_flows` 北向资金流向 · `northbound_holdings` 北向持股 · `dragon_tiger` 龙虎榜 · `block_trades` 大宗交易 · `institutional_holdings` 机构持股 |
+| 结构 / 行业（4） | `sector_members` 板块成分 · `index_constituents` 指数成分 · `industry_members` 行业分类成分 · `industry_index` 行业指数（派生） |
+| 宏观（3） | `macro_indicators` 宏观指标 · `market_breadth` 市场宽度 · `economic_calendar` 经济日历（占位，源已下线） |
+| 舆情 / 轮动（6） | `sentiment_scores` 情绪评分 · `hot_rank` 人气榜 · `sector_bars` 板块行情 · `sector_fund_flow` 板块资金流 · `news_headlines` 新闻标题 · `flash_news_wire` 7×24 快讯 |
+| 风险（2） | `share_unlock_schedule` 解禁日程 · `regulatory_events` 监管事件 |
+
+另有 **on-demand**（不进 curated 主路径）：`stock_news`、`research_reports` 等，见 [catalog](docs/datasets/catalog.md)。
 
 ## 自建日更湖
 
@@ -233,50 +317,9 @@ asl serve --port 9000 --config configs/ashare-lake.toml
 
 绑到非 loopback 地址必须给 `--token`。细节见 [serve 模块文档](docs/modules/serve.md)。
 
-## 接给 AI agent
-
-`asl serve` 把湖给人看，`asl mcp` 把湖给模型用。同样只读——采集仍然只在 CLI 上，由人来跑。
-
-**三条接入路径，按你手上有什么选：**
-
-```bash
-# ① 已经有湖 —— 完整口径：复权、universe、PIT、行级溯源
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml
-
-# ② 还没有湖，想先试试 —— 30 秒的真数据（5 只票 × 30 个交易日）
-asl demo
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/configs/ashare-lake.demo.toml
-
-# ③ 完全不想建湖 —— 现拉现给，不落盘
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml --live
-```
-
-`--config` **一定要绝对路径**：MCP 客户端从哪个目录拉起进程是不确定的，相对路径会解析到别的地方。
-
-**③ 是有代价的，而且代价写在每条响应里。** 现拉的数据没有复权因子、没有 universe 过滤、没有 PIT、没经过写前校验，所以它只支持 `resolve_symbol` 和未复权日线，其余工具会明确拒绝并说明原因；每条响应带 `origin: "live"` 和一段警告，agent 不会把它当成湖里的数据用。想要正确的收益序列、历史分位数、无未来函数的财报——那些需要湖，见[上面那张图](#为什么要一个湖而不是每次现拉)。
-
-**6 个工具，不是 39 个。** agent 每轮都要从平铺列表里选，按数据集给工具会让上下文里大半是它不会调的名字。这里按问题形状切，数据集降级成参数：
-
-| 工具 | 用途 |
-|--|--|
-| `describe_lake` | 湖里有什么、覆盖到哪、以及让答案正确的口径 |
-| `resolve_symbol` | 「茅台」→ `600519.SH`，含退市股 |
-| `query_bars` | 日线 / 指数 / 分钟线，带 `adjust`、`universe` |
-| `query_fundamentals` | 财报科目，**必须**给 `as_of` |
-| `query_dataset` | 其余任意数据集 |
-| `run_sql` | 单条只读 DuckDB SELECT，跨数据集聚合 |
-
-**口径写在响应里，不写在文档里**——模型不会去读 `docs/`。不带 `adjust` 的行情返回 warning；带了但缺因子会报「N/M 行 `adj_is_exact=false`」；不给 `as_of` 直接报错并解释为什么没有默认值。分页永远带 `total` / `truncated`，避免模型把 200 行的均值当全市场报出去。
-
-`run_sql` 只收一条 SELECT，用 DuckDB 自己的解析器判定而不是正则——湖里有 `news_headlines` / `flash_news_wire` 这类供应商文本，到达工具的 SQL 可能被湖里摄入的内容影响。
-
-它能答、而「取数 skill」类项目结构上答不了的问题：「茅台过去五年 PE 的分位数」「2018 年这个因子的 IC，别用未来数据」「过去三年退市的票退市前 60 天什么形态」——**没有湖就做不到**，临时 HTTP 调用变不出历史。
-
-**没有新增依赖**：stdio JSON-RPC 是手写的，官方 `mcp` SDK 会拉进 15 个包（含第二套 HTTP 栈）。细节见 [MCP 参考](docs/reference/mcp.md)。
-
 ## 数据源健康度：`asl sources`
 
-东财今天被封了吗？申万的证书是不是又过期了？这些源不是本项目专属的——AkShare、各类取数 skill、你自己写的爬虫，走的是同一批端点。变了通常没地方查，得先花半天怀疑自己的代码。这个湖本来就每个交易日跑全市场，顺手多发一个请求就知道了。
+东财今天被封了吗？申万的证书是不是又过期了？这些源不是本项目专属的——AkShare、各类取数 skill、你自己写的爬虫，走的是同一批端点。变了通常没地方查，得先花半天怀疑自己的代码。这个湖本来就每个交易日跑全市场，顺手对 **14 个上游主机**（TDX、东财 ×3、新浪、巨潮、同花顺 ×2、baostock、沪深交易所、申万、央行、统计局）各多发一个请求就知道了。
 
 ```bash
 asl sources --vantage cn     # 探测一遍，报告写进 meta/source_health/
@@ -292,25 +335,6 @@ asl serve                    # → http://127.0.0.1:8787/source-health
 - **一次探测不是 SLA。** 每源只发一个请求，串行——健康检查不该自己制造它要观测的故障。
 
 口径与加新源见 [数据源健康度](docs/operations/source-health.md)。
-
-## 有什么数据
-
-下表覆盖注册表全部 **39** 个数据集（36 curated + 3 derived，与 `domain/datasets.py` 同步）。  
-英文名即 `load()` 的第一个参数；字段见 [schema](docs/datasets/schema.md)，编排与主源见 [catalog](docs/datasets/catalog.md)。
-
-| 类别 | 数据集（`load()` 名 · 中文） |
-|------|------------------------------|
-| 基础参考 | `instruments` 证券主数据 · `trading_calendar` 交易日历 · `trading_status` 交易状态（停复牌 / ST） |
-| 行情 | `daily_bars` 日线（未复权） · `index_bars` 指数日线 · `minute_bars` 1 分钟线（可选） · `minute_bars_5m` 5 分钟线（可选） · `trade_ticks` 分笔（可选，3 秒快照聚合非逐笔） · `commodity_bars` 商品期货主连（可选） · `adj_factors` 复权因子（派生） · `delisting_events` 退市事件（派生） |
-| 公司事件 | `corporate_actions` 公司行为（除权除息） · `announcement_index` 公告索引 · `earnings_disclosure_schedule` 业绩披露预约 |
-| 基本面 / 估值 | `financial_statement_items` 财务报表科目（PIT） · `valuation_metrics` 估值指标 · `analyst_consensus` 分析师一致预期 |
-| 资金面 | `fund_flow` 个股资金流 · `margin_trading` 融资融券 · `northbound_flows` 北向资金流向 · `northbound_holdings` 北向持股 · `dragon_tiger` 龙虎榜 · `block_trades` 大宗交易 · `institutional_holdings` 机构持股 |
-| 结构 / 行业 | `sector_members` 板块成分 · `index_constituents` 指数成分 · `industry_members` 行业分类成分 · `industry_index` 行业指数（派生） |
-| 宏观 | `macro_indicators` 宏观指标 · `market_breadth` 市场宽度 · `economic_calendar` 经济日历（占位，源已下线） |
-| 舆情 / 轮动 | `sentiment_scores` 情绪评分 · `hot_rank` 人气榜 · `sector_bars` 板块行情 · `sector_fund_flow` 板块资金流 · `news_headlines` 新闻标题 · `flash_news_wire` 7×24 快讯 |
-| 风险 | `share_unlock_schedule` 解禁日程 · `regulatory_events` 监管事件 |
-
-另有 **on-demand**（不进 curated 主路径）：`stock_news`、`research_reports` 等，见 [catalog](docs/datasets/catalog.md)。
 
 ## 架构
 
@@ -382,5 +406,3 @@ TDX 客户端不是 fork-safe，ProcessPool 会 BrokenProcessPool，所以 `asl 
 ---
 
 如果它省了你搭数据底座的时间，点个 ⭐ 让更多做 A 股研究的人看到。
-
-[![Star History Chart](https://api.star-history.com/svg?repos=rootSunc/ashare-lake&type=Date)](https://star-history.com/#rootSunc/ashare-lake&Date)

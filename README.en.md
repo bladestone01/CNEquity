@@ -1,26 +1,54 @@
-# A-Share Data Lake
+<h1 align="center">ASL</h1>
+<p align="center"><b>A local, daily-refreshable A-share research lake</b></p>
 
-[![CI](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg)](https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/rootSunc/ashare-lake/graph/badge.svg)](https://codecov.io/gh/rootSunc/ashare-lake)
-[![PyPI](https://img.shields.io/pypi/v/ashare-lake.svg)](https://pypi.org/project/ashare-lake/)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![中文](https://img.shields.io/badge/文档-中文-lightgrey.svg)](README.md)
+<p align="center">
+  <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/rootSunc/ashare-lake"><img src="https://codecov.io/gh/rootSunc/ashare-lake/graph/badge.svg" alt="codecov"></a>
+  <a href="https://pypi.org/project/ashare-lake/"><img src="https://img.shields.io/pypi/v/ashare-lake.svg" alt="PyPI"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="README.md"><img src="https://img.shields.io/badge/文档-中文-lightgrey.svg" alt="中文"></a>
 
-**Stop re-fetching and hand-rolling adjust factors.** One install drops an
-A-share research lake you can refresh automatically every trading day onto
-local Parquet — many sources, one contract, row-level provenance, query with
-DuckDB / Polars / `load()`.
+</p>
+
+<p align="center">
+  <b>Stop re-fetching and hand-rolling adjust factors.</b>
+  One command drops a daily-refreshable A-share research lake onto your machine.<br>
+  Fetch tools give you now; a lake gives you history.
+</p>
 
 <p align="center">
   <img src="docs/assets/asl-serve.png" alt="asl serve overview: FRESH/STALE/EMPTY counts, rows and bytes by tier, a 250-session coverage heatmap" width="860" />
 </p>
 
 <p align="center">
-  <b>39 datasets</b> · <b>daily bars back to ~2001</b> · <b>row-level provenance</b> ·
-  <b>one command to stand up a lake</b> · <b>read-only dashboard</b> · <b>MIT</b>
+  <b>39 datasets · 9 categories</b> · <b>daily bars back to ~2001</b> ·
+  <b>6 MCP tools</b> · <b>row-level provenance</b> ·
+  <b>no tokens / no credits / no signup</b> · <b>MIT</b>
 </p>
+
+**Three steps in** (steps 2–3 need TDX quote hosts reachable; mainland egress
+is more reliable):
+
+```bash
+pip install ashare-lake    # 1. install — no source needs signup, tokens or credits
+asl demo                   # 2. real, adjustable daily bars in ~30 seconds (5 names × 30 sessions)
+claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.demo.toml"   # 3. optional: wire it into Claude Code
+```
+
+With step 3 wired up, ask in plain language:
+
+- "How much did Moutai return over the last five years, adjusted?"
+- "Where does Moutai's PE sit in its own five-year distribution?" ★
+- "This factor's IC in 2018 — no look-ahead." ★
+- "What did the last 60 sessions look like for stocks that delisted?" ★
+- "Who was on today's dragon-tiger list? What unlocks in the next three months?"
+
+The ★ questions need a local history. A fetch-on-demand wrapper — an HTTP
+call, an agent fetch skill — structurally cannot answer them: a one-shot call
+cannot produce a series it was never given. **Fetch tools give you now; a lake
+gives you history.** That is the reason this project exists.
 
 - **Real data in minutes:** `pip install` → `asl demo` (not a mock)
 - **Daily jobs that stay up:** watermarks / retry / audit; the author runs it
@@ -35,44 +63,15 @@ downstream) · opt-in intraday data (1m / 5m bars, transaction records; all off
 by default) · read-only dashboard `asl serve`
 
 <p align="center">
-  <a href="#why-a-lake-rather-than-fetching-on-demand">Why a lake</a> ·
   <a href="#data-in-30-seconds">30 seconds</a> ·
   <a href="#what-you-can-ask-it">What you can ask</a> ·
-  <a href="#why-not-just-akshare--tushare">vs. the alternatives</a> ·
-  <a href="#self-hosted-daily-lake">Self-hosted lake</a> ·
   <a href="#serve-it-to-an-ai-agent">AI agents</a> ·
+  <a href="#why-a-lake-rather-than-fetching-on-demand">Why a lake</a> ·
+  <a href="#why-not-just-akshare--tushare--a-fetch-skill">vs. the alternatives</a> ·
   <a href="#datasets">Datasets</a> ·
+  <a href="#self-hosted-daily-lake">Self-hosted lake</a> ·
   <a href="#faq">FAQ</a>
 </p>
-
-## Why a lake, rather than fetching on demand
-
-<p align="center">
-  <img src="docs/assets/survivorship-gap.svg" alt="Same basket, same dates — the only difference is whether the delisted names are still in it" width="820" />
-</p>
-
-The same equal-weight buy-and-hold, the same start and end dates. The only
-difference is **whether the names that later delisted are still in the basket**.
-Use "the stocks that exist today" as a historical universe — which is all a
-current-roster vendor can give you — and the 2016–2021 five-year return goes
-from **5.9% to 12.0%**, twice what it was.
-
-That is a floor, not an estimate: delisted names are carried to their last
-printed bar (usually before a long suspension, well above what a holder
-recovered), only names with an exact adjustment factor are counted, and this
-lake's own delisted coverage may still be incomplete. All three shrink the
-measured gap rather than widen it.
-
-The point is that the error **is not visible**. Those names are not zero, they
-are absent, so nothing in the output looks wrong. That is why delisted names,
-adjustment factors and PIT are first-class here rather than a 40th dataset on a
-coverage list.
-
-Reproduce it on your own lake:
-
-```bash
-python scripts/survivorship_gap.py --svg docs/assets/survivorship-gap.svg
-```
 
 ## Data in ~30 seconds
 
@@ -128,7 +127,7 @@ call cannot produce a series it was never given.
 | ★ Where Moutai's PE sits in its own five-year distribution | `SELECT quantile_cont(pe_ttm, 0.5) FROM valuation_metrics WHERE symbol=…` |
 | ★ This factor's IC in 2018, with no look-ahead | `load("financial_statement_items", as_of="2018-04-30")` |
 | ★ What the last 60 sessions looked like for stocks that delisted | `delisting_events` + `daily_bars` (delisted names are still here) |
-| ★ Equal-weight market return, free of survivorship bias | `scripts/survivorship_gap.py` (the chart above) |
+| ★ Equal-weight market return, free of survivorship bias | `scripts/survivorship_gap.py` (the chart below) |
 | Who was on today's dragon-tiger list, and who was buying | `load("dragon_tiger", start=…, end=…)` |
 | How this name's margin balance has moved | `load("margin_trading", symbols=[…])` |
 | Whether anything unlocks in the next three months | `load("share_unlock_schedule", start=…)` |
@@ -141,16 +140,113 @@ With [`asl mcp`](#serve-it-to-an-ai-agent) wired up, you ask these in plain
 language — the query contract (adjustment, PIT, which series have no history)
 comes back with the data, so you are not re-explaining it every turn.
 
-## Why not just AkShare / Tushare
+## Serve it to an AI agent
 
-AkShare / efinance answer “how do I fetch?”; Tushare answers “cloud wide tables”;
-Qlib / vn.py answer “research / trading platform”.
-**ashare-lake** owns the middle layer: many sources into one contract, as a
-resumable, provenance-tagged, auditable local Parquet lake.
+`asl serve` shows the lake to a person; `asl mcp` shows it to a model. Same
+read-only stance — ingestion stays on the CLI, where a person runs it.
 
-| What you care about | **ashare-lake** | AkShare / efinance | Tushare Pro | Baostock | Qlib / vn.py |
+**Three ways in, depending on what you already have:**
+
+```bash
+# 1. You have a lake — the full contract: adjustment, universe, PIT, provenance
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml
+
+# 2. No lake, just trying it — 30 seconds of real data (5 names x 30 sessions)
+asl demo
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/configs/ashare-lake.demo.toml
+
+# 3. No lake at all — fetched live, never written to disk
+claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml --live
+```
+
+Use an **absolute** `--config` path: an MCP client starts the process from a
+directory of its own choosing, and a relative one resolves somewhere else.
+
+**Option 3 costs you something, and the cost is stated in every response.**
+Live data has no adjustment factors, no universe filter, no point-in-time
+cutoff and no write-time validation, so it serves `resolve_symbol` and
+unadjusted daily bars only — every other tool refuses and says why. Each
+payload carries `origin: "live"` and a warning, so the model does not spend
+lake-grade confidence on it. Correct return series, historical percentiles and
+look-ahead-free fundamentals need a lake; see
+[Why a lake](#why-a-lake-rather-than-fetching-on-demand) below.
+
+**Six tools, not 39.** An agent picks from a flat list every turn, so one tool
+per dataset would spend most of the context window on names it will not call.
+These are cut by question shape, and the dataset becomes an argument:
+
+| Tool | What it is for |
+|--|--|
+| `describe_lake` | What is here, how far back, and the rules that make an answer correct |
+| `resolve_symbol` | "茅台" → `600519.SH`, delisted names included |
+| `query_bars` | Daily / index / minute bars, with `adjust` and `universe` |
+| `query_fundamentals` | Statement items; `as_of` is **required** |
+| `query_dataset` | Any other dataset |
+| `run_sql` | One read-only DuckDB SELECT, for aggregation across datasets |
+
+**The contract travels in the responses, not in the docs** — a model does not
+read `docs/`. Bars without `adjust` come back with a warning; bars with it
+report how many rows had no factor and silently used 1.0; `query_fundamentals`
+refuses to default `as_of` and says why. Every payload carries `total` /
+`truncated`, so a page of 200 out of 4,300 rows cannot be averaged and reported
+as the market's.
+
+`run_sql` accepts exactly one SELECT, decided by DuckDB's own parser rather than
+a regex — the lake ingests `news_headlines` and `flash_news_wire`, vendor text
+nobody here wrote, so SQL reaching the tool can be shaped by ingested content.
+
+Questions this answers that a fetch-on-demand toolkit structurally cannot: "the
+percentile of Moutai's PE over the last five years", "this factor's IC in 2018,
+without look-ahead", "what the last 60 sessions looked like for stocks that
+delisted". Not *not built yet* — **impossible without a lake**.
+
+**No new dependencies**: the stdio JSON-RPC loop is hand-written, because the
+official `mcp` SDK resolves to 15 additional packages including a second HTTP
+stack. Details: [MCP reference](docs/reference/mcp.md).
+
+## Why a lake, rather than fetching on demand
+
+<p align="center">
+  <img src="docs/assets/survivorship-gap.svg" alt="Same basket, same dates — the only difference is whether the delisted names are still in it" width="820" />
+</p>
+
+The same equal-weight buy-and-hold, the same start and end dates. The only
+difference is **whether the names that later delisted are still in the basket**.
+Use "the stocks that exist today" as a historical universe — which is all a
+current-roster vendor can give you — and the 2016–2021 five-year return goes
+from **5.9% to 12.0%**, twice what it was.
+
+That is a floor, not an estimate: delisted names are carried to their last
+printed bar (usually before a long suspension, well above what a holder
+recovered), only names with an exact adjustment factor are counted, and this
+lake's own delisted coverage may still be incomplete. All three shrink the
+measured gap rather than widen it.
+
+The point is that the error **is not visible**. Those names are not zero, they
+are absent, so nothing in the output looks wrong. That is why delisted names,
+adjustment factors and PIT are first-class here rather than a 40th dataset on a
+coverage list.
+
+Reproduce it on your own lake:
+
+```bash
+python scripts/survivorship_gap.py --svg docs/assets/survivorship-gap.svg
+```
+
+## Why not just AkShare / Tushare / a fetch skill
+
+AkShare / efinance answer "how do I fetch?"; agent fetch skills answer "how
+does an AI fetch?" — both live in the **on-demand layer**, and what they return
+is a snapshot of now, with no history, no adjustment semantics, no PIT.
+Tushare answers "cloud wide tables"; Qlib / vn.py answer "research / trading
+platform". **ashare-lake** owns the middle layer: many sources into one
+contract, as a resumable, provenance-tagged, auditable local Parquet lake —
+`asl mcp` gives an agent the same conversational entry point, but the answers
+come from the lake.
+
+| What you care about | **ashare-lake** | AkShare / efinance / fetch skills | Tushare Pro | Baostock | Qlib / vn.py |
 |--|--|--|--|--|--|
-| Local, resumable data base | **Lake + daily jobs** (watermarks / retry / audit) | In-memory fetch; you own orchestration | Cloud credits, not a self-hosted lake | Session fetch, no lake | Tied to platform data subsystem |
+| Local, resumable data base | **Lake + daily jobs** (watermarks / retry / audit) | On-demand into memory/context; you own orchestration | Cloud credits, not a self-hosted lake | Session fetch, no lake | Tied to platform data subsystem |
 | Provenance / auditability | **Row-level provenance** + write-time schema checks | Usually no shared contract | Platform fields | No lake contract | Varies |
 | Cross-source validation | **Primary curated + backup snapshots**, diffable, never silent replace | One call, one source | One vendor | One source | Varies |
 | Stable research semantics | **`load()` contract**: adjust / universe / PIT `as_of` | DIY | DIY | DIY | Platform semantics |
@@ -158,6 +254,27 @@ resumable, provenance-tagged, auditable local Parquet lake.
 | Standalone research data base? | **Yes** (lake + daily jobs + `load()`) | No — you still build landing/orchestration | Cloud tables, not self-hosted | No — session fetch | Yes, but platform-tied |
 
 Point by point: [comparison](docs/comparison.md) (Chinese).
+
+## Datasets
+
+All **39** registered datasets (36 curated + 3 derived; kept in sync with
+`domain/datasets.py`). Names are the first argument to `load()`. Columns:
+[schema](docs/datasets/schema.md); orchestration:
+[catalog](docs/datasets/catalog.md).
+
+| Category | Datasets (`load()` name · meaning) |
+|----------|-------------------------------------|
+| Reference (3) | `instruments` security master · `trading_calendar` trading calendar · `trading_status` suspensions / ST |
+| Market data (8) | `daily_bars` daily bars (unadjusted) · `index_bars` index bars · `minute_bars` 1m (opt-in) · `minute_bars_5m` 5m (opt-in) · `trade_ticks` transaction records (opt-in; 3-second snapshot aggregates, not tick-by-tick) · `commodity_bars` commodity main-continuous (opt-in) · `adj_factors` adjust factors (derived) · `delisting_events` delisting endings (derived) |
+| Corporate events (3) | `corporate_actions` corp actions (XDXR) · `announcement_index` announcement index · `earnings_disclosure_schedule` earnings disclosure timetable |
+| Fundamentals / valuation (3) | `financial_statement_items` financial statement items (PIT) · `valuation_metrics` valuation metrics · `analyst_consensus` analyst consensus |
+| Capital flow (7) | `fund_flow` stock fund flow · `margin_trading` margin trading · `northbound_flows` northbound flows · `northbound_holdings` northbound holdings · `dragon_tiger` dragon-tiger list · `block_trades` block trades · `institutional_holdings` institutional holdings |
+| Structure / industry (4) | `sector_members` sector members · `index_constituents` index constituents · `industry_members` industry membership · `industry_index` industry index (derived) |
+| Macro (3) | `macro_indicators` macro indicators · `market_breadth` market breadth · `economic_calendar` economic calendar (placeholder; source retired) |
+| Sentiment / rotation (6) | `sentiment_scores` sentiment scores · `hot_rank` popularity rank · `sector_bars` sector bars · `sector_fund_flow` sector fund flow · `news_headlines` news headlines · `flash_news_wire` 24/7 flash wire |
+| Risk (2) | `share_unlock_schedule` share unlock schedule · `regulatory_events` regulatory events |
+
+**On-demand** (not on the curated daily path): `stock_news`, `research_reports`, etc. — see [catalog](docs/datasets/catalog.md).
 
 ## Self-hosted daily lake
 
@@ -293,77 +410,15 @@ because a second copy is a copy that drifts.
 Binding to a non-loopback address requires `--token`. Details:
 [serve module docs](docs/modules/serve.md).
 
-## Serve it to an AI agent
-
-`asl serve` shows the lake to a person; `asl mcp` shows it to a model. Same
-read-only stance — ingestion stays on the CLI, where a person runs it.
-
-**Three ways in, depending on what you already have:**
-
-```bash
-# 1. You have a lake — the full contract: adjustment, universe, PIT, provenance
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml
-
-# 2. No lake, just trying it — 30 seconds of real data (5 names x 30 sessions)
-asl demo
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/configs/ashare-lake.demo.toml
-
-# 3. No lake at all — fetched live, never written to disk
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml --live
-```
-
-Use an **absolute** `--config` path: an MCP client starts the process from a
-directory of its own choosing, and a relative one resolves somewhere else.
-
-**Option 3 costs you something, and the cost is stated in every response.**
-Live data has no adjustment factors, no universe filter, no point-in-time
-cutoff and no write-time validation, so it serves `resolve_symbol` and
-unadjusted daily bars only — every other tool refuses and says why. Each
-payload carries `origin: "live"` and a warning, so the model does not spend
-lake-grade confidence on it. Correct return series, historical percentiles and
-look-ahead-free fundamentals need a lake; see [the chart above](#why-a-lake-rather-than-fetching-on-demand).
-
-**Six tools, not 39.** An agent picks from a flat list every turn, so one tool
-per dataset would spend most of the context window on names it will not call.
-These are cut by question shape, and the dataset becomes an argument:
-
-| Tool | What it is for |
-|--|--|
-| `describe_lake` | What is here, how far back, and the rules that make an answer correct |
-| `resolve_symbol` | "茅台" → `600519.SH`, delisted names included |
-| `query_bars` | Daily / index / minute bars, with `adjust` and `universe` |
-| `query_fundamentals` | Statement items; `as_of` is **required** |
-| `query_dataset` | Any other dataset |
-| `run_sql` | One read-only DuckDB SELECT, for aggregation across datasets |
-
-**The contract travels in the responses, not in the docs** — a model does not
-read `docs/`. Bars without `adjust` come back with a warning; bars with it
-report how many rows had no factor and silently used 1.0; `query_fundamentals`
-refuses to default `as_of` and says why. Every payload carries `total` /
-`truncated`, so a page of 200 out of 4,300 rows cannot be averaged and reported
-as the market's.
-
-`run_sql` accepts exactly one SELECT, decided by DuckDB's own parser rather than
-a regex — the lake ingests `news_headlines` and `flash_news_wire`, vendor text
-nobody here wrote, so SQL reaching the tool can be shaped by ingested content.
-
-Questions this answers that a fetch-on-demand toolkit structurally cannot: "the
-percentile of Moutai's PE over the last five years", "this factor's IC in 2018,
-without look-ahead", "what the last 60 sessions looked like for stocks that
-delisted". Not *not built yet* — **impossible without a lake**.
-
-**No new dependencies**: the stdio JSON-RPC loop is hand-written, because the
-official `mcp` SDK resolves to 15 additional packages including a second HTTP
-stack. Details: [MCP reference](docs/reference/mcp.md).
-
 ## Source health: `asl sources`
 
 Is EastMoney blocking you today? Did Shenwan's certificate expire again? These
 sources are not this project's: AkShare, every fetch-on-demand skill, and your
-own scraper all hit the same dozen endpoints, and when one changes there is
-nowhere to look it up — you spend an afternoon suspecting your own code first.
-This lake sweeps them every trading day anyway, so one extra request per source
-answers it.
+own scraper all hit the same endpoints, and when one changes there is nowhere
+to look it up — you spend an afternoon suspecting your own code first. This
+lake sweeps the market every trading day anyway, so one extra request against
+each of the **14 upstream hosts** (TDX, EastMoney ×3, Sina, cninfo, THS ×2,
+baostock, SSE, SZSE, Shenwan, PBoC, NBS) answers it.
 
 ```bash
 asl sources --vantage cn     # probe once; the report lands in meta/source_health/
@@ -388,27 +443,6 @@ Three rules make the table trustworthy:
   check should not cause the outage it exists to observe.
 
 Details and how to add a source: [source health](docs/operations/source-health.md).
-
-## Datasets
-
-All **39** registered datasets (36 curated + 3 derived; kept in sync with
-`domain/datasets.py`). Names are the first argument to `load()`. Columns:
-[schema](docs/datasets/schema.md); orchestration:
-[catalog](docs/datasets/catalog.md).
-
-| Category | Datasets (`load()` name · meaning) |
-|----------|-------------------------------------|
-| Reference | `instruments` security master · `trading_calendar` trading calendar · `trading_status` suspensions / ST |
-| Market data | `daily_bars` daily bars (unadjusted) · `index_bars` index bars · `minute_bars` 1m (opt-in) · `minute_bars_5m` 5m (opt-in) · `trade_ticks` transaction records (opt-in; 3-second snapshot aggregates, not tick-by-tick) · `commodity_bars` commodity main-continuous (opt-in) · `adj_factors` adjust factors (derived) · `delisting_events` delisting endings (derived) |
-| Corporate events | `corporate_actions` corp actions (XDXR) · `announcement_index` announcement index · `earnings_disclosure_schedule` earnings disclosure timetable |
-| Fundamentals / valuation | `financial_statement_items` financial statement items (PIT) · `valuation_metrics` valuation metrics · `analyst_consensus` analyst consensus |
-| Capital flow | `fund_flow` stock fund flow · `margin_trading` margin trading · `northbound_flows` northbound flows · `northbound_holdings` northbound holdings · `dragon_tiger` dragon-tiger list · `block_trades` block trades · `institutional_holdings` institutional holdings |
-| Structure / industry | `sector_members` sector members · `index_constituents` index constituents · `industry_members` industry membership · `industry_index` industry index (derived) |
-| Macro | `macro_indicators` macro indicators · `market_breadth` market breadth · `economic_calendar` economic calendar (placeholder; source retired) |
-| Sentiment / rotation | `sentiment_scores` sentiment scores · `hot_rank` popularity rank · `sector_bars` sector bars · `sector_fund_flow` sector fund flow · `news_headlines` news headlines · `flash_news_wire` 24/7 flash wire |
-| Risk | `share_unlock_schedule` share unlock schedule · `regulatory_events` regulatory events |
-
-**On-demand** (not on the curated daily path): `stock_news`, `research_reports`, etc. — see [catalog](docs/datasets/catalog.md).
 
 ## Architecture
 
