@@ -17,11 +17,12 @@ DuckDB / Polars / `load()`.
 - **Real data in minutes:** `pip install` → `asl demo` (not a mock)
 - **Daily jobs that stay up:** watermarks / retry / audit; the author runs it
   every trading day
-- **Stable research semantics:** adjust · universe · PIT; 38 registered datasets;
+- **Stable research semantics:** adjust · universe · PIT; 39 registered datasets;
   daily bars back to ~2001
 
 CLI: `asl` · package: `ashare_lake` · **data layer only** (backtests stay
-downstream) · opt-in minute bars (1m / 5m, off by default)
+downstream) · opt-in intraday data (1m / 5m bars, transaction records; all off
+by default) · read-only dashboard `asl serve`
 
 ## Data in ~30 seconds
 
@@ -73,8 +74,9 @@ First `asl init` backfills (slow, multi-GB). Afterwards: incremental + read.
 `load()` reads `data.root` from `configs/ashare-lake.toml` under the cwd by
 default.
 
-**Minute bars are off by default.** `asl init` / `asl run daily` cover the
-daily / fundamentals path only; enable 1m / 5m explicitly (next subsection).
+**No intraday data by default.** `asl init` / `asl run daily` cover the
+daily / fundamentals path only; 1m / 5m bars and transaction records each need
+enabling explicitly (next two subsections).
 
 ```bash
 pip install ashare-lake
@@ -83,7 +85,7 @@ asl config init --data-root /Users/you/ashare-lake
 # Windows: asl config init --data-root D:/ashare-lake
 # macOS / Windows default workers=1; Linux example template uses 8
 asl init          # layout + first backfill
-asl run daily     # every trading day afterwards (no minute bars)
+asl run daily     # every trading day afterwards (no intraday data)
 asl status
 ```
 
@@ -151,6 +153,81 @@ from ashare_lake.query import load
 m5 = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"], adjust="hfq")
 ```
 
+### Optional: transaction records (trade_ticks)
+
+**Say the limitation first: these are not individual trades.** A-share Level-1
+is a 3-second snapshot, so one TDX "分笔" record aggregates every trade in that
+frame — measured, **6-33 real trades** on average, capping a session near 4,800
+records. No order-by-order feed, no order book. The timestamp has **minute**
+precision (the protocol never carried seconds), so a row is identified by
+`tick_seq`, its position in the session, rather than by its time.
+
+What it supports: buy/sell direction splits, large-order structure by
+per-frame volume, 3-second resolution on the opening auction and the close.
+What it does not: true tick reconstruction, order-flow imbalance, anything
+needing the order queue.
+
+Off by default, its own config block, on no schedule. The source reaches back
+to **2024-01-02** — a fixed calendar floor that does not roll with today, so
+the horizon grows. About 1.85 requests and 2,700 rows per symbol-session at
+~8.4 bytes a row: a 200-name watchlist is roughly a minute and 4.5MB a day.
+
+```toml
+[trade_ticks]
+enabled = true
+scope = "watchlist"           # or index:<symbol>; "all" is refused
+symbols = ["600519.SH", "000001.SZ"]
+max_symbols = 200             # hard ceiling, checked before any request
+```
+
+```bash
+asl backfill trade_ticks --symbols 600519.SH,000001.SZ --start 2026-07-01 --end 2026-07-31
+asl run daily --group ticks   # daily refresh: again its own group
+```
+
+```python
+ticks = load("trade_ticks", start="2026-07-20", symbols=["600519.SH"], adjust="hfq")
+# direction: buy / sell / neutral / after_hours
+# after_hours is 15:05-15:30 fixed-price trading and is NOT in the exchange's
+# daily volume — exclude it before reconciling against daily_bars
+```
+
+Semantics, capacity and quality checks: [catalog](docs/datasets/catalog.md).
+Compliance boundary: [legal and data sources](docs/legal-and-data-sources.md).
+
+## Look at the lake: `asl serve`
+
+A read-only dashboard. Coverage, freshness, source mix, audit findings and run
+history live here; running, retrying and cleaning stay with the CLI.
+
+```bash
+asl serve                      # http://127.0.0.1:8787
+asl serve --port 9000 --config configs/ashare-lake.toml
+```
+
+<p align="center">
+  <img src="docs/assets/asl-serve.png" alt="asl serve overview: FRESH/STALE/EMPTY counts, rows and bytes by tier, a 250-session coverage heatmap" width="860" />
+</p>
+
+The heatmap counts gaps in **each dataset's own period**, not in days — a
+year-partitioned dataset is not reported as "missing 364 days" because one
+directory covers the year.
+
+A dataset opens into three tabs: **state** (coverage, gaps, provenance,
+findings, recent batches), **metadata** (contract / schema / primary key /
+horizon), **data** (real rows, with adjust and PIT controls).
+
+<p align="center">
+  <img src="docs/assets/asl-serve-dataset.png" alt="trade_ticks metadata tab: primary key symbol/trade_date/tick_seq, source horizon from a fixed 2024-01-02 floor, row grain 分笔" width="860" />
+</p>
+
+Everything on that tab comes from `domain/datasets.py` and
+`domain/schemas.py` — the dashboard keeps no second copy of the contract,
+because a second copy is a copy that drifts.
+
+Binding to a non-loopback address requires `--token`. Details:
+[serve module docs](docs/modules/serve.md).
+
 ## Architecture
 
 <p align="center">
@@ -170,7 +247,7 @@ On-disk layout under the daily lake's `data.root`:
 
 ## Datasets
 
-All **38** registered datasets (35 curated + 3 derived; kept in sync with
+All **39** registered datasets (36 curated + 3 derived; kept in sync with
 `domain/datasets.py`). Names are the first argument to `load()`. Columns:
 [schema](docs/datasets/schema.md); orchestration:
 [catalog](docs/datasets/catalog.md).
@@ -178,7 +255,7 @@ All **38** registered datasets (35 curated + 3 derived; kept in sync with
 | Category | Datasets (`load()` name · meaning) |
 |----------|-------------------------------------|
 | Reference | `instruments` security master · `trading_calendar` trading calendar · `trading_status` suspensions / ST |
-| Market data | `daily_bars` daily bars (unadjusted) · `index_bars` index bars · `minute_bars` 1m (opt-in) · `minute_bars_5m` 5m (opt-in) · `commodity_bars` commodity main-continuous (opt-in) · `adj_factors` adjust factors (derived) · `delisting_events` delisting endings (derived) |
+| Market data | `daily_bars` daily bars (unadjusted) · `index_bars` index bars · `minute_bars` 1m (opt-in) · `minute_bars_5m` 5m (opt-in) · `trade_ticks` transaction records (opt-in; 3-second snapshot aggregates, not tick-by-tick) · `commodity_bars` commodity main-continuous (opt-in) · `adj_factors` adjust factors (derived) · `delisting_events` delisting endings (derived) |
 | Corporate events | `corporate_actions` corp actions (XDXR) · `announcement_index` announcement index · `earnings_disclosure_schedule` earnings disclosure timetable |
 | Fundamentals / valuation | `financial_statement_items` financial statement items (PIT) · `valuation_metrics` valuation metrics · `analyst_consensus` analyst consensus |
 | Capital flow | `fund_flow` stock fund flow · `margin_trading` margin trading · `northbound_flows` northbound flows · `northbound_holdings` northbound holdings · `dragon_tiger` dragon-tiger list · `block_trades` block trades · `institutional_holdings` institutional holdings |
@@ -237,7 +314,8 @@ Full index: [docs/README.md](docs/README.md). Common entry points:
 [quickstart](docs/getting-started/quickstart.md) ·
 [catalog](docs/datasets/catalog.md) ·
 [runbook](docs/operations/runbook.md) ·
-[CLI](docs/reference/cli.md).
+[CLI](docs/reference/cli.md) ·
+[serve dashboard](docs/modules/serve.md).
 
 ## License
 

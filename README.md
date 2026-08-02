@@ -13,9 +13,9 @@
 
 - **真数上手**：`pip install` → `asl demo`，几分钟出可复权日线
 - **日更能挂着跑**：水位 / 失败重试 / 质量审计；作者自用每天自动跑
-- **研究口径一次定好**：复权 · universe · PIT；38 个注册数据集，日线可回溯到约 2001
+- **研究口径一次定好**：复权 · universe · PIT；39 个注册数据集，日线可回溯到约 2001
 
-CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号留给下游）· 可选分钟线（1m / 5m，默认关）
+CLI：`asl` · 包名：`ashare_lake` · **只做数据层**（回测和信号留给下游）· 可选日内数据（1m / 5m 分钟线、分笔，默认全关）· 只读面板 `asl serve`
 
 ## 30 秒拿到真数
 
@@ -59,7 +59,7 @@ macOS / Linux / Windows（PowerShell、cmd）命令通用；venv 与调度见 [i
 
 首次 `asl init` 会回填（耗时长、占磁盘）；之后日常增量 + 读取。`load()` 默认读 cwd 下 `configs/ashare-lake.toml` 的 `data.root`。
 
-**默认不含分钟线。** `asl init` / `asl run daily` 只跑日频与基本面等主路径；1m / 5m 需显式开启（见下节）。
+**默认不含任何日内数据。** `asl init` / `asl run daily` 只跑日频与基本面等主路径；1m / 5m 分钟线与分笔都要显式开启（见下两节）。
 
 ```bash
 pip install ashare-lake
@@ -68,7 +68,7 @@ asl config init --data-root /Users/you/ashare-lake
 # Windows：asl config init --data-root D:/ashare-lake
 # macOS / Windows 默认 workers=1；Linux 示例模板为 8
 asl init          # 建目录 + 首次回填
-asl run daily     # 之后每个交易日（不含分钟线）
+asl run daily     # 之后每个交易日（不含日内数据）
 asl status
 ```
 
@@ -129,6 +129,64 @@ from ashare_lake.query import load
 m5 = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"], adjust="hfq")
 ```
 
+### 可选：分笔（trade_ticks）
+
+**先说清楚它不是什么：不是逐笔成交。** A 股 Level-1 是每 3 秒一帧的快照，通达信的「分笔」是这一帧里所有成交的聚合——
+实测一条记录平均合并 **6–33 笔**真实成交，所以一个交易日最多约 4,800 条。没有逐笔委托，没有十档。
+时间戳只到**分钟**（协议从来没带过秒），所以行的身份是 `tick_seq`（当日时间升序的序号），不是时间戳。
+
+能做的：主动买卖方向拆分、按单帧成交量分档看大单结构、开盘竞价与尾盘异动的 3 秒粒度刻画。
+做不了的：真正的逐笔重构、订单流不平衡、任何依赖委托队列的东西。
+
+默认关闭、独立配置节、不在任何默认调度上。源端回溯到 **2024-01-02**（固定日历底，不随今天滚动，所以视野逐日变长）。
+按 symbol-session 约 1.85 次请求、2,700 行，落盘约 8.4 字节/行——200 只的 watchlist 约 1 分钟、4.5MB 一天。
+
+```toml
+[trade_ticks]
+enabled = true
+scope = "watchlist"           # 或 index:<symbol>；不支持 all
+symbols = ["600519.SH", "000001.SZ"]
+max_symbols = 200             # 硬上限，解析出的范围超了直接报错
+```
+
+```bash
+asl backfill trade_ticks --symbols 600519.SH,000001.SZ --start 2026-07-01 --end 2026-07-31
+asl run daily --group ticks   # 日更：又一个单独的组
+```
+
+```python
+ticks = load("trade_ticks", start="2026-07-20", symbols=["600519.SH"], adjust="hfq")
+# direction: buy / sell / neutral / after_hours
+# after_hours 是 15:05–15:30 盘后固定价格成交，不计入交易所当日成交量——与日频对账前要剔除
+```
+
+口径、容量与质量检查见 [数据集目录](docs/datasets/catalog.md)，合规边界见 [许可与数据源](docs/legal-and-data-sources.md)。
+
+## 看一眼湖：`asl serve`
+
+只读面板，不写湖。覆盖、新鲜度、来源构成、审计 findings、跑批记录都在这里；跑批、重试、清理仍然只在 CLI。
+
+```bash
+asl serve                      # http://127.0.0.1:8787
+asl serve --port 9000 --config configs/ashare-lake.toml
+```
+
+<p align="center">
+  <img src="docs/assets/asl-serve.png" alt="asl serve 总览：FRESH/STALE/EMPTY 计数、按分层的行数与体积、250 个交易日的覆盖热力图" width="860" />
+</p>
+
+热力图按**数据集自己的周期**计缺口，不按天——年分区的数据集不会因为一个目录覆盖整年就报「缺 364 天」。
+
+点进单个数据集是三个 tab：**状态**（覆盖、缺口、溯源、findings、最近 batch）、**元数据**（契约 / schema / 主键 / 视野）、**数据**（真的翻行，带复权与 PIT 控件）。
+
+<p align="center">
+  <img src="docs/assets/asl-serve-dataset.png" alt="trade_ticks 元数据页：主键 symbol/trade_date/tick_seq、源端历史视野自 2024-01-02 起（固定底）、行粒度分笔" width="860" />
+</p>
+
+元数据全部来自 `domain/datasets.py` 与 `domain/schemas.py`——面板不自己存一份契约，不然就有第二份会漂移的契约。
+
+绑到非 loopback 地址必须给 `--token`。细节见 [serve 模块文档](docs/modules/serve.md)。
+
 ## 架构
 
 <p align="center">
@@ -148,13 +206,13 @@ m5 = load("minute_bars_5m", start="2026-07-01", symbols=["600519.SH"], adjust="h
 
 ## 有什么数据
 
-下表覆盖注册表全部 **38** 个数据集（35 curated + 3 derived，与 `domain/datasets.py` 同步）。  
+下表覆盖注册表全部 **39** 个数据集（36 curated + 3 derived，与 `domain/datasets.py` 同步）。  
 英文名即 `load()` 的第一个参数；字段见 [schema](docs/datasets/schema.md)，编排与主源见 [catalog](docs/datasets/catalog.md)。
 
 | 类别 | 数据集（`load()` 名 · 中文） |
 |------|------------------------------|
 | 基础参考 | `instruments` 证券主数据 · `trading_calendar` 交易日历 · `trading_status` 交易状态（停复牌 / ST） |
-| 行情 | `daily_bars` 日线（未复权） · `index_bars` 指数日线 · `minute_bars` 1 分钟线（可选） · `minute_bars_5m` 5 分钟线（可选） · `commodity_bars` 商品期货主连（可选） · `adj_factors` 复权因子（派生） · `delisting_events` 退市事件（派生） |
+| 行情 | `daily_bars` 日线（未复权） · `index_bars` 指数日线 · `minute_bars` 1 分钟线（可选） · `minute_bars_5m` 5 分钟线（可选） · `trade_ticks` 分笔（可选，3 秒快照聚合非逐笔） · `commodity_bars` 商品期货主连（可选） · `adj_factors` 复权因子（派生） · `delisting_events` 退市事件（派生） |
 | 公司事件 | `corporate_actions` 公司行为（除权除息） · `announcement_index` 公告索引 · `earnings_disclosure_schedule` 业绩披露预约 |
 | 基本面 / 估值 | `financial_statement_items` 财务报表科目（PIT） · `valuation_metrics` 估值指标 · `analyst_consensus` 分析师一致预期 |
 | 资金面 | `fund_flow` 个股资金流 · `margin_trading` 融资融券 · `northbound_flows` 北向资金流向 · `northbound_holdings` 北向持股 · `dragon_tiger` 龙虎榜 · `block_trades` 大宗交易 · `institutional_holdings` 机构持股 |
@@ -194,7 +252,7 @@ AkShare / efinance 解决「怎么拉数」；Tushare 解决「云端宽表」�
 
 ## 文档
 
-完整索引：[docs/README.md](docs/README.md)。常用入口：[安装](docs/getting-started/installation.md) · [快速开始](docs/getting-started/quickstart.md) · [数据集目录](docs/datasets/catalog.md) · [Runbook](docs/operations/runbook.md) · [CLI](docs/reference/cli.md)。
+完整索引：[docs/README.md](docs/README.md)。常用入口：[安装](docs/getting-started/installation.md) · [快速开始](docs/getting-started/quickstart.md) · [数据集目录](docs/datasets/catalog.md) · [Runbook](docs/operations/runbook.md) · [CLI](docs/reference/cli.md) · [serve 面板](docs/modules/serve.md)。
 
 ## 许可
 
