@@ -39,12 +39,19 @@ DATE_COLUMNS: dict[str, str] = {
     name: spec.query_date_col for name, spec in DATASETS.items() if spec.query_date_col is not None
 }
 PIT_DATASETS = pit_dataset_names()
-PRICE_COLS = ("open", "high", "low", "close")
+# Columns an adjustment factor multiplies. `price` is here for trade_ticks,
+# which has no OHLC — without it the dataset would be in ADJUSTABLE_DATASETS
+# and `load(adjust="hfq")` would return no adj_ columns at all, silently.
+PRICE_COLS = ("open", "high", "low", "close", "price")
 # Datasets carrying per-share prices that adj_factors can adjust. Intraday
 # datasets come from the registry so a new frequency is adjustable the day it
 # is registered. index_bars is in because its `frequency` column made it a bar
 # dataset historically; its levels are not per-share, but that predates this.
-ADJUSTABLE_DATASETS = {"daily_bars", "index_bars"} | set(intraday_dataset_names())
+# trade_ticks is listed by name rather than inherited from
+# intraday_dataset_names(): it deliberately carries no `intraday_frequency`
+# (see its DatasetSpec), but its prices still cross ex-dividend dates and a
+# comparison spanning one would otherwise see a gap that is not a price move.
+ADJUSTABLE_DATASETS = {"daily_bars", "index_bars", "trade_ticks"} | set(intraday_dataset_names())
 
 
 class ReaderError(ValueError):
@@ -343,7 +350,14 @@ def load(
     # Intraday rows sort by symbol then timestamp: trade_date alone would leave
     # a session's 240 bars in whatever order the pages arrived, and grouping by
     # symbol first is what every resampling consumer wants.
-    if "bar_time" in df.columns:
+    #
+    # Transaction records need `tick_seq` rather than the timestamp, because
+    # the timestamp has no seconds: sorting a session by `trade_time` leaves
+    # the twenty records sharing a minute in file order, which is the one thing
+    # this dataset exists to preserve.
+    if "tick_seq" in df.columns:
+        order = ("symbol", "trade_date", "tick_seq")
+    elif "bar_time" in df.columns:
         order = ("symbol", "bar_time")
     else:
         order = (DATE_COLUMNS.get(dataset), "symbol")

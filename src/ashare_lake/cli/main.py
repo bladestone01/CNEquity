@@ -13,7 +13,6 @@ from ashare_lake.derive.adj_factors import compute_adj_factors
 from ashare_lake.domain.datasets import (
     fetch_semantics,
     get_dataset,
-    intraday_dataset_names,
 )
 from ashare_lake.orchestrator.engine import JobEngine
 from ashare_lake.orchestrator.manifest import Manifest
@@ -686,20 +685,7 @@ def backfill(
     _guard_history_horizon(dataset, start_d)
     if symbols_str:
         symbols = [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
-        if not get_dataset(dataset).intraday_frequency:
-            raise click.ClickException(
-                f"--symbols only applies to intraday datasets "
-                f"({', '.join(sorted(intraday_dataset_names()))}); {dataset} takes its "
-                "universe from instruments."
-            )
-        # Enabling here too: a one-off `--symbols` pull should not also require
-        # flipping [minute_bars].enabled in the config first.
-        cfg.minute_bars_enabled = True
-        cfg.minute_bars_scope = "watchlist"
-        cfg.minute_bars_symbols = symbols
-        freq = get_dataset(dataset).intraday_frequency
-        if freq not in cfg.minute_bars_frequencies:
-            cfg.minute_bars_frequencies = [*cfg.minute_bars_frequencies, freq]
+        _override_scope(cfg, dataset, symbols)
         click.echo(f"[{dataset}] scope overridden for this run: {len(symbols)} symbol(s)", err=True)
     if start_d:
         cfg._backfill_start = start_d
@@ -721,6 +707,43 @@ def backfill(
         raise SystemExit(1)
 
 
+# Datasets whose universe comes from a config block rather than from
+# `instruments`, and the block that holds it. `asl backfill --symbols` and the
+# horizon guard both need to name the right one — telling a trade_ticks user to
+# narrow `[minute_bars].scope` sends them to edit a setting that does nothing.
+SCOPED_DATASETS: dict[str, str] = {
+    "minute_bars": "minute_bars",
+    "minute_bars_5m": "minute_bars",
+    "trade_ticks": "trade_ticks",
+}
+
+
+def _override_scope(cfg, dataset: str, symbols: list[str]) -> None:
+    """Point *dataset* at exactly *symbols* for this run only.
+
+    Enabling as well as scoping: a one-off `--symbols` pull should not also
+    require flipping the config's `enabled` flag first, and the capture steps
+    return early when it is false.
+    """
+    block = SCOPED_DATASETS.get(dataset)
+    if block is None:
+        raise click.ClickException(
+            f"--symbols only applies to datasets with a configured scope "
+            f"({', '.join(sorted(SCOPED_DATASETS))}); {dataset} takes its "
+            "universe from instruments."
+        )
+    setattr(cfg, f"{block}_enabled", True)
+    setattr(cfg, f"{block}_scope", "watchlist")
+    setattr(cfg, f"{block}_symbols", symbols)
+    # The ceiling exists to stop an unnoticed full-market sweep, not to second
+    # guess a list the user just typed out by hand.
+    if block == "trade_ticks":
+        cfg.trade_ticks_max_symbols = max(cfg.trade_ticks_max_symbols, len(symbols))
+    frequency = get_dataset(dataset).intraday_frequency
+    if frequency and frequency not in cfg.minute_bars_frequencies:
+        cfg.minute_bars_frequencies = [*cfg.minute_bars_frequencies, frequency]
+
+
 def _guard_history_horizon(dataset: str, start: date | None) -> None:
     """Refuse a window the source cannot serve, instead of sweeping into nothing.
 
@@ -733,6 +756,16 @@ def _guard_history_horizon(dataset: str, start: date | None) -> None:
     earliest = spec.earliest_available(date.today())
     if earliest is None or start is None or start >= earliest:
         return
+    if spec.history_floor_date is not None:
+        # A fixed floor, not a per-symbol budget: no symbol reaches further
+        # back, so there is no narrower scope that would help.
+        raise click.ClickException(
+            f"{dataset}: --start {start} is before the source's history floor. "
+            f"The vendor serves nothing earlier than {earliest} for any symbol, "
+            f"and no backfill source extends it. Re-run with --start {earliest} "
+            "or later."
+        )
+    block = SCOPED_DATASETS.get(dataset, "minute_bars")
     raise click.ClickException(
         f"{dataset}: --start {start} is older than the source horizon. "
         f"The vendor caps history per symbol at about {spec.history_horizon_days} "
@@ -740,7 +773,7 @@ def _guard_history_horizon(dataset: str, start: date | None) -> None:
         f"{earliest}), and no backfill source extends it. Re-run with "
         f"--start {earliest} or later. "
         "(A barely-traded instrument holds bars on fewer days and so reaches "
-        "further back. To pull those, narrow [minute_bars].scope to a watchlist "
+        f"further back. To pull those, narrow [{block}].scope to a watchlist "
         "first — a full sweep at that start would spend hours on symbols that "
         "have nothing there.)"
     )

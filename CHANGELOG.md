@@ -6,6 +6,36 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`trade_ticks`: transaction records (分笔), opt-in and watchlist-scoped.**
+  Two new TDX wire commands (`0x0fc5` same-session, `0x0fb5` historical),
+  an adapter that assembles a session whole or not at all, and the dataset
+  with its own `[trade_ticks]` config block, `ticks` step group and quality
+  checks. Off by default and on no schedule.
+
+  **These are not tick-by-tick trades.** A-share Level-1 is a 3-second
+  snapshot, so one row aggregates however many real trades landed in that
+  frame — measured, 6.3 on average for 600519 and 33.4 for 000001. The wire
+  timestamp has minute precision (the protocol never carried seconds), so rows
+  are keyed by `tick_seq`, their position in the session. `direction` is TDX's
+  own tick-rule inference, not an exchange field, and its `after_hours` value
+  covers 15:05–15:30 fixed-price trading, which the exchange's daily volume
+  does not count.
+
+  History reaches back to 2024-01-02 for every symbol — a *fixed floor*, not
+  the rolling per-symbol bar count the minute bars have, which is why
+  `DatasetSpec` gains `history_floor_date`. Cost is ~1.85 requests and ~2,700
+  rows per symbol-session, ~8.4 bytes a row on disk: about a minute and 4.5MB
+  a session for a 200-name watchlist. `[trade_ticks].scope = "all"` is refused
+  at config validation and `max_symbols` (200) stops a resolved scope before
+  the first request.
+
+- **`DatasetSpec.history_floor_date`** — a source edge expressed as a calendar
+  date rather than a rolling trading-day count. `earliest_available()` prefers
+  it, and the backfill guard drops the "narrow your scope" advice when it
+  fires, since no scope reaches past a fixed floor.
+
 ### Fixed
 
 - **Intraday backfill no longer date-slices tip-paged TDX walks.** Minute-bar

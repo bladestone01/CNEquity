@@ -155,6 +155,39 @@ frequencies = ["1m"]
 # now that backfill walks tip→horizon once per symbol (no date-slice re-walk).
 fetch_workers = 4
 
+[trade_ticks]
+# Transaction records (分笔). Its own block, not a switch inside [minute_bars]:
+# these are different decisions by an order of magnitude, and enabling minute
+# bars must not quietly enable this.
+#
+# WHAT THIS IS. Not tick-by-tick trades. A-share Level-1 is a 3-second
+# snapshot, so one row aggregates however many real trades landed in that frame
+# (6-33 on average, measured). The timestamp has minute precision — the
+# protocol never carried seconds — so rows are identified by `tick_seq`, their
+# position in the session. `direction` is TDX's own tick-rule guess at who
+# crossed the spread, not an exchange field.
+#
+# HISTORY. TDX serves back to 2024-01-02 for every symbol — a fixed floor, not
+# a rolling window, and unrelated to the per-symbol bar-count limit the minute
+# bars have. `asl backfill trade_ticks --start` refuses anything earlier.
+#
+# COST. ~1.85 requests and ~2,700 rows per symbol-session; ~4.25 bytes a row on
+# disk. A 200-name watchlist is about a minute and ~3.8MB a day. Seeding those
+# 200 names over the full history is ~312,000 requests and 10-11 hours.
+enabled = false
+# "watchlist" — exactly the symbols listed below. "index:<symbol>" — that
+# index's latest constituents. There is no "all": see max_symbols.
+scope = "watchlist"
+symbols = []
+# Hard ceiling on the resolved scope, checked before any fetch. 沪深300 resolves
+# to ~300 names and so fails here until you raise this on purpose — the
+# friction is deliberate, because the disk and the wire time are yours.
+max_symbols = 200
+# Concurrent TDX connections. As with [minute_bars], this does not raise the
+# request rate (the limiter paces every request); it stops a lane idling on
+# latency. Measured serial: 1.70 req/s.
+fetch_workers = 4
+
 [failover]
 enabled = true
 
@@ -239,6 +272,13 @@ steps = ["institutional_holdings", "analyst_consensus",
 [job.daily.groups.intraday]
 at = "18:45"
 steps = ["minute_bars", "minute_bars_5m", "compact"]
+
+# Also unscheduled: `asl run daily --group ticks`. Its own group rather than a
+# fourth entry in `intraday` above, so that turning on minute bars cannot drag
+# transaction records along with it. Enable [trade_ticks] first.
+[job.daily.groups.ticks]
+at = "19:00"
+steps = ["trade_ticks", "compact"]
 
 [job.init.phases]
 names = [

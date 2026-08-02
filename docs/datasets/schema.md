@@ -22,6 +22,7 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 | daily_bars | `trade_date`（按日） |
 | index_bars | `trade_date`（按年） |
 | minute_bars / minute_bars_5m | `trade_date`（按日） |
+| trade_ticks | `trade_date`（按日） |
 | trading_status | `trade_date`（按月） |
 | corporate_actions | `ex_date`（按年） |
 | adj_factors | `trade_date`（按日） |
@@ -41,6 +42,7 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 | daily_bars | `(symbol, trade_date)` |
 | index_bars | `(symbol, trade_date, frequency)` |
 | minute_bars / minute_bars_5m | `(symbol, trade_date, bar_time, frequency)` |
+| trade_ticks | `(symbol, trade_date, tick_seq)` |
 | corporate_actions | `(symbol, ex_date, action_type)` |
 | adj_factors | `(symbol, trade_date, adjust_type)` |
 | fund_flow | `(symbol, trade_date)` |
@@ -178,6 +180,54 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --appl
 **历史视野（重要）。** 实测 2026-08-01：TDX 每个标的保留 **22,800 根 1m** 与 **23,568 根 5m**。上限是**根数**而非日期——除以一个完整交易日（240 / 48 根）即为 95 / 491 个交易日，对每个交易日都有报价的标的成立。**更早的窗口返回的不是更少数据，而是没有数据**，且没有任何回填源能补深。完整机制与例外见 [catalog.md 历史视野](catalog.md)；`asl backfill` 会直接拒绝越界窗口，`list_datasets()` 的 `history_horizon_days` 是程序化契约。
 
 **为什么一个数据集只放一个频率。** 1m 视野 95 天、5m 视野 491 天，而一个数据集只有一个水位、一个 `coverage_start`、一个 `history_horizon_days`。混在一起，这三样对两个频率都是错的。`frequency` 仍在 schema 与主键里，所以两者共用同一份列定义、同一套质量检查。
+
+#### trade_ticks
+
+分笔成交记录。**可选**，默认关闭（`[trade_ticks].enabled = false`），**独立的**配置节与 step 组（`ticks`），不搭 `[minute_bars]` 的车。
+
+**先说清楚它不是什么：不是逐笔成交。** A 股 Level-1 是**每 3 秒一帧的快照**，一条记录是那一帧里所有真实成交的聚合。
+实测当日接口带的「本帧笔数」：`600519.SH` 均值 6.3、`000001.SZ` 均值 33.4（最大 1217）。
+所以一个交易日最多约 4,800 条，实测全市场随机 40 只均值 2,721 条。没有逐笔委托，没有十档。
+
+| 列 | 类型 | 说明 |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | 分区列；A 股无夜盘，恒等于 `trade_time` 的日期 |
+| tick_seq | int32 | **当日时间升序的 0-based 稠密序号**，行的身份所在（见下） |
+| trade_time | timestamp（naive） | **分钟精度**，秒位恒为 `00`——不是被截断，是协议从来没带过秒 |
+| price | float64 | **未复权**；`load(..., adjust="hfq")` 会给出 `adj_price` |
+| volume | int64 | **股**。源端是手，适配器 ×100，并由与日频的对账确证而非假定 |
+| direction | string | `buy` / `sell` / `neutral` / `after_hours`（见下） |
+| source / data_version / fetched_at | | 溯源列 |
+
+**为什么主键是 `tick_seq` 而不是 `trade_time`。** 时间戳没有秒，一分钟里最多 20 条记录时间戳完全相同。
+用 `(symbol, trade_date, trade_time)` 会丢掉绝大多数行，而**同一分钟内的先后正是分笔的价值所在**。
+
+`tick_seq` 能当主键，是因为**已结算的交易日是冻结的**：同一天重复拉取，`600519.SH`（4,308 行）与 `300750.SZ`（4,764 行）**逐字段一致**。
+这与分钟线 0.6% 的边界归属抖动形成对比。代价是适配器必须**走满分页再编号**——
+翻页从收盘那头往回走，中途失败就整个 symbol-day 作废，绝不落半天的数据（否则空洞之后每一行的序号都错位）。
+
+**`direction` 是推断值，不是交易所字段。** 通达信按 tick rule 判断谁主动成交；实测与前一帧价格变动方向的一致率约 70%。
+
+`after_hours` 是 15:05–15:30 的**盘后固定价格成交**：价格恒等于当日最后成交价，且**不在交易所当日成交量口径内**。
+与 `daily_bars` 对账必须先剔除它——实测含它比值 1.000363，剔除后 **1.000000**（30 个 symbol-day，中位数精确为 1.0）。
+
+**交易时段是四段**，与分钟线的两段不同：`09:25`（开盘集合竞价，每个 symbol-day 恰好 1 条）、`09:30–11:30`、`13:00–15:00`、`15:05–15:30`。
+注意 09:25 与 13:00 都是**真实成交**——分钟线里它们不是合法 bar 标签，因为 bar 按收盘分钟标注。
+实测 77,000 条记录零条落在这四段之外；落在外面的会被适配器拒绝，audit 的 `trade_ticks_off_session` 报 error。
+
+**没有 `amount` 列。** 源端不提供。`price × volume` 可以自己算，但要知道它是近似——
+一帧里多笔不同价成交被合并成一个代表价。实测这个失真在 **±0.03%** 以内（成交额对账中位数 1.000013）。
+落一个看起来像事实的近似值进湖，比让使用者自己算更糟。
+
+**价格标度按品种。** 个股 ÷100、基金 ÷1000（`SECURITY_COEFFICIENT`）。
+上游 tdxpy 硬编码 ÷100，实测会让 `510300.SH` 的成交额对账变成 10.004、`159915.SZ` 的 3.368 元读成 33.68。
+适配器遇到无法识别的前缀**直接报错而不是回落到个股系数**——错误的标度是隐形的，数字看起来全都像价格。
+
+**历史底是固定日期，不是滚动窗口。** 实测 2026-08-02：所测每一只标的都回溯到 **2024-01-02**，2023-12-28 为空。
+这是 `history_floor_date`，与分钟线的 `history_horizon_days` 是两种机制，详见 [catalog.md 历史视野](catalog.md)。
+
+**北交所无数据。** TDX 没有 `.BJ` 的分笔路由，且返回空而不是报错——适配器显式抛异常，否则会和「全天停牌」无法区分。
 
 **15m / 30m / 60m 不入湖**：可从 5m 精确聚合（48 根分别被 3/6/12 整除，收盘分钟边界对齐），见 [catalog.md](catalog.md) 的示例代码。
 
