@@ -12,16 +12,33 @@
 # as possible — but any failure makes the pipeline exit non-zero after the
 # health check reports it.
 #
+# After the groups, anything still behind the last trading day gets one more
+# attempt. This matters because a `snapshot` dataset only ever fetches the run
+# day: a source outage during its one scheduled window loses that day for good,
+# since replaying it later would forge rows. valuation_metrics lost 2026-07-30
+# and 07-31 exactly that way — the per-host retries inside the adapter were
+# already there and were exhausted. What was missing was a second window.
+#
+# The wait before that second attempt is the point of it. Retrying immediately
+# mostly re-hits the same outage, so the pass sleeps first — but only when
+# something is actually stale, so a healthy day pays nothing. For an outage
+# lasting hours a separate late-evening cron line is still the better tool:
+#   5 20 * * 1-5 asl run daily --stale-only
+#
 # Usage: scripts/daily_pipeline.sh [YYYY-MM-DD]
 # Env: ASL_CONFIG, ASL_LOG_DIR, ASL_GROUPS (space-separated override),
 #      ASL_GATE_GROUPS (space-separated; default "core" — failure ⇒ hard fail),
 #      ASL_SOFT_FAIL_OK=1 (default) — gate OK 时东财/soft 失败只告警、exit 0；
 #        设为 0 则 soft 失败仍 exit 1（国内全组日更可用），
+#      ASL_STALE_RETRY=1 (default) — 收尾补抓仍落后的数据集；0 关闭，
+#      ASL_STALE_RETRY_DELAY_SEC=1800 (default) — 补抓前等多久，
 #      ASL_TRADE_DATE (same as optional CLI arg — catch up a prior session).
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ASL="$REPO_ROOT/.venv/bin/asl"
+# Overridable so the control flow can be exercised against a stub instead of a
+# real lake and a real network.
+ASL="${ASL_BIN:-$REPO_ROOT/.venv/bin/asl}"
 CONFIG="${ASL_CONFIG:-$REPO_ROOT/configs/ashare-lake.toml}"
 LOG_DIR="${ASL_LOG_DIR:-$REPO_ROOT/data/ashare-lake/logs}"
 mkdir -p "$LOG_DIR"
@@ -43,6 +60,8 @@ GROUP_LIST="${ASL_GROUPS:-core capital signals fundamentals macro_risk research}
 GATE_GROUP_LIST="${ASL_GATE_GROUPS:-core}"
 # Overseas Mac: expected EM lag must not paint the whole day red.
 SOFT_FAIL_OK="${ASL_SOFT_FAIL_OK:-1}"
+STALE_RETRY="${ASL_STALE_RETRY:-1}"
+STALE_RETRY_DELAY_SEC="${ASL_STALE_RETRY_DELAY_SEC:-1800}"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -81,6 +100,34 @@ for g in $GROUP_LIST; do
   fi
 done
 
+# Second attempt at whatever is still behind, before the health check so a
+# successful repair does not page anyone. `asl status --datasets` exits 1 when
+# something is STALE, which makes it the probe: on a clean day this costs one
+# directory walk and skips the sleep entirely.
+stale_retry_status="skipped"
+if [[ "$STALE_RETRY" == "1" ]]; then
+  log "--- stale probe ---"
+  if "$ASL" status --datasets --config "$CONFIG" >>"$LOG" 2>&1; then
+    log "nothing stale — no retry needed"
+    stale_retry_status="not needed"
+  else
+    log "something is stale; waiting ${STALE_RETRY_DELAY_SEC}s before re-fetching"
+    sleep "$STALE_RETRY_DELAY_SEC"
+    log "--- stale retry ---"
+    if "$ASL" run daily --stale-only --config "$CONFIG" \
+      ${DATE_ARGS[@]+"${DATE_ARGS[@]}"} >>"$LOG" 2>&1; then
+      log "stale retry OK"
+      stale_retry_status="OK"
+    else
+      log "stale retry FAILED (see $LOG)"
+      stale_retry_status="FAILED"
+      # Soft by construction: the groups already had their turn, and a source
+      # still down after the wait is not something this run can fix.
+      soft_failed+=("stale-retry")
+    fi
+  fi
+fi
+
 # Health check (fires desktop notification on problems) and backup run
 # regardless of group outcomes so we always get a status signal and a snapshot.
 log "--- health check ---"
@@ -113,6 +160,7 @@ while [[ $i -lt ${#summary_names[@]} ]]; do
   log "  ${g}: ${st}  [${kind}]"
   i=$((i + 1))
 done
+log "  stale-retry: ${stale_retry_status}"
 
 if [[ ${#gate_failed[@]} -gt 0 ]]; then
   log "==== daily pipeline DONE — GATE FAILED: ${gate_failed[*]} (soft also: ${soft_failed[*]:-none}) ===="

@@ -16,6 +16,7 @@ ashare_lake/
 ├── derive/              派生计算
 ├── quality/             审计与 failover
 ├── query/               消费层 API
+├── serve/               只读湖面板（asl serve）
 └── cli/                 Click 命令
 ```
 
@@ -33,6 +34,8 @@ cli → orchestrator → steps → adapters
 
 `query` 不依赖 `orchestrator` 执行路径，仅读湖内文件与 `Config` 路径。
 
+`serve` 只读，且只读**已落盘的产物**（注册表、目录布局、`meta/stats`、`meta/quality`、manifest）——不扫 curated，不写湖。
+
 ---
 
 ## 模块文档
@@ -48,6 +51,7 @@ cli → orchestrator → steps → adapters
 | derive | [derive.md](derive.md) | `adj_factors.py`, `trading_status_history.py` |
 | quality | [quality.md](quality.md) | `audit.py`, `failover.py` |
 | query | [query.md](query.md) | `reader.py`, `views.py` |
+| serve | [serve.md](serve.md) | `app.py`, `lake.py` |
 | cli | [cli.md](cli.md) | `main.py` |
 
 ---

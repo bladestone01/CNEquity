@@ -35,10 +35,10 @@ def test_horizon_guard_is_a_no_op_without_a_horizon():
 
 
 def test_earliest_available_converts_trading_days_to_calendar_days():
-    spec = DatasetSpec("x", history_horizon_days=242)
+    spec = DatasetSpec("x", tier="L1", history_horizon_days=242)
     # A year of sessions is a calendar year, not 242 calendar days.
     assert spec.earliest_available(date(2026, 8, 1)) == date(2025, 8, 1)
-    assert DatasetSpec("y").earliest_available(date(2026, 8, 1)) is None
+    assert DatasetSpec("y", tier="L1").earliest_available(date(2026, 8, 1)) is None
 
 
 class FakeEngine:
@@ -136,9 +136,7 @@ def test_minute_bars_declares_symbol_chunking_not_date_chunking():
 def test_symbol_chunked_backfill_walks_full_window_per_symbol_batch(monkeypatch):
     monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
     symbols = [f"{i:06d}.SH" for i in range(250)]
-    monkeypatch.setattr(
-        "ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols
-    )
+    monkeypatch.setattr("ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = type(
         "Cfg",
         (),
@@ -175,9 +173,7 @@ def test_symbol_chunked_backfill_stops_and_reports_resume_symbol(monkeypatch):
 
     monkeypatch.setattr(cli_main, "JobEngine", FailingSecond)
     symbols = [f"{i:06d}.SH" for i in range(250)]
-    monkeypatch.setattr(
-        "ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols
-    )
+    monkeypatch.setattr("ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = type(
         "Cfg",
         (),
@@ -268,9 +264,7 @@ def test_cli_backfill_takes_the_symbol_chunked_path_when_both_dates_given(monkey
 
     monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
     symbols = [f"{i:06d}.SH" for i in range(250)]
-    monkeypatch.setattr(
-        "ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols
-    )
+    monkeypatch.setattr("ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = types.SimpleNamespace(
         minute_bars_scope="index:000300.SH",
         minute_bars_symbols=[],
@@ -302,9 +296,7 @@ def test_cli_backfill_exits_nonzero_when_the_result_is_not_success(monkeypatch):
             return "failed"
 
     monkeypatch.setattr(cli_main, "JobEngine", AllFail)
-    monkeypatch.setattr(
-        "ashare_lake.steps.intraday.resolve_scope", lambda _cfg: ["600519.SH"]
-    )
+    monkeypatch.setattr("ashare_lake.steps.intraday.resolve_scope", lambda _cfg: ["600519.SH"])
     cfg = types.SimpleNamespace(
         minute_bars_scope="watchlist",
         minute_bars_symbols=["600519.SH"],

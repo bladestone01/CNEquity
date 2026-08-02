@@ -56,6 +56,13 @@ dependencies = [
   "xlrd>=2.0",
   # stdlib tomllib is 3.11+; config loader falls back to tomli on 3.10.
   "tomli>=2; python_version < '3.11'",
+  # `asl serve` — the read-only lake dashboard. FastAPI earns its ~8 packages on
+  # the response models and the OpenAPI page they generate: /api/docs is the
+  # API reference, so it cannot drift from the handlers, and the same models are
+  # what keep the CLI's JSON and the dashboard's JSON one contract instead of
+  # two. Starlette alone would route just as well and document nothing.
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
 ]
 
 # No [project.optional-dependencies]. Everything is a hard dependency.
@@ -95,6 +102,11 @@ ashare_lake = [
     "adapters/calendar/seeds/*.csv",
     "adapters/ths/seeds/*.json",
     "config/templates/*.toml",
+    # The dashboard page. Self-contained on purpose (no CDN, no build step): a
+    # lake often runs on an offline box or behind a proxy that would turn an
+    # external asset into a page that does not load.
+    "serve/static/*.html",
+    "serve/static/*.js",
     # MIT requires the notice to travel with every copy of the vendored code.
     "adapters/tdx_protocol/_wire/LICENSE.tdxpy",
 ]

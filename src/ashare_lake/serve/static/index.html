@@ -1,0 +1,119 @@
+<!doctype html>
+<!--
+  Lake dashboard shell. Behaviour lives in bundle.js, built from frontend/ and
+  committed so `pip install` needs no node.
+
+  Self-contained on purpose: the only script is same-origin, there is no CDN and
+  no external font. A lake often runs on an offline box or behind a proxy, and
+  an external asset there is a page that does not load.
+-->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ashare-lake</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b64; --line: #e3e3de;
+    --card: #fff; --fresh: #2f855a; --stale: #c05621; --empty: #a0a09a;
+    --cell-covered: #4a9d6f; --cell-gap: #e0684f; --cell-outside: #edecea;
+    --cell-cadence: #cfd8dc;
+    /* Categorical series, validated for this surface (light steps of the
+       reference palette): worst adjacent CVD ΔE 9.1, normal-vision 19.6.
+       Three sit under 3:1 contrast, so the legend and the totals table below
+       every chart are load-bearing, not decoration. */
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+    --series-4: #eda100; --series-5: #e87ba4; --series-other: #9a9a92;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --fg: #e8e8e4; --muted: #96968e; --line: #2e2e33;
+      --card: #1f1f23; --fresh: #68d391; --stale: #f6ad55; --empty: #5a5a55;
+      --cell-covered: #3d7f5a; --cell-gap: #b8503c; --cell-outside: #2a2a2e;
+      --cell-cadence: #3c4348;
+      /* Same eight hues stepped for the dark surface, validated as a set —
+         not an automatic flip of the light values. */
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+      --series-4: #c98500; --series-5: #d55181; --series-other: #6d6d66;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.5rem 4rem; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; font-weight: 600; }
+  h2 { font-size: .95rem; margin: 2rem 0 .75rem; font-weight: 600; }
+  h3 { font-size: .8rem; margin: 1.5rem 0 .5rem; font-weight: 600; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .05em; }
+  a { color: inherit; }
+  .sub { color: var(--muted); margin-bottom: 1.75rem; font-size: .85rem; }
+  .banner {
+    background: var(--card); border: 1px solid var(--stale); border-left-width: 3px;
+    border-radius: 5px; padding: .6rem .85rem; margin-bottom: 1.25rem; font-size: .85rem;
+  }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; margin-bottom: 2rem; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: .8rem .9rem; }
+  .kpi .n { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi .l { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+  td.n, th.n { text-align: right; }
+  .tier-row { cursor: pointer; }
+  .tier-row:hover { background: var(--card); }
+  .tier-tag { font-weight: 600; margin-right: .5rem; }
+  .dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .4rem; }
+  .fresh { background: var(--fresh); } .stale { background: var(--stale); }
+  .empty, .na { background: var(--empty); }
+  .members td { background: var(--card); font-size: .85rem; }
+  .members table { margin: .25rem 0 .5rem; }
+  .ds-link { cursor: pointer; text-decoration: underline; text-decoration-style: dotted;
+             text-underline-offset: 3px; }
+  .scroll { overflow-x: auto; }
+  .legend { color: var(--muted); font-size: .75rem; margin: .6rem 0 0; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
+  .legend span { display: flex; align-items: center; gap: .3rem; }
+  .swatch { width: .65rem; height: .65rem; border-radius: 2px; display: inline-block; }
+  code { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: .05rem .3rem; font-size: .8rem; }
+  .err { color: var(--stale); }
+  .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--line); margin: 1.5rem 0 1rem; }
+  .tab { padding: .45rem .9rem; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); }
+  .tab.on { color: var(--fg); border-bottom-color: var(--fg); font-weight: 600; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: .5rem 1.5rem; }
+  .fact { display: flex; justify-content: space-between; gap: 1rem; padding: .3rem 0; border-bottom: 1px solid var(--line); font-size: .85rem; }
+  /* nowrap: a long value (a four-column primary key) must not squeeze the
+     label into "主\A键". */
+  .fact .k { color: var(--muted); white-space: nowrap; }
+  .fact .v { text-align: right; font-variant-numeric: tabular-nums; }
+  .cmd { display: flex; align-items: center; gap: .6rem; margin-bottom: .35rem; font-size: .85rem; }
+  .cmd button { font: inherit; font-size: .75rem; cursor: pointer; border: 1px solid var(--line);
+                background: var(--card); color: var(--fg); border-radius: 4px; padding: .1rem .5rem; }
+  .cover { position: relative; height: 26px; background: var(--cell-outside); border-radius: 3px; overflow: hidden; }
+  .cover .fill { position: absolute; top: 0; bottom: 0; background: var(--cell-covered); }
+  .cover .horizon { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--stale); }
+  .muted { color: var(--muted); font-size: .8rem; }
+  .back { font-size: .85rem; color: var(--muted); cursor: pointer; }
+  /* Filters in one row above the results. */
+  .controls { display: flex; gap: .9rem; align-items: center; flex-wrap: wrap; margin: .75rem 0; }
+  .controls label { display: flex; align-items: center; gap: .35rem; font-size: .82rem; color: var(--muted); }
+  .controls select, .controls input, .controls button {
+    font: inherit; font-size: .82rem; padding: .2rem .4rem; border-radius: 4px;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  }
+  .controls button { cursor: pointer; }
+  .controls button[disabled] { opacity: .45; cursor: default; }
+  .live { color: var(--fresh); font-size: .78rem; }
+  table.rows { font-size: .8rem; white-space: nowrap; }
+  table.rows th.pk { color: var(--fg); }
+  table.rows td { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <div id="app"></div>
+</main>
+<script src="/static/bundle.js"></script>
+</body>
+</html>

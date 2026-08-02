@@ -78,6 +78,25 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 |------|------|
 | `--group` | `core` \| `capital` \| `signals` \| `fundamentals` \| `macro_risk` \| `research` \| `intraday` |
 | `--backfill` | 强制 backfill 语义（慎用） |
+| `--stale-only` | 只重抓仍落后于最后交易日的数据集（与 `--group` 互斥） |
+
+### --stale-only：当天的第二次机会
+
+`snapshot` 数据集只抓 run 当天。**一次源端中断吃掉那个窗口，那天就永久没了**——`valuation_metrics` 就这样丢了 2026-07-30 和 07-31：per-host 重试和退避本来就有，只是全部耗尽了，而 snapshot 语义决定了后面任何一次 run 都补不回来。
+
+缺的不是重试，是**当天的第二个窗口**。挂在主 pipeline 几小时之后：
+
+```cron
+# 主 pipeline
+5 16 * * 1-5 /path/to/ashare-lake/scripts/daily_pipeline.sh
+
+# 收尾补抓：只跑仍然落后的，没有就空转
+5 20 * * 1-5 cd /path/to/ashare-lake && asl run daily --stale-only
+```
+
+新鲜度判据与 `asl status --datasets` 完全一致（含每数据集的 `max_staleness_days` 容忍），所以两者不会各说各话。没有落后的数据集时不建 run、直接退出 0，可以安全挂在定时器上。
+
+派生数据集不在其中：它们由 curated 重算，该跑的是 `asl derive`，不是重抓。
 
 无 `--group` 时跑完整 `[job.daily.waves]` DAG。`intraday` 组不在默认调度里：需先开 `[minute_bars].enabled`，再 `asl run daily --group intraday`。
 
@@ -233,7 +252,90 @@ asl derive trading_status --start 2001-01-01 --end 2001-12-31
 
 ## asl catalog
 
-JSON 列出 curated 各数据集文件数与行数。
+JSON 列出 curated 各数据集文件数与行数。每次都全扫；固定的度量走 `asl stats`。
+
+---
+
+## asl serve
+
+只读湖面板：分层总览、逐数据集覆盖与新鲜度、溯源分布、覆盖热力图。
+
+| 选项 | 默认 | 说明 |
+|------|------|------|
+| `--host` | `127.0.0.1` | 非回环地址**必须**配 `--token` |
+| `--port` | `8787` | |
+| `--token` | 无 | 要求 `Authorization: Bearer <token>` 或 `?token=` |
+
+```bash
+asl serve
+```
+
+页面在 `/`，单数据集在 `#/dataset/<name>`（状态 / 元数据 / 数据 三个 tab），跑批在 `#/runs`（含实时甘特），质量在 `#/quality`，OpenAPI 在 `/api/docs`（由 handler 生成，不会与实现漂移）。
+
+**面板不写湖。** 没有端点会跑批、重试或清理——那些留给 CLI。唯一的例外是 `meta/stats` 会在后台按需重建，因为它是湖的缓存而不是湖的一部分。
+
+数值全部来自已落盘的产物（注册表、目录布局、`meta/stats`、`meta/quality/health-latest.json`、manifest），**请求路径上不扫 curated**。所以：先 `asl stats rebuild` 才有行数与体积；findings 显示的是上次 `asl audit --full` 的快照，页面上标了日期。
+
+端点与热力图语义见 [serve 模块](../modules/serve.md)。
+
+---
+
+## asl stats
+
+湖的自我度量表，写到 `meta/stats/`。`list_datasets()` 只看目录名，答不了「这个分区有多少行、多大、谁写的」——那些在这里。
+
+产物：
+
+| 文件 | 粒度 | 列 |
+|------|------|-----|
+| `partition_stats.parquet` | dataset + partition | `granularity`、`period_start/end`、`row_count`、`file_count`、`bytes` |
+| `provenance_stats.parquet` | dataset + partition + source + data_version | `row_count`、`fetched_at_min/max` |
+| `stats-latest.json` | — | `generated_at`、`latest_run_id`、汇总数 |
+
+两张表而不是一张：`bytes` / `file_count` 是目录的属性，`row_count` 按源拆分，把文件级数字挂到细粒度上会让它看起来可加，而加起来是重复计数。
+
+不含 `tier` / `layer` / `history_mode`：那些在 `domain/datasets.py`，写进数据文件的副本只会过期。
+
+用 parquet 而非 duckdb 文件：写入是「临时文件 + 原子 rename」，读端零阻塞；duckdb 文件要独占写锁，会让 `asl serve` 和夜间跑批互相挡路。
+
+### asl stats rebuild
+
+| 选项 | 说明 |
+|------|------|
+| `--dataset` | 只重建这些数据集（可重复）；**其余数据集保留原有行**，不会被删 |
+| `--json` | 结果输出 JSON |
+
+全量重建：参考湖（1.5GB / 6600 万行 / 21k 分区）约 6 秒——只读 `source`、`data_version`、`fetched_at` 三列。增量刷新是可行的（跑批动过的分区可以从 `ingestion_batches.window_start/window_end` 反推），但没到需要的规模。
+
+### asl stats refresh
+
+只在「湖动过了」时才重建，否则空转返回。
+
+| 选项 | 说明 |
+|------|------|
+| `--force` | 即使是最新的也重建 |
+
+**判据是 run id，不是时钟。** 改变湖的是采集，所以建于最后一个 run 之后的表无论多旧都是当前的，建于之前的无论多新都是过期的——`stats-latest.json` 的 `latest_run_id` 和 manifest 的最新 run 比对即可，只读一个小 JSON 加一行 SQLite。
+
+并发用非阻塞锁收敛：面板请求、cron、夜间跑批同时想重建时只有一个真做，抢不到锁的直接返回而不是排队——把 web 请求堵在一次全扫后面比多看一个 run 的旧数字更糟。
+
+刷新策略（`meta/stats` 不会自己刷新）：
+
+```bash
+# 兜底：定时器上跑，没变化就是空转
+asl stats refresh
+```
+
+面板（M2）走 `stats_freshness()` 判过期 + 后台线程调 `refresh_stats_if_stale()`；线程策略留在调用方，模块本身是同步的。`asl run daily && asl stats rebuild` 也可以，但 `refresh` 更省。
+
+### asl stats show
+
+| 选项 | 说明 |
+|------|------|
+| `--dataset` | 单个数据集的逐分区明细 |
+| `--by-source` | 改看 source / data_version 分布 |
+
+无 stats 时报错并提示先 `asl stats rebuild`。
 
 ---
 

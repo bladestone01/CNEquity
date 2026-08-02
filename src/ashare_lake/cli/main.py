@@ -273,6 +273,64 @@ def run():
     """Run scheduled jobs."""
 
 
+def stale_fetch_steps(cfg, anchor: date) -> list[str]:
+    """Registered fetch steps whose dataset is still behind *anchor*.
+
+    Freshness is judged exactly as ``asl status --datasets`` judges it, so the
+    two cannot disagree about what is behind.
+
+    Derived datasets are excluded: they are recomputed by ``asl derive`` from
+    curated inputs, and re-fetching is not what they need. Datasets with no
+    registered step are excluded because there is nothing to run.
+    """
+    # Steps are registered by the module-level `import ashare_lake.steps`.
+    from ashare_lake.domain.datasets import DATASETS, is_stale
+    from ashare_lake.orchestrator.registry import STEP_REGISTRY
+    from ashare_lake.query.reader import list_datasets
+
+    out: list[str] = []
+    for row in list_datasets(config=cfg).iter_rows(named=True):
+        name = row["dataset"]
+        spec = DATASETS[name]
+        if spec.layer == "derived" or name not in STEP_REGISTRY:
+            continue
+        if not row["has_data"] or not row["watermarked"]:
+            continue
+        mark = row["watermark"] or row["coverage_end"]
+        if is_stale(name, mark, anchor):
+            out.append(name)
+    return out
+
+
+def _run_stale_only(cfg, engine, trade_date: date | None, *, backfill: bool) -> None:
+    """Second attempt, same day, for whatever the first attempt did not land.
+
+    The gap this closes: a ``snapshot`` dataset fetches only the run day, so a
+    source outage during the one scheduled window loses that day permanently —
+    ``valuation_metrics`` lost 2026-07-30 and 07-31 to a push2 clist outage and
+    no later run could have recovered them. Per-host retries already exist and
+    were exhausted; what was missing was a second window.
+    """
+    anchor = _last_trading_day(cfg, trade_date or date.today())
+    steps = stale_fetch_steps(cfg, anchor)
+    if not steps:
+        click.echo(f"nothing stale as of {anchor.isoformat()}")
+        return
+    click.echo(f"stale as of {anchor.isoformat()}: {', '.join(steps)}", err=True)
+    try:
+        result = engine.run_job(
+            "daily:stale",
+            trade_date=trade_date,
+            waves=[WaveConfig(name="stale", parallel=False, steps=[*steps, "compact"])],
+            backfill=backfill,
+        )
+    except RunLockError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps({"run_id": result["run_id"], "status": result["status"]}, indent=2))
+    if result["status"] not in ("success", "skipped_non_trading_day"):
+        raise SystemExit(1)
+
+
 @run.command("daily")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(
@@ -288,16 +346,29 @@ def run():
     help="As-of trade date YYYY-MM-DD (default: today). Use to catch up on weekends/holidays.",
 )
 @click.option("--backfill", is_flag=True)
+@click.option(
+    "--stale-only",
+    is_flag=True,
+    help="Re-fetch only the datasets still behind the last trading day. "
+    "Schedule a few hours after the main pipeline: a snapshot dataset that lost "
+    "its window to a source outage cannot be replayed tomorrow.",
+)
 def run_daily(
     config_path: str,
     group_name: str | None,
     trade_date_str: str | None,
     backfill: bool,
+    stale_only: bool,
 ):
     """Run daily ingestion job (Wave DAG or schedule group)."""
     cfg = _cfg(config_path)
     engine = JobEngine(cfg)
     td = date.fromisoformat(trade_date_str) if trade_date_str else None
+    if stale_only:
+        if group_name:
+            raise click.ClickException("--stale-only picks its own steps; drop --group.")
+        _run_stale_only(cfg, engine, td, backfill=backfill)
+        return
     try:
         if group_name:
             group = cfg.schedule_groups.get(group_name)
@@ -640,9 +711,7 @@ def backfill(
     # Tip-paged sources (intraday) must chunk by symbol, not by date: the wire
     # always walks tip → start, so date slices re-fetch every newer page.
     if spec.backfill_chunk_symbols and start_d and end_d:
-        result = _backfill_symbol_chunked(
-            cfg, dataset, start_d, end_d, spec.backfill_chunk_symbols
-        )
+        result = _backfill_symbol_chunked(cfg, dataset, start_d, end_d, spec.backfill_chunk_symbols)
     elif spec.backfill_chunk_days and start_d and end_d:
         result = _backfill_chunked(cfg, dataset, start_d, end_d, spec.backfill_chunk_days)
     else:
@@ -707,9 +776,7 @@ def _backfill_once(cfg, dataset: str) -> dict:
     return _finish_backfill_run(engine, result)
 
 
-def _backfill_symbol_chunked(
-    cfg, dataset: str, start: date, end: date, chunk_symbols: int
-) -> dict:
+def _backfill_symbol_chunked(cfg, dataset: str, start: date, end: date, chunk_symbols: int) -> dict:
     """Backfill a tip-paged dataset as compacted symbol slices over [start, end].
 
     TDX intraday pages backwards from the live tip. A date-sliced sweep of the
@@ -743,9 +810,7 @@ def _backfill_symbol_chunked(
                 f"{len(symbols)} ({chunk[0]}..{chunk[-1]}) window {start}..{end}",
                 err=True,
             )
-            result = engine.run_job(
-                "backfill", steps=[dataset], backfill=True, finalize_run=False
-            )
+            result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
             result = _finish_backfill_run(engine, result)
             rows_read += int(result.get("rows_read", 0))
             rows_written += int(result.get("rows_written", 0))
@@ -1232,6 +1297,157 @@ def catalog(config_path: str):
                 )
                 entries.append({"dataset": ds_dir.name, "files": len(files), "rows": rows})
     click.echo(json.dumps(entries, indent=2))
+
+
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+@cli.command()
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8787, show_default=True)
+@click.option(
+    "--token",
+    default=None,
+    help="Require this bearer token (or ?token=). Mandatory for a non-loopback --host.",
+)
+def serve(config_path: str, host: str, port: int, token: str | None):
+    """Serve the read-only lake dashboard.
+
+    Shows coverage, freshness and source mix. Nothing here writes to the lake —
+    running, retrying and cleaning stay with the CLI.
+    """
+    import uvicorn
+
+    from ashare_lake.serve.app import create_app
+
+    # Checked before the config is even loaded: a typo in --config must not
+    # mask the bind guard by failing first. The service has no other access
+    # control, and a lake holds a full market history plus the paths and
+    # sources that built it.
+    if host not in _LOOPBACK and not token:
+        raise click.ClickException(
+            f"--host {host} would expose the dashboard beyond this machine; "
+            "pass --token to require one, or leave --host at 127.0.0.1."
+        )
+
+    cfg = _cfg(config_path)
+    click.echo(f"lake:      {cfg.data_root}")
+    click.echo(f"dashboard: http://{host}:{port}/" + (f"?token={token}" if token else ""))
+    click.echo(f"api docs:  http://{host}:{port}/api/docs")
+    uvicorn.run(create_app(cfg, token=token), host=host, port=port, log_level="info")
+
+
+@cli.group()
+def stats():
+    """Lake measurement tables under meta/stats (rows, bytes, source mix)."""
+
+
+@stats.command("rebuild")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--dataset",
+    "dataset_names",
+    multiple=True,
+    help="Rebuild only these datasets (repeatable). Other datasets keep their rows.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print the result as JSON.")
+def stats_rebuild(config_path: str, dataset_names: tuple[str, ...], as_json: bool):
+    """Recompute partition_stats / provenance_stats from curated and derived."""
+    from ashare_lake.storage.stats import rebuild_stats
+
+    cfg = _cfg(config_path)
+    try:
+        result = rebuild_stats(cfg, datasets=list(dataset_names) or None)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        click.echo(json.dumps(result.as_dict(), indent=2, default=str))
+        return
+    click.echo(
+        f"{len(result.datasets)} dataset(s), {result.partitions} partition(s), "
+        f"{result.rows:,} row(s), {result.files} file(s), "
+        f"{result.bytes / 1e6:.1f}MB in {result.elapsed_seconds:.1f}s"
+    )
+    if result.empty:
+        click.echo(f"no parquet yet: {', '.join(sorted(result.empty))}")
+
+
+@stats.command("refresh")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--force", is_flag=True, help="Rebuild even when the stats are current.")
+def stats_refresh(config_path: str, force: bool):
+    """Rebuild only if ingestion has run since the stats were built.
+
+    Safe to schedule on a timer: it is a no-op when nothing has changed, and a
+    concurrent rebuild elsewhere makes it exit rather than queue behind one.
+    """
+    from ashare_lake.storage.stats import refresh_stats_if_stale, stats_freshness
+
+    cfg = _cfg(config_path)
+    freshness = stats_freshness(cfg)
+    result = refresh_stats_if_stale(cfg, force=force)
+    if result is None:
+        if freshness.stale:
+            click.echo("stale, but another rebuild holds the lock — nothing to do")
+        else:
+            click.echo(f"current as of run {freshness.latest_run_id} — nothing to do")
+        return
+    click.echo(
+        f"rebuilt ({freshness.reason or 'forced'}): "
+        f"{len(result.datasets)} dataset(s), {result.rows:,} row(s) "
+        f"in {result.elapsed_seconds:.1f}s"
+    )
+
+
+@stats.command("show")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--dataset", default=None, help="Per-partition detail for one dataset.")
+@click.option("--by-source", is_flag=True, help="Group by source / data_version instead.")
+def stats_show(config_path: str, dataset: str | None, by_source: bool):
+    """Summarise the stats tables. Run `asl stats rebuild` first."""
+    from ashare_lake.storage.stats import (
+        load_partition_stats,
+        load_provenance_stats,
+        load_summary,
+        stats_freshness,
+    )
+
+    cfg = _cfg(config_path)
+    summary = load_summary(cfg)
+    if summary is None:
+        raise click.ClickException("no stats yet — run `asl stats rebuild`")
+    freshness = stats_freshness(cfg)
+
+    df = load_provenance_stats(cfg) if by_source else load_partition_stats(cfg)
+    if dataset:
+        df = df.filter(pl.col("dataset") == dataset)
+        if df.is_empty():
+            raise click.ClickException(f"no stats rows for dataset {dataset!r}")
+    elif by_source:
+        df = df.group_by(["dataset", "source", "data_version"]).agg(
+            pl.col("row_count").sum(),
+            pl.col("fetched_at_min").min(),
+            pl.col("fetched_at_max").max(),
+        )
+    else:
+        df = df.group_by("dataset").agg(
+            pl.len().alias("partitions"),
+            pl.col("row_count").sum(),
+            pl.col("file_count").sum().alias("files"),
+            pl.col("bytes").sum(),
+            pl.col("period_start").min(),
+            pl.col("period_end").max(),
+        )
+
+    stale_note = f"  STALE — {freshness.reason}; run `asl stats refresh`" if freshness.stale else ""
+    click.echo(
+        f"generated_at: {summary.get('generated_at')}  "
+        f"run: {summary.get('latest_run_id')}{stale_note}"
+    )
+    with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
+        click.echo(df.sort(df.columns[:2]))
 
 
 @cli.command()

@@ -213,6 +213,48 @@ asl run daily --group core   # 增量续采
 
 ---
 
+## 收尾补抓
+
+**`daily_pipeline.sh` 已经内建了这一步**，不用额外配 cron。跑完全部组之后它会：
+
+1. 用 `asl status --datasets` 探一下（有 STALE 退出 1）——干净的日子到此为止，零成本
+2. 有 STALE 才等 `ASL_STALE_RETRY_DELAY_SEC`（默认 1800 秒）
+3. 然后 `asl run daily --stale-only`，只重抓仍然落后的
+
+排在健康检查**之前**，所以补抓成功就不会误报。
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `ASL_STALE_RETRY` | `1` | 设 `0` 关闭 |
+| `ASL_STALE_RETRY_DELAY_SEC` | `1800` | 补抓前等多久 |
+
+**为什么需要它。** `snapshot` 数据集（`valuation_metrics`、`fund_flow`、`sector_members`、`analyst_consensus` 等）只抓 run 当天——源端在那一个调度窗口里中断，那天就**永久没了**，后面任何一次 run 都补不回来（重放会伪造行，这是 `fetch_semantics` 的设计）。
+
+这不是重试不够：`clist.py` 的 per-host 重试加退避一直都在，`valuation_metrics` 在 2026-07-30 / 07-31 是把所有 host 的重试都耗尽了。缺的是**当天的第二个窗口**。
+
+**等待本身就是重点。** 立刻重试大概率撞上同一场中断，所以先睡再抓——但只在真有 STALE 时睡。
+
+更糟的是它很安静：默认 `ASL_SOFT_FAIL_OK=1`，gate 正常时 soft 组失败只告警、退出 0。上面那两天就是这样过了三天没人发现。补抓失败同样算 soft，会出现在分组汇总的 `stale-retry:` 一行里。
+
+### 中断持续几小时怎么办
+
+脚本内的等待是分钟级的。源端挂半天的话，再加一行独立 cron：
+
+```cron
+5 20 * * 1-5 cd /path/to/ashare-lake && asl run daily --stale-only --config configs/ashare-lake.toml
+```
+
+`--stale-only` 没有落后的数据集时不建 run、直接退出 0，重复挂无害。
+
+配套的可见性：
+
+```bash
+asl status --datasets     # 有 STALE 退出 1
+asl serve                 # 面板首屏就列出 STALE 数据集
+```
+
+---
+
 ## Init 与资源
 
 ```bash

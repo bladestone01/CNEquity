@@ -128,11 +128,18 @@ def repartition_dataset(
             f"{dataset}.{spec.partition_col} is {col.dtype}, not a date; "
             "period partitioning applies to date keys only"
         )
-    part_values = {
-        "day": col.dt.strftime("%Y-%m-%d"),
-        "month": col.dt.strftime("%Y-%m"),
-        "year": col.dt.strftime("%Y"),
-    }[spec.partition_granularity]
+    granularity = spec.partition_granularity
+    if granularity == "day":
+        part_values = col.dt.strftime("%Y-%m-%d")
+    elif granularity == "month":
+        part_values = col.dt.strftime("%Y-%m")
+    elif granularity == "quarter":
+        # strftime has no quarter directive, so derive it from the month. Only
+        # reachable for a Date-keyed dataset: report_period is a String column
+        # and is rejected by the dtype check above.
+        part_values = col.dt.strftime("%Y") + "Q" + ((col.dt.month() - 1) // 3 + 1).cast(pl.String)
+    else:
+        part_values = col.dt.strftime("%Y")
 
     tmp_root = root.parent / f"{dataset}{_TMP_SUFFIX}"
     if tmp_root.exists():

@@ -43,3 +43,6 @@ logs/
 .idea/
 .vscode/
 .DS_Store
+
+# Frontend build inputs (the built bundle IS committed — see frontend/README.md)
+frontend/node_modules/
