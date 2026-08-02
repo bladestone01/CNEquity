@@ -48,6 +48,8 @@
 | `GET /api/runs?limit=` | 最近 run + 各状态 batch 计数 |
 | `GET /api/runs/{run_id}` | 该 run 的全部 batch（含 `stalled`） |
 | `GET /api/stream/runs/{run_id}` | SSE：跑批中的 batch 实时变化 |
+| `GET /api/quality?limit=` | findings 时间线、跨源差异、隔离区、on-demand 缓存 |
+| `GET /api/quality/runs/{run_id}` | 该 run 的完整 findings 与跨源差异 |
 | `GET /api/docs` | OpenAPI 页，由 handler 生成，不会与实现漂移 |
 
 `empty` 拆成 `empty_optional` / `empty_required`：一个没人开启的可选数据集和一个失败的必需数据集在磁盘上长得一模一样，混在一起报会让人学会忽略它。
@@ -122,6 +124,20 @@
 run 结束时流主动关闭，而不是让客户端挂着等永远不会来的事件。
 
 **页面上的时钟是本地走的，不靠流。** 实测一个日内 backfill 在 70 秒里只产生 1 个变化帧——heartbeat 远不到每秒一次。只靠流的话，「● 实时」徽标下面的耗时和进行中那根 bar 的右端会是冻住的，那比不声称实时更糟。所以数据仍然只来自流，只有「现在」是本地推进的。
+
+---
+
+## 质量视图
+
+四样东西，全部是已落盘的产物，面板不重算任何一项。
+
+**findings 时间线** 读 `meta/quality/findings/*.json`。那个目录里也躺着别的检查写的产物（`authority-<date>.json`），结构完全不同——按 run findings 去读只会得到胡话。用「文件名是不是 UUID」区分，不是靠猜。
+
+**跨源比对** 读 `source_diffs/*.json`。页面上专门写了一句：`no_overlap` 的意思是「两边没有共同主键可比」，**不是「一致」**——那是这张表最容易被读反的一行，而读反的方向恰好是让人放心的那个方向。
+
+**隔离区** 是 `_quarantine/` 的目录清单，带文件数、体积和最后修改时间。文案明说它**不是垃圾桶**：里面每一样都是因为有问题而被撤出 curated 的数据，留着当证据；量出体积是为了让人能判断这份证据还值不值这些磁盘。参考湖里 `trading_calendar_superseded_day_parts` 就有 4,220 个文件——正是 `domain/partitions.py` 文档里讲的那个日分区退化案例的现场。
+
+**on-demand 缓存** 读 `meta/on_demand/`。这些数据集不在 `DATASETS` 里、也不进 curated，所以面板别处一概看不见它们。空列表意味着还没人查过，页面直说这是正常状态而不是缺口——否则一个空表会被当成故障。
 
 ---
 

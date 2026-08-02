@@ -1,6 +1,6 @@
 // Lake dashboard. Two views routed on the hash: the tier overview (#/) and one
 // dataset (#/dataset/<name>[/state|meta]).
-import { disposeAll, heatmap, provenanceSeries, runGantt } from "./charts.js";
+import { disposeAll, heatmap, provenanceSeries, runGantt, severityTimeline } from "./charts.js";
 
 const qs = new URLSearchParams(location.search);
 const TOKEN = qs.get("token");
@@ -62,7 +62,8 @@ async function renderOverview() {
     <h1>ashare-lake</h1>
     <div class="sub">最后交易日 ${h.anchor} · ${h.datasets} 个注册数据集
       · 审计快照 ${h.audit_trade_date || "无"}
-      · <span class="ds-link" id="to-runs">跑批记录 →</span></div>
+      · <span class="ds-link" id="to-runs">跑批记录 →</span>
+      · <span class="ds-link" id="to-quality">质量 →</span></div>
     ${notes.length ? `<div class="banner">${notes.join("<br>")}</div>` : ""}
     <div class="kpis">
       ${kpi(h.fresh, "fresh")}
@@ -105,6 +106,7 @@ async function renderOverview() {
   }
 
   document.getElementById("to-runs").onclick = () => { location.hash = "#/runs"; };
+  document.getElementById("to-quality").onclick = () => { location.hash = "#/quality"; };
   heatmap(document.getElementById("heat"), hm);
 }
 
@@ -573,6 +575,125 @@ async function renderRunDetail(runId) {
   runStream.onerror = () => closeRunStream();
 }
 
+// --- quality ----------------------------------------------------------------
+
+async function renderQuality() {
+  const q = await api("/api/quality");
+
+  const findingsRows = q.findings_runs
+    .map((r) => {
+      const sev = r.by_severity;
+      return `<tr class="tier-row" data-qrun="${esc(r.run_id)}">
+        <td>${esc(r.trade_date || "—")}</td>
+        <td class="n ${sev.error ? "err" : ""}">${sev.error || ""}</td>
+        <td class="n">${sev.warning || ""}</td>
+        <td class="n muted">${sev.info || ""}</td>
+        <td class="muted">${r.top_checks.map(([c, n]) => `${esc(c)}×${n}`).join("、")}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const diffRows = q.diff_runs
+    .map(
+      (r) => `<tr class="tier-row" data-qrun="${esc(r.run_id)}">
+        <td>${esc(r.trade_date || "—")}</td>
+        <td class="n">${r.diff_count}</td>
+        <td class="muted">${Object.entries(r.by_check).map(([c, n]) => `${esc(c)}×${n}`).join("、")}</td>
+      </tr>`,
+    )
+    .join("");
+
+  const quarantineRows = q.quarantine.length
+    ? q.quarantine
+        .map(
+          (e) => `<tr><td><code>${esc(e.name)}</code></td><td class="n">${fmt(e.files)}</td>
+            <td class="n">${mb(e.bytes)}</td><td class="muted">${esc(e.modified.slice(0, 10))}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="4" class="muted">隔离区是空的。</td></tr>`;
+
+  const onDemandRows = q.on_demand.length
+    ? q.on_demand
+        .map(
+          (e) => `<tr><td>${esc(e.dataset)}</td><td class="n">${fmt(e.entries)}</td>
+            <td class="n">${mb(e.bytes)}</td><td class="muted">${esc((e.newest || "").slice(0, 10)) || "—"}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="4" class="muted">还没有人查过 on-demand 数据集（<code>stock_news</code> /
+       <code>research_reports</code>）——这是正常状态，不是缺口。</td></tr>`;
+
+  app.innerHTML = `
+    <div class="back" id="back">← 返回总览</div>
+    <h1>质量</h1>
+    <div class="sub">来自 <code>meta/quality/</code> 与 <code>_quarantine/</code> 的已落盘产物</div>
+
+    <h2>审计 findings（按审计日）</h2>
+    <div id="sev-chart"></div>
+    <div class="scroll"><table>
+      <tr><th>审计日</th><th class="n">error</th><th class="n">warning</th><th class="n">info</th><th>主要 check</th></tr>
+      ${findingsRows || '<tr><td colspan="5" class="muted">还没有 findings。</td></tr>'}
+    </table></div>
+
+    <h2>跨源比对</h2>
+    <p class="muted">主源与备源在同一天同一字段上的分歧。<code>no_overlap</code> 是「两边没有共同主键可比」，
+      不是「一致」——那是这张表最容易被读反的一行。</p>
+    <div class="scroll"><table>
+      <tr><th>审计日</th><th class="n">差异</th><th>按 check</th></tr>
+      ${diffRows || '<tr><td colspan="3" class="muted">还没有跨源比对产物。</td></tr>'}
+    </table></div>
+
+    <h2>隔离区</h2>
+    <p class="muted"><strong>不是垃圾桶。</strong>这些是因为有问题而被撤出 curated 的数据，留着当证据。
+      删之前先看清楚是什么。</p>
+    <div class="scroll"><table>
+      <tr><th>目录</th><th class="n">文件</th><th class="n">体积</th><th>最后修改</th></tr>
+      ${quarantineRows}
+    </table></div>
+
+    <h2>On-demand 缓存</h2>
+    <p class="muted">按 symbol 抓取、缓存在 <code>meta/on_demand/</code>，不进 curated——
+      面板别处看不到它们。</p>
+    <div class="scroll"><table>
+      <tr><th>数据集</th><th class="n">条目</th><th class="n">体积</th><th>最新</th></tr>
+      ${onDemandRows}
+    </table></div>`;
+
+  document.getElementById("back").onclick = () => { location.hash = "#/"; };
+  severityTimeline(document.getElementById("sev-chart"), q.findings_runs);
+  app.querySelectorAll("[data-qrun]").forEach((tr) => {
+    tr.onclick = () => { location.hash = `#/quality/${tr.dataset.qrun}`; };
+  });
+}
+
+async function renderQualityRun(runId) {
+  const d = await api(`/api/quality/runs/${encodeURIComponent(runId)}`);
+  const table = (rows, cols) =>
+    rows.length
+      ? `<div class="scroll"><table><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>
+          ${rows
+            .map(
+              (r) => `<tr>${cols
+                .map((c) => {
+                  const v = r[c];
+                  const cls = c === "severity" && v === "error" ? ' class="err"' : "";
+                  return `<td${cls}>${v === undefined || v === null ? '<span class="muted">—</span>' : esc(v)}</td>`;
+                })
+                .join("")}</tr>`,
+            )
+            .join("")}</table></div>`
+      : '<p class="muted">无。</p>';
+
+  app.innerHTML = `
+    <div class="back" id="back">← 返回质量</div>
+    <h1>${esc(d.trade_date || runId.slice(0, 8))}</h1>
+    <div class="sub"><code>${esc(d.run_id)}</code></div>
+    <h3>findings（${d.findings.length}）</h3>
+    ${table(d.findings, ["severity", "dataset", "check", "message"])}
+    <h3>跨源差异（${d.diffs.length}）</h3>
+    ${table(d.diffs, ["severity", "dataset", "check", "field", "bps", "message"])}`;
+  document.getElementById("back").onclick = () => { location.hash = "#/quality"; };
+}
+
 // --- routing ----------------------------------------------------------------
 
 async function route() {
@@ -580,10 +701,13 @@ async function route() {
   closeRunStream();
   const dataset = location.hash.match(/^#\/dataset\/([^/]+)(?:\/(state|meta|data))?/);
   const run = location.hash.match(/^#\/runs\/(.+)$/);
+  const qrun = location.hash.match(/^#\/quality\/(.+)$/);
   try {
     if (dataset) await renderDetail(decodeURIComponent(dataset[1]), dataset[2] || "state");
     else if (run) await renderRunDetail(decodeURIComponent(run[1]));
     else if (location.hash.startsWith("#/runs")) await renderRuns();
+    else if (qrun) await renderQualityRun(decodeURIComponent(qrun[1]));
+    else if (location.hash.startsWith("#/quality")) await renderQuality();
     else await renderOverview();
     window.scrollTo(0, 0);
   } catch (err) {

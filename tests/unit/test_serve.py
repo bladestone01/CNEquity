@@ -523,3 +523,87 @@ def test_the_bundle_url_is_stamped_so_an_upgrade_is_not_served_from_cache(client
     match = re.search(r"/static/bundle\.js\?v=(\d+)", body)
     assert match, "bundle URL is not version-stamped"
     assert client.get(f"/static/bundle.js?v={match.group(1)}").status_code == 200
+
+
+# --- quality -----------------------------------------------------------------
+
+
+def _quality(config, kind: str, name: str, payload: dict) -> None:
+    import json as _json
+
+    root = config.meta_root / "quality" / kind
+    root.mkdir(parents=True, exist_ok=True)
+    (root / f"{name}.json").write_text(_json.dumps(payload), encoding="utf-8")
+
+
+RUN_A = "11111111-1111-1111-1111-111111111111"
+
+
+def test_quality_summarises_findings_by_severity(lake):
+    _quality(
+        lake,
+        "findings",
+        RUN_A,
+        {
+            "run_id": RUN_A,
+            "trade_date": "2026-07-31",
+            "findings": [
+                {"severity": "error", "dataset": "daily_bars", "check": "exists"},
+                {"severity": "error", "dataset": "index_bars", "check": "exists"},
+                {"severity": "info", "dataset": "daily_bars", "check": "row_count"},
+            ],
+        },
+    )
+    body = TestClient(create_app(lake)).get("/api/quality").json()
+    run = body["findings_runs"][0]
+    assert run["total"] == 3
+    assert run["by_severity"] == {"error": 2, "info": 1}
+    assert run["top_checks"][0] == ["exists", 2]
+
+
+def test_quality_skips_artefacts_that_are_not_per_run(lake):
+    """meta/quality also holds authority-<date>.json, a different shape."""
+    _quality(lake, "findings", RUN_A, {"trade_date": "2026-07-31", "findings": []})
+    _quality(lake, "findings", "authority-2026-08-02", {"totally": "different"})
+
+    body = TestClient(create_app(lake)).get("/api/quality").json()
+    assert [r["run_id"] for r in body["findings_runs"]] == [RUN_A]
+
+
+def test_quality_lists_quarantine_with_its_size(lake):
+    """Evidence, not rubbish — sizing it is how you decide to keep it."""
+    entry = lake.data_root / "_quarantine" / "sector_bars_2026-07-16"
+    entry.mkdir(parents=True, exist_ok=True)
+    (entry / "part.parquet").write_bytes(b"x" * 2048)
+
+    body = TestClient(create_app(lake)).get("/api/quality").json()
+    assert body["quarantine"] == [
+        {
+            "name": "sector_bars_2026-07-16",
+            "files": 1,
+            "bytes": 2048,
+            "modified": body["quarantine"][0]["modified"],
+        }
+    ]
+
+
+def test_an_empty_on_demand_cache_is_not_an_error(lake):
+    """Nobody has queried one yet; that is a normal state."""
+    assert TestClient(create_app(lake)).get("/api/quality").json()["on_demand"] == []
+
+
+def test_quality_run_returns_findings_and_diffs_together(lake):
+    _quality(lake, "findings", RUN_A, {"trade_date": "2026-07-31", "findings": [{"a": 1}]})
+    _quality(
+        lake,
+        "source_diffs",
+        RUN_A,
+        {"trade_date": "2026-07-31", "diff_count": 2, "diffs": [{"b": 1}, {"b": 2}]},
+    )
+    client = TestClient(create_app(lake))
+
+    detail = client.get(f"/api/quality/runs/{RUN_A}").json()
+    assert len(detail["findings"]) == 1
+    assert len(detail["diffs"]) == 2
+    assert detail["trade_date"] == "2026-07-31"
+    assert client.get("/api/quality/runs/nope").status_code == 404

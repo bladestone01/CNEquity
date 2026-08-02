@@ -355,3 +355,51 @@ export function runGantt(el, detail) {
     ],
   });
 }
+
+// --- quality timeline --------------------------------------------------------
+
+// Status colours are reserved: they mean severity here and are never reused as
+// "series 4". Each ships with its name in the legend, so severity is never
+// carried by colour alone.
+const SEVERITY = [
+  ["error", "--cell-gap"],
+  ["warning", "--series-4"],
+  ["info", "--empty"],
+];
+
+/** Findings per audited trade date, stacked by severity. */
+export function severityTimeline(el, runs) {
+  const t = tokens();
+  if (!runs.length) {
+    el.innerHTML = '<p class="muted">还没有审计产物——跑一次 <code>asl audit</code>。</p>';
+    return null;
+  }
+  // Oldest first: a timeline that reads right-to-left is a timeline nobody reads.
+  const ordered = [...runs].reverse();
+  const labels = ordered.map((r) => r.trade_date || r.run_id.slice(0, 8));
+
+  el.style.height = "220px";
+  return mount(el, {
+    animation: false,
+    grid: { left: 52, right: 16, top: 12, bottom: 48 },
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" },
+      backgroundColor: t.surface, borderColor: t.line,
+      textStyle: { color: t.ink, fontSize: 12 } },
+    legend: { data: SEVERITY.map(([name]) => name), bottom: 0, icon: "roundRect",
+      itemWidth: 10, itemHeight: 10, textStyle: { color: t.muted, fontSize: 11 } },
+    xAxis: { type: "category", data: labels,
+      axisLine: { lineStyle: { color: t.line } }, axisTick: { show: false },
+      axisLabel: { color: t.muted, fontSize: 10, hideOverlap: true } },
+    yAxis: { type: "value", splitLine: { lineStyle: { color: t.line } },
+      axisLabel: { color: t.muted, fontSize: 10 } },
+    series: SEVERITY.map(([name, token]) => ({
+      name,
+      type: "bar",
+      stack: "sev",
+      color: css(token),
+      itemStyle: { borderColor: t.surface, borderWidth: 1 },
+      barMaxWidth: 44,
+      data: ordered.map((r) => r.by_severity[name] || 0),
+    })),
+  });
+}

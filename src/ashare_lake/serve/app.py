@@ -230,6 +230,53 @@ class RunDetail(BaseModel):
     batches: list[RunBatch]
 
 
+class FindingsRun(BaseModel):
+    run_id: str
+    trade_date: str | None
+    total: int
+    by_severity: dict[str, int]
+    top_checks: list[tuple[str, int]]
+
+
+class DiffRun(BaseModel):
+    run_id: str
+    trade_date: str | None
+    diff_count: int
+    by_check: dict[str, int]
+
+
+class QuarantineEntry(BaseModel):
+    name: str
+    files: int
+    bytes: int
+    modified: str
+
+
+class OnDemandEntry(BaseModel):
+    dataset: str
+    entries: int
+    bytes: int
+    newest: str | None
+
+
+class Quality(BaseModel):
+    findings_runs: list[FindingsRun]
+    diff_runs: list[DiffRun]
+    quarantine: list[QuarantineEntry] = Field(
+        description="Pulled out of curated and kept as evidence, not a wastebasket."
+    )
+    on_demand: list[OnDemandEntry] = Field(
+        description="Per-symbol caches; empty means nobody has queried one yet."
+    )
+
+
+class QualityRun(BaseModel):
+    run_id: str
+    trade_date: str | None
+    findings: list[dict]
+    diffs: list[dict]
+
+
 class Provenance(BaseModel):
     source: str
     data_version: str
@@ -409,6 +456,20 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
     def provenance_series(dataset: str, view: View) -> ProvenanceSeries:
         _known(dataset)
         return ProvenanceSeries(**view.provenance_series(dataset))
+
+    @app.get("/api/quality", response_model=Quality)
+    def quality(
+        view: View,
+        limit: Annotated[int, Query(ge=1, le=200)] = 30,
+    ) -> Quality:
+        return Quality(**view.quality(limit=limit))
+
+    @app.get("/api/quality/runs/{run_id}", response_model=QualityRun)
+    def quality_run(run_id: str, view: View) -> QualityRun:
+        detail = view.quality_run(run_id)
+        if detail is None:
+            raise HTTPException(404, f"no quality artefacts for run {run_id!r}")
+        return QualityRun(**detail)
 
     @app.get("/api/runs", response_model=list[RunSummary])
     def runs(

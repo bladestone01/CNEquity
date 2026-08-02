@@ -413,6 +413,142 @@ class LakeView:
         out.append({"cmd": f"asl stats show --dataset {name}", "why": "逐分区行数与体积"})
         return out
 
+    # --- quality ------------------------------------------------------------
+
+    def _quality_files(self, kind: str, limit: int) -> list[tuple[str, dict]]:
+        """Newest ``meta/quality/<kind>/*.json``, as (run_id, payload).
+
+        Only the per-run files: that directory also holds artefacts written by
+        other checks (``authority-<date>.json``) whose shape is entirely
+        different, and reading those as run findings would produce nonsense.
+        A run id is a UUID, which is what tells them apart.
+        """
+        root = self.config.meta_root / "quality" / kind
+        if not root.is_dir():
+            return []
+        out: list[tuple[str, dict]] = []
+        for path in sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if len(path.stem) != 36 or path.stem.count("-") != 4:
+                continue
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    out.append((path.stem, json.load(handle)))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if len(out) >= limit:
+                break
+        return out
+
+    def _quarantine(self) -> list[dict]:
+        """What has been pulled out of curated, and how big it is.
+
+        Not a wastebasket. Everything here was removed from the lake because
+        something was wrong with it, and it is kept as evidence — sizing it is
+        how you decide whether the evidence is still worth the disk.
+        """
+        root = self.config.data_root / "_quarantine"
+        if not root.is_dir():
+            return []
+        out = []
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir():
+                continue
+            files = [f for f in entry.rglob("*") if f.is_file()]
+            out.append(
+                {
+                    "name": entry.name,
+                    "files": len(files),
+                    "bytes": sum(f.stat().st_size for f in files),
+                    "modified": datetime.fromtimestamp(
+                        entry.stat().st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                }
+            )
+        return out
+
+    def _on_demand(self) -> list[dict]:
+        """Per-symbol caches under ``meta/on_demand``.
+
+        On-demand datasets are not in ``DATASETS`` and never reach curated, so
+        nothing else on this dashboard can see them. An empty list means nobody
+        has queried one yet, which is a normal state rather than a gap.
+        """
+        root = self.config.meta_root / "on_demand"
+        if not root.is_dir():
+            return []
+        out = []
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir():
+                continue
+            files = [f for f in entry.rglob("*") if f.is_file()]
+            newest = max((f.stat().st_mtime for f in files), default=None)
+            out.append(
+                {
+                    "dataset": entry.name,
+                    "entries": len(files),
+                    "bytes": sum(f.stat().st_size for f in files),
+                    "newest": datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()
+                    if newest
+                    else None,
+                }
+            )
+        return out
+
+    def quality(self, *, limit: int = 30) -> dict:
+        findings_runs = []
+        for run_id, payload in self._quality_files("findings", limit):
+            by_severity: dict[str, int] = {}
+            by_check: dict[str, int] = {}
+            for finding in payload.get("findings", []):
+                sev = finding.get("severity", "info")
+                by_severity[sev] = by_severity.get(sev, 0) + 1
+                key = finding.get("check", "?")
+                by_check[key] = by_check.get(key, 0) + 1
+            findings_runs.append(
+                {
+                    "run_id": run_id,
+                    "trade_date": payload.get("trade_date"),
+                    "total": len(payload.get("findings", [])),
+                    "by_severity": by_severity,
+                    "top_checks": sorted(by_check.items(), key=lambda kv: -kv[1])[:5],
+                }
+            )
+
+        diff_runs = []
+        for run_id, payload in self._quality_files("source_diffs", limit):
+            by_check: dict[str, int] = {}
+            for diff in payload.get("diffs", []):
+                key = diff.get("check", "?")
+                by_check[key] = by_check.get(key, 0) + 1
+            diff_runs.append(
+                {
+                    "run_id": run_id,
+                    "trade_date": payload.get("trade_date"),
+                    "diff_count": payload.get("diff_count", len(payload.get("diffs", []))),
+                    "by_check": by_check,
+                }
+            )
+
+        return {
+            "findings_runs": findings_runs,
+            "diff_runs": diff_runs,
+            "quarantine": self._quarantine(),
+            "on_demand": self._on_demand(),
+        }
+
+    def quality_run(self, run_id: str) -> dict | None:
+        """One run's findings and cross-source diffs, in full."""
+        findings = dict(self._quality_files("findings", 200)).get(run_id)
+        diffs = dict(self._quality_files("source_diffs", 200)).get(run_id)
+        if findings is None and diffs is None:
+            return None
+        return {
+            "run_id": run_id,
+            "trade_date": (findings or diffs or {}).get("trade_date"),
+            "findings": (findings or {}).get("findings", []),
+            "diffs": (diffs or {}).get("diffs", []),
+        }
+
     # --- runs ---------------------------------------------------------------
 
     def _manifest_rows(self, sql: str, params: tuple = ()) -> list[dict]:
