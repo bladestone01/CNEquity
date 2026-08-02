@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from datetime import date
@@ -19,6 +20,16 @@ logger = logging.getLogger(__name__)
 
 # (batch_id, symbols, window_start, window_end)
 BatchSpec = tuple[str, list[str], date, date]
+
+
+def _hms(seconds: float) -> str:
+    """Compact duration. A backfill runs for hours; `7245.3s` is not readable."""
+    total = int(seconds)
+    if total >= 3600:
+        return f"{total // 3600}h{(total % 3600) // 60:02d}m"
+    if total >= 60:
+        return f"{total // 60}m{total % 60:02d}s"
+    return f"{total}s"
 
 
 def _symbol_batch_id(start: date, end: date, index: int) -> str:
@@ -42,8 +53,21 @@ def _worker_tdx_config(
     return cfg
 
 
-def _window_backfill(start: date) -> bool:
-    return start == BACKFILL_START
+def _window_backfill(config: Config, start: date) -> bool:
+    """Whether this batch is fetching history, which decides how strict it is.
+
+    Strict means a page failure mid-pagination raises instead of keeping the
+    pages that did arrive — the difference between a batch that fails loudly
+    and a symbol quietly missing its older years.
+
+    The window start alone used to decide this, and 2016-01-01 was the only
+    start a backfill ever had. It is not any more: `asl init --since` picks its
+    own, and inferring "not a backfill" from that would have made a shallower
+    init silently lenient. The orchestrator already knows — it sets
+    ``_backfill`` on the config for exactly these phases — so ask it, and keep
+    the date test for callers that reach here without the flag set.
+    """
+    return bool(getattr(config, "_backfill", False)) or start == BACKFILL_START
 
 
 def _empty_pool_result() -> dict[str, Any]:
@@ -196,7 +220,7 @@ def fetch_daily_bars_parallel(
         batch_start: date,
         batch_end: date,
     ) -> dict[str, Any]:
-        backfill = _window_backfill(batch_start)
+        backfill = _window_backfill(config, batch_start)
         manifest.start_batch(
             run_id,
             batch_id,
@@ -259,6 +283,30 @@ def fetch_daily_bars_parallel(
             "failed_symbols": list(dict.fromkeys(failed_symbols)),
         }
 
+    # A full-market bar sweep is ~54 batches and can run for an hour. Without a
+    # line per batch the whole thing is silent until it ends, which is
+    # indistinguishable from hung — and the first thing anyone does about a
+    # process that looks hung is kill it. Progress is logged from the parent so
+    # it is one ordered stream whether the batches ran serially or in a pool.
+    done = 0
+    started_at = time.monotonic()
+
+    def _progress(batch_symbols: list[str], failed: bool = False) -> None:
+        nonlocal done
+        done += 1
+        elapsed = time.monotonic() - started_at
+        remaining = (elapsed / done) * (len(batches) - done) if done else 0.0
+        logger.info(
+            "%s %d/%d batches%s · %s rows · %s elapsed · ~%s left",
+            dataset,
+            done,
+            len(batches),
+            f" ({len(batch_symbols)} symbols FAILED)" if failed else "",
+            f"{total_written:,}",
+            _hms(elapsed),
+            _hms(remaining),
+        )
+
     if config.workers <= 1 or len(batches) == 1:
         had_error = False
         for batch_id, batch_symbols, batch_start, batch_end in batches:
@@ -266,9 +314,11 @@ def fetch_daily_bars_parallel(
                 result = _run_batch(batch_id, batch_symbols, batch_start, batch_end)
                 total_read += result["rows_read"]
                 total_written += result["rows_written"]
+                _progress(batch_symbols)
             except Exception:
                 had_error = True
                 failed_symbols.extend(batch_symbols)
+                _progress(batch_symbols, failed=True)
         return _outcome(had_error)
 
     def _task_for(batch: tuple) -> tuple:
@@ -285,7 +335,7 @@ def fetch_daily_bars_parallel(
             config.tdx_allow_mock,
             manifest_path,
             config.failover_enabled,
-            _window_backfill(batch_start),
+            _window_backfill(config, batch_start),
             str(config.config_path) if config.config_path else "",
         )
 
@@ -307,7 +357,8 @@ def fetch_daily_bars_parallel(
                     result = fut.result(timeout=stale_seconds)
                     total_read += result["rows_read"]
                     total_written += result["rows_written"]
-                    pending.pop(batch_id, None)
+                    batch = pending.pop(batch_id, None)
+                    _progress(batch[1] if batch else [])
                 except TimeoutError:
                     had_error = True
                     batch = pending.pop(batch_id, None)
@@ -316,6 +367,7 @@ def fetch_daily_bars_parallel(
                     manifest.mark_batch_stale(
                         run_id, batch_id, f"worker result timeout after {stale_seconds}s"
                     )
+                    _progress(batch[1] if batch else [], failed=True)
                     logger.warning(
                         "%s batch %s timed out after %ss; marked stale",
                         dataset,
@@ -334,6 +386,7 @@ def fetch_daily_bars_parallel(
                     batch = pending.pop(batch_id, None)
                     if batch is not None:
                         failed_symbols.extend(batch[1])
+                    _progress(batch[1] if batch else [], failed=True)
                     logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
     except BrokenProcessPool:
         # The pool died mid-run. Whatever is still pending never got a parent

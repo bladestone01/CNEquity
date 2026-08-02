@@ -20,6 +20,7 @@ from ashare_lake.orchestrator.run_lock import RunLockError
 from ashare_lake.quality.audit import run_audit
 from ashare_lake.query.on_demand import OnDemandService
 from ashare_lake.query.views import ensure_duckdb_views
+from ashare_lake.steps.common import BACKFILL_START
 from ashare_lake.storage.layout import init_data_layout
 from ashare_lake.storage.source_snapshots import (
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
@@ -30,6 +31,50 @@ from ashare_lake.storage.staging_cleanup import clean_staging
 USER_CONFIG = "configs/ashare-lake.toml"
 EXAMPLE_CONFIG = "configs/ashare-lake.example.toml"
 DEFAULT_CONFIG = USER_CONFIG
+
+# `asl init --profile quick`. Three years is the shortest window that still
+# spans a full A-share cycle plus two annual report seasons, so the lake it
+# builds can answer a real question rather than only prove the pipeline runs.
+QUICK_PROFILE_YEARS = 3
+
+
+def _init_history_start(profile: str, since_str: str | None, trade_date: date) -> date | None:
+    """History floor for an init run, or None to use each step's own default."""
+    if since_str:
+        return date.fromisoformat(since_str)
+    if profile == "quick":
+        # Calendar arithmetic, not 365*N: a leap year in the window would
+        # otherwise move the floor by a day for no reason anyone could explain.
+        # Feb 29 has no counterpart three years back, so it lands on Mar 1.
+        year = trade_date.year - QUICK_PROFILE_YEARS
+        try:
+            return trade_date.replace(year=year)
+        except ValueError:
+            return date(year, 3, 1)
+    return None
+
+
+def _progress_logging(quiet: bool = False) -> None:
+    """Send the pipeline's own INFO records to the terminal.
+
+    Long fetches were silent until they finished: `asl init` runs for hours and
+    printed nothing until the closing JSON, which is indistinguishable from
+    hung — and a process that looks hung gets killed. The steps and the worker
+    pool already log their progress; nothing was listening.
+
+    Third-party loggers stay at WARNING. httpx logs a line per request, which
+    on a full-market sweep is hundreds of thousands of lines and buries exactly
+    the progress this exists to surface.
+    """
+    import logging
+
+    logging.basicConfig(
+        level=logging.WARNING if quiet else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    for noisy in ("httpx", "httpcore", "urllib3", "curl_cffi"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def resolve_config_path(config_path: str) -> Path:
@@ -154,6 +199,21 @@ def demo_cmd(
     is_flag=True,
     help="Continue init phases after a phase failure instead of stopping.",
 )
+@click.option(
+    "--profile",
+    type=click.Choice(["full", "quick"]),
+    default="full",
+    show_default=True,
+    help=f"How much history to fetch. quick = the last {QUICK_PROFILE_YEARS} years "
+    f"instead of everything from {BACKFILL_START.isoformat()}.",
+)
+@click.option(
+    "--since",
+    "since_str",
+    default=None,
+    help="Explicit history start (YYYY-MM-DD); overrides --profile.",
+)
+@click.option("--quiet", is_flag=True, help="Only warnings and errors; no per-batch progress.")
 def init(
     config_path: str,
     layout_only: bool,
@@ -161,8 +221,23 @@ def init(
     resume: bool,
     resume_run_id: str | None,
     keep_going: bool,
+    profile: str,
+    since_str: str | None,
+    quiet: bool,
 ):
-    """Initialize data lake and run configured init phases (first full backfill)."""
+    """Initialize data lake and run configured init phases (first full backfill).
+
+    `--profile quick` makes the first run SHALLOWER, never NARROWER: every
+    symbol is still fetched, just fewer years each. Dropping symbols instead
+    would build the survivorship bias this lake exists to avoid straight into
+    it, and `coverage_start` records a shallow lake honestly where a missing
+    name would look like a name that never traded.
+
+    Deepen later without re-running init:
+
+      asl backfill daily_bars --start 2016-01-01 --end <your coverage_start>
+    """
+    _progress_logging(quiet)
     cfg = _cfg(config_path)
     init_data_layout(cfg)
     if layout_only:
@@ -170,6 +245,16 @@ def init(
         return
 
     td = date.fromisoformat(trade_date) if trade_date else date.today()
+
+    history_start = _init_history_start(profile, since_str, td)
+    if history_start is not None:
+        cfg._backfill_start = history_start
+        click.echo(
+            f"History window: {history_start.isoformat()} .. {td.isoformat()} "
+            f"(full universe, {profile if not since_str else 'custom'} depth). "
+            "Deepen later with `asl backfill daily_bars --start <earlier>`."
+        )
+
     engine = JobEngine(cfg)
 
     if not resume and not resume_run_id:
@@ -345,6 +430,7 @@ def _run_stale_only(cfg, engine, trade_date: date | None, *, backfill: bool) -> 
     help="As-of trade date YYYY-MM-DD (default: today). Use to catch up on weekends/holidays.",
 )
 @click.option("--backfill", is_flag=True)
+@click.option("--quiet", is_flag=True, help="Only warnings and errors; no per-step progress.")
 @click.option(
     "--stale-only",
     is_flag=True,
@@ -358,8 +444,10 @@ def run_daily(
     trade_date_str: str | None,
     backfill: bool,
     stale_only: bool,
+    quiet: bool,
 ):
     """Run daily ingestion job (Wave DAG or schedule group)."""
+    _progress_logging(quiet)
     cfg = _cfg(config_path)
     engine = JobEngine(cfg)
     td = date.fromisoformat(trade_date_str) if trade_date_str else None
@@ -658,17 +746,7 @@ def backfill(
     workers: int,
 ):
     """Backfill a dataset."""
-    # Multi-hour sweeps (baostock ST, EM sector kline) need visible progress on
-    # stdout; adapters log at INFO. Keep WARNING+ for third-party noise.
-    import logging
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        force=True,
-    )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    _progress_logging()
     if fetch_semantics(dataset) == "snapshot" and not get_dataset(dataset).backfill_source:
         raise click.ClickException(
             f"{dataset}: backfill not supported — fetch semantics are snapshot "
@@ -1368,6 +1446,9 @@ def serve(config_path: str, host: str, port: int, token: str | None):
     click.echo(f"lake:      {cfg.data_root}")
     click.echo(f"dashboard: http://{host}:{port}/" + (f"?token={token}" if token else ""))
     click.echo(f"api docs:  http://{host}:{port}/api/docs")
+    click.echo(
+        f"sources:   http://{host}:{port}/source-health" + (f"?token={token}" if token else "")
+    )
     uvicorn.run(create_app(cfg, token=token), host=host, port=port, log_level="info")
 
 
@@ -1507,28 +1588,157 @@ def query(config_path: str, sql: str, dataset: str | None, symbol: str | None):
         con.close()
 
 
-@cli.command("servers")
+@cli.command("mcp")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--live",
+    is_flag=True,
+    help="Where the lake holds nothing, fetch from the vendor on demand and do "
+    "not store it. Serves symbol lookup and unadjusted daily bars only; every "
+    "other tool refuses rather than answer without adjustment, universe or PIT.",
+)
+def mcp_cmd(config_path: str, live: bool):
+    """Serve this lake to an AI agent over MCP (stdio).
+
+    Not meant to be typed: an MCP client spawns it and talks JSON-RPC on the
+    pipe. Register it once, e.g.
+
+      claude mcp add ashare-lake -- asl mcp --config /path/to/ashare-lake.toml
+
+    Read-only, like `asl serve`. The tools query the lake; ingestion stays on
+    the CLI, where a person runs it.
+    """
+    import logging
+    import sys
+
+    from ashare_lake.mcp_server import serve_stdio
+
+    cfg = _cfg(config_path)
+    # Opt-in, never inferred. A lake user whose lake is broken must get "no
+    # parquet data" and go fix it, not a quietly different answer from a vendor.
+    cfg._mcp_live = live
+    if not live:
+        _guard_mcp_data_root(cfg, config_path)
+
+    # stdout is the JSON-RPC wire. Anything else written there is a parse error
+    # on the client with no indication of where it came from, so every log
+    # record — ours and every library's — goes to stderr, which MCP clients
+    # capture as the server's log.
+    logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+    serve_stdio(cfg)
+
+
+def _guard_mcp_data_root(cfg, config_path: str) -> None:
+    """Refuse to serve a lake with nothing in it, and say why it is empty.
+
+    A relative ``data.root`` resolves against the working directory, and this is
+    the one entry point where the working directory belongs to somebody else —
+    an MCP client spawns the process from wherever it happens to be. The lake
+    then resolves to a path that does not exist, every tool answers "no parquet
+    data", and the agent reports that the data is missing. Which is true of that
+    path and false of the user's lake.
+
+    Cheap enough to do on every start: one directory walk that stops at the
+    first file.
+    """
+    curated = cfg.curated_root
+    if curated.exists() and next(curated.rglob("*.parquet"), None) is not None:
+        return
+    raise click.ClickException(
+        f"No curated data under {curated}.\n"
+        f"  config:    {resolve_config_path(config_path).resolve()}\n"
+        f"  data.root: {cfg.data_root}\n"
+        "If that is not your lake, `data.root` is relative and resolved against "
+        "the working directory the client started this process in. Make both "
+        "`--config` and `[data].root` absolute paths.\n"
+        "If it is your lake and it is genuinely empty: `asl init` builds one, "
+        "`asl demo` makes a 5-symbol sample in 30 seconds, and `--live` serves "
+        "symbol lookup and raw daily bars straight from the vendor without one."
+    )
+
+
+@cli.command("sources")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--vantage",
+    default="local",
+    show_default=True,
+    help="Where this probe ran from — 'cn', 'overseas', or any label you use. "
+    "Several sources refuse non-mainland egress, so a result without this is "
+    "not interpretable.",
+)
+@click.option("--only", default=None, help="Comma-separated probe keys; default is all of them.")
+@click.option(
+    "--out",
+    default=None,
+    help="Where to write the JSON report. Defaults to meta/source_health/<vantage>.json "
+    "inside the lake, which is where `asl serve` reads it from.",
+)
+def sources(config_path: str, vantage: str, only: str | None, out: str | None):
+    """Probe the public sources this lake depends on.
+
+    One request per source, serial and polite: these are the same hosts the
+    daily pipeline uses, and a health check that trips a rate-limit ban would be
+    causing the outage it is meant to observe.
+
+    The report lands in the lake, and `asl serve` renders it at /source-health.
+    Probing is a CLI action on purpose — the dashboard stays read-only, and an
+    unauthenticated local service that can reach out to a dozen third parties
+    is not something to leave listening.
+    """
+    from ashare_lake.diagnostics.source_health import STATUS_LABELS, ProbeStatus, run_probes
+
+    _progress_logging(quiet=True)
+    cfg = _cfg(config_path)
+    keys = [k.strip() for k in only.split(",") if k.strip()] if only else None
+    report = run_probes(cfg, vantage=vantage, only=keys)
+
+    for result in report.results:
+        latency = f"{result.latency_ms:>6}ms" if result.latency_ms is not None else "     \u2014"
+        label = STATUS_LABELS[ProbeStatus(result.status)]
+        click.echo(f"{result.status:<8}{label:<5}{latency}  {result.key:<22}{result.detail}")
+
+    path = Path(out) if out else cfg.meta_root / "source_health" / f"{vantage}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    click.echo(f"\nWrote {path}")
+    click.echo("View it with: asl serve  \u2192  http://127.0.0.1:8787/source-health")
+
+    # Exit 0 even when sources are down. A red source is this command's *output*,
+    # not its failure.
+
+
+@cli.command("servers", hidden=True)
 @click.argument("action", type=click.Choice(["test"]))
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 def servers(action: str, config_path: str):
-    """Test TDX server connectivity."""
-    try:
-        from ashare_lake.adapters.tdx_protocol.client import _quotes_client
+    """Deprecated alias for `asl sources --only tdx_protocol`.
 
-        cfg = _cfg(config_path)
-        client = _quotes_client(cfg)
-        _ = client
-        click.echo("TDX connection OK")
-    except ImportError:
-        click.echo("TDX wire client unavailable — this is a bug, please report it")
-    except Exception as exc:
-        click.echo(f"TDX connection failed: {exc}", err=True)
-        raise SystemExit(1) from exc
+    That probe is strictly the stronger check: it asserts that real bars came
+    back, where this one only proved a socket opened. Kept working — it is in
+    the quickstart and in people's runbooks — but off the top-level list.
+    """
+    from ashare_lake.diagnostics.source_health import PROBES_BY_KEY, ProbeStatus, run_probe
+
+    click.echo("note: `asl servers test` is now `asl sources --only tdx_protocol`", err=True)
+    result = run_probe(PROBES_BY_KEY["tdx_protocol"], _cfg(config_path))
+    if result.status == ProbeStatus.OK.value:
+        click.echo(f"TDX connection OK ({result.detail}, {result.latency_ms}ms)")
+        return
+    click.echo(f"TDX {result.status}: {result.detail}", err=True)
+    raise SystemExit(1)
 
 
-@cli.group("push2his")
+@cli.group("push2his", hidden=True)
 def push2his_grp():
-    """push2his CDN edge sticky / probe (sector_bars kline)."""
+    """push2his CDN edge sticky / probe (sector_bars kline).
+
+    Hidden from the top-level list rather than removed: it is a debugging tool
+    for one CDN host, and it was competing for attention with the commands that
+    make up the pipeline's actual state machine. Still fully supported.
+    """
 
 
 @push2his_grp.command("remember")

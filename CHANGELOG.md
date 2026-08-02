@@ -8,6 +8,96 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`asl mcp`: the lake as an MCP server, read-only, over stdio.** Six tools cut
+  by question shape rather than one per dataset — `describe_lake`,
+  `resolve_symbol`, `query_bars`, `query_fundamentals`, `query_dataset`,
+  `run_sql`. An agent picks from a flat list every turn, so 39 dataset tools
+  would spend most of the context window on names it will not call and still
+  leave it guessing which one answers the question.
+
+  **The query contract travels in the responses, not in the docs**, because a
+  model does not read `docs/`. `describe_lake` returns the adjustment, PIT,
+  `snapshot_only` and `universe` rules; a bar query without `adjust` comes back
+  with a warning; one with `adjust` reports how many rows had no factor and
+  silently used 1.0; `query_fundamentals` refuses to default `as_of` and says
+  why. Every payload carries `total` / `returned` / `truncated`, so a page of
+  200 out of 4,300 rows cannot be averaged and reported as the market's.
+
+  `run_sql` accepts exactly one SELECT, decided by DuckDB's own parser rather
+  than a regex: the lake ingests `news_headlines` and `flash_news_wire`, vendor
+  text nobody here wrote, so SQL reaching the tool can be shaped by ingested
+  content. A read-only connection alone would still allow `COPY ... TO`.
+
+  **No new dependencies.** The stdio JSON-RPC loop is ~200 lines rather than the
+  official `mcp` SDK, which resolves to 15 additional packages — cryptography,
+  pyjwt and truststore for an OAuth flow a local server never performs,
+  opentelemetry for tracing nothing exports, and a second HTTP stack beside the
+  pinned httpx. `pip install ashare-lake` with no extras stays intact.
+
+- **`asl init --profile quick` / `--since`** — a first backfill that is
+  *shallower, never narrower*. `quick` fetches the last three calendar years for
+  the full cross-section; filtering symbols instead would build the survivorship
+  bias this lake exists to repair straight into it, and a missing name looks
+  exactly like a name that never traded, where fewer years is recorded honestly
+  by `coverage_start`. The window is written to the run metadata so `--resume`
+  reuses it instead of silently reverting to full depth days later.
+
+- **`asl sources`: a local A-share source health board.** Fourteen probes over
+  the endpoints this lake depends on — TDX, three EastMoney hosts, Sina, CNINFO,
+  both THS hosts, baostock, both exchanges, Shenwan, PBoC, NBS. The report lands
+  in `meta/source_health/<vantage>.json` and `asl serve` renders it at
+  `/source-health`. These endpoints are not this project's: AkShare, agent skill
+  files and hand-rolled scrapers all depend on them, and there is nowhere to look
+  up whether one changed.
+
+  Probing is a CLI action and viewing is the dashboard. A GET that reaches out to
+  a dozen third-party hosts is what the dashboard's read-only stance exists to
+  prevent — the same reason nothing there triggers ingestion.
+
+  **HTTP 200 is not "up".** EastMoney answers a challenge page with 200, Sina
+  answers an unknown symbol with an empty array, THS answers a rate-limited page
+  with 200 and no rows. Every probe therefore asserts on the payload — `total`,
+  `klines`, the `PK` magic of an xlsx — and `empty` is its own status, because a
+  source answering politely with nothing is what truncates a backfill silently
+  and looks healthier than a failure.
+
+  **Vantage is recorded and never merged.** Several of these refuse non-mainland
+  egress at the WAF, so one column can be green and another red for the same host
+  at the same second. `--vantage` labels each report and the page renders them
+  side by side; merging would invent a fact neither probe established.
+
+  Probes call the adapters' own URL constants and clients, so the fragile part is
+  the part under test. They run serially and once per source: a health check that
+  trips a rate-limit ban would cause the outage it exists to observe.
+
+- **`asl mcp --live`: MCP for an agent with no lake.** Where the lake holds
+  nothing, symbol lookup and unadjusted daily bars are fetched from the vendor on
+  demand and never written. Everything else refuses by name with the reason —
+  fundamentals because a vendor returns today's view of a restated figure and
+  there is no honest `as_of`; `run_sql` because it queries parquet that live mode
+  does not produce. Every payload carries `origin: "lake" | "live"`, both
+  labelled, so a missing field cannot default to "lake". Off unless asked: a user
+  whose lake is broken must get "no parquet data" and go fix it. Capped at 50
+  symbols and 800 days per call, with `symbols` required.
+
+- **Progress while a long fetch runs.** `asl init` and `asl run daily` set up no
+  logging at all, so an hours-long backfill printed nothing until the closing
+  JSON — indistinguishable from hung, and a process that looks hung gets killed
+  along with the hours it had banked. The steps and the worker pool already
+  logged; nothing was listening. Adds a line per batch from the parent, with
+  rows, elapsed and a rough estimate. `--quiet` opts out.
+
+- **`survivorship_gap.py --lang`** — the chart's labels are localised, so the
+  Chinese README embeds a Chinese chart. Same numbers, same geometry.
+
+- **`scripts/survivorship_gap.py`** — measures the bias on the lake's own bars
+  and emits a dependency-free SVG. Same equal-weight basket, same dates, the
+  only difference being whether delisted names are still in it: 2016–2021 reads
+  5.9% complete against 12.0% survivors-only. A floor rather than an estimate —
+  delisted names are carried to their last printed bar, only exact-adjustment
+  names count, and the lake's own delisted coverage may be incomplete, all of
+  which shrink the measured gap.
+
 - **`trade_ticks`: transaction records (分笔), opt-in and watchlist-scoped.**
   Two new TDX wire commands (`0x0fc5` same-session, `0x0fb5` historical),
   an adapter that assembles a session whole or not at all, and the dataset
@@ -45,7 +135,28 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   only the latter, intraday transaction records were displayed as a daily
   dataset. The dataset panel's 日内频率 fact is now 行粒度.
 
+### Changed
+
+- **`asl servers test` and `asl push2his` are off the top-level command list.**
+  Both keep working — they are in the quickstart and in runbooks — but `servers
+  test` is now an alias for `asl sources --only tdx_protocol`, which asserts that
+  real bars came back rather than that a socket opened, and `push2his` debugs one
+  CDN host. They were competing for attention with the commands that make up the
+  pipeline's actual state machine.
+
 ### Fixed
+
+- **The dashboard's own tests depended on the wall clock.** Freshness is judged
+  against the last trading day *today*, so a fixture with fixed dates passed on
+  the day it was written and reported every dataset stale from then on.
+
+- **A backfill with a non-default start was silently lenient.** Whether a bar
+  batch fetches strictly — raising on a mid-pagination failure instead of
+  keeping the pages that arrived — was inferred from `start == 2016-01-01`,
+  which was the only start a backfill ever had. `asl init --since` picks its
+  own, so `_window_backfill` now asks the orchestrator's `_backfill` flag and
+  keeps the date test as a fallback. Without this, the shallow init path would
+  have been the one that loses a symbol's older years without saying so.
 
 - **Intraday backfill no longer date-slices tip-paged TDX walks.** Minute-bar
   sources page backwards from today, so a 10-day chunk sitting near the horizon

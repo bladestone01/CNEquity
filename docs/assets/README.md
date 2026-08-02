@@ -4,6 +4,34 @@ PNGs embedded in `README.md` / `README.en.md` (relative paths).
 PyPI uses the short `README.pypi.md`, which points at absolute
 `raw.githubusercontent.com` URLs for the one demo screenshot it embeds.
 
+## Social preview
+
+Set in **Settings → Social preview**, not embedded in either README — GitHub
+reads `og:image` from the repo setting, and a 1MB marketing card above the fold
+would only push the actual content down.
+
+| File | Size | Use |
+|------|------|-----|
+| `og-image-brand.png` | 1280×640 | The one to upload. GitHub caps the social preview at 1MB. |
+| `og-image.png` | 1280×640 | Earlier variant without the brand panel. |
+| `social-preview.png` | 1774×887 | Higher-res master of `og-image-brand.png`. Too large to upload as-is; keep it for re-exports. |
+| `og-image.html` | — | Source the PNGs are rendered from. |
+
+## Charts
+
+| File | Shows |
+|------|--------|
+| `survivorship-gap.svg` | Survivorship bias, English labels — embedded in `README.en.md` |
+| `survivorship-gap.zh.svg` | The same numbers with Chinese labels — embedded in `README.md` |
+
+Same geometry and same measurement; only the string table differs. Re-render
+both after a backfill changes the numbers:
+
+```bash
+python scripts/survivorship_gap.py --lang en --svg docs/assets/survivorship-gap.svg
+python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.zh.svg
+```
+
 ## Architecture
 
 | File | Shows |
