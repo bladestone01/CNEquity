@@ -1,6 +1,8 @@
 # README assets
 
-PNGs embedded in `README.md` / `README.en.md` (relative paths).
+READMEs embed four visuals: survivorship chart, `asl-demo.png`,
+`asl-serve-hero.png` (cropped scorecard), and `architecture-overview.png`.
+Other PNGs below are for docs / social / re-exports.
 PyPI uses the short `README.pypi.md`, which points at absolute
 `raw.githubusercontent.com` URLs for the one demo screenshot it embeds.
 
@@ -36,15 +38,15 @@ python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.
 
 | File | Shows |
 |------|--------|
-| `architecture-overview.png` | Four-layer overview: sources → ASL Daily Pipeline → lake → consumers (bilingual) |
+| `architecture-overview.png` | Four-layer overview — embedded in both READMEs under Architecture |
 
 ## Terminal screenshots
 
 | File | Shows |
 |------|--------|
-| `asl-demo.png` | `asl demo` phased progress + sample bars |
-| `asl-query.png` | `asl query` SQL result with `source` |
-| `asl-load.png` | Python `load()` REPL |
+| `asl-demo.png` | `asl demo` phased progress + sample bars — embedded in both READMEs |
+| `asl-query.png` | `asl query` SQL result with `source` (kept for re-exports) |
+| `asl-load.png` | Python `load()` REPL (kept for re-exports) |
 
 ```bash
 .venv/bin/python scripts/render_readme_screenshots.py
@@ -60,8 +62,15 @@ lake with something in it.
 
 | File | Shows |
 |------|--------|
-| `asl-serve.png` | Overview: KPI row, tier table, coverage heatmap |
-| `asl-serve-dataset.png` | `trade_ticks` metadata tab — contract, schema, source horizon |
+| `asl-serve-hero.png` | Cropped overview: KPI row + L0–L8 tier table (no heatmap) — in both READMEs |
+| `asl-serve.png` | Full overview including coverage heatmap (source / docs) |
+| `asl-serve-dataset.png` | `trade_ticks` metadata tab (for docs; not in README) |
+
+Regenerate the hero crop after re-capturing `asl-serve.png`:
+
+```bash
+ffmpeg -y -i docs/assets/asl-serve.png -vf "crop=2560:1320:0:0" docs/assets/asl-serve-hero.png
+```
 
 ```bash
 asl serve --config configs/ashare-lake.toml --port 8791
