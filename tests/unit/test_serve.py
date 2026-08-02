@@ -202,6 +202,41 @@ def test_detail_reports_the_source_floor_not_the_backlog(client):
     assert daily["earliest_available"] is None
 
 
+def test_row_grain_marks_intraday_data_that_is_not_bars(client):
+    """trade_ticks is intraday but holds no bars.
+
+    The catalog used to expose only `intraday`, the behavioural field, which
+    trade_ticks leaves unset on purpose so it cannot inherit bar-shaped checks
+    — so the panel showed a dash and the dataset read as daily.
+    """
+    ticks = client.get("/api/datasets/trade_ticks").json()
+    assert ticks["row_grain"] == "tick"
+    assert ticks["intraday"] is None
+
+    bars = client.get("/api/datasets/minute_bars").json()
+    assert bars["row_grain"] == bars["intraday"] == "1m"
+
+    assert client.get("/api/datasets/daily_bars").json()["row_grain"] is None
+
+
+def test_detail_distinguishes_a_fixed_floor_from_a_rolling_horizon(client):
+    """A date-limited source must not read as unlimited.
+
+    Both mechanisms produce an `earliest_available`, so that field alone cannot
+    tell them apart. Without `history_floor_date`, the dashboard keyed on
+    `history_horizon_days` and printed 无上限 for trade_ticks — directly
+    contradicting the 最早可得 line beside it.
+    """
+    ticks = client.get("/api/datasets/trade_ticks").json()
+    assert ticks["history_floor_date"] == "2024-01-02"
+    assert ticks["history_horizon_days"] is None
+    assert ticks["earliest_available"] == "2024-01-02"
+
+    # A rolling horizon carries no floor date, and an unlimited source neither.
+    assert client.get("/api/datasets/minute_bars").json()["history_floor_date"] is None
+    assert client.get("/api/datasets/daily_bars").json()["history_floor_date"] is None
+
+
 def test_detail_omits_the_partition_series(client):
     """6,202 partitions must not ride along on every tab switch."""
     assert "partitions_detail" not in client.get("/api/datasets/daily_bars").json()
