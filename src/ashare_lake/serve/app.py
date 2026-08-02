@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Poll interval for the run stream. Batches finish on the order of seconds to
+# minutes, so this is responsive without making the manifest a hot file.
+_STREAM_POLL_SECONDS = 2.0
+
+_BUNDLE_SRC = "/static/bundle.js"
+
+
+def _bundle_stamp() -> str:
+    """Cache-busting stamp for the bundle URL.
+
+    The file's mtime rather than the package version: installing a wheel
+    refreshes it, so upgrades bust the cache — and so does a local rebuild,
+    which a version string would not, leaving a developer testing yesterday's
+    JavaScript against today's code. One stat per page load.
+    """
+    bundle = STATIC_DIR / "bundle.js"
+    return str(int(bundle.stat().st_mtime)) if bundle.exists() else "dev"
+
 
 class Health(BaseModel):
     anchor: date = Field(description="Last trading day; freshness is judged against this.")
@@ -165,6 +183,53 @@ class RowPage(BaseModel):
     limit: int
 
 
+class RunSummary(BaseModel):
+    run_id: str
+    job_name: str
+    status: str
+    started_at: str
+    finished_at: str | None
+    rows_read: int | None
+    rows_written: int | None
+    error_message: str | None
+    batches: int
+    batch_status: dict[str, int]
+
+
+class RunBatch(BaseModel):
+    batch_id: str
+    dataset: str
+    status: str
+    window_start: str | None
+    window_end: str | None
+    rows_read: int | None
+    rows_written: int | None
+    retry_count: int | None
+    started_at: str | None
+    finished_at: str | None
+    heartbeat_at: str | None
+    error_message: str | None
+    stalled: bool = Field(
+        description="Still 'running' but silent past batch_stale_seconds — what "
+        "the engine will promote to failed on the next run."
+    )
+    silent_seconds: int | None = None
+
+
+class RunDetail(BaseModel):
+    run_id: str
+    job_name: str
+    status: str
+    started_at: str
+    finished_at: str | None
+    rows_read: int | None
+    rows_written: int | None
+    error_message: str | None
+    metadata_json: str | None
+    stale_after_seconds: float
+    batches: list[RunBatch]
+
+
 class Provenance(BaseModel):
     source: str
     data_version: str
@@ -256,7 +321,13 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
         page = STATIC_DIR / "index.html"
         if not page.exists():  # pragma: no cover — packaging failure
             raise HTTPException(500, "dashboard page missing from the installed package")
-        return HTMLResponse(page.read_text(encoding="utf-8"))
+        # Version-stamp the bundle URL. StaticFiles sends no Cache-Control, so a
+        # browser is free to reuse a cached /static/bundle.js by heuristic
+        # freshness without revalidating — which after an upgrade means new API,
+        # old JavaScript, and a dashboard that misbehaves in ways neither side
+        # can explain. A changed query string is a changed URL.
+        html = page.read_text(encoding="utf-8")
+        return HTMLResponse(html.replace(_BUNDLE_SRC, f"{_BUNDLE_SRC}?v={_bundle_stamp()}"))
 
     @app.get("/api/health", response_model=Health)
     def health(view: View) -> Health:
@@ -338,6 +409,68 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
     def provenance_series(dataset: str, view: View) -> ProvenanceSeries:
         _known(dataset)
         return ProvenanceSeries(**view.provenance_series(dataset))
+
+    @app.get("/api/runs", response_model=list[RunSummary])
+    def runs(
+        view: View,
+        limit: Annotated[int, Query(ge=1, le=200)] = 40,
+    ) -> list[RunSummary]:
+        return [RunSummary(**row) for row in view.runs(limit=limit)]
+
+    @app.get("/api/runs/{run_id}", response_model=RunDetail)
+    def run_detail(run_id: str, view: View) -> RunDetail:
+        detail = view.run_detail(run_id)
+        if detail is None:
+            raise HTTPException(404, f"unknown run {run_id!r}")
+        return RunDetail(**detail)
+
+    @app.get("/api/stream/runs/{run_id}", include_in_schema=False)
+    async def stream_run(run_id: str, view: View, request: Request):
+        """Server-sent events: the run's batches as they change.
+
+        Polls the manifest rather than being pushed to, because the writers are
+        separate worker processes and SQLite has no notification channel. A
+        cheap fingerprint decides whether anything is worth sending, so an idle
+        subscriber costs one small query per interval and no traffic.
+
+        The poll runs in a thread: SQLite is blocking, and doing it on the event
+        loop would stall every other request for the duration.
+        """
+        import asyncio
+        import json as _json
+
+        from fastapi.responses import StreamingResponse
+        from starlette.concurrency import run_in_threadpool
+
+        if view.run_detail(run_id) is None:
+            raise HTTPException(404, f"unknown run {run_id!r}")
+
+        async def events():
+            last = None
+            while True:
+                if await request.is_disconnected():
+                    return
+                fingerprint = await run_in_threadpool(view.run_fingerprint, run_id)
+                if fingerprint != last:
+                    last = fingerprint
+                    detail = await run_in_threadpool(view.run_detail, run_id)
+                    if detail is None:
+                        return
+                    yield f"data: {_json.dumps(detail, default=str)}\n\n"
+                    # A finished run cannot change again; close rather than
+                    # leave the client holding an idle connection forever.
+                    if detail["status"] not in ("running",):
+                        return
+                else:
+                    # Comment frame: keeps proxies from reaping an idle stream.
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(_STREAM_POLL_SECONDS)
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/heatmap", response_model=Heatmap)
     def heatmap(

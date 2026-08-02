@@ -1,7 +1,7 @@
 // ECharts, registered piece by piece rather than pulled in whole: the prebuilt
 // bundle is 1.1MB and half of it is chart types this dashboard never draws.
 import * as echarts from "echarts/core";
-import { BarChart, HeatmapChart } from "echarts/charts";
+import { BarChart, CustomChart, HeatmapChart } from "echarts/charts";
 import {
   DataZoomComponent,
   GridComponent,
@@ -13,6 +13,7 @@ import { CanvasRenderer } from "echarts/renderers";
 
 echarts.use([
   BarChart,
+  CustomChart,
   HeatmapChart,
   DataZoomComponent,
   GridComponent,
@@ -244,5 +245,113 @@ export function provenanceSeries(el, data) {
       barMaxWidth: 40,
       data: periods.map((d) => bucket.get(`${d}|${key}`) || 0),
     })),
+  });
+}
+
+// --- run gantt ---------------------------------------------------------------
+
+const BATCH_COLORS = {
+  success: "--cell-covered",
+  running: "--series-1",
+  failed: "--cell-gap",
+  stale: "--series-4",
+};
+
+/**
+ * One run's batches on a time axis, grouped into a lane per dataset.
+ *
+ * A batch that is still running has no `finished_at`, so its bar is drawn to
+ * "now" — which is what makes the chart readable while a job is in flight, and
+ * why it is redrawn on every stream frame rather than only at the end.
+ */
+export function runGantt(el, detail) {
+  const t = tokens();
+  const batches = detail.batches.filter((b) => b.started_at);
+  if (!batches.length) {
+    el.innerHTML = '<p class="muted">这个 run 还没有 batch 记录。</p>';
+    return null;
+  }
+
+  const lanes = [...new Set(batches.map((b) => b.dataset))].sort();
+  const laneIndex = new Map(lanes.map((d, i) => [d, i]));
+  const now = Date.now();
+  const ms = (s) => (s ? new Date(s).getTime() : null);
+
+  const data = batches.map((b) => {
+    const start = ms(b.started_at);
+    const end = ms(b.finished_at) ?? now;
+    return {
+      value: [laneIndex.get(b.dataset), start, end, b],
+      itemStyle: {
+        color: css(BATCH_COLORS[b.status] ?? "--empty"),
+        // A retried batch is not the same event as a clean one; outline it
+        // rather than hiding the retry in a tooltip nobody opens.
+        borderColor: b.retry_count ? css("--stale") : "transparent",
+        borderWidth: b.retry_count ? 2 : 0,
+        // A stalled batch is still 'running' in the manifest but nothing is
+        // moving; hatch it so it does not read as healthy progress.
+        decal: b.stalled ? { symbol: "line", rotation: 0.8, color: css("--bg") } : undefined,
+      },
+    };
+  });
+
+  el.style.height = `${Math.max(180, lanes.length * 26 + 80)}px`;
+  return mount(el, {
+    animation: false,
+    grid: { left: 170, right: 24, top: 12, bottom: 40 },
+    tooltip: {
+      backgroundColor: t.surface,
+      borderColor: t.line,
+      textStyle: { color: t.ink, fontSize: 12 },
+      formatter: (p) => {
+        const b = p.value[3];
+        const secs = Math.round((( ms(b.finished_at) ?? now) - ms(b.started_at)) / 1000);
+        const lines = [
+          `<b>${b.dataset}</b> · ${b.status}${b.stalled ? " · 静默" : ""}`,
+          `${secs}s${b.finished_at ? "" : "（进行中）"}`,
+          `写入 ${(b.rows_written ?? 0).toLocaleString()} 行`,
+        ];
+        if (b.retry_count) lines.push(`重试 ${b.retry_count} 次`);
+        if (b.window_start) lines.push(`窗口 ${b.window_start} → ${b.window_end}`);
+        if (b.error_message) lines.push(`<span style="opacity:.8">${b.error_message.slice(0, 120)}</span>`);
+        return lines.join("<br>");
+      },
+    },
+    xAxis: {
+      type: "time",
+      axisLine: { lineStyle: { color: t.line } },
+      axisLabel: { color: t.muted, fontSize: 10 },
+      splitLine: { lineStyle: { color: t.line } },
+    },
+    yAxis: {
+      type: "category",
+      data: lanes,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: t.muted, fontSize: 11 },
+    },
+    series: [
+      {
+        type: "custom",
+        renderItem: (params, api) => {
+          const lane = api.value(0);
+          const start = api.coord([api.value(1), lane]);
+          const end = api.coord([api.value(2), lane]);
+          const height = Math.min(api.size([0, 1])[1] * 0.55, 18);
+          const rect = echarts.graphic.clipRectByRect(
+            { x: start[0], y: start[1] - height / 2, width: Math.max(end[0] - start[0], 2), height },
+            {
+              x: params.coordSys.x,
+              y: params.coordSys.y,
+              width: params.coordSys.width,
+              height: params.coordSys.height,
+            },
+          );
+          return rect && { type: "rect", shape: { ...rect, r: 2 }, style: api.style() };
+        },
+        encode: { x: [1, 2], y: 0 },
+        data,
+      },
+    ],
   });
 }

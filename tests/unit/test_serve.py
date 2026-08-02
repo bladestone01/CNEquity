@@ -452,7 +452,7 @@ def test_the_page_reaches_nothing_outside_this_host(client):
 
 def test_the_bundle_ships_beside_the_page(client):
     """The page is a shell; without the bundle it renders nothing at all."""
-    assert '<script src="/static/bundle.js"></script>' in client.get("/").text
+    assert "/static/bundle.js" in client.get("/").text
     bundle = client.get("/static/bundle.js")
     assert bundle.status_code == 200
     assert "javascript" in bundle.headers["content-type"]
@@ -509,3 +509,17 @@ def test_an_unmeasured_lake_still_answers(config):
 def test_dates_serialise_as_plain_iso_days(client):
     body = client.get("/api/health").json()
     assert date.fromisoformat(body["anchor"])
+
+
+def test_the_bundle_url_is_stamped_so_an_upgrade_is_not_served_from_cache(client):
+    """StaticFiles sends no Cache-Control, so the URL has to change instead.
+
+    Without this an upgraded install can pair a new API with the browser's
+    cached copy of the old JavaScript — a failure neither side can explain.
+    """
+    import re
+
+    body = client.get("/").text
+    match = re.search(r"/static/bundle\.js\?v=(\d+)", body)
+    assert match, "bundle URL is not version-stamped"
+    assert client.get(f"/static/bundle.js?v={match.group(1)}").status_code == 200

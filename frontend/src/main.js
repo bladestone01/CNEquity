@@ -1,6 +1,6 @@
 // Lake dashboard. Two views routed on the hash: the tier overview (#/) and one
 // dataset (#/dataset/<name>[/state|meta]).
-import { disposeAll, heatmap, provenanceSeries } from "./charts.js";
+import { disposeAll, heatmap, provenanceSeries, runGantt } from "./charts.js";
 
 const qs = new URLSearchParams(location.search);
 const TOKEN = qs.get("token");
@@ -60,7 +60,9 @@ async function renderOverview() {
 
   app.innerHTML = `
     <h1>ashare-lake</h1>
-    <div class="sub">最后交易日 ${h.anchor} · ${h.datasets} 个注册数据集 · 审计快照 ${h.audit_trade_date || "无"}</div>
+    <div class="sub">最后交易日 ${h.anchor} · ${h.datasets} 个注册数据集
+      · 审计快照 ${h.audit_trade_date || "无"}
+      · <span class="ds-link" id="to-runs">跑批记录 →</span></div>
     ${notes.length ? `<div class="banner">${notes.join("<br>")}</div>` : ""}
     <div class="kpis">
       ${kpi(h.fresh, "fresh")}
@@ -102,6 +104,7 @@ async function renderOverview() {
     body.append(tr, detail);
   }
 
+  document.getElementById("to-runs").onclick = () => { location.hash = "#/runs"; };
   heatmap(document.getElementById("heat"), hm);
 }
 
@@ -407,13 +410,180 @@ async function renderDetail(name, tab) {
   });
 }
 
+// --- runs -------------------------------------------------------------------
+
+const AGO = (iso) => {
+  if (!iso) return "—";
+  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 90) return `${Math.round(secs)} 秒前`;
+  if (secs < 5400) return `${Math.round(secs / 60)} 分钟前`;
+  if (secs < 172800) return `${Math.round(secs / 3600)} 小时前`;
+  return `${Math.round(secs / 86400)} 天前`;
+};
+
+const DURATION = (a, b) => {
+  if (!a) return "—";
+  const secs = Math.max(0, ((b ? new Date(b) : new Date()).getTime() - new Date(a).getTime()) / 1000);
+  return secs < 90 ? `${Math.round(secs)}s` : `${Math.round(secs / 60)}m`;
+};
+
+async function renderRuns() {
+  const runs = await api("/api/runs?limit=40");
+  const rows = runs
+    .map((r) => {
+      const bad = Object.keys(r.batch_status).some((s) => s === "failed" || s === "stale");
+      const cls = r.status === "success" ? "fresh" : r.status === "running" ? "" : "stale";
+      const tally = Object.entries(r.batch_status)
+        .map(([s, n]) => `${s} ${n}`)
+        .join(" · ");
+      return `<tr class="tier-row" data-run="${esc(r.run_id)}">
+        <td><span class="dot ${cls}"></span>${esc(r.job_name)}</td>
+        <td class="${bad || r.status === "failed" ? "err" : ""}">${esc(r.status)}</td>
+        <td class="muted">${AGO(r.started_at)}</td>
+        <td class="n">${DURATION(r.started_at, r.finished_at)}</td>
+        <td class="n">${fmt(r.rows_written)}</td>
+        <td class="muted">${esc(tally) || "—"}</td>
+        <td class="muted">${esc((r.error_message || "").slice(0, 60))}</td>
+      </tr>`;
+    })
+    .join("");
+
+  app.innerHTML = `
+    <div class="back" id="back">← 返回总览</div>
+    <h1>跑批</h1>
+    <div class="sub">最近 ${runs.length} 个 run · 点一行看它的 batch 甘特</div>
+    <div class="scroll"><table>
+      <tr><th>job</th><th>状态</th><th>开始</th><th class="n">耗时</th>
+          <th class="n">写入</th><th>batch</th><th>错误</th></tr>
+      ${rows}
+    </table></div>`;
+  document.getElementById("back").onclick = () => { location.hash = "#/"; };
+  app.querySelectorAll("[data-run]").forEach((tr) => {
+    tr.onclick = () => { location.hash = `#/runs/${tr.dataset.run}`; };
+  });
+}
+
+let runStream = null;
+let runTicker = null;
+let lastRunDetail = null;
+
+function closeRunStream() {
+  if (runStream) {
+    runStream.close();
+    runStream = null;
+  }
+  if (runTicker) {
+    clearInterval(runTicker);
+    runTicker = null;
+  }
+  lastRunDetail = null;
+}
+
+/**
+ * Advance the clock between stream frames.
+ *
+ * The stream only fires when the manifest changes, and a batch heartbeats far
+ * less often than once a second — measured at one frame in 70s on an intraday
+ * backfill. Without a local tick the elapsed time and the running bar's leading
+ * edge sit frozen under a badge that says 实时, which is worse than not
+ * claiming it. The data still comes from the stream; only "now" moves here.
+ */
+function startRunTicker() {
+  if (runTicker) clearInterval(runTicker);
+  let ticks = 0;
+  runTicker = setInterval(() => {
+    if (!lastRunDetail || lastRunDetail.status !== "running") return;
+    const el = document.getElementById("run-status");
+    if (!el) return closeRunStream();
+    paintRunStatus(lastRunDetail);
+    // The bar's right edge is "now" too, but redrawing a canvas every second
+    // to move it a few pixels is not worth it.
+    if (++ticks % 5 === 0) runGantt(document.getElementById("run-gantt"), lastRunDetail);
+  }, 1000);
+}
+
+function paintRunStatus(detail) {
+  const live = detail.status === "running";
+  document.getElementById("run-status").innerHTML =
+    `${esc(detail.status)}${live ? ' <span class="live">● 实时</span>' : ""}
+     · ${DURATION(detail.started_at, detail.finished_at)}
+     · ${fmt(detail.rows_written)} 行`;
+}
+
+function paintRun(detail) {
+  lastRunDetail = detail;
+  paintRunStatus(detail);
+
+  const stalled = detail.batches.filter((b) => b.stalled);
+  document.getElementById("run-note").innerHTML = stalled.length
+    ? `<div class="banner">${stalled.length} 个 batch 仍是 running 但已静默超过
+       ${Math.round(detail.stale_after_seconds / 60)} 分钟——下次 run 会把它们判为 failed：
+       ${stalled.map((b) => `<code>${esc(b.dataset)}</code>`).join(" ")}</div>`
+    : "";
+
+  runGantt(document.getElementById("run-gantt"), detail);
+
+  const failed = detail.batches.filter((b) => b.error_message);
+  document.getElementById("run-errors").innerHTML = failed.length
+    ? `<h3>失败的 batch</h3><div class="scroll"><table>
+        <tr><th>数据集</th><th>状态</th><th class="n">重试</th><th>错误</th></tr>
+        ${failed
+          .map(
+            (b) => `<tr><td>${esc(b.dataset)}</td><td class="err">${esc(b.status)}</td>
+            <td class="n">${b.retry_count || ""}</td>
+            <td class="muted">${esc(b.error_message)}</td></tr>`,
+          )
+          .join("")}</table></div>`
+    : "";
+}
+
+async function renderRunDetail(runId) {
+  const detail = await api(`/api/runs/${encodeURIComponent(runId)}`);
+  app.innerHTML = `
+    <div class="back" id="back">← 返回跑批列表</div>
+    <h1>${esc(detail.job_name)}</h1>
+    <div class="sub"><span id="run-status"></span> · <code>${esc(detail.run_id)}</code></div>
+    <div id="run-note"></div>
+    <h3>batch 甘特（按数据集分道）</h3>
+    <div id="run-gantt"></div>
+    <p class="legend">
+      <span><i class="swatch" style="background:var(--cell-covered)"></i> success</span>
+      <span><i class="swatch" style="background:var(--series-1)"></i> running</span>
+      <span><i class="swatch" style="background:var(--cell-gap)"></i> failed</span>
+      <span><i class="swatch" style="background:var(--series-4)"></i> stale</span>
+      <span>橙色描边 = 有重试；斜纹 = 已静默</span>
+    </p>
+    <div id="run-errors"></div>`;
+  document.getElementById("back").onclick = () => { location.hash = "#/runs"; };
+  paintRun(detail);
+
+  // Only a running job can change. Subscribing to a finished one would hold a
+  // connection open for events that can never arrive.
+  if (detail.status !== "running") return;
+  startRunTicker();
+  const url = TOKEN
+    ? `/api/stream/runs/${encodeURIComponent(runId)}?token=${encodeURIComponent(TOKEN)}`
+    : `/api/stream/runs/${encodeURIComponent(runId)}`;
+  runStream = new EventSource(url);
+  runStream.onmessage = (e) => {
+    // Ignore late frames for a run the user has already navigated away from.
+    if (!location.hash.includes(runId)) return closeRunStream();
+    paintRun(JSON.parse(e.data));
+  };
+  runStream.onerror = () => closeRunStream();
+}
+
 // --- routing ----------------------------------------------------------------
 
 async function route() {
   disposeAll();
-  const m = location.hash.match(/^#\/dataset\/([^/]+)(?:\/(state|meta|data))?/);
+  closeRunStream();
+  const dataset = location.hash.match(/^#\/dataset\/([^/]+)(?:\/(state|meta|data))?/);
+  const run = location.hash.match(/^#\/runs\/(.+)$/);
   try {
-    if (m) await renderDetail(decodeURIComponent(m[1]), m[2] || "state");
+    if (dataset) await renderDetail(decodeURIComponent(dataset[1]), dataset[2] || "state");
+    else if (run) await renderRunDetail(decodeURIComponent(run[1]));
+    else if (location.hash.startsWith("#/runs")) await renderRuns();
     else await renderOverview();
     window.scrollTo(0, 0);
   } catch (err) {

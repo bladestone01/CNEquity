@@ -45,6 +45,9 @@
 | `GET /api/datasets/{name}/dates` | 可选日期值 + `kind`（渲染层据此选控件） |
 | `GET /api/datasets/{name}/rows` | 一页真实的行；`period` / `symbol` / `as_of` / `adjust` / `limit` / `offset` |
 | `GET /api/heatmap?days=` | 数据集 × 交易日覆盖网格 |
+| `GET /api/runs?limit=` | 最近 run + 各状态 batch 计数 |
+| `GET /api/runs/{run_id}` | 该 run 的全部 batch（含 `stalled`） |
+| `GET /api/stream/runs/{run_id}` | SSE：跑批中的 batch 实时变化 |
 | `GET /api/docs` | OpenAPI 页，由 handler 生成，不会与实现漂移 |
 
 `empty` 拆成 `empty_optional` / `empty_required`：一个没人开启的可选数据集和一个失败的必需数据集在磁盘上长得一模一样，混在一起报会让人学会忽略它。
@@ -110,6 +113,18 @@
 
 ---
 
+## 跑批视图与实时流
+
+`stalled` 不是 manifest 的列，是推出来的：**仍是 `running` 但静默超过 `batch_stale_seconds`**。引擎下次跑批会用同一个阈值把这种 batch 判为 failed，所以提前显示出来，等于让人先看到引擎即将得出的结论——否则一个死掉的 worker 和一个慢 worker 在界面上长得一样。
+
+**SSE 是轮询出来的，不是被推送的。** 写 manifest 的是独立的 worker 进程，SQLite 没有通知通道。所以流每 2 秒比一次 `run_fingerprint`（一个把 batch 数、最大 `finished_at`/`heartbeat_at`、行数、重试数和状态串拼起来的廉价值）——没变就只发一个 keepalive 注释帧，闲置订阅者几乎不花钱。轮询在线程里做：SQLite 是阻塞的，放在事件循环上会卡住其它所有请求。
+
+run 结束时流主动关闭，而不是让客户端挂着等永远不会来的事件。
+
+**页面上的时钟是本地走的，不靠流。** 实测一个日内 backfill 在 70 秒里只产生 1 个变化帧——heartbeat 远不到每秒一次。只靠流的话，「● 实时」徽标下面的耗时和进行中那根 bar 的右端会是冻住的，那比不声称实时更糟。所以数据仍然只来自流，只有「现在」是本地推进的。
+
+---
+
 ## 鉴权与绑定
 
 默认绑 `127.0.0.1`。`--host` 指向非回环地址时**必须**给 `--token`，否则拒绝启动——这个检查排在读配置之前，免得 `--config` 打错字先失败、把绑定守卫盖掉。
@@ -133,6 +148,8 @@ token 支持 `Authorization: Bearer <token>` 与 `?token=`（页面用后者：�
 ECharts 走 `echarts/core` 显式注册而非预构建文件：1.1MB → 596KB（gzip 205KB），砍掉的一半是这个面板不画的图表类型。
 
 **没有 CDN。** 页面唯一的 script 是同源的、和它一起打包的；有测试断言页面里不出现任何外链。湖经常跑在离线机器或需要代理的网络里，那里的一个外部资源就是一个打不开的页面。
+
+**bundle 的 URL 带 mtime 戳。** `StaticFiles` 不发 `Cache-Control`，浏览器就按启发式新鲜度直接复用缓存里的 `/static/bundle.js`，不去 revalidate——升级之后就成了「新 API + 旧 JavaScript」，两边都解释不了的故障。用 mtime 而不是包版本：装 wheel 会刷新它，本地重建也会，而版本号只管前者，会让开发者拿昨天的 JS 测今天的代码（这个坑本人踩过）。
 
 ### 图表配色
 

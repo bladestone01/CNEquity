@@ -25,7 +25,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import polars as pl
@@ -413,6 +413,119 @@ class LakeView:
         out.append({"cmd": f"asl stats show --dataset {name}", "why": "逐分区行数与体积"})
         return out
 
+    # --- runs ---------------------------------------------------------------
+
+    def _manifest_rows(self, sql: str, params: tuple = ()) -> list[dict]:
+        """Query the manifest read-only. Returns [] when there is none yet."""
+        import sqlite3
+
+        path = self.config.manifest_path
+        if not path.exists():
+            return []
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            with conn:
+                return [dict(row) for row in conn.execute(sql, params).fetchall()]
+        except sqlite3.Error:
+            return []
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def runs(self, *, limit: int = 40) -> list[dict]:
+        """Recent runs, newest first, with their batch tally."""
+        runs = self._manifest_rows(
+            """SELECT run_id, job_name, status, started_at, finished_at,
+                      rows_read, rows_written, error_message
+               FROM ingestion_runs ORDER BY started_at DESC LIMIT ?""",
+            (limit,),
+        )
+        if not runs:
+            return []
+        tally = self._manifest_rows(
+            """SELECT run_id, status, COUNT(*) AS n FROM ingestion_batches
+               WHERE run_id IN ({}) GROUP BY run_id, status""".format(",".join("?" * len(runs))),
+            tuple(r["run_id"] for r in runs),
+        )
+        by_run: dict[str, dict[str, int]] = {}
+        for row in tally:
+            by_run.setdefault(row["run_id"], {})[row["status"]] = int(row["n"])
+        for run in runs:
+            counts = by_run.get(run["run_id"], {})
+            run["batches"] = sum(counts.values())
+            run["batch_status"] = counts
+            run["datasets"] = []
+        return runs
+
+    def run_detail(self, run_id: str) -> dict | None:
+        """One run and every batch in it, with a stalled flag per batch.
+
+        ``stalled`` is not a manifest column: it is "still ``running`` but
+        silent for longer than ``batch_stale_seconds``". The engine uses the
+        same threshold to promote such batches on the next run, so surfacing it
+        here shows the operator what the engine is about to conclude, before it
+        does — a worker that died is otherwise indistinguishable from a slow one.
+        """
+        rows = self._manifest_rows(
+            """SELECT run_id, job_name, status, started_at, finished_at,
+                      rows_read, rows_written, error_message, metadata_json
+               FROM ingestion_runs WHERE run_id = ?""",
+            (run_id,),
+        )
+        if not rows:
+            return None
+        run = rows[0]
+        batches = self._manifest_rows(
+            """SELECT batch_id, dataset, status, window_start, window_end,
+                      rows_read, rows_written, retry_count, started_at,
+                      finished_at, heartbeat_at, error_message
+               FROM ingestion_batches WHERE run_id = ?
+               ORDER BY COALESCE(started_at, '')""",
+            (run_id,),
+        )
+        now = datetime.now(timezone.utc)
+        threshold = float(getattr(self.config, "batch_stale_seconds", 3600) or 3600)
+        for batch in batches:
+            batch["stalled"] = False
+            if batch["status"] != "running":
+                continue
+            mark = batch["heartbeat_at"] or batch["started_at"]
+            if not mark:
+                continue
+            try:
+                silent = (now - datetime.fromisoformat(mark)).total_seconds()
+            except ValueError:
+                continue
+            batch["silent_seconds"] = round(silent)
+            batch["stalled"] = silent >= threshold
+        run["batches"] = batches
+        run["stale_after_seconds"] = threshold
+        return run
+
+    def run_fingerprint(self, run_id: str) -> str:
+        """Cheap value that changes whenever the run's batches do.
+
+        The stream compares this instead of diffing rows: a poll that finds it
+        unchanged sends nothing, which is what keeps an idle subscriber free.
+        """
+        rows = self._manifest_rows(
+            """SELECT COUNT(*) AS n, COALESCE(MAX(finished_at), '') AS f,
+                      COALESCE(MAX(heartbeat_at), '') AS h,
+                      COALESCE(SUM(rows_written), 0) AS w,
+                      COALESCE(SUM(retry_count), 0) AS r,
+                      COALESCE(GROUP_CONCAT(status), '') AS s
+               FROM ingestion_batches WHERE run_id = ?""",
+            (run_id,),
+        )
+        state = self._manifest_rows("SELECT status FROM ingestion_runs WHERE run_id = ?", (run_id,))
+        head = rows[0] if rows else {}
+        return (
+            "|".join(str(head.get(k, "")) for k in ("n", "f", "h", "w", "r", "s"))
+            + f"|{state[0]['status'] if state else ''}"
+        )
+
     def recent_batches(self, dataset: str, *, limit: int = 15) -> list[dict]:
         """Latest manifest batches for this dataset, newest first.
 
@@ -422,30 +535,13 @@ class LakeView:
         spinner. The manifest is small and WAL is already on, so a concurrent
         run is not blocked by this read.
         """
-        import sqlite3
-
-        path = self.config.manifest_path
-        if not path.exists():
-            return []
-        try:
-            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-            conn.row_factory = sqlite3.Row
-            with conn:
-                rows = conn.execute(
-                    """SELECT run_id, batch_id, status, window_start, window_end, rows_written,
-                              retry_count, started_at, finished_at, error_message
-                       FROM ingestion_batches WHERE dataset = ?
-                       ORDER BY COALESCE(started_at, '') DESC LIMIT ?""",
-                    (dataset, limit),
-                ).fetchall()
-            return [dict(row) for row in rows]
-        except sqlite3.Error:
-            return []
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        return self._manifest_rows(
+            """SELECT run_id, batch_id, status, window_start, window_end, rows_written,
+                      retry_count, started_at, finished_at, error_message
+               FROM ingestion_batches WHERE dataset = ?
+               ORDER BY COALESCE(started_at, '') DESC LIMIT ?""",
+            (dataset, limit),
+        )
 
     def dataset_detail(self, dataset: str) -> dict:
         """Everything the detail page shows, in one round trip."""
