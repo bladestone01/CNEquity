@@ -57,14 +57,29 @@
 | 字段 | 含义 |
 |------|------|
 | `name` | 数据集名 |
-| `layer` | `curated` / `derived` |
+| `tier` | L0–L8 研究分层；无默认值，必须显式声明 |
+| `layer` | `curated` / `derived`（**存储位置**，与 `tier` 正交） |
 | `partition_col` | Hive 分区列；`None` = merge 文件 |
+| `partition_granularity` | `day` / `month` / `quarter` / `year`；按每日行数选，不按习惯 |
 | `date_col` | 查询日期列；默认等于 `partition_col` |
 | `fetch_semantics` | `by_date` / `snapshot` |
 | `watermark` | 是否维护 `meta/state` 水位 |
 | `pit` | 是否 PIT 数据集 |
 | `backfill_source` | snapshot 数据集的历史回填源名 |
 | `max_staleness_days` | `status --datasets` 容忍滞后天数 |
+| `required` | `False` 时空 curated 只算 warning，不拉低 `lake_health` |
+| `history_horizon_days` | 源端还提供多少个**交易日**（滚动，随今天前移） |
+| `history_floor_date` | 源端的**固定日历底**（不随今天移动）；与上一项二选一，同时设时它优先 |
+| `backfill_chunk_days` | 单次回填子跑覆盖的日历天数（by-date 源用） |
+| `backfill_chunk_symbols` | 单次回填子跑的标的数（**tip-paged 源用**，与上一项互斥） |
+| `intraday_frequency` | bar 频率（`1m` / `5m`）。**行为字段**：设了就会被 audit 的会话检查、reader 的复权集合、`asl backfill --symbols` 认领 |
+| `row_grain` | 一行覆盖多久（`1m` / `5m` / `tick`）。**纯描述**，不驱动任何行为 |
+
+**两组容易混的字段：**
+
+`history_horizon_days` vs `history_floor_date` —— 前者是「每标的固定根数」（分钟线：源端存 22,800 根 1m，除以一个完整交易日得 95 天），窗口每天往前滑；后者是服务端按日历切的保留底（分笔：所有标的都回溯到 2024-01-02），**不随今天移动，所以视野逐日变长**。用错会让 `earliest_available()` 每天漂，几个月后把源端还愿意给的数据挡在门外。
+
+`intraday_frequency` vs `row_grain` —— 前者是行为的，它的消费者都假定存在 `bar_time` 列和「每交易日 N 根」；`trade_ticks` 故意不设它，否则会继承一批在错误列上静默通过的检查。但目录和面板仍需知道它是日内数据，这是 `row_grain` 的唯一职责。两者同时存在时必须一致（注册表测试强制）。
 
 ### 辅助函数
 

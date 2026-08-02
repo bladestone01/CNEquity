@@ -34,7 +34,16 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **`DatasetSpec.history_floor_date`** — a source edge expressed as a calendar
   date rather than a rolling trading-day count. `earliest_available()` prefers
   it, and the backfill guard drops the "narrow your scope" advice when it
-  fires, since no scope reaches past a fixed floor.
+  fires, since no scope reaches past a fixed floor. Both fields now reach the
+  dashboard and `/api/datasets/{name}`, which previously could not express
+  which mechanism produced an `earliest_available` — and so called a
+  date-limited source unlimited.
+
+- **`DatasetSpec.row_grain`** — what one row covers (`1m` / `5m` / `tick`),
+  descriptive only. Separate from `intraday_frequency`, which drives fetch,
+  checks and the reader and which `trade_ticks` deliberately leaves unset; with
+  only the latter, intraday transaction records were displayed as a daily
+  dataset. The dataset panel's 日内频率 fact is now 行粒度.
 
 ### Fixed
 
