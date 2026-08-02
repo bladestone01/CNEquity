@@ -273,6 +273,64 @@ def run():
     """Run scheduled jobs."""
 
 
+def stale_fetch_steps(cfg, anchor: date) -> list[str]:
+    """Registered fetch steps whose dataset is still behind *anchor*.
+
+    Freshness is judged exactly as ``asl status --datasets`` judges it, so the
+    two cannot disagree about what is behind.
+
+    Derived datasets are excluded: they are recomputed by ``asl derive`` from
+    curated inputs, and re-fetching is not what they need. Datasets with no
+    registered step are excluded because there is nothing to run.
+    """
+    # Steps are registered by the module-level `import ashare_lake.steps`.
+    from ashare_lake.domain.datasets import DATASETS, is_stale
+    from ashare_lake.orchestrator.registry import STEP_REGISTRY
+    from ashare_lake.query.reader import list_datasets
+
+    out: list[str] = []
+    for row in list_datasets(config=cfg).iter_rows(named=True):
+        name = row["dataset"]
+        spec = DATASETS[name]
+        if spec.layer == "derived" or name not in STEP_REGISTRY:
+            continue
+        if not row["has_data"] or not row["watermarked"]:
+            continue
+        mark = row["watermark"] or row["coverage_end"]
+        if is_stale(name, mark, anchor):
+            out.append(name)
+    return out
+
+
+def _run_stale_only(cfg, engine, trade_date: date | None, *, backfill: bool) -> None:
+    """Second attempt, same day, for whatever the first attempt did not land.
+
+    The gap this closes: a ``snapshot`` dataset fetches only the run day, so a
+    source outage during the one scheduled window loses that day permanently —
+    ``valuation_metrics`` lost 2026-07-30 and 07-31 to a push2 clist outage and
+    no later run could have recovered them. Per-host retries already exist and
+    were exhausted; what was missing was a second window.
+    """
+    anchor = _last_trading_day(cfg, trade_date or date.today())
+    steps = stale_fetch_steps(cfg, anchor)
+    if not steps:
+        click.echo(f"nothing stale as of {anchor.isoformat()}")
+        return
+    click.echo(f"stale as of {anchor.isoformat()}: {', '.join(steps)}", err=True)
+    try:
+        result = engine.run_job(
+            "daily:stale",
+            trade_date=trade_date,
+            waves=[WaveConfig(name="stale", parallel=False, steps=[*steps, "compact"])],
+            backfill=backfill,
+        )
+    except RunLockError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps({"run_id": result["run_id"], "status": result["status"]}, indent=2))
+    if result["status"] not in ("success", "skipped_non_trading_day"):
+        raise SystemExit(1)
+
+
 @run.command("daily")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(
@@ -288,16 +346,29 @@ def run():
     help="As-of trade date YYYY-MM-DD (default: today). Use to catch up on weekends/holidays.",
 )
 @click.option("--backfill", is_flag=True)
+@click.option(
+    "--stale-only",
+    is_flag=True,
+    help="Re-fetch only the datasets still behind the last trading day. "
+    "Schedule a few hours after the main pipeline: a snapshot dataset that lost "
+    "its window to a source outage cannot be replayed tomorrow.",
+)
 def run_daily(
     config_path: str,
     group_name: str | None,
     trade_date_str: str | None,
     backfill: bool,
+    stale_only: bool,
 ):
     """Run daily ingestion job (Wave DAG or schedule group)."""
     cfg = _cfg(config_path)
     engine = JobEngine(cfg)
     td = date.fromisoformat(trade_date_str) if trade_date_str else None
+    if stale_only:
+        if group_name:
+            raise click.ClickException("--stale-only picks its own steps; drop --group.")
+        _run_stale_only(cfg, engine, td, backfill=backfill)
+        return
     try:
         if group_name:
             group = cfg.schedule_groups.get(group_name)

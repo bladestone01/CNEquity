@@ -78,6 +78,25 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 |------|------|
 | `--group` | `core` \| `capital` \| `signals` \| `fundamentals` \| `macro_risk` \| `research` \| `intraday` |
 | `--backfill` | 强制 backfill 语义（慎用） |
+| `--stale-only` | 只重抓仍落后于最后交易日的数据集（与 `--group` 互斥） |
+
+### --stale-only：当天的第二次机会
+
+`snapshot` 数据集只抓 run 当天。**一次源端中断吃掉那个窗口，那天就永久没了**——`valuation_metrics` 就这样丢了 2026-07-30 和 07-31：per-host 重试和退避本来就有，只是全部耗尽了，而 snapshot 语义决定了后面任何一次 run 都补不回来。
+
+缺的不是重试，是**当天的第二个窗口**。挂在主 pipeline 几小时之后：
+
+```cron
+# 主 pipeline
+5 16 * * 1-5 /path/to/ashare-lake/scripts/daily_pipeline.sh
+
+# 收尾补抓：只跑仍然落后的，没有就空转
+5 20 * * 1-5 cd /path/to/ashare-lake && asl run daily --stale-only
+```
+
+新鲜度判据与 `asl status --datasets` 完全一致（含每数据集的 `max_staleness_days` 容忍），所以两者不会各说各话。没有落后的数据集时不建 run、直接退出 0，可以安全挂在定时器上。
+
+派生数据集不在其中：它们由 curated 重算，该跑的是 `asl derive`，不是重抓。
 
 无 `--group` 时跑完整 `[job.daily.waves]` DAG。`intraday` 组不在默认调度里：需先开 `[minute_bars].enabled`，再 `asl run daily --group intraday`。
 

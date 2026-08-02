@@ -213,6 +213,29 @@ asl run daily --group core   # 增量续采
 
 ---
 
+## 收尾补抓（强烈建议加上）
+
+```cron
+5 20 * * 1-5 cd /path/to/ashare-lake && asl run daily --stale-only --config configs/ashare-lake.toml
+```
+
+**为什么需要它。** `snapshot` 数据集（`valuation_metrics`、`fund_flow`、`sector_members`、`analyst_consensus` 等）只抓 run 当天——源端在那一个调度窗口里中断，那天就**永久没了**，后面任何一次 run 都补不回来（重放会伪造行，这是 `fetch_semantics` 的设计）。
+
+这不是重试不够：`clist.py` 的 per-host 重试加退避一直都在，`valuation_metrics` 在 2026-07-30 / 07-31 是把所有 host 的重试都耗尽了。缺的是**当天的第二个窗口**。
+
+更糟的是它很安静：`daily_pipeline.sh` 默认 `ASL_SOFT_FAIL_OK=1`，gate 正常时 soft 组失败只告警、退出 0。上面那两天就是这样过了三天没人发现。
+
+`--stale-only` 的新鲜度判据与 `asl status --datasets` 一致（含每数据集的 `max_staleness_days`），没有落后的数据集时不建 run、直接退出 0，可以安全挂在定时器上。
+
+配套的可见性：
+
+```bash
+asl status --datasets     # 有 STALE 退出 1
+asl serve                 # 面板首屏就列出 STALE 数据集
+```
+
+---
+
 ## Init 与资源
 
 ```bash
