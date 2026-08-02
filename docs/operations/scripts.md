@@ -21,16 +21,25 @@
 for group in core capital signals fundamentals macro_risk research; do
   asl run daily --group $group
 done
+asl status --datasets            # 探针：有 STALE 才继续
+  └─ sleep ASL_STALE_RETRY_DELAY_SEC
+     asl run daily --stale-only  # 只重抓仍落后的
 health_notify.sh
 backup_meta.sh
+asl clean
 ```
+
+**收尾补抓**排在健康检查之前，所以补抓成功不会误报。`snapshot` 数据集只抓 run 当天，源端在那一个窗口中断就永久丢那天（重放会伪造行）——而立刻重试大概率撞上同一场中断，所以先等再抓，**但只在真有 STALE 时才等**，干净的日子零成本。详见 [runbook · 收尾补抓](runbook.md#收尾补抓)。
 
 **环境变量**（仅本脚本读取；`asl` CLI 不读）：`ASL_CONFIG`, `ASL_LOG_DIR`, `ASL_GROUPS`,
 `ASL_GATE_GROUPS`（默认 `core`，失败标为 gate；其余组标 soft）、
 `ASL_SOFT_FAIL_OK`（默认 `1`：gate OK 时 soft 失败 exit 0；`0`=仍 exit 1）、
-`ASL_TRADE_DATE`。
+`ASL_STALE_RETRY`（默认 `1`；`0` 关闭收尾补抓）、
+`ASL_STALE_RETRY_DELAY_SEC`（默认 `1800`）、
+`ASL_TRADE_DATE`、
+`ASL_BIN`（覆盖 `asl` 路径；供用 stub 跑通控制流的测试用）。
 
-结束时打印分组摘要（`group: OK|FAILED [gate|soft]`），便于区分「门禁挂了」与「东财挂了」。
+结束时打印分组摘要（`group: OK|FAILED [gate|soft]`）外加 `stale-retry: OK|FAILED|not needed|skipped`，便于区分「门禁挂了」与「东财挂了」。补抓失败算 soft。
 
 ---
 
