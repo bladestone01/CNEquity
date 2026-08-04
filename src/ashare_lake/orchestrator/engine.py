@@ -312,7 +312,7 @@ class JobEngine:
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         batches = self.manifest.get_batches_for_run(run_id)
-        for step_name in ("compact", "derive_adj_factors", "audit"):
+        for step_name in ("compact", "derive_adj_factors", "derive_industry_index", "audit"):
             if step_succeeded(batches, step_name):
                 continue
             result = self._run_step(step_name, trade_date, run_id, context)

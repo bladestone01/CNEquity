@@ -3,7 +3,7 @@ from __future__ import annotations
 from ashare_lake.orchestrator.registry import FINALIZE_STEP_GROUPS, STEP_REGISTRY, get_step
 
 # Hard ordering for finalize steps — do not rely on registration or alphabet sort alone.
-FINALIZE_STEP_ORDER = ("compact", "derive_adj_factors", "audit")
+FINALIZE_STEP_ORDER = ("compact", "derive_adj_factors", "derive_industry_index", "audit")
 
 
 class CyclicDependencyError(ValueError):
@@ -64,9 +64,10 @@ def step_execution_levels(step_names: list[str]) -> list[list[str]]:
     Dependencies on steps outside *step_names* are treated as already satisfied
     (typically fulfilled by earlier waves or schedule groups).
 
-    Steps in finalize groups (``compact``, ``derive_adj_factors``, ``audit``) are
-    deferred until every non-finalize step in *step_names* has completed, so
-    ``compact`` never runs against an empty staging run.
+    Steps in finalize groups (``compact``, ``derive_adj_factors``,
+    ``derive_industry_index``, ``audit``) are deferred until every non-finalize
+    step in *step_names* has completed, so ``compact`` never runs against an
+    empty staging run.
     """
     validate_steps_registered(step_names)
 

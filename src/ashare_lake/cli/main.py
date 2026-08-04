@@ -1092,17 +1092,21 @@ def repartition(config_path: str, dataset: str | None, do_all: bool, dry_run: bo
     "--start",
     "start_str",
     default=None,
-    help="trading_status: only derive suspensions on/after this date (YYYY-MM-DD).",
+    help="industry_index / trading_status: only derive on/after this date (YYYY-MM-DD).",
 )
 @click.option(
     "--end",
     "end_str",
     default=None,
-    help="trading_status: only derive suspensions on/before this date (YYYY-MM-DD).",
+    help="industry_index / trading_status: only derive on/before this date (YYYY-MM-DD).",
 )
 def derive(name: str, config_path: str, full: bool, start_str: str | None, end_str: str | None):
     """Derive computed datasets."""
     cfg = _cfg(config_path)
+    start = date.fromisoformat(start_str) if start_str else None
+    end = date.fromisoformat(end_str) if end_str else None
+    if start and end and start > end:
+        raise click.ClickException("--start must be on or before --end")
     if name == "adj_factors":
         result = compute_adj_factors(cfg, full=full)
         click.echo(f"Derived {name}: {result.rows} rows")
@@ -1115,15 +1119,11 @@ def derive(name: str, config_path: str, full: bool, start_str: str | None, end_s
     elif name == "industry_index":
         from ashare_lake.derive.industry_index import derive_industry_index
 
-        summary = derive_industry_index(cfg, full=full)
+        summary = derive_industry_index(cfg, start=start, end=end, full=full)
         click.echo(json.dumps(summary, indent=2, default=str))
     elif name == "trading_status":
         from ashare_lake.derive.trading_status_history import derive_suspension_history
 
-        start = date.fromisoformat(start_str) if start_str else None
-        end = date.fromisoformat(end_str) if end_str else None
-        if start and end and start > end:
-            raise click.ClickException("--start must be on or before --end")
         rows = derive_suspension_history(cfg, start=start, end=end)
         click.echo(f"Derived historical suspension: {rows} rows into trading_status")
     elif name == "sector_routing":

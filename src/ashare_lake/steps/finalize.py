@@ -1,4 +1,4 @@
-"""Finalize steps: compact, derive_adj_factors, audit."""
+"""Finalize steps: compact, derive_adj_factors, derive_industry_index, audit."""
 
 from __future__ import annotations
 
@@ -260,10 +260,26 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
 
 
 @register_step(
+    "derive_industry_index",
+    group="finalize",
+    parallelizable=False,
+    depends_on=["derive_adj_factors"],
+)
+def step_derive_industry_index(
+    config: Config, trade_date: date, run_id: str, context: dict
+) -> dict:
+    from ashare_lake.derive.industry_index import derive_industry_index
+
+    summary = derive_industry_index(config)
+    rows = int(summary.get("rows") or 0)
+    return {"rows_read": rows, "rows_written": rows}
+
+
+@register_step(
     "audit",
     group="finalize",
     parallelizable=False,
-    depends_on=["compact", "derive_adj_factors"],
+    depends_on=["compact", "derive_adj_factors", "derive_industry_index"],
 )
 def step_audit(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     from ashare_lake.quality.audit import run_audit

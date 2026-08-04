@@ -464,7 +464,7 @@ class Manifest:
                 UPDATE ingestion_batches
                 SET status = 'failed', error_message = ?
                 WHERE run_id = ? AND status = 'success' AND dataset NOT IN
-                    ('compact', 'derive_adj_factors', 'audit')
+                    ('compact', 'derive_adj_factors', 'derive_industry_index', 'audit')
                 """,
                 (reason, run_id),
             )

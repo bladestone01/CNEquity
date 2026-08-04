@@ -96,6 +96,7 @@ def test_retry_runs_missing_init_steps(cfg):
         "trading_status",
         "compact",
         "derive_adj_factors",
+        "derive_industry_index",
         "audit",
     ]
     assert phases_never_started(phases, batches) == ["phase3_index_and_status", "phase4_finalize"]

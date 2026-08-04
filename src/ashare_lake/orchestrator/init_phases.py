@@ -10,7 +10,7 @@ INIT_PHASE_STEPS: dict[str, list[str]] = {
     "phase2b_daily_bars_incremental": ["daily_bars"],
     "phase2c_daily_bars_backfill": ["daily_bars"],
     "phase3_index_and_status": ["index_bars", "trading_status"],
-    "phase4_finalize": ["compact", "derive_adj_factors", "audit"],
+    "phase4_finalize": ["compact", "derive_adj_factors", "derive_industry_index", "audit"],
 }
 
 INIT_BACKFILL_PHASES = frozenset(
@@ -27,7 +27,7 @@ INIT_BACKFILL_PHASES = frozenset(
     }
 )
 
-FINALIZE_STEPS = frozenset({"compact", "derive_adj_factors", "audit"})
+FINALIZE_STEPS = frozenset({"compact", "derive_adj_factors", "derive_industry_index", "audit"})
 
 DEFAULT_INIT_PHASES = [
     "phase1_reference",

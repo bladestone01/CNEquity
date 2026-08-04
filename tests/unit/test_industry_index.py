@@ -227,3 +227,89 @@ def test_derive_industry_index_writes_and_watermarks(tmp_path, monkeypatch):
     again = derive_industry_index(cfg, start=date(2026, 5, 16), end=date(2026, 5, 15))
     assert again["rows"] == 0
     assert "already current" in again["note"]
+
+
+def test_catchup_after_watermark_keeps_first_day(tmp_path, monkeypatch):
+    """Incremental catch-up must not drop the first day after the watermark.
+
+    Returns need the prior close. Loading bars from watermark+1 alone makes
+    pct_change null on that first day and silently skips it — the 2026-08-03
+    gap after a Jul-31 watermark.
+    """
+    cfg = Config(data_root=tmp_path / "data")
+    _seed_sw_membership(
+        cfg,
+        [
+            {
+                "symbol": "600000.SH",
+                "classification_system": "sw",
+                "industry_code": "240301",
+                "industry_name": "铝",
+                "as_of_date": date(2026, 7, 31),
+                "source": "sw",
+                "data_version": "v1",
+                "fetched_at": "2026-07-31T00:00:00+00:00",
+            }
+        ],
+    )
+    for d in (date(2026, 7, 31), date(2026, 8, 3)):
+        part = cfg.derived_root / "adj_factors" / f"trade_date={d.isoformat()}"
+        part.mkdir(parents=True)
+        pl.DataFrame(
+            {
+                "symbol": ["600000.SH"],
+                "trade_date": [d],
+                "adjust_type": ["hfq"],
+                "adj_factor": [1.0],
+                "source": ["sina"],
+                "data_version": ["v1"],
+                "fetched_at": ["2026-08-03T00:00:00+00:00"],
+            }
+        ).write_parquet(part / "part-000.parquet")
+
+    cal_part = cfg.curated_root / "trading_calendar" / "trade_date=2026"
+    cal_part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2026, 7, 31), date(2026, 8, 3), date(2026, 8, 4)],
+            "is_trading": [True, True, True],
+            "source": ["seed", "seed", "seed"],
+            "data_version": ["v1", "v1", "v1"],
+            "fetched_at": ["2026-08-03T00:00:00+00:00"] * 3,
+        }
+    ).write_parquet(cal_part / "part-000.parquet")
+
+    bars = pl.DataFrame(
+        [
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 7, 31),
+                "close": 10.0,
+                "amount": 1.0e8,
+            },
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 8, 3),
+                "close": 11.0,
+                "amount": 1.0e8,
+            },
+        ]
+    )
+    monkeypatch.setattr("ashare_lake.query.reader.load", lambda *a, **k: bars)
+    StateStore(cfg.meta_root).update_max_date("industry_index", date(2026, 7, 31))
+
+    summary = derive_industry_index(cfg, end=date(2026, 8, 3))
+    assert summary["rows"] > 0
+    assert summary["first"] == "2026-08-03"
+    assert summary["last"] == "2026-08-03"
+    assert StateStore(cfg.meta_root).get_date("industry_index") == date(2026, 8, 3)
+
+    written = pl.read_parquet(
+        next((cfg.derived_root / "industry_index").glob("**/part-000.parquet"))
+    )
+    day = written.filter(
+        (pl.col("trade_date") == date(2026, 8, 3)) & (pl.col("weighting") == "equal")
+    )
+    assert not day.is_empty()
+    assert day["ret"][0] == pytest.approx(0.1)
+    assert date(2026, 7, 31) not in written["trade_date"].to_list()

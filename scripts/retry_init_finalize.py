@@ -40,11 +40,11 @@ def main() -> int:
         print(json.dumps(retry, indent=2, default=str))
         return 1
 
-    logging.info("Finalize: derive_adj_factors + audit")
+    logging.info("Finalize: derive_adj_factors + derive_industry_index + audit")
     finalize = engine.run_job(
         "init-finalize",
         TRADE_DATE,
-        steps=["derive_adj_factors", "audit"],
+        steps=["derive_adj_factors", "derive_industry_index", "audit"],
         run_id=RUN_ID,
     )
     out = {"retry": retry, "finalize": finalize}

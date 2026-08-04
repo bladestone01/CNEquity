@@ -63,11 +63,13 @@ def test_compact_runs_after_fetch_steps_in_core_group():
         "index_bars",
         "compact",
         "derive_adj_factors",
+        "derive_industry_index",
     ]
     levels = step_execution_levels(steps)
     flat = [s for level in levels for s in level]
     assert flat.index("compact") > flat.index("daily_bars")
     assert flat.index("derive_adj_factors") > flat.index("compact")
+    assert flat.index("derive_industry_index") > flat.index("derive_adj_factors")
 
 
 def test_capital_group_runs_compact_last():
@@ -86,8 +88,15 @@ def test_capital_group_runs_compact_last():
 
 
 def test_finalize_wave_order():
-    levels = step_execution_levels(["compact", "derive_adj_factors", "audit"])
-    assert levels == [["compact"], ["derive_adj_factors"], ["audit"]]
+    levels = step_execution_levels(
+        ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
+    )
+    assert levels == [
+        ["compact"],
+        ["derive_adj_factors"],
+        ["derive_industry_index"],
+        ["audit"],
+    ]
 
 
 def test_finalize_subset_skips_missing_steps():

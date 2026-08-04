@@ -227,14 +227,14 @@ steps = ["index_bars"]
 [[job.daily.waves]]
 name = "finalize"
 parallel = false
-steps = ["compact", "derive_adj_factors", "audit"]
+steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
 
 [job.daily.groups.core]
 at = "16:00"
 steps = [
   "instruments", "trading_calendar", "trading_status",
   "corporate_actions", "daily_bars", "index_bars",
-  "compact", "derive_adj_factors",
+  "compact", "derive_adj_factors", "derive_industry_index",
 ]
 
 [job.daily.groups.capital]

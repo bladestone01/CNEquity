@@ -30,7 +30,7 @@ would bias exactly those industries with no way to notice.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -42,17 +42,36 @@ logger = logging.getLogger(__name__)
 
 # Below one yuan a "turnover" is a feed artefact, not a trade.
 _MIN_TRADED_AMOUNT = 1.0
+# How far back to search for a prior trading day used only as a pct_change baseline.
+_LOOKBACK_CALENDAR_DAYS = 21
 
 LEVELS = {"L1": 2, "L2": 4, "L3": 6}
 WEIGHTINGS = ("equal", "amount")
 
 
+def _prior_trading_day(config: Config, day: date) -> date | None:
+    """Latest trading day strictly before *day*, or None if the calendar is empty."""
+    from ashare_lake.steps.common import list_trading_dates
+
+    window_start = day - timedelta(days=_LOOKBACK_CALENDAR_DAYS)
+    prior = list_trading_dates(config, window_start, day - timedelta(days=1))
+    return prior[-1] if prior else None
+
+
 def _membership(config: Config) -> pl.DataFrame:
     """申万 snapshots only — `industry_members` also carries EastMoney board rows
     under 3/4-digit codes, which are a different taxonomy entirely."""
-    from ashare_lake.query.parquet_scan import parquet_glob
+    from ashare_lake.query.parquet_scan import dataset_has_parquet, parquet_glob
 
     root = config.curated_root / "industry_members"
+    if not dataset_has_parquet(root):
+        return pl.DataFrame(
+            schema={
+                "symbol": pl.Utf8,
+                "industry_code": pl.Utf8,
+                "as_of_date": pl.Date,
+            }
+        )
     df = (
         pl.scan_parquet(parquet_glob(root))
         .filter(pl.col("source") == "sw")
@@ -64,10 +83,10 @@ def _membership(config: Config) -> pl.DataFrame:
 
 def _priced_universe(config: Config) -> set[str]:
     """Symbols with an adjustment factor: everything else has no hfq series."""
-    from ashare_lake.query.parquet_scan import parquet_glob
+    from ashare_lake.query.parquet_scan import dataset_has_parquet, parquet_glob
 
     root = config.derived_root / "adj_factors"
-    if not root.exists():
+    if not dataset_has_parquet(root):
         return set()
     return set(
         pl.scan_parquet(parquet_glob(root)).select("symbol").unique().collect()["symbol"].to_list()
@@ -146,9 +165,16 @@ def compute_industry_index(
         members["symbol"].n_unique(),
         len(symbols),
     )
-    rets = _hfq_returns(config, start, end, symbols)
+    # pct_change needs the prior close: load one trading day before *start*, then
+    # drop lookback-only rows so the emitted range stays [start, end].
+    load_start = _prior_trading_day(config, start) or start
+    rets = _hfq_returns(config, load_start, end, symbols)
     if rets.is_empty():
         logger.warning("industry_index: no priced bars in [%s, %s]", start, end)
+        return pl.DataFrame()
+    rets = rets.filter(pl.col("trade_date") >= start)
+    if rets.is_empty():
+        logger.warning("industry_index: no priced returns in [%s, %s]", start, end)
         return pl.DataFrame()
 
     days = sorted(rets["trade_date"].unique().to_list())

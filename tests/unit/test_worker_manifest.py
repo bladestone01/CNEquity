@@ -164,7 +164,12 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
     )
     assert curated.exists()
     steps_run = {r.get("step") for r in retry["results"]}
-    assert steps_run >= {"compact", "derive_adj_factors", "audit"}
+    assert steps_run >= {
+        "compact",
+        "derive_adj_factors",
+        "derive_industry_index",
+        "audit",
+    }
 
 
 def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
