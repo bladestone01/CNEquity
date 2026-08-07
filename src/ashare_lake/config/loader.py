@@ -59,9 +59,6 @@ class Config:
     # Per-request timeout for EastMoneyClient (connect+read). Keep modest so
     # overseas daily groups fail fast instead of 30s × max_retries hangs.
     eastmoney_timeout_sec: float = 15.0
-    # Board-kline sweep pacing (sector_bars backfill) — in addition to per-request interval.
-    eastmoney_batch_size: int = 15
-    eastmoney_batch_rest_seconds: float = 60.0
     # baostock free-API pacing (full-market history sweeps).
     baostock_batch_size: int = 20
     baostock_batch_rest_seconds: float = 120.0
@@ -190,8 +187,6 @@ def load_config(path: str | Path) -> Config:
     source_intervals: dict[str, float] = {}
     eastmoney_proxy: str | None = None
     eastmoney_timeout_sec = 15.0
-    eastmoney_batch_size = 15
-    eastmoney_batch_rest_seconds = 60.0
     baostock_batch_size = 20
     baostock_batch_rest_seconds = 120.0
     for name, val in sources_raw.items():
@@ -203,11 +198,10 @@ def load_config(path: str | Path) -> Config:
                 eastmoney_proxy = str(val["proxy"]).strip() or None
             if name == "eastmoney" and val.get("timeout_sec") is not None:
                 eastmoney_timeout_sec = float(val["timeout_sec"])
-            if name == "eastmoney":
-                if val.get("batch_size") is not None:
-                    eastmoney_batch_size = int(val["batch_size"])
-                if val.get("batch_rest_seconds") is not None:
-                    eastmoney_batch_rest_seconds = float(val["batch_rest_seconds"])
+            # No eastmoney batch_size / batch_rest_seconds: the batch cool-down
+            # is a baostock mechanism. Parsing them here made them look wired up
+            # while every EastMoney sweep ran on min_interval_seconds alone.
+            # Unknown keys are ignored, so configs still carrying them load fine.
             if name == "baostock":
                 if val.get("batch_size") is not None:
                     baostock_batch_size = int(val["batch_size"])
@@ -280,8 +274,6 @@ def load_config(path: str | Path) -> Config:
         source_intervals=source_intervals,
         eastmoney_proxy=eastmoney_proxy,
         eastmoney_timeout_sec=eastmoney_timeout_sec,
-        eastmoney_batch_size=eastmoney_batch_size,
-        eastmoney_batch_rest_seconds=eastmoney_batch_rest_seconds,
         baostock_batch_size=baostock_batch_size,
         baostock_batch_rest_seconds=baostock_batch_rest_seconds,
         universe_default=str(raw.get("universe", {}).get("default", "all_a")),

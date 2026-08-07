@@ -70,9 +70,14 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   index bases into one series and produced a fake +79% median jump across 439
   boards. The troubleshooting entry also quoted a log line no code emits, and
   pointed at `[sources.eastmoney].proxy`, which does nothing for this dataset.
-- `[sources.eastmoney]` `batch_size` / `batch_rest_seconds` are marked inert in
-  the shipped config: they are parsed but no code reads them (the batch
-  cool-down is implemented for baostock only).
+### Removed (config)
+
+- **`[sources.eastmoney].batch_size` / `.batch_rest_seconds` are gone.** They
+  were parsed into `Config` and never read by anything — the batch cool-down is
+  a baostock mechanism — so they read as pacing that was wired up while every
+  EastMoney sweep ran on `min_interval_seconds` alone. Unknown keys are
+  ignored, so a config still carrying them loads unchanged; delete the two
+  lines when convenient.
 
 ## [0.5.0] — 2026-08-03
 

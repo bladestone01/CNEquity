@@ -55,10 +55,9 @@ enabled = true
 min_interval_seconds = 0.5
 # Per-request timeout (seconds). Connect/timeout/protocol errors do not retry.
 timeout_sec = 30
-# Accepted and parsed, but nothing reads them today — the batch cool-down is
-# implemented for baostock only. Left in place so existing configs keep loading.
-batch_size = 50
-batch_rest_seconds = 5
+# No batch_size / batch_rest_seconds here: EastMoney sweeps pace on
+# min_interval_seconds alone. The batch cool-down is a baostock mechanism —
+# see [sources.baostock], where it guards against the IP blacklist.
 # Optional HTTP(S) proxy for every EastMoney host. Only needed without a
 # mainland route: overseas and some cloud egress get 502s or dropped TLS from
 # push2/push2his. Point it at any proxy that has one (Clash, ssh -D, a China
