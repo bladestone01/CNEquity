@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from ashare_lake.orchestrator.init_phases import (
+    FINALIZE_STEPS,
+    INIT_PHASE_STEPS,
     expected_steps,
     init_run_complete,
     needs_finalize,
@@ -86,12 +88,20 @@ def test_needs_finalize_true_when_prior_done_and_finalize_incomplete():
 
 def test_needs_finalize_false_when_finalize_already_done():
     phases = ["phase1_reference", "phase4_finalize"]
-    batches = [
-        {"dataset": "instruments", "status": "success"},
-        {"dataset": "trading_calendar", "status": "success"},
-        {"dataset": "compact", "status": "success"},
-        {"dataset": "derive_adj_factors", "status": "success"},
-        {"dataset": "audit", "status": "success"},
+    batches = [{"dataset": "instruments", "status": "success"}] + [
+        {"dataset": step, "status": "success"} for step in sorted(FINALIZE_STEPS)
     ]
+    batches.append({"dataset": "trading_calendar", "status": "success"})
     assert init_run_complete(phases, batches) is True
     assert needs_finalize(phases, batches) is False
+
+
+def test_finalize_steps_match_the_phase_definition():
+    """Regression: the two lists drifted apart when derive_industry_index landed.
+
+    ``FINALIZE_STEPS`` gates ``needs_finalize`` and ``phase4_finalize`` gates
+    ``init_run_complete``. Adding a step to one and not the other leaves init
+    either re-running finalize forever or calling an incomplete run complete,
+    and every fixture that spells the steps out by hand goes stale silently.
+    """
+    assert set(INIT_PHASE_STEPS["phase4_finalize"]) == set(FINALIZE_STEPS)
