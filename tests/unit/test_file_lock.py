@@ -257,3 +257,39 @@ def test_is_locked_treats_open_oserror_as_held(tmp_path, monkeypatch):
 
     monkeypatch.setattr(file_lock, "exclusive_lock", boom)
     assert is_locked(path) is True
+
+
+# --- run_lock messages -------------------------------------------------------
+# Every scheduled daily group shares one non-blocking lock, so a collision means
+# the previous group overran and this one is being skipped for the day. Naming
+# the lock alone sent people hunting for a stuck process instead.
+
+
+def test_daily_group_collision_explains_the_skip(tmp_path):
+    import pytest
+
+    from ashare_lake.orchestrator.run_lock import (
+        DAILY_INGESTION_LOCK,
+        RunLockError,
+        run_lock,
+    )
+
+    with run_lock(tmp_path, DAILY_INGESTION_LOCK):
+        with pytest.raises(RunLockError) as exc:
+            with run_lock(tmp_path, DAILY_INGESTION_LOCK):
+                pass
+    message = str(exc.value)
+    assert "Another daily group is still running" in message
+    assert "skipped" in message
+    assert "[job.daily.groups]" in message
+
+
+def test_other_locks_keep_the_generic_message(tmp_path):
+    import pytest
+
+    from ashare_lake.orchestrator.run_lock import RunLockError, run_lock
+
+    with run_lock(tmp_path, "some-run-id"):
+        with pytest.raises(RunLockError, match="locked by another process"):
+            with run_lock(tmp_path, "some-run-id"):
+                pass

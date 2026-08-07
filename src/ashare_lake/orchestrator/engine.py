@@ -25,7 +25,7 @@ from ashare_lake.orchestrator.init_phases import (
 )
 from ashare_lake.orchestrator.manifest import Manifest
 from ashare_lake.orchestrator.registry import get_step
-from ashare_lake.orchestrator.run_lock import run_lock
+from ashare_lake.orchestrator.run_lock import DAILY_INGESTION_LOCK, run_lock
 from ashare_lake.steps.common import is_trading_day
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class JobEngine:
             }
 
         metadata = {"trade_date": trade_date.isoformat(), "backfill": backfill}
-        lock_name = "daily_ingestion" if job_name.startswith("daily") else None
+        lock_name = DAILY_INGESTION_LOCK if job_name.startswith("daily") else None
         with self._optional_job_lock(lock_name):
             if not run_id:
                 run_id = self.manifest.start_run(job_name, metadata)

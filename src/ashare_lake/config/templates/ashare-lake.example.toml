@@ -236,6 +236,21 @@ name = "finalize"
 parallel = false
 steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
 
+# Group start times. Every `daily*` job takes the same non-blocking
+# `daily_ingestion` lock, so a group that is still running when the next one
+# fires does not queue — the next one aborts and that group is simply missing
+# for the day. Spacing therefore has to cover the *slowest* plausible run, not
+# the typical one.
+#
+# Measured end-to-end (2026-08, macOS so workers=1, overseas egress — i.e. the
+# slow end): capital 10.3min, research 11.4min, fundamentals 2.6min,
+# macro_risk 2.4min, signals 5s. `core` is the long pole: full-market
+# daily_bars measured 543ms/symbol, ~49min for ~5400 symbols, which overran the
+# old 30-minute gap to capital and silently cost that group every day.
+#
+# A mainland Linux box with workers=8 finishes core in minutes and will find
+# this schedule far roomier than it needs. That is the intended asymmetry —
+# starting late costs nothing, being skipped costs a day of data.
 [job.daily.groups.core]
 at = "16:00"
 steps = [
@@ -245,7 +260,7 @@ steps = [
 ]
 
 [job.daily.groups.capital]
-at = "16:30"
+at = "17:00"
 steps = [
   "fund_flow", "northbound_holdings", "northbound_flows", "margin_trading",
   "valuation_metrics", "sector_members", "announcement_index",
@@ -253,22 +268,22 @@ steps = [
 ]
 
 [job.daily.groups.signals]
-at = "17:00"
+at = "17:20"
 steps = ["dragon_tiger", "block_trades", "compact"]
 
 [job.daily.groups.fundamentals]
-at = "17:30"
+at = "17:35"
 steps = [
   "financial_statement_items", "earnings_disclosure_schedule",
   "index_constituents", "industry_members", "compact",
 ]
 
 [job.daily.groups.macro_risk]
-at = "18:00"
+at = "17:55"
 steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events", "commodity_bars", "compact"]
 
 [job.daily.groups.research]
-at = "18:30"
+at = "18:15"
 # Rotation / headlines before sentiment so batch can score lake news without HTTP.
 steps = ["institutional_holdings", "analyst_consensus",
   "hot_rank", "sector_bars", "sector_fund_flow", "news_headlines", "flash_news_wire",
