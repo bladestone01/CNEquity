@@ -60,19 +60,19 @@ EM 改列名会整报 `code=9501`。适配器里的 `_REPORT` / `_COLUMNS` 是�
 
 历史估值：`valuation_metrics` 的 `backfill_source=baostock`。
 
-### sector_bars（板块 OHLC）
+### sector_bars 不在这里
 
-- **日更**：板块 clist（概念 + 行业），当日快照。
-- **历史回填**：`push2his` 板块 kline（`secid=90.BKxxxx`），`backfill_source="eastmoney_kline"`。
-- clist 只有当日截面；动量/RRG 需在国内网络跑一次 `asl backfill sector_bars`（~991 板 × 400 日历日）。
-- push2his 在海外 IP 常不可用；clist 日更一般仍可用。Checkpoint：`meta/state/sector_bars_backfill.json`；`--retry-failed` / `--force` 见 [CLI](../../reference/cli.md)。
-- **代理**：`[sources.eastmoney] proxy = "http://127.0.0.1:7890"`（写入 `EastMoneyClient`）；未配置时仍可读 `HTTPS_PROXY` / `HTTP_PROXY`。
-- 板块指数无公司行为，`fqt=0`。
-- **防 Empty reply**：海外裸 `httpx`/`curl` 常 TLS 后被掐；`EastMoneyClient.get` 对
-  `push2his` / `91.push2his` 走 `curl_cffi` Chrome impersonation（同页 `ut` + Referer）。
-  短时密集扫仍可能被掐 → 降速后 `--retry-failed`。
+板块 OHLC 已整体迁到同花顺，日更与历史同源，见
+[逐源限制](../../datasets/sources.md) 与 [steps](../steps.md)。本适配器不再参与
+`sector_bars` 采集。
 
 可选 `asl derive sector_routing` 生成 EM×TDX 名称映射（**不参与** sector_bars 采集）。
+
+### 代理
+
+`[sources.eastmoney] proxy = "http://127.0.0.1:7897"` 对**所有**东财主机生效
+（push2 / push2his / datacenter / reportapi）；未配置时仍可读 `HTTPS_PROXY` /
+`HTTP_PROXY`。这是海外出口唯一需要的开关——大陆网络不需要配。
 
 ### 北向持股
 

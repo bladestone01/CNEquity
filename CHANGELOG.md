@@ -6,6 +6,74 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`northbound_flows` was never northbound.** It read
+  `push2his /stock/fflow/kline/get?secid=1.000001` and mapped f52 → 沪股通 and
+  f53 → 深股通. Those fields are 上证指数's 主力净流入 and 小单净流入 — two legs
+  of a zero-sum decomposition, which is why the two "channels" were opposite-signed
+  on 13 of 14 days and why 3 of 28 rows exceeded the exchange's own 520亿 daily
+  quota cap, topping out at 777.9亿. When that host was unreachable the fallback
+  wrote `kamt`'s northbound fields, which have been a hard zero since the feed
+  retired — so the column held wrong numbers on good days and invented flat
+  sessions on bad ones. It now reads 沪深港通资金历史
+  (`RPT_MUTUAL_DEAL_HISTORY`, `MUTUAL_TYPE` 001/003), which also fills
+  `buy_amount` / `sell_amount` — previously hardcoded to 0.0.
+
+  **Existing rows are wrong and must be replaced**: drop the dataset's
+  partitions and its watermark, then `asl backfill northbound_flows`.
+
+- **`northbound_flows` gains real history: 2014-11-17 → 2024-08-16.** The
+  exchanges stopped publishing daily northbound net flow after 2024-08-16, so
+  rows from 2024-08-19 on carry a null amount. Those are **dropped, not
+  zero-filled** — a zero would claim a flat session where no figure exists.
+  The watermark consequently freezes at 2024-08-16 and `asl status` reports the
+  dataset STALE forever; that is the source's state, not a pipeline fault.
+
+  The step also fetches the whole outstanding window in one request rather than
+  one request per session, because a frozen watermark would otherwise grow the
+  daily gap window without bound.
+
+### Changed
+
+- **The EastMoney client is plain `httpx` again, and `[sources.eastmoney].proxy`
+  is the one overseas lever.** Removed the curl_cffi Chrome-JA3 impersonation,
+  the `CURLOPT_RESOLVE` CDN pinning with its DoH / `dig` / hardcoded-seed-IP
+  ladder, the sticky last-good-edge file (`meta/state/push2his_endpoint.json`),
+  and the egress circuit breaker that existed to make that ladder's failure
+  mode affordable — about 430 lines that bought nothing for a mainland route
+  and broke whenever EastMoney rotated an edge or a TLS fingerprint. The proxy
+  now covers every EastMoney host rather than only push2his kline, and
+  `httpx.ProxyError` joins the fail-fast set so a dead proxy stops a batch
+  instead of burning its retry budget.
+- **The shipped example config is paced for a mainland route**
+  (`min_interval_seconds` 3.0 → 0.5, `batch_size` 15 → 50,
+  `batch_rest_seconds` 60 → 5), which takes a full ~991-board `sector_bars`
+  sweep from ~2h to ~10min. The previous values were sized for a hostile
+  overseas egress and every mainland user was paying for them.
+
+### Removed
+
+- **`asl push2his remember` / `asl push2his probe`.** Both existed only to
+  drive the sticky CDN-edge machinery above. Overseas users set
+  `[sources.eastmoney].proxy` and verify with
+  `asl sources --only eastmoney_push2,eastmoney_push2his`.
+
+### Docs
+
+- **`sector_bars` is documented as a 同花顺 dataset, which it has been for a
+  while.** The catalog, the steps reference, the CLI reference and the EastMoney
+  adapter page all still described it as EastMoney clist daily plus a
+  `push2his` kline backfill under `backfill_source="eastmoney_kline"`. The
+  registry says `ths`, the step raises when `[sources.ths]` is disabled, and
+  daily and history are deliberately one source — mixing them once spliced two
+  index bases into one series and produced a fake +79% median jump across 439
+  boards. The troubleshooting entry also quoted a log line no code emits, and
+  pointed at `[sources.eastmoney].proxy`, which does nothing for this dataset.
+- `[sources.eastmoney]` `batch_size` / `batch_rest_seconds` are marked inert in
+  the shipped config: they are parsed but no code reads them (the batch
+  cool-down is implemented for baostock only).
+
 ## [0.5.0] — 2026-08-03
 
 ### Changed

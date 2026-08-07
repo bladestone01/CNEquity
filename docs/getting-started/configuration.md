@@ -66,7 +66,7 @@ asl config validate --config configs/ashare-lake.toml
 |----|------|
 | `enabled` | 是否启用该源；缺省（配置中没有该 `[sources.<name>]` 段落）时按**关闭**处理 |
 | `min_interval_seconds` | 跨进程文件锁限速（见 `domain/rate_limit.py`） |
-| `proxy`（eastmoney） | 可选 HTTP(S) 代理 URL；用于海外访问 push2his。未设时仍可用环境变量 `HTTPS_PROXY` |
+| `proxy`（eastmoney） | 可选 HTTP(S) 代理 URL，对所有东财主机生效；**大陆网络不需要**，海外出口才配。未设时仍可用环境变量 `HTTPS_PROXY` |
 | `batch_size` / `batch_rest_seconds`（baostock） | 全市场回填批次冷却，防 IP 黑名单 |
 
 推荐默认（时间宁可慢，勿被封）：

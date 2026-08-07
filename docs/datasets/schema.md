@@ -124,7 +124,7 @@ ashare-lake 的 curated 数据集统一带溯源列，并声明明确主键。
 | ths | 股 | 中位数 0.999，5,303,037 行 |
 | baostock | 股 | 中位数 1.000，374,888 行 |
 | sina | 股 | 供应商口径；不提供 `amount`，比值无法实测 |
-| eastmoney | 手 | **未独立验证**：`push2his` 在多数网络不可达，湖内东财行全是停牌占位零值；沿用 `commodity_bars` 已记录的「东财口径 = 手」（同一 endpoint 同一字段位）。若判断有误，`daily_bars_volume_unit` 会在第一批真实行落地时报错 |
+| eastmoney | 手 | **未独立验证**：本湖建表时的出口拉不到 `push2his`，落盘的东财行全是停牌占位零值，样本不足以测比值；沿用 `commodity_bars` 已记录的「东财口径 = 手」（同一 endpoint 同一字段位）。若判断有误，`daily_bars_volume_unit` 会在第一批真实行落地时报错 |
 
 TDX 的单位**按频率而非按源**：日线（`frequency=9`）是手，同一 wire parser 出来的日内线是股（实测 600519 1m bar vol=59,700，amount=88,977,784，价格 ~1490 → 59,716 股）。`minute_bars` / `minute_bars_5m` 因此**不复用**日线的 ×100 换算；minute↔daily 的成交量对账必须股对股（实测 5 个交易日 × 3 只，1m/5m 汇总对日频比值精确为 1.0000）。
 
