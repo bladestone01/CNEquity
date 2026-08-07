@@ -150,15 +150,24 @@ Wave DAG：每个 wave 含 `name`、`parallel`（wave 内 step 是否并行）�
 
 `[job.daily.groups.<name>]`：`at`（文档/调度参考时间）、`steps`（含末尾 `compact`）。
 
-| 组名 | 典型时间 | 内容摘要 |
-|------|----------|----------|
-| `core` | 16:00 | L0 + L1 核心 + derive_adj_factors |
-| `capital` | 16:30 | 资金面 + 估值 + 板块 + 公告索引 |
-| `signals` | 17:00 | 龙虎榜、大宗交易 |
-| `fundamentals` | 17:30 | 财报、指数成分、行业 |
-| `macro_risk` | 18:00 | 宏观、市场宽度、解禁、监管 |
-| `research` | 18:30 | 机构持仓、一致预期、情绪 |
-| `intraday` | 18:45 | `minute_bars` / `minute_bars_5m`（**不在默认调度**；需先开 `[minute_bars]`） |
+| 组名 | 典型时间 | 实测耗时 | 内容摘要 |
+|------|----------|----------|----------|
+| `core` | 16:00 | **~50 min** | L0 + L1 核心 + derive_adj_factors |
+| `capital` | 17:00 | 10.3 min | 资金面 + 估值 + 板块 + 公告索引 |
+| `signals` | 17:20 | 5 s | 龙虎榜、大宗交易 |
+| `fundamentals` | 17:35 | 2.6 min | 财报、指数成分、行业 |
+| `macro_risk` | 17:55 | 2.4 min | 宏观、市场宽度、解禁、监管 |
+| `research` | 18:15 | 11.4 min | 机构持仓、一致预期、情绪 |
+| `intraday` | 18:45 | — | `minute_bars` / `minute_bars_5m`（**不在默认调度**；需先开 `[minute_bars]`） |
+
+「实测耗时」测于 2026-08:macOS(因此 `workers=1`)+ 海外出口,即最慢的一端。
+大陆 Linux + `workers=8` 会快一个数量级,这个间隔会显得很宽松——**这是刻意的**。
+
+> **间隔必须容得下最慢的一次运行,不是典型的一次。** 所有 `daily*` 任务共用一把
+> **非阻塞**的 `daily_ingestion` 锁:上一组还没跑完时,下一组不会排队,而是直接
+> 中止——那一组当天就没有数据。`core` 的全市场 `daily_bars` 实测 543ms/只、
+> ~5400 只约 50 分钟,曾经超出到 `capital` 的 30 分钟间隔,导致资金面组每天被跳过。
+> 撞锁时报错会明确说明是被跳过,以及去哪里调间隔。
 
 `asl run daily --group <name>` 只跑该组 steps。
 

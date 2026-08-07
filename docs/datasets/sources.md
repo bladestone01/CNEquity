@@ -128,7 +128,7 @@
 
 | 项 | 值 |
 |------|-------|
-| 分组 | core@16:30 |
+| 分组 | capital@17:00 |
 | 主源 | eastmoney |
 | 主键 | (symbol, trade_date) |
 
@@ -136,7 +136,7 @@
 
 | 项 | 值 |
 |------|-------|
-| 分组 | capital@16:30 |
+| 分组 | capital@17:00 |
 | 主源 | eastmoney（`RPT_MUTUAL_HOLDSTOCKNORTH_STA`） |
 | 主键 | 见 [schema.md](schema.md) |
 | 已知限制 | 2024-08 起按季度披露，历史只能向前累积（EM 对历史 `TRADE_DATE` 返回 0 行） |
@@ -145,7 +145,7 @@
 
 | 项 | 值 |
 |------|-------|
-| 分组 | capital@16:30 |
+| 分组 | capital@17:00 |
 | 主源 | eastmoney 沪深港通资金历史（`RPT_MUTUAL_DEAL_HISTORY`，`MUTUAL_TYPE` 001 沪股通 / 003 深股通） |
 | 主键 | 见 [schema.md](schema.md) |
 | 覆盖 | **2014-11-17 → 2024-08-16**（深股通自 2016-12-05）。回填：`asl backfill northbound_flows` |
@@ -157,7 +157,7 @@
 
 | 项 | 值 |
 |------|-------|
-| 分组 | signals@17:00 |
+| 分组 | capital@17:00 |
 | 主源 | eastmoney |
 | 主键 | (symbol, trade_date) |
 

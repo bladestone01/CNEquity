@@ -8,6 +8,25 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Shenwan (`sw`) fetches failed TLS verification on every attempt.**
+  `swsresearch.com` sends its leaf certificate and no intermediate — one cert
+  deep on every handshake — so certifi cannot build a path to a root it trusts.
+  Browsers and macOS curl hide this by following the leaf's Authority
+  Information Access extension; Python does not. Measured httpx 0/5,
+  curl_cffi 0/6. The public DigiCert intermediate now ships with the package
+  (`asl sources --only sw`: 0/5 → **5/5**), which restores the path without
+  weakening verification — the root must still be trusted and the hostname must
+  still match. Affects `industry_members` backfill, and it is a property of the
+  server, so mainland users hit it identically.
+- **`core` could not finish inside its schedule slot, silently costing the next
+  group.** Scheduled `daily*` groups share one non-blocking `daily_ingestion`
+  lock: a group still running when the next fires does not queue, the next one
+  aborts. Full-market `daily_bars` measured 543ms/symbol — ~49min for ~5400
+  symbols — against a 30-minute gap to `capital`. The shipped schedule now
+  gives `core` 60 minutes and spaces the rest off measured durations, and the
+  collision message says a group is being skipped instead of naming an internal
+  lock.
+
 - **`share_unlock_schedule` failed on every run.** EastMoney's datacenter now
   rejects range comparisons on date columns outright — `参数预处理错误:
   org.antlr.v4.runtime.InputMismatchException (code=9501)` — so the
