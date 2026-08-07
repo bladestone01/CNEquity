@@ -47,14 +47,22 @@ standard = [
 
 [sources.eastmoney]
 enabled = true
-# push2his bans bursty overseas/cloud IPs — keep slow for sector_bars sweeps.
-min_interval_seconds = 3.0
+# Paced for a mainland route, which is what EastMoney serves without complaint.
+# The heaviest consumers are fund_flow's ~54-page clist sweep and the
+# margin_trading backfill (one datacenter request per trading day), so this is
+# what a multi-year backfill runs at. Raise it if EastMoney starts 429ing.
+# (sector_bars is *not* paced here — it is a 同花顺 dataset; see [sources.ths].)
+min_interval_seconds = 0.5
 # Per-request timeout (seconds). Connect/timeout/protocol errors do not retry.
 timeout_sec = 30
-batch_size = 15
-batch_rest_seconds = 60
-# Optional: mainland HTTP(S) proxy for push2his kline (sector_bars backfill).
-# When unset, httpx still honors HTTPS_PROXY / HTTP_PROXY env vars.
+# Accepted and parsed, but nothing reads them today — the batch cool-down is
+# implemented for baostock only. Left in place so existing configs keep loading.
+batch_size = 50
+batch_rest_seconds = 5
+# Optional HTTP(S) proxy for every EastMoney host. Only needed without a
+# mainland route: overseas and some cloud egress get 502s or dropped TLS from
+# push2/push2his. Point it at any proxy that has one (Clash, ssh -D, a China
+# VPS). When unset, httpx still honors HTTPS_PROXY / HTTP_PROXY env vars.
 # proxy = "http://127.0.0.1:7890"
 
 [sources.ths]

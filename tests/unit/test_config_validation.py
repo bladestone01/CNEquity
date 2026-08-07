@@ -65,9 +65,11 @@ def test_example_config_validates(monkeypatch):
     assert cfg.source_intervals["baostock"] == 1.0
     assert cfg.baostock_batch_size == 20
     assert cfg.baostock_batch_rest_seconds == 120.0
-    # EastMoney pacing is a floor, not a fixed value: push2his bans bursty
-    # overseas IPs, so the example config may raise it further.
-    assert cfg.source_intervals["eastmoney"] >= 1.0
+    # EastMoney pacing is a floor, not a fixed value. The example targets a
+    # mainland route, where 0.5s sweeps ~991 sector boards in ~10min; overseas
+    # users raise it in their own config. What the floor guards is shipping a
+    # config with no pacing at all, which is how a source starts 429ing.
+    assert cfg.source_intervals["eastmoney"] >= 0.5
     # PBOC feeds social_financing; an index fetch plus a workbook per year.
     assert cfg.source_intervals["pboc"] >= 1.0
     # AkShare is retired — shipping a [sources.akshare] section would advertise

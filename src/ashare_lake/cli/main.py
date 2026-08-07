@@ -1731,69 +1731,6 @@ def servers(action: str, config_path: str):
     raise SystemExit(1)
 
 
-@cli.group("push2his", hidden=True)
-def push2his_grp():
-    """push2his CDN edge sticky / probe (sector_bars kline).
-
-    Hidden from the top-level list rather than removed: it is a debugging tool
-    for one CDN host, and it was competing for attention with the commands that
-    make up the pipeline's actual state machine. Still fully supported.
-    """
-
-
-@push2his_grp.command("remember")
-@click.argument("endpoint")
-@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-def push2his_remember(endpoint: str, config_path: str):
-    """Save Chrome DevTools Remote Address as sticky CDN edge.
-
-    Example: asl push2his remember 61.129.129.199:443
-    """
-    from ashare_lake.adapters.eastmoney.em_auth import remember_push2his_endpoint
-
-    cfg = _cfg(config_path)
-    remember_push2his_endpoint(endpoint, config=cfg)
-    click.echo(f"sticky push2his edge → {endpoint.split(':')[0]}")
-
-
-@push2his_grp.command("probe")
-@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-def push2his_probe(config_path: str):
-    """Discover CDN edges and probe which ones answer kline (updates sticky on hit)."""
-    from ashare_lake.adapters.eastmoney.em_auth import (
-        EastMoneyClient,
-        _candidate_ips,
-        _sticky_path,
-    )
-
-    cfg = _cfg(config_path)
-    sticky = _sticky_path(cfg)
-    candidates = _candidate_ips("push2his.eastmoney.com", sticky, force_discover=True)
-    click.echo(f"candidates ({len(candidates)}): {', '.join(candidates)}")
-    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-    params = {
-        "secid": "90.BK1152",
-        "fields1": "f1",
-        "fields2": "f51",
-        "klt": 101,
-        "fqt": 1,
-        "beg": 0,
-        "end": "20500101",
-        "lmt": 2,
-    }
-    try:
-        with EastMoneyClient(config=cfg) as client:
-            resp = client.get(url, params=params)
-        code = int(getattr(resp, "status_code", 0) or 0)
-        body = getattr(resp, "text", "") or ""
-        click.echo(f"probe OK status={code} bytes={len(body.encode('utf-8', 'replace'))}")
-        if sticky and sticky.exists():
-            click.echo(f"sticky: {sticky.read_text(encoding='utf-8').strip()}")
-    except Exception as exc:
-        click.echo(f"probe FAILED: {exc}", err=True)
-        raise SystemExit(1) from exc
-
-
 if __name__ == "__main__":
     cli()
 
