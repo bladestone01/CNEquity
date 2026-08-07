@@ -8,6 +8,23 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`share_unlock_schedule` failed on every run.** EastMoney's datacenter now
+  rejects range comparisons on date columns outright — `参数预处理错误:
+  org.antlr.v4.runtime.InputMismatchException (code=9501)` — so the
+  `(FREE_DATE>=…)(FREE_DATE<=…)` filter took the step from working to raising
+  with no change on this side. It now pages the report newest-first and stops
+  at the first page that ends before the window, then applies the horizon
+  locally: 63 pages of 500 down to ~7, measured 141.8s → **13.7s**, with the
+  result verified row-for-row against a full scan.
+- **`commodity_bars` burned 151s per run to return nothing.** The fail-fast
+  predicate was inverted: it retried exactly the transport failures
+  `is_transport_fail_fast` says a retry cannot fix, and gave up immediately on
+  the transient ones. `clist` and `datacenter` both break on the same
+  predicate. Measured 151.2s → **17.5s** against an unreachable push2his.
+- `fetch_datacenter` takes an optional `stop_after` predicate for early-stopping
+  a sorted report. It suppresses the declared-`count` completeness guard, since
+  a short read is the point; without it the guard is unchanged.
+
 - **`northbound_flows` was never northbound.** It read
   `push2his /stock/fflow/kline/get?secid=1.000001` and mapped f52 → 沪股通 and
   f53 → 深股通. Those fields are 上证指数's 主力净流入 and 小单净流入 — two legs
