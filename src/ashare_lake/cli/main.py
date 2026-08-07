@@ -202,10 +202,11 @@ def demo_cmd(
 @click.option(
     "--profile",
     type=click.Choice(["full", "quick"]),
-    default="full",
+    default="quick",
     show_default=True,
-    help=f"How much history to fetch. quick = the last {QUICK_PROFILE_YEARS} years "
-    f"instead of everything from {BACKFILL_START.isoformat()}.",
+    help=f"How much history to fetch. quick = the last {QUICK_PROFILE_YEARS} years; "
+    f"full = everything from {BACKFILL_START.isoformat()} (measured ~3x longer). "
+    "Both fetch every symbol — deepen later with `asl backfill daily_bars`.",
 )
 @click.option(
     "--since",
@@ -225,17 +226,26 @@ def init(
     since_str: str | None,
     quiet: bool,
 ):
-    """Initialize data lake and run configured init phases (first full backfill).
+    """Initialize the data lake and run the configured init phases.
 
-    `--profile quick` makes the first run SHALLOWER, never NARROWER: every
-    symbol is still fetched, just fewer years each. Dropping symbols instead
-    would build the survivorship bias this lake exists to avoid straight into
-    it, and `coverage_start` records a shallow lake honestly where a missing
-    name would look like a name that never traded.
+    Defaults to `--profile quick`: the last few years, every symbol. That is
+    SHALLOWER, never NARROWER. Dropping symbols instead would build the
+    survivorship bias this lake exists to avoid straight into it, and
+    `coverage_start` records a shallow lake honestly where a missing name would
+    look like a name that never traded.
+
+    Why quick is the default: measured per 10 symbols on one connection,
+    3 years costs ~4.8s against ~15.1s for everything from 2001 — roughly an
+    hour versus several for a full market. Going shallower still buys very
+    little (1 year measured ~3.9s, because the per-symbol round trip dominates
+    once the window is short) while costing the multi-year windows that most
+    factor work needs. So: a usable lake on the first run, deepened on demand.
 
     Deepen later without re-running init:
 
       asl backfill daily_bars --start 2016-01-01 --end <your coverage_start>
+
+    Or take everything up front with `--profile full`.
     """
     _progress_logging(quiet)
     cfg = _cfg(config_path)

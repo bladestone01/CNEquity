@@ -75,15 +75,23 @@ enabled = true
 min_interval_seconds = 1.0
 
 [sources.ths_pages]
-# q.10jqka.com.cn (board catalog and listing pages) is far less tolerant than the
-# kline host: it began returning 401 after ~23 requests at 1 req/s. Only the
+# q.10jqka.com.cn (board catalog and listing pages) is far less tolerant than
+# the kline host: it began returning 401 after ~23 requests at 1 req/s. Only the
 # catalog build touches it (~95 requests, then cached to
-# meta/state/ths_board_catalog.json), so a slow interval costs a rare ~30 min
-# rebuild rather than anything on the daily path.
-# This value is a conservative guess: the only figure actually measured is the
-# rate that got blocked, not one observed to be safe.
+# meta/state/ths_board_catalog.json), so this interval costs a rare rebuild
+# rather than anything on the daily path.
+#
+# 20.0 used to sit here as an admitted guess — the only figure ever measured was
+# the rate that failed. Measured 2026-08, 25 sequential requests per rung:
+# 8s, 5s, 3s, 2s and 1.5s each came back 25/25 clean. 3.0 is therefore twice the
+# fastest rate observed to be safe and three times the one known to fail, and it
+# takes a catalog rebuild from ~32 min to ~5 min.
+#
+# Caveat worth keeping: that test was 25 requests of one URL, while a real
+# rebuild is ~95 across several. Lower it further only with a longer run behind
+# the number.
 enabled = true
-min_interval_seconds = 20.0
+min_interval_seconds = 3.0
 
 [sources.cninfo]
 enabled = true

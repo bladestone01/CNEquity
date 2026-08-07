@@ -81,9 +81,22 @@ def test_quick_profile_reaches_the_engine(tmp_path, monkeypatch):
     assert "2023-08-02" in output
 
 
-def test_default_init_is_unchanged(tmp_path, monkeypatch):
-    """The shallow path is opt-in; an existing `asl init` must fetch what it always did."""
+def test_default_init_is_the_shallow_window(tmp_path, monkeypatch):
+    """A bare `asl init` takes the quick window — a usable lake on the first run.
+
+    Measured per 10 symbols on one connection: 3 years ~4.8s against ~15.1s for
+    everything from 2001. Going shallower than that buys little (1 year ~3.9s,
+    the per-symbol round trip dominating once the window is short) and costs
+    the multi-year windows factor work needs, so `quick` is the floor, not 1y.
+    """
     start, output = _capture_backfill_start(tmp_path, monkeypatch, [])
+    assert start == date(2023, 8, 8)
+    assert "History window" in output
+    assert "asl backfill daily_bars" in output, "must say how to deepen"
+
+
+def test_full_profile_still_takes_everything(tmp_path, monkeypatch):
+    start, output = _capture_backfill_start(tmp_path, monkeypatch, ["--profile", "full"])
     assert start is None
     assert "History window" not in output
 

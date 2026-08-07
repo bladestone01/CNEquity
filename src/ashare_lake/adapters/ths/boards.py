@@ -58,15 +58,19 @@ _CATALOG_FILE = "ths_board_catalog.json"
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_SECONDS = 2.0
 _DEFAULT_MIN_INTERVAL = 1.0
-# The listing host is two orders of magnitude less tolerant than the data host:
+# The listing host is much less tolerant than the data host:
 # `d.10jqka.com.cn` served ~1300 sequential kline requests at 1 req/s without a
 # single failure, while `q.10jqka.com.cn` started returning 401 after ~23 at the
-# same pace. They therefore get separate limiters. The listing interval below is
-# a conservative guess: the only rate ever measured is the one that failed, and
-# no safe rate has been established, so lower it only with evidence.
+# same pace. They therefore get separate limiters.
+#
+# The listing interval was 20.0 as an admitted guess. Measured 2026-08 at 25
+# sequential requests per rung, 8s / 5s / 3s / 2s / 1.5s all came back 25/25
+# clean, so 3.0 is twice the fastest rate observed safe and three times the one
+# known to fail. The measurement was 25 requests of a single URL where a real
+# rebuild is ~95 across several, so go lower only with a longer run behind it.
 _PAGE_HOST = "q.10jqka.com.cn"
 _PAGE_SOURCE = "ths_pages"
-_DEFAULT_PAGE_MIN_INTERVAL = 20.0
+_DEFAULT_PAGE_MIN_INTERVAL = 3.0
 
 
 class ThsError(RuntimeError):
