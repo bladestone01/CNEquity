@@ -80,3 +80,48 @@ def test_expand_sw_industry_as_of():
         (pl.col("symbol") == "600519.SH") & (pl.col("as_of_date") == date(2023, 6, 1))
     )
     assert latest["industry_code"][0] == "B"
+
+
+# --- TLS trust ---------------------------------------------------------------
+# swsresearch.com sends its leaf certificate and no intermediate, so certifi
+# alone cannot build a path to a root it trusts and every fetch failed with
+# "unable to get local issuer certificate" (httpx 0/5, curl_cffi 0/6 measured).
+
+
+def test_shipped_intermediate_completes_the_chain():
+    import ssl
+
+    assert sw._SW_INTERMEDIATE_PEM.exists(), "intermediate must ship in the wheel"
+    pem = sw._SW_INTERMEDIATE_PEM.read_text(encoding="ascii")
+    assert pem.startswith("-----BEGIN CERTIFICATE-----")
+
+    # Loadable, and it is the CA the leaf's AIA extension names.
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.load_verify_locations(cafile=str(sw._SW_INTERMEDIATE_PEM))
+    subjects = {
+        tuple(part for rdn in cert["subject"] for part in rdn) for cert in ctx.get_ca_certs()
+    }
+    flat = {v for subj in subjects for _, v in [p for p in subj]}
+    assert "GeoTrust G2 TLS CN RSA4096 SHA256 2022 CA1" in flat
+
+
+def test_sw_ssl_context_keeps_verification_on():
+    ctx = sw.sw_ssl_context()
+    assert ctx.verify_mode != 0, "must not fall back to an unverified context"
+    assert ctx.check_hostname is True
+    # Cached: building the context per request would re-read the PEM every time.
+    assert sw.sw_ssl_context() is ctx
+
+
+def test_sw_client_uses_that_context(monkeypatch):
+    seen = {}
+
+    def _fake_client(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(sw.httpx, "Client", _fake_client)
+    sw.sw_client(timeout=7.0)
+    assert seen["verify"] is sw.sw_ssl_context()
+    assert seen["timeout"] == 7.0
+    assert seen["follow_redirects"] is True

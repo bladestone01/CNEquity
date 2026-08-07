@@ -7,9 +7,12 @@ historical rows use ``classification_system=sw``.
 
 from __future__ import annotations
 
+import functools
 import io
 import logging
+import ssl
 from datetime import date
+from pathlib import Path
 
 import httpx
 import polars as pl
@@ -23,6 +26,7 @@ __all__ = [
     "exchange_from_code",
     "fetch_sw_industry_intervals",
     "expand_sw_industry_as_of",
+    "sw_ssl_context",
 ]
 
 SW_INDUSTRY_XLS_URL = (
@@ -30,6 +34,42 @@ SW_INDUSTRY_XLS_URL = (
 )
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; ashare-lake/0.1)"}
+
+# swsresearch.com serves its leaf certificate and nothing else — measured over
+# six handshakes, the chain is one cert deep every time. Browsers and macOS
+# curl paper over that by fetching the issuer named in the leaf's Authority
+# Information Access extension; Python does not, so certifi cannot build a path
+# to a root it does trust and every request fails with
+# "unable to get local issuer certificate". Measured: httpx 0/5, curl_cffi 0/6.
+#
+# The missing link is a public DigiCert intermediate (GeoTrust G2 TLS CN
+# RSA4096 SHA256 2022 CA1, valid to 2032-12-14) whose own issuer — DigiCert
+# Global Root G2 — is already in certifi. Shipping it restores the path without
+# weakening anything: the root must still be trusted, the chain must still
+# verify, and the hostname must still match. `verify=False` would have been the
+# one-line alternative and would have turned a server misconfiguration into a
+# silently unauthenticated download of the classification history.
+#
+# When swsresearch rotates CAs this file goes stale and the same error returns.
+# Refresh it from the leaf's AIA URL:
+#   openssl s_client -connect www.swsresearch.com:443 | openssl x509 -noout -text \
+#     | grep -A2 "Authority Information Access"
+_SW_INTERMEDIATE_PEM = Path(__file__).with_name("geotrust_g2_tls_cn_rsa4096.pem")
+
+
+@functools.lru_cache(maxsize=1)
+def sw_ssl_context() -> ssl.SSLContext:
+    """Default trust store plus the intermediate swsresearch.com omits."""
+    ctx = httpx.create_ssl_context()
+    try:
+        ctx.load_verify_locations(cafile=str(_SW_INTERMEDIATE_PEM))
+    except (OSError, ssl.SSLError) as exc:  # pragma: no cover — packaging slip
+        logger.warning("Shenwan intermediate cert unusable (%s); TLS may fail", exc)
+    return ctx
+
+
+def sw_client(timeout: float = 120.0) -> httpx.Client:
+    return httpx.Client(timeout=timeout, follow_redirects=True, verify=sw_ssl_context())
 
 
 def exchange_from_code(code: str) -> str:
@@ -61,7 +101,7 @@ def fetch_sw_industry_intervals(*, client: httpx.Client | None = None) -> pl.Dat
 
     owns = client is None
     if client is None:
-        client = httpx.Client(timeout=120.0, follow_redirects=True)
+        client = sw_client()
     try:
         resp = client.get(SW_INDUSTRY_XLS_URL, headers=_HEADERS)
         resp.raise_for_status()

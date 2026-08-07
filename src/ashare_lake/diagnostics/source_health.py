@@ -398,11 +398,16 @@ def _probe_nbs(config: Config) -> str:
 
 
 def _probe_sw(config: Config) -> str:
-    import httpx
+    # Same client as the adapter, so the probe carries the intermediate cert
+    # swsresearch.com omits. Building a bare httpx.Client here reported the
+    # source down while the backfill would have worked.
+    from ashare_lake.adapters.sw.industry_history import (
+        _HEADERS,
+        SW_INDUSTRY_XLS_URL,
+        sw_client,
+    )
 
-    from ashare_lake.adapters.sw.industry_history import _HEADERS, SW_INDUSTRY_XLS_URL
-
-    with httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=True) as client:
+    with sw_client(timeout=TIMEOUT_SECONDS) as client:
         resp = client.get(SW_INDUSTRY_XLS_URL, headers=_HEADERS)
         resp.raise_for_status()
         body = resp.content
