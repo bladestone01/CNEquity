@@ -115,6 +115,10 @@ ashare_lake = [
     "py.typed",
     "adapters/calendar/seeds/*.csv",
     "adapters/ths/seeds/*.json",
+    # Public DigiCert intermediate that swsresearch.com fails to send. Without
+    # it in the wheel every Shenwan fetch fails TLS verification on a fresh
+    # install — see adapters/sw/industry_history.py.
+    "adapters/sw/*.pem",
     "config/templates/*.toml",
     # The dashboard page. Self-contained on purpose (no CDN, no build step): a
     # lake often runs on an offline box or behind a proxy that would turn an

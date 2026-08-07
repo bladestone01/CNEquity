@@ -47,14 +47,21 @@ standard = [
 
 [sources.eastmoney]
 enabled = true
-# push2his bans bursty overseas/cloud IPs — keep slow for sector_bars sweeps.
-min_interval_seconds = 3.0
+# Paced for a mainland route, which is what EastMoney serves without complaint.
+# The heaviest consumers are fund_flow's ~54-page clist sweep and the
+# margin_trading backfill (one datacenter request per trading day), so this is
+# what a multi-year backfill runs at. Raise it if EastMoney starts 429ing.
+# (sector_bars is *not* paced here — it is a 同花顺 dataset; see [sources.ths].)
+min_interval_seconds = 0.5
 # Per-request timeout (seconds). Connect/timeout/protocol errors do not retry.
 timeout_sec = 30
-batch_size = 15
-batch_rest_seconds = 60
-# Optional: mainland HTTP(S) proxy for push2his kline (sector_bars backfill).
-# When unset, httpx still honors HTTPS_PROXY / HTTP_PROXY env vars.
+# No batch_size / batch_rest_seconds here: EastMoney sweeps pace on
+# min_interval_seconds alone. The batch cool-down is a baostock mechanism —
+# see [sources.baostock], where it guards against the IP blacklist.
+# Optional HTTP(S) proxy for every EastMoney host. Only needed without a
+# mainland route: overseas and some cloud egress get 502s or dropped TLS from
+# push2/push2his. Point it at any proxy that has one (Clash, ssh -D, a China
+# VPS). When unset, httpx still honors HTTPS_PROXY / HTTP_PROXY env vars.
 # proxy = "http://127.0.0.1:7890"
 
 [sources.ths]
@@ -68,15 +75,23 @@ enabled = true
 min_interval_seconds = 1.0
 
 [sources.ths_pages]
-# q.10jqka.com.cn (board catalog and listing pages) is far less tolerant than the
-# kline host: it began returning 401 after ~23 requests at 1 req/s. Only the
+# q.10jqka.com.cn (board catalog and listing pages) is far less tolerant than
+# the kline host: it began returning 401 after ~23 requests at 1 req/s. Only the
 # catalog build touches it (~95 requests, then cached to
-# meta/state/ths_board_catalog.json), so a slow interval costs a rare ~30 min
-# rebuild rather than anything on the daily path.
-# This value is a conservative guess: the only figure actually measured is the
-# rate that got blocked, not one observed to be safe.
+# meta/state/ths_board_catalog.json), so this interval costs a rare rebuild
+# rather than anything on the daily path.
+#
+# 20.0 used to sit here as an admitted guess — the only figure ever measured was
+# the rate that failed. Measured 2026-08, 25 sequential requests per rung:
+# 8s, 5s, 3s, 2s and 1.5s each came back 25/25 clean. 3.0 is therefore twice the
+# fastest rate observed to be safe and three times the one known to fail, and it
+# takes a catalog rebuild from ~32 min to ~5 min.
+#
+# Caveat worth keeping: that test was 25 requests of one URL, while a real
+# rebuild is ~95 across several. Lower it further only with a longer run behind
+# the number.
 enabled = true
-min_interval_seconds = 20.0
+min_interval_seconds = 3.0
 
 [sources.cninfo]
 enabled = true
@@ -229,6 +244,21 @@ name = "finalize"
 parallel = false
 steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
 
+# Group start times. Every `daily*` job takes the same non-blocking
+# `daily_ingestion` lock, so a group that is still running when the next one
+# fires does not queue — the next one aborts and that group is simply missing
+# for the day. Spacing therefore has to cover the *slowest* plausible run, not
+# the typical one.
+#
+# Measured end-to-end (2026-08, macOS so workers=1, overseas egress — i.e. the
+# slow end): capital 10.3min, research 11.4min, fundamentals 2.6min,
+# macro_risk 2.4min, signals 5s. `core` is the long pole: full-market
+# daily_bars measured 543ms/symbol, ~49min for ~5400 symbols, which overran the
+# old 30-minute gap to capital and silently cost that group every day.
+#
+# A mainland Linux box with workers=8 finishes core in minutes and will find
+# this schedule far roomier than it needs. That is the intended asymmetry —
+# starting late costs nothing, being skipped costs a day of data.
 [job.daily.groups.core]
 at = "16:00"
 steps = [
@@ -238,7 +268,7 @@ steps = [
 ]
 
 [job.daily.groups.capital]
-at = "16:30"
+at = "17:00"
 steps = [
   "fund_flow", "northbound_holdings", "northbound_flows", "margin_trading",
   "valuation_metrics", "sector_members", "announcement_index",
@@ -246,22 +276,22 @@ steps = [
 ]
 
 [job.daily.groups.signals]
-at = "17:00"
+at = "17:20"
 steps = ["dragon_tiger", "block_trades", "compact"]
 
 [job.daily.groups.fundamentals]
-at = "17:30"
+at = "17:35"
 steps = [
   "financial_statement_items", "earnings_disclosure_schedule",
   "index_constituents", "industry_members", "compact",
 ]
 
 [job.daily.groups.macro_risk]
-at = "18:00"
+at = "17:55"
 steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events", "commodity_bars", "compact"]
 
 [job.daily.groups.research]
-at = "18:30"
+at = "18:15"
 # Rotation / headlines before sentiment so batch can score lake news without HTTP.
 steps = ["institutional_holdings", "analyst_consensus",
   "hot_rank", "sector_bars", "sector_fund_flow", "news_headlines", "flash_news_wire",

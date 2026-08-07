@@ -109,11 +109,14 @@ from ashare_lake.steps import reference, bars, events, ...  # noqa
 | Step | 数据集 | 主源 |
 |------|--------|------|
 | hot_rank | hot_rank | eastmoney |
-| sector_bars | sector_bars | eastmoney clist（日更）；backfill → push2his kline |
+| sector_bars | sector_bars | ths（日更与历史同源，见下） |
 | sector_fund_flow | sector_fund_flow | eastmoney |
 | news_headlines | news_headlines | eastmoney |
 
-`sector_bars` 为 snapshot 语义；历史由 `asl backfill sector_bars` 写入（需国内网络，一次性）。
+`sector_bars` 为 snapshot 语义；历史由 `asl backfill sector_bars` 写入（一次性）。
+日更与历史**刻意同源**（同花顺）：早先用 TDX 历史拼东财日更，同一 `sector_code`
+下混进了两个指数基期，拼接日出现跨 439 个板块 +79% 的假跳变。`[sources.ths]`
+关闭时该 step 直接报错，不会静默回落到别的源。
 
 ### finalize.py
 

@@ -13,6 +13,10 @@ class RunLockError(RuntimeError):
     """Another process holds the run lock."""
 
 
+# Shared by every scheduled `daily*` group, so only one can ingest at a time.
+DAILY_INGESTION_LOCK = "daily_ingestion"
+
+
 def lock_path(meta_root: Path, run_id: str) -> Path:
     return meta_root / "locks" / f"{run_id}.lock"
 
@@ -35,7 +39,21 @@ def run_lock(meta_root: Path, run_id: str, *, blocking: bool = False) -> Iterato
         try:
             stack.enter_context(exclusive_lock(path, blocking=blocking))
         except LockUnavailable as exc:
-            raise RunLockError(
-                f"Run {run_id} is locked by another process; wait for it to finish before retrying."
-            ) from exc
+            raise RunLockError(_lock_busy_message(run_id)) from exc
         yield
+
+
+def _lock_busy_message(run_id: str) -> str:
+    if run_id == DAILY_INGESTION_LOCK:
+        # Every scheduled group shares this one lock, so the realistic cause is
+        # a previous group still running — not "another operator". Naming the
+        # lock alone sent people looking for a stuck process when the answer
+        # was that `core` had simply overrun its slot and this group was about
+        # to be skipped for the day.
+        return (
+            "Another daily group is still running (they share one ingestion lock, "
+            "and this one does not queue — it is skipped). Usually the previous "
+            "group overran its start-time gap: check `asl status`, then widen the "
+            "spacing in [job.daily.groups] so the slowest group fits its window."
+        )
+    return f"Run {run_id} is locked by another process; wait for it to finish before retrying."

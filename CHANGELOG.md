@@ -6,6 +6,115 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Shenwan (`sw`) fetches failed TLS verification on every attempt.**
+  `swsresearch.com` sends its leaf certificate and no intermediate — one cert
+  deep on every handshake — so certifi cannot build a path to a root it trusts.
+  Browsers and macOS curl hide this by following the leaf's Authority
+  Information Access extension; Python does not. Measured httpx 0/5,
+  curl_cffi 0/6. The public DigiCert intermediate now ships with the package
+  (`asl sources --only sw`: 0/5 → **5/5**), which restores the path without
+  weakening verification — the root must still be trusted and the hostname must
+  still match. Affects `industry_members` backfill, and it is a property of the
+  server, so mainland users hit it identically.
+- **`core` could not finish inside its schedule slot, silently costing the next
+  group.** Scheduled `daily*` groups share one non-blocking `daily_ingestion`
+  lock: a group still running when the next fires does not queue, the next one
+  aborts. Full-market `daily_bars` measured 543ms/symbol — ~49min for ~5400
+  symbols — against a 30-minute gap to `capital`. The shipped schedule now
+  gives `core` 60 minutes and spaces the rest off measured durations, and the
+  collision message says a group is being skipped instead of naming an internal
+  lock.
+
+- **`share_unlock_schedule` failed on every run.** EastMoney's datacenter now
+  rejects range comparisons on date columns outright — `参数预处理错误:
+  org.antlr.v4.runtime.InputMismatchException (code=9501)` — so the
+  `(FREE_DATE>=…)(FREE_DATE<=…)` filter took the step from working to raising
+  with no change on this side. It now pages the report newest-first and stops
+  at the first page that ends before the window, then applies the horizon
+  locally: 63 pages of 500 down to ~7, measured 141.8s → **13.7s**, with the
+  result verified row-for-row against a full scan.
+- **`commodity_bars` burned 151s per run to return nothing.** The fail-fast
+  predicate was inverted: it retried exactly the transport failures
+  `is_transport_fail_fast` says a retry cannot fix, and gave up immediately on
+  the transient ones. `clist` and `datacenter` both break on the same
+  predicate. Measured 151.2s → **17.5s** against an unreachable push2his.
+- `fetch_datacenter` takes an optional `stop_after` predicate for early-stopping
+  a sorted report. It suppresses the declared-`count` completeness guard, since
+  a short read is the point; without it the guard is unchanged.
+
+- **`northbound_flows` was never northbound.** It read
+  `push2his /stock/fflow/kline/get?secid=1.000001` and mapped f52 → 沪股通 and
+  f53 → 深股通. Those fields are 上证指数's 主力净流入 and 小单净流入 — two legs
+  of a zero-sum decomposition, which is why the two "channels" were opposite-signed
+  on 13 of 14 days and why 3 of 28 rows exceeded the exchange's own 520亿 daily
+  quota cap, topping out at 777.9亿. When that host was unreachable the fallback
+  wrote `kamt`'s northbound fields, which have been a hard zero since the feed
+  retired — so the column held wrong numbers on good days and invented flat
+  sessions on bad ones. It now reads 沪深港通资金历史
+  (`RPT_MUTUAL_DEAL_HISTORY`, `MUTUAL_TYPE` 001/003), which also fills
+  `buy_amount` / `sell_amount` — previously hardcoded to 0.0.
+
+  **Existing rows are wrong and must be replaced**: drop the dataset's
+  partitions and its watermark, then `asl backfill northbound_flows`.
+
+- **`northbound_flows` gains real history: 2014-11-17 → 2024-08-16.** The
+  exchanges stopped publishing daily northbound net flow after 2024-08-16, so
+  rows from 2024-08-19 on carry a null amount. Those are **dropped, not
+  zero-filled** — a zero would claim a flat session where no figure exists.
+  The watermark consequently freezes at 2024-08-16 and `asl status` reports the
+  dataset STALE forever; that is the source's state, not a pipeline fault.
+
+  The step also fetches the whole outstanding window in one request rather than
+  one request per session, because a frozen watermark would otherwise grow the
+  daily gap window without bound.
+
+### Changed
+
+- **The EastMoney client is plain `httpx` again, and `[sources.eastmoney].proxy`
+  is the one overseas lever.** Removed the curl_cffi Chrome-JA3 impersonation,
+  the `CURLOPT_RESOLVE` CDN pinning with its DoH / `dig` / hardcoded-seed-IP
+  ladder, the sticky last-good-edge file (`meta/state/push2his_endpoint.json`),
+  and the egress circuit breaker that existed to make that ladder's failure
+  mode affordable — about 430 lines that bought nothing for a mainland route
+  and broke whenever EastMoney rotated an edge or a TLS fingerprint. The proxy
+  now covers every EastMoney host rather than only push2his kline, and
+  `httpx.ProxyError` joins the fail-fast set so a dead proxy stops a batch
+  instead of burning its retry budget.
+- **The shipped example config is paced for a mainland route**
+  (`min_interval_seconds` 3.0 → 0.5, `batch_size` 15 → 50,
+  `batch_rest_seconds` 60 → 5), which takes a full ~991-board `sector_bars`
+  sweep from ~2h to ~10min. The previous values were sized for a hostile
+  overseas egress and every mainland user was paying for them.
+
+### Removed
+
+- **`asl push2his remember` / `asl push2his probe`.** Both existed only to
+  drive the sticky CDN-edge machinery above. Overseas users set
+  `[sources.eastmoney].proxy` and verify with
+  `asl sources --only eastmoney_push2,eastmoney_push2his`.
+
+### Docs
+
+- **`sector_bars` is documented as a 同花顺 dataset, which it has been for a
+  while.** The catalog, the steps reference, the CLI reference and the EastMoney
+  adapter page all still described it as EastMoney clist daily plus a
+  `push2his` kline backfill under `backfill_source="eastmoney_kline"`. The
+  registry says `ths`, the step raises when `[sources.ths]` is disabled, and
+  daily and history are deliberately one source — mixing them once spliced two
+  index bases into one series and produced a fake +79% median jump across 439
+  boards. The troubleshooting entry also quoted a log line no code emits, and
+  pointed at `[sources.eastmoney].proxy`, which does nothing for this dataset.
+### Removed (config)
+
+- **`[sources.eastmoney].batch_size` / `.batch_rest_seconds` are gone.** They
+  were parsed into `Config` and never read by anything — the batch cool-down is
+  a baostock mechanism — so they read as pacing that was wired up while every
+  EastMoney sweep ran on `min_interval_seconds` alone. Unknown keys are
+  ignored, so a config still carrying them loads unchanged; delete the two
+  lines when convenient.
+
 ## [0.5.0] — 2026-08-03
 
 ### Changed

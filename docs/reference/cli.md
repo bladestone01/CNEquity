@@ -149,10 +149,11 @@ asl backfill minute_bars_5m --start 2026-05-01 --end 2026-07-31 \
 
 Checkpoint：`meta/state/sector_bars_backfill.json`。失败超过 50% 时 step 状态为 `warning` 但仍写入已成功部分。
 
-**网络**：历史 kline 走 `push2his.eastmoney.com`，需国内或大陆出口代理；日更 clist 在海外通常可用。
+**网络**：走同花顺 `d.10jqka.com.cn`（日更与历史同源），限速在 `[sources.ths]`。
+与东财无关，`[sources.eastmoney] proxy` 对它不生效。
 
 ```bash
-# 首次或换源后全量（建议在国内机器）
+# 首次或换源后全量
 asl backfill sector_bars --config configs/ashare-lake.toml --force
 
 # 续跑失败板

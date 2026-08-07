@@ -36,12 +36,10 @@ python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.
 
 ```bash
 pip install ashare-lake    # 所有数据源都不要注册、token、积分
-asl demo                   # 5 只票 × 30 个交易日，可复权真日线
-# 可选：接给 Claude Code
-claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.demo.toml"
+asl demo                   # 5 只票 × 30 个交易日，真实日线
 ```
 
-需能访问 **TDX 行情主机**（大陆出口更稳）。不通先 `asl servers test`，或 `asl demo --symbols 600519.SH,000001.SZ --days 10`。
+实测 25 秒。需能访问 **TDX 行情主机**（大陆直连即可）。不通先 `asl sources --only tdx_protocol`。
 
 <p align="center">
   <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
@@ -50,7 +48,30 @@ claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.demo.
 ```python
 from ashare_lake.query import load
 
-bars = load("daily_bars", data_root="data/ashare-lake-demo", adjust="hfq")
+bars = load("daily_bars", data_root="data/ashare-lake-demo")
+```
+
+## 建你自己的湖：四条命令
+
+```bash
+pip install ashare-lake
+asl config init            # 写出 configs/ashare-lake.toml
+asl init                   # 全市场标的 × 最近 3 年（约 1 小时）
+asl run daily              # 之后每个交易日跑这一条
+```
+
+`asl init` 默认**浅而不窄**：年限少，标的一个不缺。按标的裁剪会把幸存者偏差直接建进湖里，
+而浅是诚实的——`coverage_start` 会如实记录。想要全量历史：`asl init --profile full`（约 3 倍时间），
+或随时加深：
+
+```bash
+asl backfill daily_bars --start 2016-01-01 --end <你的 coverage_start>
+```
+
+**接给 AI**（可选，湖建好之后）：
+
+```bash
+claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.toml"
 ```
 
 接上 MCP 之后，直接用中文问：
@@ -116,15 +137,24 @@ AkShare / 取数 skill 解决「怎么拉数」——拿到的是没有历史口
 
 日内数据（1m / 5m / 分笔）**默认全关**，见 [runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
 
-## 自建日更湖
+## 让它每天自己跑
+
+`asl run daily` 跑完当天全部分组。挂进 crontab 就是日更：
 
 ```bash
-pip install ashare-lake
-asl config init --data-root /Users/you/ashare-lake   # Windows: D:/ashare-lake
-asl init          # 建目录 + 首次回填（不想等：--profile quick，最近 3 年全市场）
-asl run daily     # 之后每个交易日
-asl status
+# 交易日收盘后跑一次；非交易日会自己跳过
+30 16 * * 1-5  cd /path/to/lake && asl run daily >> logs/daily.log 2>&1
 ```
+
+```bash
+asl status        # 各数据集新鲜度：FRESH / STALE / EMPTY
+asl serve         # http://127.0.0.1:8787 看覆盖、体积、分层
+asl sources       # 14 个上游主机健康度
+asl retry <run_id>  # 只重跑失败的批次
+```
+
+一条命令跑不动的时候不会静默:失败的 step 记成 failed batch,其余照常写入,
+`asl retry` 只补失败的那些。
 
 ```python
 from ashare_lake.query import load
@@ -177,7 +207,10 @@ asl sources   # 14 个上游主机健康度（探测在 CLI，展示在 serve）
 ## FAQ
 
 **Q：`asl init` 要跑多久、占多少磁盘？**  
-全量回填是小时级、多 GB。`asl init --profile quick` 只回填最近 3 年，**全市场标的一个不少**——按标的裁剪会把幸存者偏差建进湖里。
+默认（最近 3 年、全市场）约 1 小时、GB 级。`--profile full`（2001 起）实测约 3 倍时间。
+两者都是**全市场标的一个不缺**——按标的裁剪会把幸存者偏差建进湖里。
+再浅意义不大:窗口一短,成本就由「每只标的一次往返」主导,1 年和 3 年差不了多少,
+却拉不出多数因子需要的多年窗口。
 
 **Q：为什么只存后复权因子？**  
 前复权价格会随「今天」变。落盘只存 hfq，qfq 在 `load(adjust="qfq")` 现算（[ADR-0004](docs/adr/0004-store-hfq-derive-qfq-at-query.md)）。

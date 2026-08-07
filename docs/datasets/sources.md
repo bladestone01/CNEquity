@@ -128,23 +128,36 @@
 
 | 项 | 值 |
 |------|-------|
-| 分组 | core@16:30 |
+| 分组 | capital@17:00 |
 | 主源 | eastmoney |
 | 主键 | (symbol, trade_date) |
 
-#### northbound_holdings / northbound_flows
+#### northbound_holdings
 
 | 项 | 值 |
 |------|-------|
-| 分组 | capital@16:30 |
-| 主源 | eastmoney |
+| 分组 | capital@17:00 |
+| 主源 | eastmoney（`RPT_MUTUAL_HOLDSTOCKNORTH_STA`） |
 | 主键 | 见 [schema.md](schema.md) |
+| 已知限制 | 2024-08 起按季度披露，历史只能向前累积（EM 对历史 `TRADE_DATE` 返回 0 行） |
+
+#### northbound_flows
+
+| 项 | 值 |
+|------|-------|
+| 分组 | capital@17:00 |
+| 主源 | eastmoney 沪深港通资金历史（`RPT_MUTUAL_DEAL_HISTORY`，`MUTUAL_TYPE` 001 沪股通 / 003 深股通） |
+| 主键 | 见 [schema.md](schema.md) |
+| 覆盖 | **2014-11-17 → 2024-08-16**（深股通自 2016-12-05）。回填：`asl backfill northbound_flows` |
+| 已知限制 | 交易所自 **2024-08-19** 起停止披露每日北向净买入，此后所有行 `NET_DEAL_AMT` 为 null。这些行**不落盘**（不补零），因此水位永久停在 2024-08-16，`asl status` 会一直显示 STALE——这是源的事实，不是流水线故障 |
+| 单位 | 报表金额列按 **百万元**，落盘换算为元。同一行的 `HOLD_MARKET_CAP` 却是元——该报表混用单位，改字段时要重新标定 |
+| 一次一请求 | 该报表拒绝 `TRADE_DATE` 范围谓词（`InputMismatchException`），所以取全量后在本地切窗；两条通道全史约 5k 行 |
 
 #### margin_trading
 
 | 项 | 值 |
 |------|-------|
-| 分组 | signals@17:00 |
+| 分组 | capital@17:00 |
 | 主源 | eastmoney |
 | 主键 | (symbol, trade_date) |
 

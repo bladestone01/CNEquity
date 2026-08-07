@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from urllib.parse import quote
 
 from ashare_lake.adapters.eastmoney.common import DATACENTER_BASE
@@ -38,8 +39,17 @@ def fetch_datacenter(
     sort_types: str | None = None,
     max_retries: int = 3,
     retry_backoff_seconds: float = 5.0,
+    stop_after: Callable[[list[dict]], bool] | None = None,
 ) -> list[dict]:
+    """Page a datacenter report to exhaustion, or until *stop_after* says stop.
+
+    ``stop_after`` receives each page's rows and returns True when no later page
+    can contain anything the caller wants. It only makes sense on a sorted
+    report, and it deliberately suppresses the completeness guards below — a
+    short read is the point, so the declared ``count`` will not match.
+    """
     page_size = min(page_size, _MAX_PAGE_SIZE)
+    stopped_early = False
     rows: list[dict] = []
     # First page's result.pages/count; a transient "返回数据为空" on a later
     # page looks exactly like end-of-data and silently truncates at a 500×k
@@ -118,6 +128,9 @@ def fetch_datacenter(
                 expected_count = raw_count
         batch = result.get("data") or []
         rows.extend(batch)
+        if stop_after is not None and stop_after(batch):
+            stopped_early = True
+            break
         if expected_pages is not None:
             if page >= expected_pages:
                 break
@@ -129,7 +142,7 @@ def fetch_datacenter(
         elif len(batch) < page_size:
             break
         page += 1
-    if expected_count is not None and len(rows) < expected_count:
+    if not stopped_early and expected_count is not None and len(rows) < expected_count:
         raise EastMoneyDatacenterError(
             f"EastMoney datacenter {report} returned {len(rows)} rows but page 1 "
             f"declared count={expected_count}; refusing truncated result"

@@ -61,3 +61,48 @@ def test_catalog_header_states_the_registered_count():
     """The intro sentence hard-codes the total; keep it honest."""
     header = CATALOG.read_text(encoding="utf-8").split("---", 1)[0]
     assert f"**{len(DATASETS)} 个注册数据集**" in header
+
+
+# --- sources.md group labels -------------------------------------------------
+# Same failure mode, different file: sources.md tags each dataset with the
+# schedule group and start time it runs in. Both drifted — fund_flow was labelled
+# core@16:30 and margin_trading signals@17:00 when both run in capital — and one
+# of them had been wrong since before the start times moved at all.
+
+SOURCES = Path(__file__).resolve().parents[2] / "docs" / "datasets" / "sources.md"
+_GROUP_ROW = re.compile(r"\|\s*分组\s*\|\s*([^|]+?)\s*\|")
+
+
+def _shipped_step_groups() -> dict[str, str]:
+    import sys
+    from unittest.mock import patch
+
+    from ashare_lake.config import load_config
+
+    example = Path(__file__).resolve().parents[2] / "configs" / "ashare-lake.example.toml"
+    with patch.object(sys, "platform", "linux"):
+        cfg = load_config(example)
+    return {
+        step: f"{name}@{group.at}"
+        for name, group in cfg.schedule_groups.items()
+        for step in group.steps
+        if step != "compact"
+    }
+
+
+def test_sources_group_labels_match_the_shipped_schedule():
+    step_groups = _shipped_step_groups()
+    mismatches = []
+    for block in SOURCES.read_text(encoding="utf-8").split("\n#### ")[1:]:
+        heading = block.split("\n", 1)[0].strip()
+        row = _GROUP_ROW.search(block)
+        if row is None:
+            continue
+        for dataset in (part.strip() for part in heading.split("/")):
+            if dataset in step_groups:
+                if row.group(1) != step_groups[dataset]:
+                    mismatches.append(
+                        f"{dataset}: doc={row.group(1)} config={step_groups[dataset]}"
+                    )
+                break
+    assert mismatches == []

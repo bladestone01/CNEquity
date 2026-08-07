@@ -17,6 +17,9 @@ def test_is_transport_fail_fast():
     assert is_transport_fail_fast(httpx.TimeoutException("t"))
     assert is_transport_fail_fast(httpx.ConnectError("c"))
     assert is_transport_fail_fast(httpx.RemoteProtocolError("r"))
+    # A dead proxy is the overseas equivalent of a dead route: with
+    # [sources.eastmoney].proxy set, every retry goes back through it.
+    assert is_transport_fail_fast(httpx.ProxyError("p"))
     assert not is_transport_fail_fast(RuntimeError("other"))
 
 

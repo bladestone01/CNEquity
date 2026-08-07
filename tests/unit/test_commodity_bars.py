@@ -113,5 +113,66 @@ def test_fetch_commodity_bars_empty_on_failure():
     assert df.is_empty()
 
 
+def test_transport_failures_are_not_retried():
+    """Regression: the fail-fast predicate was inverted in this loop.
+
+    It retried exactly the failures ``is_transport_fail_fast`` says a retry
+    cannot fix. With push2his refusing an egress, the 15 domestic contracts
+    burned 151s of backoff per daily run to return nothing.
+    """
+    import httpx
+
+    fake_client = MagicMock()
+    fake_client.get.side_effect = httpx.ConnectError("route down")
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = None
+
+    only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
+    with (
+        patch(
+            "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
+            return_value=fake_client,
+        ),
+        patch("ashare_lake.adapters.eastmoney.commodity_bars.time.sleep") as slept,
+    ):
+        df = fetch_commodity_bars_range(
+            date(2026, 7, 21),
+            date(2026, 7, 21),
+            contracts=only,
+            include_offshore=False,
+        )
+    assert df.is_empty()
+    assert fake_client.get.call_count == 1, "a dead route must cost one attempt, not five"
+    # The 0.25s pause between contracts still runs; what must not appear is the
+    # retry backoff ladder (0.6 / 1.1 / 1.6 / 2.1).
+    backoffs = [c.args[0] for c in slept.call_args_list if c.args and c.args[0] > 0.3]
+    assert backoffs == [], f"no backoff for a failure retrying cannot fix, got {backoffs}"
+
+
+def test_transient_failures_still_retry():
+    """The other half of the predicate: retryable errors keep their budget."""
+    fake_client = MagicMock()
+    fake_client.get.side_effect = RuntimeError("transient parse blip")
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = None
+
+    only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
+    with (
+        patch(
+            "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
+            return_value=fake_client,
+        ),
+        patch("ashare_lake.adapters.eastmoney.commodity_bars.time.sleep"),
+    ):
+        df = fetch_commodity_bars_range(
+            date(2026, 7, 21),
+            date(2026, 7, 21),
+            contracts=only,
+            include_offshore=False,
+        )
+    assert df.is_empty()
+    assert fake_client.get.call_count == 5
+
+
 def test_dataset_count_includes_commodity():
     assert "commodity_bars" in DATASETS

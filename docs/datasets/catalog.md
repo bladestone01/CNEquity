@@ -45,7 +45,7 @@ ashare-lake 交付 **39 个注册数据集**（36 curated + 3 derived：`adj_fac
 | `by_date` | 可按日期回补缺口 | daily_bars, margin_trading |
 | `snapshot` | 仅抓 run 当日快照，禁止伪造历史 | valuation_metrics, sector_members |
 
-`snapshot` 数据集若配置了 `backfill_source`（如 `valuation_metrics` → baostock、`sector_bars` → eastmoney_kline），允许 `asl backfill` 走专用历史源。
+`snapshot` 数据集若配置了 `backfill_source`（如 `valuation_metrics` → baostock、`sector_bars` → ths），允许 `asl backfill` 走专用历史源。
 
 ### 历史可用性（history_mode）
 

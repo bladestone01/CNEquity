@@ -78,7 +78,13 @@ def _fetch_one_kline(
             data = resp.json().get("data") or {}
             break
         except Exception as exc:
-            if attempt + 1 >= _MAX_RETRIES or not is_transport_fail_fast(exc):
+            # The predicate was inverted here: it retried exactly the failures
+            # `is_transport_fail_fast` says a retry cannot fix, and gave up at
+            # once on the transient ones. With push2his refusing an egress that
+            # cost 151s per daily run — 15 contracts × 5 attempts × backoff —
+            # to return nothing. clist and datacenter both break on this same
+            # predicate; match them.
+            if is_transport_fail_fast(exc) or attempt + 1 >= _MAX_RETRIES:
                 raise
             time.sleep(0.6 + attempt * 0.5)
     klines = data.get("klines") or []

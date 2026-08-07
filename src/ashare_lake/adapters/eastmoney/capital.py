@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from datetime import date
 
 import polars as pl
@@ -12,7 +11,6 @@ from ashare_lake.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_cl
 from ashare_lake.adapters.eastmoney.common import (
     _to_float,
     exchange_from_datacenter,
-    parse_em_ymd,
     symbol_from_em,
     symbol_from_secucode,
 )
@@ -36,12 +34,33 @@ _DRAGON_COLUMNS = (
 )
 _BLOCK_REPORT = "RPT_BLOCKTRADE_STA"
 _BLOCK_COLUMNS = "SECURITY_CODE,TRADE_DATE,VOLUME,DEAL_AMT,AVERAGE_PRICE,PREMIUM_RATIO"
-_FFLOW_KLINE_URL = (
-    "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
-    "?secid=1.000001&klt=101&lmt={limit}&fields1=f1,f2,f3,f7"
-    "&fields2=f51,f52,f53,f54,f55,f56"
-)
-_KAMT_URL = "https://push2.eastmoney.com/api/qt/kamt/get"
+# 沪深港通资金历史 (data.eastmoney.com/hsgt). The report carries all six
+# MUTUAL_TYPE channels; only the two northbound legs belong in this dataset.
+_NORTH_FLOW_REPORT = "RPT_MUTUAL_DEAL_HISTORY"
+_NORTH_FLOW_COLUMNS = "MUTUAL_TYPE,TRADE_DATE,NET_DEAL_AMT,BUY_AMT,SELL_AMT"
+# 001 沪股通, 003 深股通. 005 (北向合计) is the sum of the two, so storing it
+# would put a third row under a PK that means "one leg of one direction".
+_NORTHBOUND_CHANNELS = {"001": "SH", "003": "SZ"}
+# Scale from the report's amount columns to the 元 the lake stores.
+#
+# Calibrated against ``HOLD_MARKET_CAP`` in the same row, which is plainly in 元
+# (2024-08-16, 北向合计: 1,910,745,742,832 = 1.91万亿, the published figure).
+# The report therefore mixes units, so the flow columns need their own scale:
+#
+#   2024-08-16  沪股通  BUY_AMT = 22080.14   NET_DEAL_AMT = -2568.22
+#     ×1e6 → 买入 220.8亿, 净流出 25.7亿   (北向合计净流出 67.7亿)
+#     ×1e4 → 买入 2.21亿,  净流出 0.26亿   — two orders below a session whose
+#            northbound turnover ran past 900亿, so 万元 cannot be right.
+#
+# ``QUOTA_BALANCE`` agrees: 53786.23 ×1e6 = 537.9亿 against a 520亿 daily quota
+# plus that day's net sell, where ×1e4 would leave 5.4亿 of a 520亿 quota.
+_AMOUNT_SCALE = 1_000_000.0
+# 沪股通's first session. 深股通 opens 2016-12-05 and simply has no earlier rows.
+NORTHBOUND_HISTORY_START = date(2014, 11, 17)
+# The exchanges stopped publishing daily northbound net flow after this session;
+# every row from 2024-08-19 on carries NET_DEAL_AMT = null. Kept as a named
+# constant so the docs, the tests and the audit finding cite one date.
+NORTHBOUND_LAST_PUBLISHED = date(2024, 8, 16)
 
 
 def _channel(mutual_type: str | int | None) -> str:
@@ -66,33 +85,26 @@ def _margin_symbol(item: dict) -> str | None:
     return symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
 
 
-def _northbound_kline_lines(
-    client: EastMoneyClient, *, limit: int = 120, max_retries: int = 3
-) -> list[str]:
-    url = _FFLOW_KLINE_URL.format(limit=limit)
-    last_exc: Exception | None = None
-    for attempt in range(max_retries):
-        try:
-            resp = client.get(url, timeout=30.0)
-            resp.raise_for_status()
-            payload = resp.json()
-            data = payload.get("data") or {}
-            lines = data.get("klines") or []
-            if lines:
-                return lines
-        except Exception as exc:
-            last_exc = exc
-            if attempt + 1 < max_retries:
-                time.sleep(1.0 * (attempt + 1))
-    if last_exc is not None:
-        logger.warning("EastMoney northbound kline fetch failed: %s", last_exc)
-    return []
+def _em_datetime_to_date(value) -> date | None:
+    """``2024-08-16 00:00:00`` → ``date``; the report never sends a bare date."""
+    text = str(value or "").strip()
+    if len(text) < 10:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
 
 
-def fetch_fund_flow(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
+def fetch_fund_flow(
+    trade_date: date,
+    *,
+    client: EastMoneyClient | None = None,
+    config: Config | None = None,
+) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
     rows_raw = fetch_clist_pages(client, fields=_FUND_FLOW_FIELDS)
     rows = []
     for sym, item in clist_rows_to_symbols(rows_raw):
@@ -113,11 +125,14 @@ def fetch_fund_flow(trade_date: date, *, client: EastMoneyClient | None = None) 
 
 
 def fetch_margin_trading(
-    trade_date: date, *, client: EastMoneyClient | None = None
+    trade_date: date,
+    *,
+    client: EastMoneyClient | None = None,
+    config: Config | None = None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
     ds = trade_date.isoformat()
     raw = fetch_datacenter(
         client,
@@ -212,78 +227,100 @@ def fetch_northbound_holdings(
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
-def fetch_northbound_flows(
-    trade_date: date, *, client: EastMoneyClient | None = None
+def fetch_northbound_flows_range(
+    start: date,
+    end: date,
+    *,
+    client: EastMoneyClient | None = None,
+    config: Config | None = None,
 ) -> pl.DataFrame:
+    """Northbound 沪股通 / 深股通 daily flows over [*start*, *end*].
+
+    The whole series is one request. ``RPT_MUTUAL_DEAL_HISTORY`` rejects range
+    predicates on ``TRADE_DATE`` (``InputMismatchException``), and equality
+    would cost one request per session — which the daily path cannot afford,
+    because the watermark stops advancing the moment the source stops
+    publishing and the gap window then grows without bound. Both northbound
+    legs across the full history are ~5k rows, so pulling them and slicing
+    locally is one request whatever the window.
+
+    Rows with a null ``NET_DEAL_AMT`` are dropped rather than zero-filled: the
+    exchanges stopped publishing daily northbound net flow after
+    ``NORTHBOUND_LAST_PUBLISHED``, and a zero would claim a flat session where
+    the truth is that no figure exists.
+    """
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
+    try:
+        raw = fetch_datacenter(
+            client,
+            _NORTH_FLOW_REPORT,
+            _NORTH_FLOW_COLUMNS,
+            filter_expr='(MUTUAL_TYPE in ("001","003"))',
+            sort_columns="TRADE_DATE",
+            sort_types="1",
+        )
+    finally:
+        if owns:
+            client.close()
 
     rows: list[dict] = []
-    for line in _northbound_kline_lines(client):
-        parts = line.split(",")
-        if len(parts) < 3:
+    withheld = 0
+    for item in raw:
+        channel = _NORTHBOUND_CHANNELS.get(str(item.get("MUTUAL_TYPE") or "").strip())
+        if channel is None:
             continue
-        try:
-            row_date = parse_em_ymd(parts[0])
-        except ValueError:
+        row_date = _em_datetime_to_date(item.get("TRADE_DATE"))
+        if row_date is None or not (start <= row_date <= end):
             continue
-        if row_date != trade_date:
+        # Read the raw value, not ``_to_float``: that helper defaults a missing
+        # amount to 0.0, which is exactly the zero this dataset must not invent.
+        # From 2024-08-19 the column is null on every northbound row.
+        net = item.get("NET_DEAL_AMT")
+        if net is None or net == "" or net == "-":
+            withheld += 1
             continue
-        rows.extend(
-            [
-                {
-                    "trade_date": row_date,
-                    "channel": "SH",
-                    "net_buy": float(parts[1]),
-                    "buy_amount": 0.0,
-                    "sell_amount": 0.0,
-                },
-                {
-                    "trade_date": row_date,
-                    "channel": "SZ",
-                    "net_buy": float(parts[2]),
-                    "buy_amount": 0.0,
-                    "sell_amount": 0.0,
-                },
-            ]
+        rows.append(
+            {
+                "trade_date": row_date,
+                "channel": channel,
+                "net_buy": _to_float(net) * _AMOUNT_SCALE,
+                "buy_amount": _to_float(item.get("BUY_AMT")) * _AMOUNT_SCALE,
+                "sell_amount": _to_float(item.get("SELL_AMT")) * _AMOUNT_SCALE,
+            }
         )
-        break
 
-    if not rows:
-        try:
-            resp = client.get(f"{_KAMT_URL}?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56")
-            resp.raise_for_status()
-            data = resp.json().get("data") or {}
-        except Exception as exc:
-            logger.warning("EastMoney kamt northbound fetch failed: %s", exc)
-            data = {}
-        for key, channel in (("hk2sh", "SH"), ("hk2sz", "SZ")):
-            block = data.get(key) or {}
-            date2 = str(block.get("date2") or "")[:10]
-            if date2 != trade_date.isoformat():
-                continue
-            # dayNetAmtIn is 万元 on EastMoney kamt API.
-            net = float(block.get("dayNetAmtIn") or 0) * 10_000
-            rows.append(
-                {
-                    "trade_date": trade_date,
-                    "channel": channel,
-                    "net_buy": net,
-                    "buy_amount": 0.0,
-                    "sell_amount": 0.0,
-                }
-            )
-
-    if owns:
-        client.close()
+    if withheld:
+        logger.info(
+            "northbound_flows: %d row(s) in %s..%s carry no net amount "
+            "(source stopped publishing after %s)",
+            withheld,
+            start.isoformat(),
+            end.isoformat(),
+            NORTHBOUND_LAST_PUBLISHED.isoformat(),
+        )
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
-def fetch_dragon_tiger(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
+def fetch_northbound_flows(
+    trade_date: date,
+    *,
+    client: EastMoneyClient | None = None,
+    config: Config | None = None,
+) -> pl.DataFrame:
+    return fetch_northbound_flows_range(trade_date, trade_date, client=client, config=config)
+
+
+def fetch_dragon_tiger(
+    trade_date: date,
+    *,
+    client: EastMoneyClient | None = None,
+    config: Config | None = None,
+) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
     ds = trade_date.isoformat()
     raw = fetch_datacenter(
         client,
@@ -313,10 +350,15 @@ def fetch_dragon_tiger(trade_date: date, *, client: EastMoneyClient | None = Non
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
-def fetch_block_trades(trade_date: date, *, client: EastMoneyClient | None = None) -> pl.DataFrame:
+def fetch_block_trades(
+    trade_date: date,
+    *,
+    client: EastMoneyClient | None = None,
+    config: Config | None = None,
+) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
     ds = trade_date.isoformat()
     raw = fetch_datacenter(
         client,

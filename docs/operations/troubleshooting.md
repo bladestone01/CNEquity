@@ -125,27 +125,35 @@ uv run asl status --datasets   # valuation 不应再停在稀疏 tip
   **海外机器**：catchup（TDX core + 本地 derive breadth）通常够用；
   `fund_flow` / `hot_rank` / `sector_bars` 日更落后属预期，等国内出口再 `--all-groups`。
 
-### 云主机 / SOCKS 能开 ipinfo 但东财 Empty reply
+### 东财 502 / 连接被重置（海外出口）
 
-- **现象**：出口 IP 显示 CN，`curl`/`ssh -D` 访问 `push2his` 仍 `Empty reply` /
-  `Failure when receiving data from the peer`；同机 RDP 里直接 `curl` 有时也曾成功后被掐。
-- **原因**：经 SOCKS 时 TLS 仍在境外客户端握手；云 IP 也易被东财短时风控。
-- **处理**：在**本机进程**发起请求的大陆机器上跑回填（不要指望 Mac→云 SOCKS）；
-  探针失败就停，换宽带出口或等解封后再 `sector_bars --force`。
+- **现象**：`asl sources` 里 `eastmoney_push2` 报 `HTTP 502`、`eastmoney_push2his`
+  报 `Connection closed abruptly`；日更 core 正常（行情走 TDX），资金面 / 板块组失败。
+- **原因**：东财对非大陆出口做风控。**大陆网络下这一整类问题不存在**，无需任何配置。
+- **处理**：给 `[sources.eastmoney]` 配一个有大陆出口的 HTTP(S) 代理——Clash、
+  `ssh -D` 转 HTTP、或一台国内 VPS 都行：
+
+  ```toml
+  [sources.eastmoney]
+  proxy = "http://127.0.0.1:7897"
+  ```
+
+  代理对**所有**东财主机生效（push2 / push2his / datacenter / reportapi）。
+  改完用 `asl sources --only eastmoney_push2,eastmoney_push2his` 验证。
+  不想改配置也可以走 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。
+
+  **代理挂了不会重试**：`ProxyError` 归入 fail-fast，一次失败即放弃该请求，
+  不会拿着退避把整批时间耗光。先确认代理本身通。
 
 ### sector_bars backfill 大量失败
 
-- **现象**：日志 `sector kline failed for BKxxxx on all push2his hosts`；`failed_sectors` 接近 991。
-- **原因**：`push2his.eastmoney.com` 在海外 IP 常不可用；日更 clist 仍可能正常。
-  CDN 边缘（Azure Traffic Manager）按 DNS 源轮转——Chrome DevTools Remote Address
-  （如 `61.129.129.199:443`）与系统 DNS 常不一致；可用边缘也会突然 Empty reply。
-- **处理**：
-  1. 客户端已自动 sticky + 多源发现 + 失败降级（`meta/state/push2his_endpoint.json`）。
-  2. 浏览器能开、脚本不能时：DevTools 复制 Remote Address，
-     `asl push2his remember 61.129.129.199:443`，再 `asl push2his probe`。
-  3. 仍全挂：换大陆出口或 `[sources.eastmoney] proxy`，然后
-     `asl backfill sector_bars --retry-failed`；全量换源后 `--force`。
-  Checkpoint：`meta/state/sector_bars_backfill.json`。
+- **现象**：日志 `THS sweep: BKxxxx (板块名) failed: ...`；`failed_sectors` 数量偏高。
+- **原因**：**这是同花顺的源,不是东财**——`[sources.eastmoney] proxy` 对它不生效。
+  `d.10jqka.com.cn` 对密集请求会限速甚至封禁。
+- **处理**：提高 `[sources.ths] min_interval_seconds`（默认 1.0，实测这个速率下
+  ~1300 次连续请求零失败），再 `asl backfill sector_bars --retry-failed`；
+  全量换源后用 `--force`。Checkpoint：`meta/state/sector_bars_backfill.json`。
+  失败率超过 50% 时 step 状态为 `warning`，已成功的板块仍会写入。
 
 ### 海外机器 + 国内阿里云 VPS（推荐跑在 VPS 上）
 

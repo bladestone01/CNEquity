@@ -1,11 +1,9 @@
-"""EastMoney auth helpers not covered by the push2his ladder tests: NID cookie
-fetch/cache, header building, sticky-path plumbing, CDN discovery probes, and
-the plain (non-Chrome-TLS) EastMoneyClient request path.
+"""EastMoney auth helpers: NID cookie fetch/cache, header building, the push2
+``ut`` token injection, and the EastMoneyClient request path.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
@@ -16,22 +14,8 @@ from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
 
 
 def _reset_state() -> None:
-    em._STICKY_IP = None
-    em._FAILED_UNTIL.clear()
-    em._DISCOVER_CACHE.clear()
-    em.reset_egress_breaker()
     em._NID_CACHE["nid"] = None
     em._NID_CACHE["expires"] = 0.0
-
-
-def test_reset_egress_breaker_specific_host():
-    em._BREAKER["a.example.com"] = (3, 999999999.0)
-    em._BREAKER["b.example.com"] = (3, 999999999.0)
-    em.reset_egress_breaker("a.example.com")
-    assert "a.example.com" not in em._BREAKER
-    assert "b.example.com" in em._BREAKER
-    em.reset_egress_breaker()
-    assert em._BREAKER == {}
 
 
 def test_fetch_nid_returns_cookie_value(monkeypatch):
@@ -137,230 +121,70 @@ def test_build_eastmoney_headers_unknown_domain_is_plain():
     assert "Referer" not in headers
 
 
-def test_sticky_path_none_config_returns_none():
-    assert em._sticky_path(None) is None
+# --- push2 ut token ---------------------------------------------------------
+# Every push2 call site relied on the old Chrome-TLS path to add ``ut``; the
+# API rejects requests without it, so these pin the replacement.
 
 
-def test_sticky_path_with_config(tmp_path: Path):
-    class _Cfg:
-        meta_root = tmp_path
+def test_is_push2_url_matches_kline_and_clist_hosts():
+    assert em.is_push2_url("https://push2his.eastmoney.com/api/qt/stock/kline/get")
+    assert em.is_push2_url("https://91.push2his.eastmoney.com/api/qt/stock/kline/get")
+    assert em.is_push2_url("https://push2.eastmoney.com/api/qt/clist/get")
+    assert not em.is_push2_url("https://datacenter-web.eastmoney.com/api/data/v1/get")
 
-    path = em._sticky_path(_Cfg())
-    assert path == tmp_path / "state" / em._PUSH2HIS_STICKY_FILE
 
+def test_apply_push2_token_adds_ut_when_params_absent():
+    assert em.apply_push2_token("https://push2his.eastmoney.com/api/qt/stock/kline/get", None) == {
+        "ut": em._PUSH2_UT
+    }
 
-def test_load_sticky_missing_path_returns_none(tmp_path: Path):
-    _reset_state()
-    assert em._load_sticky(tmp_path / "nope.json") is None
 
+def test_apply_push2_token_merges_into_existing_params():
+    out = em.apply_push2_token(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        {"secid": "1.600519"},
+    )
+    assert out == {"secid": "1.600519", "ut": em._PUSH2_UT}
 
-def test_load_sticky_none_path_returns_none():
-    _reset_state()
-    assert em._load_sticky(None) is None
 
+def test_apply_push2_token_adds_ut_for_query_string_call_sites():
+    # capital.py builds the fflow kline URL as a formatted query string with no
+    # params dict; httpx merges the returned dict into that query.
+    url = "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?secid=1.000001&klt=101"
+    assert em.apply_push2_token(url, None) == {"ut": em._PUSH2_UT}
 
-def test_load_sticky_bad_json_returns_none(tmp_path: Path):
-    _reset_state()
-    path = tmp_path / "sticky.json"
-    path.write_text("not json")
-    assert em._load_sticky(path) is None
 
+def test_apply_push2_token_respects_caller_supplied_ut():
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    assert em.apply_push2_token(url, {"ut": "own-token"}) == {"ut": "own-token"}
+    assert em.apply_push2_token(f"{url}?ut=own-token", None) is None
 
-def test_load_sticky_uses_process_cache_before_disk(tmp_path: Path):
-    _reset_state()
-    em._STICKY_IP = "9.9.9.9"
-    assert em._load_sticky(tmp_path / "unrelated.json") == "9.9.9.9"
 
+def test_apply_push2_token_leaves_non_push2_urls_alone():
+    assert (
+        em.apply_push2_token("https://datacenter-web.eastmoney.com/api/data/v1/get", None) is None
+    )
 
-def test_save_sticky_none_path_still_sets_process_cache():
-    _reset_state()
-    em._save_sticky(None, "1.2.3.4")
-    assert em._STICKY_IP == "1.2.3.4"
 
+def test_client_get_sends_ut_on_push2_requests():
+    client = EastMoneyClient(min_interval=0.0)
+    seen: dict = {}
 
-def test_save_sticky_handles_write_failure(tmp_path: Path, monkeypatch):
-    _reset_state()
-    bad_path = tmp_path / "no_such_dir" / "sticky.json"
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"data": None})
 
-    def _boom_mkdir(*a, **k):
-        raise OSError("disk full")
+    client._client = httpx.Client(transport=httpx.MockTransport(_handler))
+    client.get(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        params={"secid": "1.600519"},
+    )
+    client.close()
+    assert f"ut={em._PUSH2_UT}" in seen["url"]
+    assert "secid=1.600519" in seen["url"]
 
-    monkeypatch.setattr(Path, "mkdir", _boom_mkdir)
-    em._save_sticky(bad_path, "1.2.3.4")
-    assert em._STICKY_IP == "1.2.3.4"  # process cache still updated
 
-
-def test_remember_push2his_endpoint_ignores_blank_ip(tmp_path: Path):
-    _reset_state()
-
-    class _Cfg:
-        meta_root = tmp_path
-
-    em.remember_push2his_endpoint("   ", config=_Cfg())
-    assert em._STICKY_IP is None
-    assert not (tmp_path / "state").exists()
-
-
-def test_mark_edge_failed_clears_matching_sticky_and_file(tmp_path: Path):
-    _reset_state()
-    sticky = tmp_path / "sticky.json"
-    sticky.write_text('{"ip": "1.1.1.1"}\n')
-    em._STICKY_IP = "1.1.1.1"
-    em._mark_edge_failed("1.1.1.1", sticky)
-    assert em._STICKY_IP is None
-    assert not sticky.exists()
-
-
-def test_mark_edge_failed_leaves_other_ips_sticky_file_alone(tmp_path: Path):
-    _reset_state()
-    sticky = tmp_path / "sticky.json"
-    sticky.write_text('{"ip": "2.2.2.2"}\n')
-    em._mark_edge_failed("1.1.1.1", sticky)
-    assert sticky.exists()
-
-
-def test_mark_edge_failed_missing_sticky_path_is_noop():
-    _reset_state()
-    em._mark_edge_failed("1.1.1.1", None)
-    assert em._is_demoted("1.1.1.1")
-
-
-def test_mark_edge_failed_tolerates_corrupt_sticky_file(tmp_path: Path):
-    _reset_state()
-    sticky = tmp_path / "sticky.json"
-    sticky.write_text("not json")
-    em._mark_edge_failed("1.1.1.1", sticky)  # must not raise
-    assert em._is_demoted("1.1.1.1")
-
-
-def test_is_demoted_expires_after_window(monkeypatch):
-    _reset_state()
-    em._FAILED_UNTIL["1.1.1.1"] = 0.0  # already expired
-    assert em._is_demoted("1.1.1.1") is False
-    assert "1.1.1.1" not in em._FAILED_UNTIL
-
-
-def test_is_demoted_false_when_never_marked():
-    _reset_state()
-    assert em._is_demoted("9.9.9.9") is False
-
-
-def test_doh_a_records_parses_answers_and_skips_bad_endpoints(monkeypatch):
-    def _fake_get(url, headers=None, timeout=None):
-        resp = MagicMock()
-        if "dns.google" in url:
-            resp.raise_for_status.side_effect = RuntimeError("dns.google down")
-            return resp
-        resp.raise_for_status.return_value = None
-        resp.json.return_value = {
-            "Answer": [
-                {"type": 1, "data": "1.1.1.1"},
-                {"type": 1, "data": "1.1.1.1"},  # dup, deduped
-                {"type": 5, "data": "cname.example.com"},  # CNAME, skipped
-                {"type": 1, "data": "2.2.2.2"},
-            ]
-        }
-        return resp
-
-    monkeypatch.setattr(em.httpx, "get", _fake_get)
-    ips = em._doh_a_records("push2his.eastmoney.com")
-    assert ips == ["1.1.1.1", "2.2.2.2"]
-
-
-def test_doh_a_records_all_endpoints_fail(monkeypatch):
-    def _boom(*a, **k):
-        raise RuntimeError("no network")
-
-    monkeypatch.setattr(em.httpx, "get", _boom)
-    assert em._doh_a_records("push2his.eastmoney.com") == []
-
-
-def test_system_a_records_dedupes_and_skips_ipv6(monkeypatch):
-    def _fake_getaddrinfo(host, port, type=None):
-        return [
-            (2, 1, 6, "", ("3.3.3.3", 443)),
-            (2, 1, 6, "", ("3.3.3.3", 443)),
-            (30, 1, 6, "", ("::1", 443)),
-            (2, 1, 6, "", ("4.4.4.4", 443)),
-        ]
-
-    monkeypatch.setattr(em.socket, "getaddrinfo", _fake_getaddrinfo)
-    ips = em._system_a_records("push2his.eastmoney.com")
-    assert ips == ["3.3.3.3", "4.4.4.4"]
-
-
-def test_system_a_records_returns_empty_on_dns_failure(monkeypatch):
-    def _boom(host, port, type=None):
-        raise OSError("dns failure")
-
-    monkeypatch.setattr(em.socket, "getaddrinfo", _boom)
-    assert em._system_a_records("push2his.eastmoney.com") == []
-
-
-def test_udp_dig_a_records_returns_empty_when_dig_missing(monkeypatch):
-    import shutil as real_shutil
-
-    monkeypatch.setattr(real_shutil, "which", lambda name: None)
-    assert em._udp_dig_a_records("push2his.eastmoney.com") == []
-
-
-def test_udp_dig_a_records_parses_dig_output(monkeypatch):
-    import shutil as real_shutil
-    import subprocess as real_subprocess
-
-    monkeypatch.setattr(real_shutil, "which", lambda name: "/usr/bin/dig")
-
-    def _fake_check_output(cmd, text=True, timeout=4, stderr=None):
-        ns = cmd[-1]
-        if ns == "@223.5.5.5":
-            return "5.5.5.5.\n\n"
-        if ns == "@119.29.29.29":
-            raise real_subprocess.SubprocessError("timeout")
-        return ""
-
-    monkeypatch.setattr(real_subprocess, "check_output", _fake_check_output)
-    ips = em._udp_dig_a_records("push2his.eastmoney.com")
-    assert ips == ["5.5.5.5"]
-
-
-def test_discover_cdn_ips_combines_sources_and_caches(monkeypatch):
-    _reset_state()
-    calls = {"n": 0}
-
-    def _doh(host):
-        calls["n"] += 1
-        return ["1.1.1.1"]
-
-    monkeypatch.setattr(em, "_doh_a_records", _doh)
-    monkeypatch.setattr(em, "_udp_dig_a_records", lambda host: ["2.2.2.2"])
-    monkeypatch.setattr(em, "_system_a_records", lambda host: ["1.1.1.1", "3.3.3.3"])
-
-    ips = em._discover_cdn_ips("push2his.eastmoney.com")
-    assert ips == ["1.1.1.1", "2.2.2.2", "3.3.3.3"]
-    assert calls["n"] == 2  # host + TM host
-
-    # Cached result is served without calling the probes again.
-    calls_before = calls["n"]
-    em._discover_cdn_ips("push2his.eastmoney.com")
-    assert calls["n"] == calls_before
-
-
-def test_discover_cdn_ips_force_bypasses_cache(monkeypatch):
-    _reset_state()
-    calls = {"n": 0}
-
-    def _doh(host):
-        calls["n"] += 1
-        return []
-
-    monkeypatch.setattr(em, "_doh_a_records", _doh)
-    monkeypatch.setattr(em, "_udp_dig_a_records", lambda host: [])
-    monkeypatch.setattr(em, "_system_a_records", lambda host: [])
-
-    em._discover_cdn_ips("push2his.eastmoney.com")
-    before = calls["n"]
-    em._discover_cdn_ips("push2his.eastmoney.com", force=True)
-    assert calls["n"] > before
+# --- client plumbing --------------------------------------------------------
 
 
 def test_eastmoney_client_default_min_interval():
@@ -427,7 +251,7 @@ def test_eastmoney_client_throttle_delegates_to_config_rate_limiter():
     client.close()
 
 
-def test_eastmoney_client_get_uses_plain_httpx_for_non_chrome_hosts(monkeypatch):
+def test_eastmoney_client_get_uses_plain_httpx(monkeypatch):
     client = EastMoneyClient(min_interval=0.0)
     seen = {}
 
@@ -445,24 +269,25 @@ def test_eastmoney_client_get_uses_plain_httpx_for_non_chrome_hosts(monkeypatch)
     client.close()
 
 
-def test_eastmoney_client_get_routes_chrome_hosts_through_chrome_get(monkeypatch):
+def test_eastmoney_client_get_routes_push2his_through_the_same_pool(monkeypatch):
     client = EastMoneyClient(min_interval=0.0)
     seen = {}
 
-    def _fake_chrome_get(url, *, headers, params, timeout, proxy, sticky_path):
-        seen.update(url=url, params=params, timeout=timeout)
+    def _fake_get(url, headers=None, **kwargs):
+        seen.update(url=url, params=kwargs.get("params"), timeout=kwargs.get("timeout"))
         resp = MagicMock()
         resp.status_code = 200
         return resp
 
-    monkeypatch.setattr(em, "_chrome_get", _fake_chrome_get)
-    monkeypatch.setattr(em, "_breaker_guard", lambda host: None)
+    monkeypatch.setattr(client._client, "get", _fake_get)
     resp = client.get(
         "https://push2his.eastmoney.com/api/qt/stock/kline/get",
         params={"secid": "1.600519"},
+        timeout=30.0,
     )
     assert resp.status_code == 200
-    assert seen["params"] == {"secid": "1.600519"}
+    assert seen["params"] == {"secid": "1.600519", "ut": em._PUSH2_UT}
+    assert seen["timeout"] == 30.0
     client.close()
 
 

@@ -19,6 +19,16 @@ _UNLOCK_COLUMNS = (
 )
 
 
+def _free_date(item: dict) -> date | None:
+    raw = item.get("FREE_DATE")
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+
+
 def fetch_share_unlock_schedule(
     trade_date: date,
     *,
@@ -29,15 +39,33 @@ def fetch_share_unlock_schedule(
     if client is None:
         client = EastMoneyClient()
 
-    start = trade_date.isoformat()
-    end = (trade_date + timedelta(days=horizon_days)).isoformat()
+    # No FREE_DATE range predicate. EastMoney's datacenter rejects range
+    # comparisons on date columns outright — "参数预处理错误:
+    # org.antlr.v4.runtime.InputMismatchException (code=9501)" — which took this
+    # step from working to failing every run with no code change on our side.
+    # Equality still parses, but that is one request per day across the horizon.
+    #
+    # So: page the report newest-first and stop as soon as a page ends before
+    # the window does. The report spans 2010..2035 in 63 pages of 500; the
+    # 180-day window lives in the first ~7 of them descending, where reading it
+    # ascending would walk all 63 to reach the same rows.
+    start = trade_date
+    end = trade_date + timedelta(days=horizon_days)
+
+    def _page_is_past_window(batch: list[dict]) -> bool:
+        for item in reversed(batch):
+            parsed = _free_date(item)
+            if parsed is not None:
+                return parsed < start
+        return False
+
     raw = fetch_datacenter(
         client,
         _UNLOCK_REPORT,
         _UNLOCK_COLUMNS,
-        filter_expr=f"(FREE_DATE>='{start}')(FREE_DATE<='{end}')",
         sort_columns="FREE_DATE",
-        sort_types="1",
+        sort_types="-1",
+        stop_after=_page_is_past_window,
     )
     if owns:
         client.close()
@@ -50,12 +78,8 @@ def fetch_share_unlock_schedule(
         sym = symbol_from_em(code, market_id)
         if not sym:
             continue
-        unlock_raw = item.get("FREE_DATE")
-        if not unlock_raw:
-            continue
-        try:
-            unlock_date = date.fromisoformat(str(unlock_raw)[:10])
-        except ValueError:
+        unlock_date = _free_date(item)
+        if unlock_date is None or not (start <= unlock_date <= end):
             continue
         shares = item.get("ABLE_FREE_SHARES")
         if shares is None:

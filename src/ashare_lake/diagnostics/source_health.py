@@ -37,6 +37,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
+from urllib.parse import urlparse
 
 from ashare_lake.config import Config
 
@@ -204,17 +205,33 @@ def _eastmoney_json(config: Config, url: str) -> dict:
 
 
 def _probe_em_push2(config: Config) -> str:
+    """Walk the clist host list, exactly as ``fetch_clist_pages`` does.
+
+    Probing only the first host reported this source down while every clist
+    sweep in the pipeline was succeeding on a later one: push2 answers 502
+    while push2delay serves the same query. A probe that is redder than the
+    pipeline sends people chasing an outage that is not there.
+    """
     from ashare_lake.adapters.eastmoney.common import ALL_A_FS, PUSH2_CLIST_HOSTS
 
-    url = (
-        f"{PUSH2_CLIST_HOSTS[0]}/api/qt/clist/get"
-        f"?pn=1&pz=1&po=1&np=1&fltt=2&invt=2&fid=f12&fs={ALL_A_FS}&fields=f12,f14"
-    )
-    payload = _eastmoney_json(config, url)
-    total = int((payload.get("data") or {}).get("total") or 0)
-    if not total:
-        raise ProbeEmpty("clist 返回 total=0")
-    return f"全市场 {total} 只"
+    last_exc: Exception | None = None
+    for host in PUSH2_CLIST_HOSTS:
+        url = (
+            f"{host}/api/qt/clist/get"
+            f"?pn=1&pz=1&po=1&np=1&fltt=2&invt=2&fid=f12&fs={ALL_A_FS}&fields=f12,f14"
+        )
+        try:
+            payload = _eastmoney_json(config, url)
+        except Exception as exc:  # noqa: BLE001 — try the next host, as the adapter does
+            last_exc = exc
+            continue
+        total = int((payload.get("data") or {}).get("total") or 0)
+        if not total:
+            last_exc = ProbeEmpty("clist 返回 total=0")
+            continue
+        suffix = "" if host == PUSH2_CLIST_HOSTS[0] else f"（经 {urlparse(host).hostname}）"
+        return f"全市场 {total} 只{suffix}"
+    raise last_exc if last_exc else ProbeEmpty("clist 无可用主机")
 
 
 def _probe_em_push2his(config: Config) -> str:
@@ -381,11 +398,16 @@ def _probe_nbs(config: Config) -> str:
 
 
 def _probe_sw(config: Config) -> str:
-    import httpx
+    # Same client as the adapter, so the probe carries the intermediate cert
+    # swsresearch.com omits. Building a bare httpx.Client here reported the
+    # source down while the backfill would have worked.
+    from ashare_lake.adapters.sw.industry_history import (
+        _HEADERS,
+        SW_INDUSTRY_XLS_URL,
+        sw_client,
+    )
 
-    from ashare_lake.adapters.sw.industry_history import _HEADERS, SW_INDUSTRY_XLS_URL
-
-    with httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=True) as client:
+    with sw_client(timeout=TIMEOUT_SECONDS) as client:
         resp = client.get(SW_INDUSTRY_XLS_URL, headers=_HEADERS)
         resp.raise_for_status()
         body = resp.content

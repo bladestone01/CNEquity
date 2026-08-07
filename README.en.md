@@ -45,14 +45,11 @@ python scripts/survivorship_gap.py --svg docs/assets/survivorship-gap.svg
 
 ```bash
 pip install ashare-lake    # no source needs signup, tokens, or credits
-asl demo                   # 5 names × 30 sessions, real adjustable daily bars
-# optional: wire into Claude Code
-claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.demo.toml"
+asl demo                   # 5 names × 30 sessions, real daily bars
 ```
 
-Needs **TDX quote hosts** reachable (mainland egress is more reliable). If
-down: `asl servers test`, or
-`asl demo --symbols 600519.SH,000001.SZ --days 10`.
+25 seconds, measured. Needs **TDX quote hosts** reachable (direct from the
+mainland). If down: `asl sources --only tdx_protocol`.
 
 <p align="center">
   <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
@@ -61,7 +58,31 @@ down: `asl servers test`, or
 ```python
 from ashare_lake.query import load
 
-bars = load("daily_bars", data_root="data/ashare-lake-demo", adjust="hfq")
+bars = load("daily_bars", data_root="data/ashare-lake-demo")
+```
+
+## Your own lake, in four commands
+
+```bash
+pip install ashare-lake
+asl config init            # writes configs/ashare-lake.toml
+asl init                   # every symbol × the last 3 years (~1 hour)
+asl run daily              # this one line, each trading day after
+```
+
+`asl init` defaults to **shallow, never narrow**: fewer years, every symbol.
+Trimming symbols instead would build the survivorship bias this lake exists to
+avoid straight into it, whereas shallow is honest — `coverage_start` records it.
+Want everything: `asl init --profile full` (~3x the time). Deepen any time:
+
+```bash
+asl backfill daily_bars --start 2016-01-01 --end <your coverage_start>
+```
+
+**Wire into an AI agent** (optional, once the lake exists):
+
+```bash
+claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.toml"
 ```
 
 With MCP wired up, ask in plain language:
@@ -134,15 +155,25 @@ Point by point: [comparison](docs/comparison.md).
 Intraday (1m / 5m / ticks) is **off by default** — see
 [runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m).
 
-## Self-hosted daily lake
+## Keeping it current
+
+`asl run daily` runs every group for the day. Put it in crontab and that is the
+whole daily job:
 
 ```bash
-pip install ashare-lake
-asl config init --data-root /Users/you/ashare-lake   # Windows: D:/ashare-lake
-asl init          # directories + first backfill (impatient? --profile quick = last 3 years, full cross-section)
-asl run daily     # every trading day after that
-asl status
+# after the close on weekdays; non-trading days skip themselves
+30 16 * * 1-5  cd /path/to/lake && asl run daily >> logs/daily.log 2>&1
 ```
+
+```bash
+asl status          # per-dataset freshness: FRESH / STALE / EMPTY
+asl serve           # http://127.0.0.1:8787 — coverage, size, tiers
+asl sources         # health of the 14 upstream hosts
+asl retry <run_id>  # re-run only the failed batches
+```
+
+A step that fails does not take the run with it: it is recorded as a failed
+batch, everything else still lands, and `asl retry` picks up just those.
 
 ```python
 from ashare_lake.query import load
@@ -203,9 +234,12 @@ More: [architecture overview](docs/architecture/overview.md).
 ## FAQ
 
 **Q: How long does `asl init` take, and how much disk?**
-A full backfill is hours and multiple GB. `asl init --profile quick` fetches
-only the last three years — for the *full* cross-section. Filtering symbols
-instead builds survivorship bias into the lake.
+The default (last 3 years, whole market) is about an hour and GBs.
+`--profile full` (from 2001) measured roughly 3x that. Both fetch the *full*
+cross-section — filtering symbols instead builds survivorship bias into the
+lake. Going shallower than 3 years buys little: once the window is short the
+per-symbol round trip dominates, so 1 year and 3 years cost about the same
+while only one of them supports a multi-year factor window.
 
 **Q: Why store only back-adjusted factors?**
 Forward-adjusted prices move with "today". Disk stores hfq only; qfq is derived

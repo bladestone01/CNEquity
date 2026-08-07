@@ -129,9 +129,17 @@ def test_validate_config_accepts_capital_group(tmp_path):
     assert validate_config(cfg) == []
 
 
-def test_fflow_kline_url_is_formattable_string():
-    """Regression: _FFLOW_KLINE_URL must be a str (a stray comma made it a tuple)."""
+def test_northbound_reads_the_hsgt_report_not_an_index_fund_flow_kline():
+    """Regression: northbound must not be sourced from a fund-flow kline.
+
+    It used to read ``push2his /stock/fflow/kline/get?secid=1.000001`` and map
+    f52/f53 onto SH/SZ. Those fields are 上证指数's 主力净流入 and 小单净流入 —
+    two legs of a zero-sum decomposition, not two geographic channels — so the
+    column carried plausible-looking numbers that were never northbound at all.
+    """
     from ashare_lake.adapters.eastmoney import capital
 
-    assert isinstance(capital._FFLOW_KLINE_URL, str)
-    assert "lmt=5" in capital._FFLOW_KLINE_URL.format(limit=5)
+    assert capital._NORTH_FLOW_REPORT == "RPT_MUTUAL_DEAL_HISTORY"
+    assert capital._NORTHBOUND_CHANNELS == {"001": "SH", "003": "SZ"}
+    assert not hasattr(capital, "_FFLOW_KLINE_URL")
+    assert not hasattr(capital, "_KAMT_URL")
