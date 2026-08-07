@@ -8,17 +8,18 @@ from datetime import date
 import polars as pl
 
 from ashare_lake.adapters.eastmoney.capital import (
+    NORTHBOUND_HISTORY_START,
     fetch_block_trades,
     fetch_dragon_tiger,
     fetch_fund_flow,
     fetch_margin_trading,
-    fetch_northbound_flows,
+    fetch_northbound_flows_range,
     fetch_northbound_holdings,
 )
 from ashare_lake.config import Config
 from ashare_lake.orchestrator.registry import register_step
-from ashare_lake.steps.common import BACKFILL_START, list_trading_dates
-from ashare_lake.steps.http_common import run_incremental_fetched
+from ashare_lake.steps.common import BACKFILL_START, incremental_trade_dates, list_trading_dates
+from ashare_lake.steps.http_common import run_incremental_fetched, write_fetched
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +37,19 @@ def _run_capital_step(
 ) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
+
+    # Bind Config so EastMoneyClient uses [sources.eastmoney] shared pacing /
+    # proxy / timeout — bare clients only throttle at 1s in-process and trip EM
+    # WAF on first-run multi-page clist/datacenter sweeps (fund_flow, margin).
+    def _bound(d: date) -> pl.DataFrame:
+        return fetch_fn(d, config=config)
+
     return run_incremental_fetched(
         config,
         trade_date,
         run_id,
         dataset,
-        fetch_fn,
+        _bound,
         source="eastmoney",
         allow_empty=allow_empty,
     )
@@ -71,7 +79,35 @@ def step_northbound_holdings(config: Config, trade_date: date, run_id: str, cont
 
 @register_step("northbound_flows", group="capital")
 def step_northbound_flows(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    return _run_capital_step(config, trade_date, run_id, "northbound_flows", fetch_northbound_flows)
+    """Northbound flows over the whole outstanding window in one request.
+
+    Deliberately not on ``_run_capital_step``: that helper fetches one day at a
+    time, and this dataset's watermark is frozen at the last session the
+    exchanges published (see ``NORTHBOUND_LAST_PUBLISHED``). Per-day fetching
+    would therefore issue one more request every day, forever, all of them
+    returning nothing.
+    """
+    if not config.sources.get("eastmoney", True):
+        raise RuntimeError("northbound_flows: eastmoney source disabled in config")
+
+    if getattr(config, "_backfill", False):
+        start = getattr(config, "_backfill_start", None) or NORTHBOUND_HISTORY_START
+        end = getattr(config, "_backfill_end", None) or trade_date
+    else:
+        dates = incremental_trade_dates(config, "northbound_flows", trade_date)
+        if not dates:
+            return {"rows_read": 0, "rows_written": 0}
+        start, end = dates[0], dates[-1]
+
+    df = fetch_northbound_flows_range(start, end, config=config)
+    if df.is_empty():
+        # Expected for any window past the cutoff — not a fetch failure, and
+        # not something to zero-fill. The audit reports the frozen watermark.
+        logger.info(
+            "northbound_flows: no published rows in %s..%s", start.isoformat(), end.isoformat()
+        )
+        return {"rows_read": 0, "rows_written": 0}
+    return write_fetched(config, run_id, "northbound_flows", df, source="eastmoney")
 
 
 def _existing_margin_dates(config: Config) -> set[date]:

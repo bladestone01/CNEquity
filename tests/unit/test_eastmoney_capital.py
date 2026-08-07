@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import polars as pl
 
 from ashare_lake.adapters.eastmoney import capital as cap
+from ashare_lake.config import Config
 
 
 def test_channel_and_margin_symbol():
@@ -90,46 +91,102 @@ def test_fetch_northbound_holdings_and_flows(monkeypatch):
     assert hdf.height >= 1
     assert set(hdf["channel"].to_list()) == {"SH"}
 
-    monkeypatch.setattr(
-        cap,
-        "_northbound_kline_lines",
-        lambda client, **k: ["2025-01-02,100,200", "bad", "not-a-date,1,2"],
+
+def _mutual_row(mutual_type: str, day: str, net, buy=None, sell=None) -> dict:
+    return {
+        "MUTUAL_TYPE": mutual_type,
+        "TRADE_DATE": f"{day} 00:00:00",
+        "NET_DEAL_AMT": net,
+        "BUY_AMT": buy,
+        "SELL_AMT": sell,
+    }
+
+
+def _patch_mutual_report(monkeypatch, rows: list[dict]) -> None:
+    monkeypatch.setattr(cap, "fetch_datacenter", lambda *a, **k: rows)
+
+
+def _offline_client() -> SimpleNamespace:
+    return SimpleNamespace(
+        close=lambda: None,
+        get=lambda url, **k: (_ for _ in ()).throw(RuntimeError("offline")),
     )
-    fdf = cap.fetch_northbound_flows(date(2025, 1, 2), client=client)
-    assert fdf.height == 2
-    assert set(fdf["channel"].to_list()) == {"SH", "SZ"}
-
-    # kamt fallback when kline empty
-    class Resp:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "data": {
-                    "hk2sh": {"date2": "2025-01-03", "dayNetAmtIn": 1.5},
-                    "hk2sz": {"date2": "2025-01-03", "dayNetAmtIn": 2.0},
-                }
-            }
-
-    monkeypatch.setattr(cap, "_northbound_kline_lines", lambda client, **k: [])
-    client2 = SimpleNamespace(close=lambda: None, get=lambda url, **k: Resp())
-    kamt = cap.fetch_northbound_flows(date(2025, 1, 3), client=client2)
-    assert kamt.height == 2
-    assert kamt.filter(pl.col("channel") == "SH")["net_buy"][0] == 1.5 * 10_000
 
 
-def test_northbound_kline_retries_then_empty(monkeypatch):
-    calls = {"n": 0}
+def test_northbound_flows_keeps_only_northbound_legs_and_scales_to_yuan(monkeypatch):
+    # 002/004/006 are the southbound legs — same report, wrong direction.
+    _patch_mutual_report(
+        monkeypatch,
+        [
+            _mutual_row("001", "2024-08-16", -2568.22, 22080.14, 24648.36),
+            _mutual_row("003", "2024-08-16", -4206.77, 20561.17, 24767.94),
+            _mutual_row("005", "2024-08-16", -6774.99, 42641.31, 49416.30),
+            _mutual_row("002", "2024-08-16", 2820.59, 9200.12, 6379.53),
+        ],
+    )
+    df = cap.fetch_northbound_flows(date(2024, 8, 16), client=_offline_client())
+    assert df.height == 2
+    assert set(df["channel"].to_list()) == {"SH", "SZ"}
+    sh = df.filter(pl.col("channel") == "SH")
+    assert sh["net_buy"][0] == -2568.22 * 1_000_000
+    assert sh["buy_amount"][0] == 22080.14 * 1_000_000
+    assert sh["sell_amount"][0] == 24648.36 * 1_000_000
 
-    class BoomClient:
-        def get(self, url, **k):
-            calls["n"] += 1
-            raise RuntimeError("down")
 
-    monkeypatch.setattr(cap.time, "sleep", lambda s: None)
-    assert cap._northbound_kline_lines(BoomClient(), max_retries=2) == []
-    assert calls["n"] == 2
+def test_northbound_flows_drops_unpublished_days_instead_of_zero_filling(monkeypatch):
+    # From 2024-08-19 the exchanges stopped publishing; the column is null.
+    # A zero here would claim a flat session where no figure exists at all.
+    _patch_mutual_report(
+        monkeypatch,
+        [
+            _mutual_row("001", "2024-08-16", -2568.22, 22080.14, 24648.36),
+            _mutual_row("001", "2024-08-19", None, None, None),
+            _mutual_row("003", "2024-08-19", None, None, None),
+        ],
+    )
+    df = cap.fetch_northbound_flows_range(
+        date(2024, 8, 16), date(2024, 8, 19), client=_offline_client()
+    )
+    assert df["trade_date"].to_list() == [date(2024, 8, 16)]
+    assert 0.0 not in df["net_buy"].to_list()
+
+
+def test_northbound_flows_windows_client_side(monkeypatch):
+    # The report rejects range predicates on TRADE_DATE, so the whole series
+    # comes back and the window is applied here.
+    _patch_mutual_report(
+        monkeypatch,
+        [
+            _mutual_row("001", "2024-08-13", -862.15, 21148.25, 22010.40),
+            _mutual_row("001", "2024-08-14", -3060.70, 18531.00, 21591.70),
+            _mutual_row("001", "2024-08-15", 8865.01, 31345.92, 22480.91),
+        ],
+    )
+    df = cap.fetch_northbound_flows_range(
+        date(2024, 8, 14), date(2024, 8, 14), client=_offline_client()
+    )
+    assert df["trade_date"].to_list() == [date(2024, 8, 14)]
+
+
+def test_northbound_flows_tolerates_unparseable_trade_date(monkeypatch):
+    _patch_mutual_report(
+        monkeypatch,
+        [
+            {"MUTUAL_TYPE": "001", "TRADE_DATE": "not-a-date", "NET_DEAL_AMT": 1.0},
+            {"MUTUAL_TYPE": "001", "TRADE_DATE": None, "NET_DEAL_AMT": 1.0},
+            _mutual_row("001", "2024-08-16", 1.0, 2.0, 1.0),
+        ],
+    )
+    df = cap.fetch_northbound_flows(date(2024, 8, 16), client=_offline_client())
+    assert df.height == 1
+
+
+def test_em_datetime_to_date():
+    assert cap._em_datetime_to_date("2024-08-16 00:00:00") == date(2024, 8, 16)
+    assert cap._em_datetime_to_date("2024-08-16") == date(2024, 8, 16)
+    assert cap._em_datetime_to_date("not-a-date") is None
+    assert cap._em_datetime_to_date("") is None
+    assert cap._em_datetime_to_date(None) is None
 
 
 def test_fetch_dragon_tiger_and_block_trades(monkeypatch):
@@ -167,3 +224,25 @@ def test_fetch_dragon_tiger_and_block_trades(monkeypatch):
     bdf = cap.fetch_block_trades(date(2025, 1, 2), client=client)
     assert bdf.height == 1
     assert bdf["symbol"][0] == "000001.SZ"
+
+
+def test_fetch_fund_flow_and_margin_pass_config_to_client(monkeypatch, tmp_path):
+    """Daily capital must not build a bare EastMoneyClient (1s in-process only)."""
+    cfg = Config(data_root=tmp_path / "data")
+    seen: list[object] = []
+
+    class FakeClient:
+        def __init__(self, *args, config=None, **kwargs):
+            seen.append(config)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(cap, "EastMoneyClient", FakeClient)
+    monkeypatch.setattr(cap, "fetch_clist_pages", lambda client, fields: [])
+    monkeypatch.setattr(cap, "fetch_datacenter", lambda *a, **k: [])
+
+    cap.fetch_fund_flow(date(2025, 1, 2), config=cfg)
+    cap.fetch_margin_trading(date(2025, 1, 2), config=cfg)
+
+    assert seen == [cfg, cfg]
