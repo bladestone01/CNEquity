@@ -89,8 +89,17 @@ def test_default_init_is_the_shallow_window(tmp_path, monkeypatch):
     the per-symbol round trip dominating once the window is short) and costs
     the multi-year windows factor work needs, so `quick` is the floor, not 1y.
     """
+    # Derived, not hardcoded: a bare `asl init` anchors on today, so a literal
+    # date here passes only on the day it was written and fails at the next
+    # midnight for reasons that have nothing to do with the behaviour under test.
+    today = date.today()
+    try:
+        expected = today.replace(year=today.year - QUICK_PROFILE_YEARS)
+    except ValueError:  # Feb 29 — same fallback the CLI uses
+        expected = date(today.year - QUICK_PROFILE_YEARS, 3, 1)
+
     start, output = _capture_backfill_start(tmp_path, monkeypatch, [])
-    assert start == date(2023, 8, 8)
+    assert start == expected
     assert "History window" in output
     assert "asl backfill daily_bars" in output, "must say how to deepen"
 
