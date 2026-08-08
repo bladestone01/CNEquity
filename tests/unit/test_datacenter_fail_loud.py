@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 
 from ashare_lake.adapters.eastmoney.datacenter import (
@@ -128,3 +130,56 @@ def test_fetch_datacenter_clamps_page_size_to_500():
     fetch_datacenter(CapClient(), "RPT_TEST", "COL", page_size=5000, max_retries=1)
     assert "pageSize=500" in captured["url"]
     assert "pageSize=5000" not in captured["url"]
+
+
+# --- throttling is not a schema break ---------------------------------------
+# The datacenter reports "服务器繁忙" the same way it reports a broken schema:
+# success=false with a message. Without singling it out, a busy server surfaced
+# as "rejected schema" — and was raised outside the retry loop, so it was never
+# retried. Hit while sweeping the F10 shareholder reports (~110 pages each).
+
+
+def test_server_busy_is_retried_then_reported_as_throttling():
+    import pytest
+
+    from ashare_lake.adapters.eastmoney.datacenter import (
+        EastMoneyDatacenterError,
+        fetch_datacenter,
+    )
+
+    calls = {"n": 0}
+
+    class _Busy:
+        def get(self, url):
+            calls["n"] += 1
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"success": False, "message": "服务器繁忙", "code": 9701}
+            return resp
+
+    with pytest.raises(EastMoneyDatacenterError, match="throttling, not a schema break"):
+        fetch_datacenter(_Busy(), "RPT_X", "a", max_retries=3, retry_backoff_seconds=0)
+    assert calls["n"] == 3, "a busy server must be retried, not failed on contact"
+
+
+def test_a_real_schema_break_still_fails_immediately():
+    import pytest
+
+    from ashare_lake.adapters.eastmoney.datacenter import (
+        EastMoneyDatacenterError,
+        fetch_datacenter,
+    )
+
+    calls = {"n": 0}
+
+    class _Broken:
+        def get(self, url):
+            calls["n"] += 1
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"success": False, "message": "XX列不存在", "code": 9501}
+            return resp
+
+    with pytest.raises(EastMoneyDatacenterError, match="rejected schema"):
+        fetch_datacenter(_Broken(), "RPT_X", "a", max_retries=3, retry_backoff_seconds=0)
+    assert calls["n"] == 1, "a schema break will not fix itself; do not burn the budget"

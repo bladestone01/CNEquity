@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 _EMPTY_RESULT_MESSAGES = frozenset({"返回数据为空"})
 
+# The server refusing *this moment*, not the request. Reported the same way a
+# broken schema is — success=false with a message — so without singling it out
+# a busy server surfaced as "rejected schema" and, worse, was raised outside
+# the retry loop and never retried. Hit while sweeping the F10 shareholder
+# reports, which are the heaviest datacenter consumers here (~110 pages each).
+_BUSY_MESSAGES = ("服务器繁忙", "系统繁忙", "请求过于频繁")
+
 # EastMoney datacenter caps pageSize at 500; requesting more returns only 500
 # rows and — because the short page looks like the last one — silently
 # truncates every high-volume report. Clamp so pagination stays correct.
@@ -26,6 +33,14 @@ class EastMoneyDatacenterError(RuntimeError):
 
 class _TransientEmptyPage(Exception):
     """Empty response on a page the first page's `pages` field says must exist."""
+
+
+class _ServerBusy(Exception):
+    """Datacenter said it was busy — retry, do not report a schema break."""
+
+
+def _is_busy(message: str) -> bool:
+    return any(token in message for token in _BUSY_MESSAGES)
 
 
 def fetch_datacenter(
@@ -77,13 +92,16 @@ def fetch_datacenter(
                 resp = client.get(url)
                 resp.raise_for_status()
                 payload = resp.json()
-                if (
-                    payload.get("success") is False
-                    and str(payload.get("message") or "") in _EMPTY_RESULT_MESSAGES
-                    and expected_pages is not None
-                    and page <= expected_pages
-                ):
-                    raise _TransientEmptyPage(f"empty response on page {page}/{expected_pages}")
+                if payload.get("success") is False:
+                    message = str(payload.get("message") or "")
+                    if _is_busy(message):
+                        raise _ServerBusy(f"{message} on page {page}")
+                    if (
+                        message in _EMPTY_RESULT_MESSAGES
+                        and expected_pages is not None
+                        and page <= expected_pages
+                    ):
+                        raise _TransientEmptyPage(f"empty response on page {page}/{expected_pages}")
                 last_exc = None
                 break
             except Exception as exc:
@@ -97,6 +115,12 @@ def fetch_datacenter(
                 if attempt + 1 < max_retries:
                     time.sleep(retry_backoff_seconds * (attempt + 1))
         if last_exc is not None:
+            if isinstance(last_exc, _ServerBusy):
+                raise EastMoneyDatacenterError(
+                    f"EastMoney datacenter {report} still busy after {max_retries} attempts "
+                    f"({last_exc}); this is throttling, not a schema break — retry later or "
+                    "raise [sources.eastmoney].min_interval_seconds"
+                ) from last_exc
             if isinstance(last_exc, _TransientEmptyPage):
                 raise EastMoneyDatacenterError(
                     f"EastMoney datacenter {report} truncated: {last_exc} persisted after "
