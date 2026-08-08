@@ -6,3 +6,6 @@ contact_links:
   - name: 文档与定位
     url: https://github.com/rootSunc/ashare-lake/blob/main/docs/comparison.md
     about: 提功能前先看与 akshare / Tushare / Baostock 的差异
+  - name: 使用帮助与想法
+    url: https://github.com/rootSunc/ashare-lake/discussions
+    about: 适合开放式问题、使用经验和还没有明确实现范围的想法

@@ -57,7 +57,9 @@ asl init --config configs/ashare-lake.toml
 
 1. 创建 `{data.root}` 下 staging / curated / derived / meta / duckdb 目录  
 2. 初始化 `meta/manifest.db`（SQLite WAL）与 DuckDB 视图  
-3. 按 `[job.init.phases]` 执行分阶段全量回填（默认自 2016 年起）
+3. 按 `[job.init.phases]` 执行分阶段全量回填（默认最近 3 年、全市场标的）
+
+需要从 2016 年起的完整初始化时，使用 `asl init --profile full`；也可以先用默认窗口建湖，再按需回填。
 
 **仅建目录、不跑回填：**
 

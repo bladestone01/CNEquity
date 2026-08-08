@@ -1,5 +1,5 @@
 <h1 align="center">ASL · ashare-lake</h1>
-<p align="center"><b>A local, daily-refreshable A-share research lake</b></p>
+<p align="center"><b>A free, self-hosted historical data layer for A-shares</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -11,15 +11,38 @@
 
 <p align="center">
   <b>Stop re-fetching and hand-rolling adjust factors.</b>
-  One command drops a daily-refreshable A-share research lake onto your machine.<br>
-  Fetch tools give you now; a lake gives you history.
+  One command drops a daily-refreshable research data layer onto your machine.<br>
+  Keep historical semantics for Python, DuckDB, Polars, and AI agents.
 </p>
 
 <p align="center">
-  <b>39 datasets · 9 categories</b> · <b>daily bars back to ~2001</b> ·
-  <b>6 MCP tools</b> · <b>row-level provenance</b> ·
-  <b>no tokens / no credits / no signup</b>
+  <b>39 datasets · 9 categories</b> · <b>adjustment / historical universes / PIT</b> ·
+  <b>6 MCP tools</b> · <b>row-level provenance</b>
 </p>
+
+## Data in ~30 seconds
+
+```bash
+pip install ashare-lake    # no token, credit, or signup
+asl demo                   # real data: 5 names × 30 sessions
+```
+
+Measured at about 25 seconds. Needs **TDX quote hosts** reachable (mainland access is more reliable);
+if it fails, try `asl sources --only tdx_protocol`. The demo writes to its own
+`data/ashare-lake-demo/` directory and never touches a full lake.
+
+<p align="center">
+  <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
+</p>
+
+```python
+from ashare_lake.query import load
+
+bars = load("daily_bars", data_root="data/ashare-lake-demo")
+```
+
+If you only need a current quote, a fetch API may be enough. Build a lake when you need reproducible history,
+survivorship-safe universes, or point-in-time research.
 
 ## Why a lake
 
@@ -41,26 +64,6 @@ dataset on a coverage list.
 python scripts/survivorship_gap.py --svg docs/assets/survivorship-gap.svg
 ```
 
-## Data in ~30 seconds
-
-```bash
-pip install ashare-lake    # no source needs signup, tokens, or credits
-asl demo                   # 5 names × 30 sessions, real daily bars
-```
-
-25 seconds, measured. Needs **TDX quote hosts** reachable (direct from the
-mainland). If down: `asl sources --only tdx_protocol`.
-
-<p align="center">
-  <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
-</p>
-
-```python
-from ashare_lake.query import load
-
-bars = load("daily_bars", data_root="data/ashare-lake-demo")
-```
-
 ## Your own lake, in four commands
 
 ```bash
@@ -70,7 +73,7 @@ asl init                   # every symbol × the last 3 years (~1 hour)
 asl run daily              # this one line, each trading day after
 ```
 
-`asl init` defaults to **shallow, never narrow**: fewer years, every symbol.
+`asl init` defaults to **shallow, never narrow**: the last 3 years, every symbol.
 Trimming symbols instead would build the survivorship bias this lake exists to
 avoid straight into it, whereas shallow is honest — `coverage_start` records it.
 Want everything: `asl init --profile full` (~3x the time). Deepen any time:
@@ -271,7 +274,7 @@ More: [troubleshooting](docs/operations/troubleshooting.md) ·
 
 ## Project status and docs
 
-Personal project: issues and PRs welcome, responses best-effort.
+Personal project: issues and PRs welcome, responses best-effort. See the current [ROADMAP](ROADMAP.md).
 [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) ·
 [CHANGELOG](CHANGELOG.md).
 

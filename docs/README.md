@@ -8,6 +8,8 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install ashare-lake`
 
 定位与合规（开源读者可先看）：[与同类项目差异](comparison.md) · [许可与数据合规](legal-and-data-sources.md)。
 
+产品边界与近期方向：[ROADMAP](../ROADMAP.md)。
+
 面向使用者的文档以中文为准；[CHANGELOG](../CHANGELOG.md) 与 [ADR](adr/) 保持英文。英文简介见 [README.en.md](../README.en.md)。
 
 ### 术语约定

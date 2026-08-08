@@ -1,5 +1,5 @@
 <h1 align="center">ASL · ashare-lake</h1>
-<p align="center"><b>本地可日更的 A 股研究湖</b></p>
+<p align="center"><b>免费、零注册、自托管的 A 股历史数据层</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -10,13 +10,36 @@
 </p>
 
 <p align="center">
-  <b>别再每次重拉、自己拼复权了。</b> 一行命令，把能日更的 A 股研究湖落到本地。<br>
-  取数工具给你现在，湖给你历史。
+  <b>别再每次重拉、自己拼复权了。</b> 一条命令，把可日更的研究数据落到本地。<br>
+  自动保存历史口径，供 Python、DuckDB、Polars 和 AI agent 使用。
 </p>
 
 <p align="center">
-  <b>39 个数据集 · 9 大类</b> · <b>日线回溯至各股上市日</b> · <b>6 个 MCP 工具</b> · <b>行级溯源</b> · <b>零 token / 零积分 / 零注册</b>
+  <b>39 个数据集 · 9 大类</b> · <b>复权 / 历史股票池 / PIT</b> · <b>6 个 MCP 工具</b> · <b>行级溯源</b>
 </p>
+
+## 30 秒拿到真数
+
+```bash
+pip install ashare-lake    # 不需要 token、积分或注册
+asl demo                   # 真实数据：5 只票 × 30 个交易日
+```
+
+实测约 25 秒。需要能访问 **TDX 行情主机**（大陆直连更稳）；不通先运行
+`asl sources --only tdx_protocol`。demo 会写入独立的
+`data/ashare-lake-demo/`，不会覆盖全量湖。
+
+<p align="center">
+  <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
+</p>
+
+```python
+from ashare_lake.query import load
+
+bars = load("daily_bars", data_root="data/ashare-lake-demo")
+```
+
+如果你只需要现价，取数接口就够了；如果你需要复查历史、避免幸存者偏差或做 PIT 研究，继续建湖。
 
 ## 为什么要一个湖
 
@@ -32,25 +55,6 @@
 python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.zh.svg
 ```
 
-## 30 秒拿到真数
-
-```bash
-pip install ashare-lake    # 所有数据源都不要注册、token、积分
-asl demo                   # 5 只票 × 30 个交易日，真实日线
-```
-
-实测 25 秒。需能访问 **TDX 行情主机**（大陆直连即可）。不通先 `asl sources --only tdx_protocol`。
-
-<p align="center">
-  <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
-</p>
-
-```python
-from ashare_lake.query import load
-
-bars = load("daily_bars", data_root="data/ashare-lake-demo")
-```
-
 ## 建你自己的湖：四条命令
 
 ```bash
@@ -60,7 +64,7 @@ asl init                   # 全市场标的 × 最近 3 年（约 1 小时）
 asl run daily              # 之后每个交易日跑这一条
 ```
 
-`asl init` 默认**浅而不窄**：年限少，标的一个不缺。按标的裁剪会把幸存者偏差直接建进湖里，
+`asl init` 默认**浅而不窄**：最近 3 年，标的一个不缺。按标的裁剪会把幸存者偏差直接建进湖里，
 而浅是诚实的——`coverage_start` 会如实记录。想要全量历史：`asl init --profile full`（约 3 倍时间），
 或随时加深：
 
@@ -305,7 +309,8 @@ asl backfill daily_bars --start 2001-01-01     # 或事后加深
 
 ## 项目状态与文档
 
-个人项目：issue / PR 欢迎，响应尽力而为。[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) · [CHANGELOG](CHANGELOG.md)。
+个人项目：issue / PR 欢迎，响应尽力而为。当前路线见 [ROADMAP](ROADMAP.md)。
+[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) · [CHANGELOG](CHANGELOG.md)。
 
 完整索引：[docs/README.md](docs/README.md)。常用：[MCP](docs/reference/mcp.md) · [安装](docs/getting-started/installation.md) · [数据集目录](docs/datasets/catalog.md) · [CLI](docs/reference/cli.md)。
 
