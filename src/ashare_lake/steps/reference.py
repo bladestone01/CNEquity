@@ -168,18 +168,31 @@ def _merge_delisted_instruments(config: Config, df: pl.DataFrame) -> pl.DataFram
 
 
 def _earliest_bar_date(config: Config) -> date | None:
-    """First date daily_bars carries — the calendar has to reach at least that
-    far back or every window over the deep history resolves to zero sessions."""
+    """First date any bar dataset carries — the calendar has to reach at least
+    that far back or every window over the deep history resolves to zero
+    sessions.
+
+    Both datasets, matching ``_trading_days_from_bars`` in the calendar adapter.
+    Reading only daily_bars pinned the calendar's start to 2001 while index_bars
+    reached 1990-12-19, so 2,538 index_bars dates sat before the calendar
+    existed and the audit reported them as bars on non-trading days — a warning
+    about the calendar being short, dressed as a warning about the data.
+    """
     import polars as pl
 
-    root = config.curated_root / "daily_bars"
-    if not root.exists():
-        return None
-    files = list(root.glob("**/*.parquet"))
-    if not files:
-        return None
-    frames = [pl.read_parquet(f, columns=["trade_date"]) for f in files]
-    return pl.concat(frames, how="diagonal_relaxed")["trade_date"].min()
+    earliest: date | None = None
+    for dataset in ("index_bars", "daily_bars"):
+        root = config.curated_root / dataset
+        if not root.exists():
+            continue
+        files = list(root.glob("**/*.parquet"))
+        if not files:
+            continue
+        frames = [pl.read_parquet(f, columns=["trade_date"]) for f in files]
+        first = pl.concat(frames, how="diagonal_relaxed")["trade_date"].min()
+        if first is not None and (earliest is None or first < earliest):
+            earliest = first
+    return earliest
 
 
 @register_step("trading_calendar", group="core")

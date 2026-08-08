@@ -134,6 +134,55 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
     return findings
 
 
+def trading_calendar_horizon_findings(config: Config, trade_date: date) -> list[dict]:
+    """Warn before the calendar starts guessing holidays.
+
+    ``trading_calendar`` is written a year ahead of every run. Inside the
+    bundled holiday table that is real; past its last date the fallback only
+    strips weekends, so 春节 and 国庆 come back marked as sessions — silently,
+    and a year of "trading days" that are not would land in every window,
+    watermark and backtest built on them.
+
+    Verified against the current table (ends 2027-10-07): asking for 2028-01-26,
+    the first day of that 春节, returns is_trading=True.
+    """
+    from ashare_lake.adapters.calendar.holidays_cn import CLOSED_DATES
+
+    cal_root = config.curated_root / "trading_calendar"
+    if not dataset_has_parquet(cal_root) or not CLOSED_DATES:
+        return []
+    table_end = date.fromisoformat(max(CLOSED_DATES))
+
+    written = (
+        scan_parquet_root(cal_root)
+        .filter(pl.col("is_trading"))
+        .select(pl.col("trade_date").max().alias("last"))
+        .collect()
+    )
+    if written.is_empty() or written["last"][0] is None:
+        return []
+    last_written = written["last"][0]
+
+    if last_written <= table_end:
+        return []
+    return [
+        {
+            "dataset": "trading_calendar",
+            "severity": "warning",
+            "check": "trading_calendar_beyond_holiday_table",
+            "message": (
+                f"calendar marks trading days through {last_written.isoformat()} but the "
+                f"bundled holiday table ends {table_end.isoformat()}; dates past it only "
+                "drop weekends, so public holidays are marked as sessions — refresh "
+                "adapters/calendar/holidays_cn.py and the seed CSV"
+            ),
+            "calendar_last_trading_day": last_written.isoformat(),
+            "holiday_table_end": table_end.isoformat(),
+            "days_beyond": (last_written - table_end).days,
+        }
+    ]
+
+
 def valuation_day_coverage_ratio(config: Config, trade_date: date) -> float | None:
     """``|valuation ∩ bars| / |bars|`` on *trade_date*, or None if either side empty."""
     val_root = config.curated_root / "valuation_metrics"

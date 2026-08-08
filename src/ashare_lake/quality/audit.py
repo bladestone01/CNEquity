@@ -19,6 +19,7 @@ from ashare_lake.quality.cross_checks import (
     daily_bars_calendar_findings,
     daily_bars_close_crosscheck_findings,
     st_label_crosscheck_findings,
+    trading_calendar_horizon_findings,
     universe_survivorship_findings,
     valuation_bars_coverage_findings,
 )
@@ -221,6 +222,7 @@ def _collect_lake_findings(
 
     findings.extend(_index_bars_coverage_findings(config, trade_date))
     findings.extend(daily_bars_calendar_findings(config, trade_date))
+    findings.extend(trading_calendar_horizon_findings(config, trade_date))
     findings.extend(daily_bars_volume_unit_findings(config, trade_date))
     # No-ops on a lake that never enabled intraday capture.
     findings.extend(minute_bars_findings(config, trade_date))
