@@ -119,6 +119,9 @@
 | 频率 | compact 之后每日 |
 | 主键 | (symbol, trade_date, adjust_type) |
 | 说明 | 外部累计因子对齐 daily_bars；`adj_close = close * factor` |
+| **已知缺口** | **新浪因子序列基本不覆盖北交所**。实测本湖 6128 只股票中 260 只完全没有因子（252 只 BJ、5 只 SH、3 只 SZ）。`daily_bars` 走 TDX，覆盖北交所；两边因此不对齐 |
+| **查询侧后果** | `load(adjust="hfq")` 默认 `strict_adj=False`，缺因子的行按 `factor=1.0` 返回，即**未复权价出现在复权结果里**，只由 `adj_is_exact=False` 标记。实测一年窗口 + `universe="all_a"`：10,480 行（0.77%）如此，其中 10,461 行 `close>0` 是真实价格，10,460 行是北交所 |
+| **怎么办** | 只做沪深：`universe="all_a"` 之后再按 `adj_is_exact` 过滤；要严格失败而不是静默降级：`load(..., strict_adj=True)` |
 
 ---
 
