@@ -36,6 +36,15 @@ const esc = (s) =>
 
 const kpi = (n, label) => `<div class="kpi"><div class="n">${n}</div><div class="l">${label}</div></div>`;
 
+// storage/stats.py emits exactly two of these; anything else falls through
+// unchanged rather than being silently mistranslated.
+function statsReason(reason) {
+  if (!reason) return "原因未知";
+  if (reason.includes("landed after the stats were built")) return "有新的采集批次晚于度量表";
+  if (reason.includes("no stats yet")) return "尚未生成过度量表";
+  return reason;
+}
+
 async function renderOverview() {
   const [h, tiers, datasets, hm] = await Promise.all([
     api("/api/health"),
@@ -45,7 +54,11 @@ async function renderOverview() {
   ]);
   const sev = h.findings_by_severity || {};
   const notes = [];
-  if (h.stats_stale) notes.push(`度量表过期（${esc(h.stats_reason)}）——已在后台重建，稍后刷新。`);
+  // The reason strings come from the ingestion layer and are English, with a
+  // run UUID in them. Fine in a log, wrong in the banner of a Chinese page —
+  // the id is not something the reader can act on. Translate the ones that can
+  // actually appear, keep the original as a tooltip for anyone debugging.
+  if (h.stats_stale) notes.push(`度量表过期（${esc(statsReason(h.stats_reason))}）——已在后台重建，稍后刷新。`);
   if (h.stale_datasets.length) {
     notes.push(
       `STALE：${h.stale_datasets.map((d) => `<code class="ds-link" data-ds="${esc(d)}">${esc(d)}</code>`).join(" ")}`,

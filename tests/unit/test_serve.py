@@ -657,3 +657,36 @@ def test_quality_run_returns_findings_and_diffs_together(lake):
     assert len(detail["diffs"]) == 2
     assert detail["trade_date"] == "2026-07-31"
     assert client.get("/api/quality/runs/nope").status_code == 404
+
+
+def test_heatmap_cell_coverage_is_exact_at_the_interval_edges(client, lake):
+    """Guards the bisect rewrite of the cell loop.
+
+    The original tested every trading day against every partition interval —
+    O(datasets × intervals × days), and a day-partitioned dataset contributes
+    one interval per session. On a real lake (daily_bars ~6,200 partitions) the
+    endpoint took 0.1s at days=60 and 24-67s at days=250, which is the whole
+    first paint of the dashboard, blank, with no loading state. Binary search
+    made it 0.02s at the 750-day maximum. Cells must be identical.
+    """
+    body = client.get("/api/heatmap", params={"days": 30}).json()
+    days = body["days"]
+    rows = {r["dataset"]: r for r in body["rows"]}
+    covered_char = next(c for c, label in body["legend"].items() if label == "covered")
+
+    row = rows["daily_bars"]
+    assert len(row["cells"]) == len(days)
+    # Recompute independently from the partition spans and compare char for char.
+    from ashare_lake.storage.stats import load_partition_stats
+
+    stats = load_partition_stats(lake)
+    spans = [
+        (r["period_start"], r["period_end"])
+        for r in stats.iter_rows(named=True)
+        if r["dataset"] == "daily_bars" and r["period_start"] and r["period_end"]
+    ]
+    # The API serialises days as ISO strings; partition spans are date objects.
+    parsed = [date.fromisoformat(d) if isinstance(d, str) else d for d in days]
+    expected = {i for i, d in enumerate(parsed) for s, e in spans if s <= d <= e}
+    actual = {i for i, c in enumerate(row["cells"]) if c == covered_char}
+    assert actual == expected

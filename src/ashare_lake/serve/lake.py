@@ -24,6 +24,7 @@ import json
 import logging
 import threading
 import time
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -937,14 +938,24 @@ class LakeView:
                 cells = CELL_OUTSIDE * len(trading_days)
             else:
                 first, last = intervals[0][0], max(end for _, end in intervals)
-                covered = set()
+                # Binary-search each interval into the sorted day list instead of
+                # testing every day against every interval. That inner scan was
+                # O(datasets × intervals × days), and a day-partitioned dataset
+                # brings one interval per session: daily_bars alone put ~6,200
+                # intervals against 250 days. Measured on this lake, the endpoint
+                # took 0.1s at days=60 and 24-67s at days=250 — the dashboard's
+                # whole first paint waits on it.
+                covered_flags = bytearray(len(trading_days))
                 for start, end in intervals:
-                    covered.update(d for d in trading_days if start <= d <= end)
+                    lo = bisect_left(trading_days, start)
+                    hi = bisect_right(trading_days, end)
+                    for i in range(lo, hi):
+                        covered_flags[i] = 1
                 cells = "".join(
                     CELL_COVERED
-                    if day in covered
+                    if covered_flags[i]
                     else (CELL_GAP if first <= day <= last else CELL_OUTSIDE)
-                    for day in trading_days
+                    for i, day in enumerate(trading_days)
                 )
             rows.append(
                 {
