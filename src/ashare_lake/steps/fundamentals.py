@@ -284,20 +284,32 @@ def _run_shareholder_step(
     dataset: str,
     fetch_fn,
 ) -> dict:
-    import polars as pl
-
     if not config.sources.get("eastmoney", True):
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
 
-    frames = []
-    for period in _shareholder_periods(config, trade_date):
+    rows_read = 0
+    rows_written = 0
+    periods = _shareholder_periods(config, trade_date)
+    for period in periods:
         part = fetch_fn(period, config=config)
-        if not part.is_empty():
-            frames.append(part)
-    if not frames:
-        return {"rows_read": 0, "rows_written": 0}
-    df = pl.concat(frames, how="diagonal_relaxed")
-    return write_fetched(config, run_id, dataset, df, source="eastmoney")
+        if part.is_empty():
+            continue
+        # Write each period as it lands rather than concatenating the walk: a
+        # full top_holders backfill is ~110k rows per quarter across ~40
+        # quarters, and holding all of it costs both memory and everything
+        # fetched so far if the run is killed. Unique batch id per period —
+        # write_simple's default batch-0 would overwrite the previous one.
+        chunk = write_fetched(
+            config,
+            run_id,
+            dataset,
+            part,
+            source="eastmoney",
+            batch_id=f"batch-{period.isoformat()}",
+        )
+        rows_read += int(chunk.get("rows_read", 0))
+        rows_written += int(chunk.get("rows_written", 0))
+    return {"rows_read": rows_read, "rows_written": rows_written, "periods": len(periods)}
 
 
 @register_step("share_structure", group="fundamentals", depends_on=["instruments"])
