@@ -32,6 +32,11 @@ FAIL_RATIO_THRESHOLD = 0.05
 # return divergence.
 MAX_FACTOR_STEP_RATIO = 20.0
 
+# Symbols whose missing history one incremental run will realign. A daily run
+# normally finds none; this bounds the first run after a deep `asl backfill
+# daily_bars`, which would otherwise realign the whole market in one go.
+UNCOVERED_REFRESH_LIMIT = 500
+
 _EMPTY_BAR_DATES = pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 _ADJ_PK = ["symbol", "trade_date", "adjust_type"]
 
@@ -220,6 +225,75 @@ def _new_listing_symbols_on(config: Config, trade_date: date) -> set[str]:
         return set()
     listed = df.filter(pl.col("list_date") == trade_date)
     return set(listed["symbol"].unique().to_list())
+
+
+def _uncovered_symbols(config: Config) -> set[str]:
+    """Symbols with bars the factor table does not reach.
+
+    The derive is append-only from its watermark, which handles new sessions and
+    misses everything else. `asl backfill daily_bars` adds *old* dates, and old
+    dates are behind the watermark by definition, so the history it lands never
+    gets a factor — silently, because `load(adjust=…)` fills factor=1.0 and only
+    marks `adj_is_exact`. Measured on a real lake: 260 stocks with no factor at
+    all and ~220k unadjusted bar rows, which read as "Sina does not cover
+    北交所" until a targeted re-derive filled three of them going back to 2016.
+
+    Compared per symbol rather than per row: a (symbol, trade_date) anti-join
+    against a 338M-row daily_bars on every run would cost more than the derive.
+    Min/max per symbol catches both a symbol with no factors and one whose
+    coverage stops short, and a refreshed symbol realigns its whole history
+    anyway.
+    """
+    from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+
+    bars_root = config.curated_root / "daily_bars"
+    if not dataset_has_parquet(bars_root):
+        return set()
+    bar_span = (
+        scan_parquet_root(bars_root)
+        .group_by("symbol")
+        .agg(
+            pl.col("trade_date").min().alias("bar_first"),
+            pl.col("trade_date").max().alias("bar_last"),
+        )
+        .collect()
+    )
+    if bar_span.is_empty():
+        return set()
+
+    fac_root = config.derived_root / "adj_factors"
+    if not dataset_has_parquet(fac_root):
+        return set(bar_span["symbol"].to_list())
+    fac_span = (
+        scan_parquet_root(fac_root)
+        .group_by("symbol")
+        .agg(
+            pl.col("trade_date").min().alias("fac_first"),
+            pl.col("trade_date").max().alias("fac_last"),
+        )
+        .collect()
+    )
+    # Only the *backward* direction. `fac_last < bar_last` is true on every
+    # ordinary run — today's bar lands before its factor is derived — so
+    # including it would force a full-history realign of the entire market
+    # daily. New sessions are precisely what the incremental path is for.
+    joined = bar_span.join(fac_span, on="symbol", how="left")
+    uncovered = joined.filter(
+        pl.col("fac_first").is_null() | (pl.col("fac_first") > pl.col("bar_first"))
+    )
+    # Only stocks. ETFs and LOFs have no hfq factor series to fetch — 91 of the
+    # 103 names left after the first self-heal run were ETFs, and without this
+    # they would be re-fetched on every run forever. CDRs go for the same
+    # reason: the task loop already drops them, so they can never be covered.
+    candidates = {s for s in uncovered["symbol"].to_list() if not _is_cdr(s)}
+    inst_root = config.curated_root / "instruments"
+    if dataset_has_parquet(inst_root):
+        instruments = scan_parquet_root(inst_root).collect()
+        if "asset_type" in instruments.columns:
+            stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
+            if stocks:
+                candidates &= stocks
+    return candidates
 
 
 def _event_refresh_symbols(config: Config, trade_date: date) -> set[str]:
@@ -432,6 +506,26 @@ def compute_adj_factors(
     refresh_set = set(refresh_symbols or [])
     if isinstance(latest_bar_date, date):
         refresh_set |= _event_refresh_symbols(config, latest_bar_date)
+    if not full and watermark is not None:
+        # Self-heal history the append-only path cannot see — see
+        # `_uncovered_symbols`. Only meaningful when that path is in play:
+        # `full`, and a lake with no watermark at all, already load every date,
+        # and forcing a refresh there would only bypass a valid factor cache.
+        uncovered = sorted(_uncovered_symbols(config) - refresh_set)
+        if uncovered:
+            # Capped so a lake that has never derived does not turn one daily run
+            # into a full-market sweep; the remainder is picked up next run, and
+            # a name Sina genuinely cannot serve lands in `failed` rather than
+            # being retried without limit.
+            batch = uncovered[:UNCOVERED_REFRESH_LIMIT]
+            logger.info(
+                "adj_factors: %d symbol(s) have bars the factor table does not reach; "
+                "realigning %d this run (e.g. %s)",
+                len(uncovered),
+                len(batch),
+                batch[:5],
+            )
+            refresh_set |= set(batch)
 
     bars = _bars_for_derive(config, watermark=watermark, refresh_set=refresh_set, full=full)
     if bars.is_empty():

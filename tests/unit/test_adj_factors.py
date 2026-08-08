@@ -221,6 +221,19 @@ def _write_factor_cache(cfg, symbol: str, trade_date: date, factor: float = 0.5)
     pl.DataFrame({"trade_date": [trade_date], "factor": [factor]}).write_parquet(path)
 
 
+def _write_adj_partition(cfg, symbol: str, trade_date: date, factor: float = 0.5) -> None:
+    part = cfg.derived_root / "adj_factors" / f"trade_date={trade_date.isoformat()}"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": [symbol],
+            "trade_date": [trade_date],
+            "adjust_type": ["hfq"],
+            "factor": [factor],
+        }
+    ).write_parquet(part / f"{symbol.replace('.', '_')}.parquet")
+
+
 def test_compute_adj_factors_skips_cdr(adj_config, monkeypatch):
     _write_bar(adj_config, "689009.SH", date(2024, 6, 28))
     calls: list[str] = []
@@ -436,3 +449,45 @@ def test_compute_adj_factors_fails_over_threshold(adj_config, monkeypatch):
 
     with pytest.raises(AdjFactorsDeriveError, match="adj_factors"):
         step_derive_adj_factors(adj_config, date(2024, 6, 28), "run-adj", {})
+
+
+# --- self-healing history ----------------------------------------------------
+# The derive is append-only from its watermark, so `asl backfill daily_bars`
+# lands history *behind* the watermark and never gets a factor. On a real lake
+# that left 260 stocks with none at all and ~220k unadjusted rows, which read as
+# "Sina does not cover 北交所" until a targeted re-derive filled them from 2016.
+
+
+def test_uncovered_symbols_finds_history_behind_the_watermark(adj_config):
+    from ashare_lake.derive.adj_factors import _uncovered_symbols
+
+    # Bars from 2016; factors only from 2024 — the backfilled years are naked.
+    _write_bar(adj_config, "600519.SH", date(2016, 1, 4))
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
+
+    assert _uncovered_symbols(adj_config) == {"600519.SH"}
+
+
+def test_a_symbol_covered_from_its_first_bar_is_not_reprocessed(adj_config):
+    from ashare_lake.derive.adj_factors import _uncovered_symbols
+
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
+    assert _uncovered_symbols(adj_config) == set()
+
+
+def test_todays_bar_alone_does_not_mark_a_symbol_uncovered(adj_config):
+    """The trap this check walked into first.
+
+    `fac_last < bar_last` holds on every ordinary run — today's bar lands before
+    its factor is derived — so including it would force a full-history realign
+    of the whole market, daily. New sessions are what the incremental path is
+    for; only the backward direction belongs here.
+    """
+    from ashare_lake.derive.adj_factors import _uncovered_symbols
+
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
+    assert _uncovered_symbols(adj_config) == set()

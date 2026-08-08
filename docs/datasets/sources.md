@@ -121,9 +121,10 @@
 | 频率 | compact 之后每日 |
 | 主键 | (symbol, trade_date, adjust_type) |
 | 说明 | 外部累计因子对齐 daily_bars；`adj_close = close * factor` |
-| **已知缺口** | **新浪因子序列基本不覆盖北交所**。实测本湖 6128 只股票中 260 只完全没有因子（252 只 BJ、5 只 SH、3 只 SZ）。`daily_bars` 走 TDX，覆盖北交所；两边因此不对齐 |
-| **查询侧后果** | `load(adjust="hfq")` 默认 `strict_adj=False`，缺因子的行按 `factor=1.0` 返回，即**未复权价出现在复权结果里**，只由 `adj_is_exact=False` 标记。实测一年窗口 + `universe="all_a"`：10,480 行（0.77%）如此，其中 10,461 行 `close>0` 是真实价格，10,460 行是北交所 |
-| **怎么办** | 只做沪深：`universe="all_a"` 之后再按 `adj_is_exact` 过滤；要严格失败而不是静默降级：`load(..., strict_adj=True)` |
+| **已知缺口** | 新浪**确实覆盖北交所**（`bj430017` 等都能取到）。此前 260 只股票没有因子并非源的问题，而是本 derive 是**从水位向前追加**的：`asl backfill daily_bars` 补进来的历史日期在水位之后方，永远轮不到。现已自愈（见下），残留 12 只：5 只 2025-04-30 退市的北交所标的 + 7 只已上市未交易的新股，两者新浪都取不到 |
+| **查询侧后果** | `load(adjust="hfq")` 默认 `strict_adj=False`，缺因子的行按 `factor=1.0` 返回，即**未复权价出现在复权结果里**，只由 `adj_is_exact=False` 标记。自愈后实测一年窗口 + `universe="all_a"`：**65 行（0.005%）**，其中 46 行 `close>0`——修复前是 10,480 行（0.77%）|
+| **怎么办** | 要严格失败而不是静默降级：`load(..., strict_adj=True)`。**它不是默认值**：新上市的票在拿到第一个因子前必然缺，所以严格模式会让 `universe="all_a"` 的 hfq 查询长期抛错。默认容忍 + `adj_is_exact` 标记 + 审计告警，是在「不静默污染」和「查询可用」之间的取舍 |
+| **自愈** | `derive_adj_factors` 每次增量运行都会找出「有 bar 但因子够不到」的标的并重排其完整历史，单次上限 500 只。所以 `asl backfill daily_bars` 补的历史会在随后的日更里自动补上因子，无需 `--full` |
 
 ---
 
