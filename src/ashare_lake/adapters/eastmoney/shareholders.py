@@ -5,10 +5,16 @@ Three datasets the long-format ``financial_statement_items`` cannot hold.
 period, and no number of ``item_code`` rows expresses a rank. The other two are
 wide fixed records that would only be item codes by accident of shape.
 
-Every report here is fetched **per report period**, not per symbol. One period
-of 前十大流通股东 is ~55k rows across the market, so a per-symbol sweep would be
-~5,500 requests where one filtered sweep is ~110 pages. These are the heaviest
+Everything here is swept **market-wide with a filter**, never per symbol. One
+period of 前十大流通股东 is ~55k rows, so a per-symbol sweep would be ~5,500
+requests where one filtered sweep is ~110 pages. These are the heaviest
 datacenter consumers in the project.
+
+What the filter is on differs, and the difference matters. 股东户数 and the two
+holder reports are keyed by report period, so they are swept per period. 股本结构
+is **not**: ``RPT_F10_EH_EQUITY.END_DATE`` is the date the share count changed,
+an arbitrary date, so it is swept by date window instead. Filtering it on
+quarter-ends returns plenty of rows and quietly omits most of the report.
 
 PIT. A 半年报 shareholder list is dated 06-30 and disclosed in late August, so
 keying it by period alone lets a July backtest read August's filing. Three of
@@ -54,6 +60,9 @@ _FREEHOLDERS_COLUMNS = (
     "SECUCODE,END_DATE,HOLDER_NAME,HOLD_NUM,FREE_HOLDNUM_RATIO,HOLDER_RANK,"
     "IS_HOLDORG,HOLDER_TYPE,NOTICE_DATE"
 )
+
+CHANGE_DATE = "change_date"
+NOTICE_DATE = "notice_date"
 
 SCOPE_TOTAL = "total"
 SCOPE_FLOAT = "float"
@@ -105,11 +114,17 @@ def _period_filter(period: date) -> str:
     return f"(END_DATE='{period.isoformat()}')"
 
 
-def _fetch(
+def _range_filter(column: str, start: date, end: date) -> str:
+    """Half-inclusive-both-ends range. Date literals here go unquoted — that is
+    the form the datacenter accepts for comparisons on this report."""
+    return f"({column}>={start.isoformat()})({column}<={end.isoformat()})"
+
+
+def _fetch_filtered(
     client: EastMoneyClient,
     report: str,
     columns: str,
-    period: date,
+    filter_expr: str,
     *,
     config: Config | None,
 ) -> list[dict]:
@@ -119,7 +134,7 @@ def _fetch(
         client,
         report,
         columns,
-        filter_expr=_period_filter(period),
+        filter_expr=filter_expr,
         # Ascending by the keyset column is a precondition of re-anchoring.
         sort_columns=_KEYSET_COLUMN,
         sort_types="1",
@@ -129,18 +144,52 @@ def _fetch(
     )
 
 
-def fetch_share_structure(
+def _fetch_period(
+    client: EastMoneyClient,
+    report: str,
+    columns: str,
     period: date,
     *,
+    config: Config | None,
+) -> list[dict]:
+    return _fetch_filtered(client, report, columns, _period_filter(period), config=config)
+
+
+def fetch_share_structure(
+    start: date,
+    end: date,
+    *,
+    by: str = CHANGE_DATE,
     client: EastMoneyClient | None = None,
     config: Config | None = None,
 ) -> pl.DataFrame:
-    """股本结构 changes disclosed for *period*."""
+    """股本结构变动 in a date window.
+
+    Unlike the other two reports, ``RPT_F10_EH_EQUITY.END_DATE`` is the date the
+    share count *changed*, not a report period: 600519 has 16 rows in its entire
+    history, dated things like 2015-07-17 (送股上市) and 2025-09-01 (回购).
+    Sweeping quarter-ends therefore collects only the changes that happen to
+    fall on one — 2,446 rows on 2025-06-30 against ~50 a day for ordinary dates,
+    which looks plausible right up until you notice the rest is missing.
+
+    *by* picks which date the window applies to. ``change_date`` (END_DATE)
+    matches the partition column, so a backfill window writes exactly the
+    partitions it names. ``notice_date`` is for daily runs, where the question
+    is "what was newly disclosed", and a change that took effect weeks ago can
+    be announced today.
+    """
+    column = "END_DATE" if by == CHANGE_DATE else "NOTICE_DATE"
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
     try:
-        raw = _fetch(client, _EQUITY_REPORT, _EQUITY_COLUMNS, period, config=config)
+        raw = _fetch_filtered(
+            client,
+            _EQUITY_REPORT,
+            _EQUITY_COLUMNS,
+            _range_filter(column, start, end),
+            config=config,
+        )
     finally:
         if owns:
             client.close()
@@ -179,7 +228,7 @@ def fetch_shareholder_counts(
     if client is None:
         client = EastMoneyClient(config=config)
     try:
-        raw = _fetch(client, _HOLDERNUM_REPORT, _HOLDERNUM_COLUMNS, period, config=config)
+        raw = _fetch_period(client, _HOLDERNUM_REPORT, _HOLDERNUM_COLUMNS, period, config=config)
     finally:
         if owns:
             client.close()
@@ -256,8 +305,10 @@ def fetch_top_holders(
     if client is None:
         client = EastMoneyClient(config=config)
     try:
-        free_raw = _fetch(client, _FREEHOLDERS_REPORT, _FREEHOLDERS_COLUMNS, period, config=config)
-        total_raw = _fetch(client, _HOLDERS_REPORT, _HOLDERS_COLUMNS, period, config=config)
+        free_raw = _fetch_period(
+            client, _FREEHOLDERS_REPORT, _FREEHOLDERS_COLUMNS, period, config=config
+        )
+        total_raw = _fetch_period(client, _HOLDERS_REPORT, _HOLDERS_COLUMNS, period, config=config)
     finally:
         if owns:
             client.close()

@@ -312,13 +312,62 @@ def _run_shareholder_step(
     return {"rows_read": rows_read, "rows_written": rows_written, "periods": len(periods)}
 
 
+# 股本结构 is keyed by change date, not report period, so it walks a date window
+# rather than the quarter list the other two use.
+SHARE_STRUCTURE_HISTORY_START = date(2001, 1, 1)
+# Daily lookback on NOTICE_DATE. Generous on purpose: the cost is one extra
+# filtered sweep of a few pages, and the failure it prevents — a disclosure
+# landing while the daily job was broken for a week — is silent.
+SHARE_STRUCTURE_DAILY_LOOKBACK_DAYS = 30
+
+
 @register_step("share_structure", group="fundamentals", depends_on=["instruments"])
 def step_share_structure(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    from ashare_lake.adapters.eastmoney.shareholders import fetch_share_structure
+    from datetime import timedelta
 
-    return _run_shareholder_step(
-        config, trade_date, run_id, "share_structure", fetch_share_structure
+    from ashare_lake.adapters.eastmoney.shareholders import (
+        CHANGE_DATE,
+        NOTICE_DATE,
+        fetch_share_structure,
     )
+
+    if not config.sources.get("eastmoney", True):
+        raise RuntimeError("share_structure: eastmoney source disabled in config")
+
+    if getattr(config, "_backfill", False):
+        start = getattr(config, "_backfill_start", None) or SHARE_STRUCTURE_HISTORY_START
+        end = getattr(config, "_backfill_end", None) or trade_date
+        # Window on the change date so a backfill writes exactly the partitions
+        # it names, and one calendar year at a time so a kill costs one year.
+        windows = [
+            (max(start, date(y, 1, 1)), min(end, date(y, 12, 31)))
+            for y in range(start.year, end.year + 1)
+        ]
+        by = CHANGE_DATE
+    else:
+        # Window on the announcement date: a change that took effect weeks ago
+        # can be disclosed today, and a change-date window would never see it.
+        start = trade_date - timedelta(days=SHARE_STRUCTURE_DAILY_LOOKBACK_DAYS)
+        windows = [(start, trade_date)]
+        by = NOTICE_DATE
+
+    rows_read = 0
+    rows_written = 0
+    for win_start, win_end in windows:
+        df = fetch_share_structure(win_start, win_end, by=by, config=config)
+        if df.is_empty():
+            continue
+        chunk = write_fetched(
+            config,
+            run_id,
+            "share_structure",
+            df,
+            source="eastmoney",
+            batch_id=f"batch-{win_start.isoformat()}",
+        )
+        rows_read += int(chunk.get("rows_read", 0))
+        rows_written += int(chunk.get("rows_written", 0))
+    return {"rows_read": rows_read, "rows_written": rows_written, "windows": len(windows)}
 
 
 @register_step("shareholder_counts", group="fundamentals", depends_on=["instruments"])

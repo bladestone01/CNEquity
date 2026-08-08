@@ -24,10 +24,12 @@ class _Client:
         return None
 
 
-def _patch(monkeypatch, by_report: dict[str, list[dict]]):
+def _patch(monkeypatch, by_report: dict[str, list[dict]], seen: dict | None = None):
     """Route fetch_datacenter by report name so both holder reports differ."""
 
     def _fake(client, report, columns, **kwargs):
+        if seen is not None:
+            seen[report] = kwargs.get("filter_expr", "")
         return by_report.get(report, [])
 
     monkeypatch.setattr(sh, "fetch_datacenter", _fake)
@@ -69,7 +71,7 @@ def test_share_structure_maps_the_four_share_counts(monkeypatch):
             ]
         },
     )
-    df = sh.fetch_share_structure(PERIOD, client=_Client())
+    df = sh.fetch_share_structure(date(2025, 1, 1), date(2025, 12, 31), client=_Client())
     row = df.row(0, named=True)
     assert row["symbol"] == "000001.SZ"
     assert row["change_date"] == PERIOD
@@ -80,6 +82,34 @@ def test_share_structure_maps_the_four_share_counts(monkeypatch):
     assert row["free_float_shares"] == 8160481215
     assert row["change_reason"] == "高管股份变动"
     assert row["announce_date"] == date(2025, 8, 23)
+
+
+def test_share_structure_is_swept_by_date_window_never_by_quarter_end(monkeypatch):
+    """END_DATE here is the date the share count changed, not a report period.
+
+    600519 has 16 rows in its whole history (送股上市, 回购, …). A quarter-end
+    filter returns 2,446 rows market-wide — enough to look right — while
+    silently dropping the ~50/day dated to every other date.
+    """
+    seen: dict[str, str] = {}
+    _patch(monkeypatch, {sh._EQUITY_REPORT: []}, seen)
+    sh.fetch_share_structure(date(2025, 1, 1), date(2025, 12, 31), client=_Client())
+    expr = seen[sh._EQUITY_REPORT]
+    assert "END_DATE>=2025-01-01" in expr
+    assert "END_DATE<=2025-12-31" in expr
+    assert "END_DATE=2025" not in expr, "an equality filter would be the period-sweep bug"
+
+
+def test_share_structure_can_window_on_the_announcement_date_instead(monkeypatch):
+    """Daily runs ask what was newly *disclosed* — a change effective weeks ago
+    can be announced today, and a change-date window would never see it."""
+    seen: dict[str, str] = {}
+    _patch(monkeypatch, {sh._EQUITY_REPORT: []}, seen)
+    sh.fetch_share_structure(
+        date(2025, 8, 1), date(2025, 8, 31), by=sh.NOTICE_DATE, client=_Client()
+    )
+    assert "NOTICE_DATE>=2025-08-01" in seen[sh._EQUITY_REPORT]
+    assert "END_DATE" not in seen[sh._EQUITY_REPORT]
 
 
 # --- shareholder_counts ------------------------------------------------------
