@@ -137,10 +137,16 @@ def check_partition_row_mutation(
         prev_symbols = int(prev_symbols)
         cur_symbols = int(cur_symbols)
         if prev_symbols >= ROW_COUNT_MUTATION_MIN_BASELINE_ROWS:
-            # Distinct symbols do not accumulate the way rows do: a half-month
-            # of daily snapshots already covers the whole universe, so this
-            # comparison stays unprorated.
-            symbol_ratio = _mutation_ratio(cur_symbols, prev_symbols)
+            # Prorated as well. Leaving this raw was the first attempt, on the
+            # theory that a few days of daily snapshots already cover the whole
+            # universe — true for valuation_metrics, false for every
+            # event-driven dataset, where distinct names accumulate exactly like
+            # rows. dragon_tiger, block_trades and sentiment_scores all kept
+            # warning on the symbol ratio alone (26% / 28% / 46%) after the row
+            # ratio was fixed. For a genuinely daily-snapshot dataset the
+            # prorated symbol baseline is simply easy to clear, which is the
+            # right outcome — the row check still covers it.
+            symbol_ratio = _mutation_ratio(cur_symbols, prev_symbols * fraction)
             symbol_triggered = symbol_ratio < ROW_COUNT_MUTATION_MIN_RATIO
 
     if not row_triggered and not symbol_triggered:

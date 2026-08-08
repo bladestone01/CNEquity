@@ -315,6 +315,32 @@ def test_partial_month_is_not_flagged_as_a_shrink():
     assert finding is None, "on pace for the month — 2160 vs a prorated ~2564"
 
 
+def test_symbol_counts_are_prorated_too():
+    """Leaving symbols raw kept three datasets warning after the row fix.
+
+    dragon_tiger, block_trades and sentiment_scores are event-driven: distinct
+    names accumulate over the month exactly like rows, so an 8-day partition
+    holds ~26% of them and tripped the threshold on the symbol ratio alone.
+    """
+    from ashare_lake.quality.dataset_checks import check_partition_row_mutation
+
+    for dataset, cur_rows, prev_rows, cur_syms, prev_syms in [
+        ("dragon_tiger", 355, 1977, 235, 900),
+        ("block_trades", 218, 1098, 138, 499),
+        ("sentiment_scores", 2700, 12140, 2090, 4582),
+    ]:
+        finding = check_partition_row_mutation(
+            dataset,
+            "trade_date",
+            current_value="2026-08",
+            previous_value="2026-07",
+            current_stats={"rows": cur_rows, "symbols": cur_syms},
+            previous_stats={"rows": prev_rows, "symbols": prev_syms},
+            elapsed_fraction=8 / 31,
+        )
+        assert finding is None, f"{dataset} is on pace, not shrinking"
+
+
 def test_a_real_shrink_still_fires_mid_period():
     from ashare_lake.quality.dataset_checks import check_partition_row_mutation
 
