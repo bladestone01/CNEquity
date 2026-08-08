@@ -3,6 +3,7 @@ earnings_disclosure_schedule."""
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import polars as pl
@@ -28,6 +29,9 @@ _CANONICAL_BACKFILL = "tdx_protocol"
 _CANONICAL_DAILY = "eastmoney"
 
 
+logger = logging.getLogger(__name__)
+
+
 @register_step("corporate_actions", group="core", depends_on=["instruments"])
 def step_corporate_actions(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     rl = config.tdx_rate_limit_spec()
@@ -36,9 +40,22 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     if backfill:
         symbols = load_symbols(config)
         if config.failover_enabled:
-            snapshot_corporate_actions_backup(
-                config, trade_date=trade_date, run_id=run_id, backfill=True
-            )
+            # Best-effort: this writes an EastMoney snapshot for cross-source
+            # audit, not the canonical rows. It must never decide whether the
+            # backfill runs — when EastMoney changed its filter grammar the
+            # raise from here aborted the whole step before TDX, the actual
+            # primary, was contacted at all.
+            try:
+                snapshot_corporate_actions_backup(
+                    config, trade_date=trade_date, run_id=run_id, backfill=True
+                )
+            except Exception as exc:  # noqa: BLE001 — audit artifact, not the data
+                logger.warning(
+                    "corporate_actions: backup snapshot failed (%s: %s); "
+                    "continuing with the canonical TDX fetch",
+                    type(exc).__name__,
+                    exc,
+                )
         df = fetch_corporate_actions(
             trade_date,
             symbols=symbols,

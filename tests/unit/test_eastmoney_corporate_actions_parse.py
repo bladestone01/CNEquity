@@ -105,8 +105,11 @@ class _Client:
 def test_fetch_corporate_actions_eastmoney_backfill_filter_and_dedupe(monkeypatch):
     seen_filters = []
 
+    seen_stop = []
+
     def _fake_fetch_datacenter(client, report, columns, *, filter_expr, **kwargs):
         seen_filters.append(filter_expr)
+        seen_stop.append(kwargs.get("stop_after"))
         return [
             {
                 "SECURITY_CODE": "600519",
@@ -129,7 +132,12 @@ def test_fetch_corporate_actions_eastmoney_backfill_filter_and_dedupe(monkeypatc
     )
     client = _Client()
     df = fetch_corporate_actions_eastmoney(date(2024, 6, 28), backfill=True, client=client)
-    assert "2016-01-01" in seen_filters[0]
+    # No range predicate: EastMoney rejects those on date columns now
+    # (InputMismatchException, code=9501), which took `asl backfill
+    # corporate_actions` from working to failing outright. The window is bounded
+    # by early-stopping the newest-first paging instead.
+    assert seen_filters[0] == ""
+    assert callable(seen_stop[0]), "backfill must bound itself via stop_after"
     assert client.closed is False
     # unique(keep="last") on (symbol, ex_date, action_type) keeps the second row.
     assert df.height == 1
@@ -213,3 +221,25 @@ def test_fetch_corporate_actions_eastmoney_uses_config_retries_and_rate_limit(mo
     fetch_corporate_actions_eastmoney(date(2024, 6, 28), client=_Client(), config=_Cfg())
     assert seen_kwargs == {"max_retries": 7, "retry_backoff_seconds": 2.0}
     assert rate_limit_calls == ["eastmoney"]
+
+
+def test_backfill_stops_paging_once_past_the_floor(monkeypatch):
+    """The floor is enforced by early-stopping, since the filter cannot express it."""
+    from datetime import date as _date
+
+    pages = [
+        [{"SECURITY_CODE": "600519", "EX_DIVIDEND_DATE": "2026-06-26", "BONUS_RATIO": "1"}],
+        [{"SECURITY_CODE": "600519", "EX_DIVIDEND_DATE": "2010-06-26", "BONUS_RATIO": "1"}],
+    ]
+    captured = {}
+
+    def _fake(client, report, columns, *, filter_expr, stop_after=None, **kwargs):
+        captured["stop_after"] = stop_after
+        return pages[0]
+
+    monkeypatch.setattr("ashare_lake.adapters.eastmoney.corporate_actions.fetch_datacenter", _fake)
+    fetch_corporate_actions_eastmoney(_date(2026, 8, 7), backfill=True, client=_Client())
+    stop = captured["stop_after"]
+    assert stop(pages[0]) is False, "a page inside the window must not stop paging"
+    assert stop(pages[1]) is True, "a page ending before the floor must stop it"
+    assert stop([{"SECURITY_CODE": "x"}]) is False, "no parseable date — keep going"

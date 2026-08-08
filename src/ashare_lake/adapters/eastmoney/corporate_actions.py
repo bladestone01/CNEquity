@@ -24,6 +24,8 @@ _REPORT = "RPT_SHAREBONUS_DET"
 # pretax; _parse_row divides by 10 to honor the per-share CORPORATE_ACTIONS
 # unit contract (schemas.py). Do NOT stage the raw per-10 values.
 _EX_DATE_COL = "EX_DIVIDEND_DATE"
+# Oldest ex-date a backfill walks back to when the caller names no start.
+_BACKFILL_FLOOR = date(2016, 1, 1)
 _COLUMNS = (
     "SECURITY_CODE,SECUCODE,EX_DIVIDEND_DATE,EQUITY_RECORD_DATE,PRETAX_BONUS_RMB,"
     "BONUS_RATIO,IT_RATIO,BONUS_IT_RATIO,IMPL_PLAN_PROFILE,ASSIGN_PROGRESS"
@@ -56,11 +58,21 @@ def _map_action_type(row: dict) -> str | None:
     return None
 
 
-def _parse_row(row: dict) -> dict | None:
-    ex_raw = row.get(_EX_DATE_COL) or row.get("EQUITY_RECORD_DATE")
-    if not ex_raw:
+def _ex_date(row: dict) -> date | None:
+    """Ex-date of one report row, or None when the row carries neither field."""
+    raw = row.get(_EX_DATE_COL) or row.get("EQUITY_RECORD_DATE")
+    if not raw:
         return None
-    ex_date = date.fromisoformat(str(ex_raw)[:10])
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+
+
+def _parse_row(row: dict) -> dict | None:
+    ex_date = _ex_date(row)
+    if ex_date is None:
+        return None
 
     secucode = str(row.get("SECUCODE") or "")
     code_part, _, suffix = secucode.partition(".")
@@ -108,8 +120,25 @@ def fetch_corporate_actions_eastmoney(
     if client is None:
         client = EastMoneyClient(config=config)
 
+    # No range predicate on the backfill path. EastMoney's datacenter rejects
+    # range comparisons on date columns — "参数预处理错误: org.antlr.v4.runtime.
+    # InputMismatchException (code=9501)" — the same change that broke
+    # share_unlock_schedule and northbound_flows. Here it took out
+    # `asl backfill corporate_actions` entirely. Equality still parses, so the
+    # daily path keeps its exact-date filter; the backfill pages the report
+    # newest-first (it is already sorted that way) and stops at the first page
+    # that ends before the floor.
+    stop_after = None
     if backfill:
-        date_filter = f"({_EX_DATE_COL}>='2016-01-01')"
+        date_filter = ""
+        floor = getattr(config, "_backfill_start", None) or _BACKFILL_FLOOR
+
+        def stop_after(batch: list[dict]) -> bool:
+            for item in reversed(batch):
+                parsed = _ex_date(item)
+                if parsed is not None:
+                    return parsed < floor
+            return False
     else:
         ds = trade_date.isoformat()
         date_filter = f"({_EX_DATE_COL}='{ds}')"
@@ -129,6 +158,7 @@ def fetch_corporate_actions_eastmoney(
             sort_types="-1",
             max_retries=retries,
             retry_backoff_seconds=backoff,
+            stop_after=stop_after,
         )
     except EastMoneyDatacenterError:
         if owns:

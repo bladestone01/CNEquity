@@ -143,3 +143,54 @@ def test_northbound_reads_the_hsgt_report_not_an_index_fund_flow_kline():
     assert capital._NORTHBOUND_CHANNELS == {"001": "SH", "003": "SZ"}
     assert not hasattr(capital, "_FFLOW_KLINE_URL")
     assert not hasattr(capital, "_KAMT_URL")
+
+
+def test_backup_snapshot_failure_does_not_abort_the_ca_backfill(tmp_path, monkeypatch):
+    """Regression: a best-effort audit artifact took down the primary fetch.
+
+    `snapshot_corporate_actions_backup` writes an EastMoney snapshot for
+    cross-source audit. When EastMoney changed its filter grammar it started
+    raising, and the raise propagated out of the step — aborting
+    `asl backfill corporate_actions` before TDX, the actual canonical source,
+    was contacted at all.
+    """
+    from datetime import date
+
+    import polars as pl
+
+    from ashare_lake.steps import events
+
+    monkeypatch.setattr(events, "load_symbols", lambda cfg: ["600519.SH"])
+
+    def _boom(*a, **k):
+        raise RuntimeError("EastMoney datacenter rejected schema")
+
+    monkeypatch.setattr(events, "snapshot_corporate_actions_backup", _boom)
+    fetched = {}
+
+    def _fake_tdx(trade_date, **kwargs):
+        fetched["called"] = True
+        return pl.DataFrame(
+            [
+                {
+                    "symbol": "600519.SH",
+                    "ex_date": date(2024, 6, 28),
+                    "action_type": "cash_dividend",
+                    "cash_dividend": 1.0,
+                    "bonus_ratio": 0.0,
+                    "transfer_ratio": 0.0,
+                    "allotment_ratio": None,
+                    "allotment_price": None,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(events, "fetch_corporate_actions", _fake_tdx)
+    monkeypatch.setattr(events, "write_simple", lambda *a, **k: {"rows_read": 1, "rows_written": 1})
+
+    cfg = Config(data_root=tmp_path / "lake")
+    cfg._backfill = True
+    out = events.step_corporate_actions(cfg, date(2024, 6, 28), "run-1", {})
+
+    assert fetched.get("called") is True, "TDX must still be contacted"
+    assert out["rows_written"] == 1
