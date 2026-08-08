@@ -50,6 +50,22 @@ CONTINUOUS_CONTRACTS: tuple[tuple[str, str, str, str], ...] = (
 DEFAULT_BACKFILL_START = date(2020, 1, 1)
 
 
+def _sina_contracts(
+    universe: tuple[tuple[str, str, str, str], ...],
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Re-key the EastMoney contract table onto Sina's symbols.
+
+    Sina names a main-continuous contract by its bare code plus ``0`` — the
+    same string the lake symbol already starts with — so the mapping is taken
+    from the lake symbol rather than kept as a second hand-maintained table
+    that could drift against the first.
+    """
+    return tuple(
+        (lake_symbol, lake_symbol.split(".")[0], name, exchange)
+        for lake_symbol, _secid, name, exchange in universe
+    )
+
+
 def _fetch_one_kline(
     client: EastMoneyClient,
     *,
@@ -146,17 +162,27 @@ def fetch_commodity_bars_range(
 ) -> pl.DataFrame:
     """Fetch continuous-contract daily OHLC for [*start*, *end*] (inclusive).
 
-    Domestic main-continuous via EastMoney push2his; offshore gold (``GC0.CMX``)
-    via Sina global futures (narrow v1 — research overnight lead only).
+    Domestic main-continuous via Sina; offshore gold (``GC0.CMX``) via Sina
+    global futures (narrow v1 — research overnight lead only).
+
+    Domestic used to come from EastMoney push2his and no longer does. That host
+    refuses requests intermittently in a way nothing here controls — measured
+    0/12 both directly and through a mainland exit, still failing after seven
+    minutes of quiet, with TLS and routing verified healthy — so every daily run
+    failed all 15 contracts and wrote the one offshore row. Sina serves the same
+    series with deeper history from a host that has answered every probe. The
+    EastMoney path is kept below as an explicit opt-in for comparison, not as a
+    fallback: silently retrying a source known to be flaky is how the 151-second
+    daily stall happened.
     """
     if start > end:
         return pl.DataFrame()
     universe = contracts or CONTINUOUS_CONTRACTS
     rows: list[dict] = []
     client_kwargs: dict = {"config": config} if config is not None else {"min_interval": 0.5}
-    em_enabled = True
+    em_enabled = False
     if config is not None:
-        em_enabled = bool(config.sources.get("eastmoney", True))
+        em_enabled = bool(getattr(config, "_commodity_via_eastmoney", False))
     if em_enabled:
         with EastMoneyClient(**client_kwargs) as client:
             for symbol, secid, name, exchange in universe:
@@ -196,10 +222,27 @@ def fetch_commodity_bars_range(
         else pl.DataFrame()
     )
 
-    offshore = pl.DataFrame()
     sina_enabled = True
     if config is not None:
         sina_enabled = bool(config.sources.get("sina", True))
+
+    if domestic.is_empty() and sina_enabled:
+        from ashare_lake.adapters.sina.domestic_futures import (
+            fetch_domestic_commodity_bars_range,
+        )
+
+        try:
+            domestic = fetch_domestic_commodity_bars_range(
+                start, end, contracts=_sina_contracts(universe), config=config
+            )
+        except Exception as exc:  # noqa: BLE001 — offshore may still be writable
+            logger.warning(
+                "commodity_bars: domestic fetch failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+
+    offshore = pl.DataFrame()
     if include_offshore and sina_enabled:
         from ashare_lake.adapters.sina.global_futures import (
             fetch_offshore_commodity_bars_range,

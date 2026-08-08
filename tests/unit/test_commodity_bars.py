@@ -87,6 +87,24 @@ def test_fetch_commodity_bars_parses_kline():
     assert "open_interest" in validated.columns
 
 
+class _EastMoneyOnly:
+    """Config stub that opts into the EastMoney path and blocks Sina.
+
+    The domestic source is Sina now; EastMoney is opt-in. These three tests are
+    about the EastMoney retry loop, so they turn it on explicitly — and they set
+    sources["sina"]=False so a failure cannot fall through to a live network
+    call, which is exactly what happened when the reroute first landed.
+    """
+
+    sources = {"sina": False, "eastmoney": True}
+    eastmoney_proxy = None
+    eastmoney_timeout_sec = 15.0
+    _commodity_via_eastmoney = True
+
+    def rate_limit(self, source):
+        return None
+
+
 def test_fetch_commodity_bars_empty_on_failure():
     fake_client = MagicMock()
     fake_client.get.side_effect = RuntimeError("boom")
@@ -109,6 +127,7 @@ def test_fetch_commodity_bars_empty_on_failure():
             date(2026, 7, 21),
             contracts=only,
             include_offshore=False,
+            config=_EastMoneyOnly(),
         )
     assert df.is_empty()
 
@@ -140,6 +159,7 @@ def test_transport_failures_are_not_retried():
             date(2026, 7, 21),
             contracts=only,
             include_offshore=False,
+            config=_EastMoneyOnly(),
         )
     assert df.is_empty()
     assert fake_client.get.call_count == 1, "a dead route must cost one attempt, not five"
@@ -169,6 +189,7 @@ def test_transient_failures_still_retry():
             date(2026, 7, 21),
             contracts=only,
             include_offshore=False,
+            config=_EastMoneyOnly(),
         )
     assert df.is_empty()
     assert fake_client.get.call_count == 5
@@ -176,3 +197,73 @@ def test_transient_failures_still_retry():
 
 def test_dataset_count_includes_commodity():
     assert "commodity_bars" in DATASETS
+
+
+# --- Sina is the domestic source now ----------------------------------------
+
+
+def test_domestic_defaults_to_sina_not_push2his(monkeypatch):
+    """push2his must not be touched on the daily path.
+
+    It refuses requests intermittently in a way nothing here controls (measured
+    0/12 direct and through a mainland exit, still failing after seven minutes
+    of quiet, TLS and routing healthy throughout), and commodity_bars was its
+    only daily consumer — spending every run failing 15 contracts to write the
+    one offshore row.
+    """
+    from ashare_lake.adapters.eastmoney import commodity_bars as cb
+
+    def _boom(*a, **k):
+        raise AssertionError("EastMoney must not be called by default")
+
+    monkeypatch.setattr(cb, "EastMoneyClient", _boom)
+    captured = {}
+
+    def _fake_sina(start, end, *, contracts=None, config=None, **k):
+        captured["contracts"] = contracts
+        return pl.DataFrame(
+            [
+                {
+                    "symbol": "AU0.SHF",
+                    "name": "沪金主连",
+                    "exchange": "SHF",
+                    "trade_date": date(2026, 7, 21),
+                    "open": 900.0,
+                    "high": 910.0,
+                    "low": 895.0,
+                    "close": 905.0,
+                    "volume": 1000,
+                    "amount": None,
+                    "open_interest": 50.0,
+                    "source": "sina",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        "ashare_lake.adapters.sina.domestic_futures.fetch_domestic_commodity_bars_range",
+        _fake_sina,
+    )
+    df = cb.fetch_commodity_bars_range(
+        date(2026, 7, 21),
+        date(2026, 7, 21),
+        contracts=(("AU0.SHF", "113.AUM", "沪金主连", "SHF"),),
+        include_offshore=False,
+    )
+    assert df.height == 1
+    assert df["source"][0] == "sina"
+    # The Sina symbol is derived from the lake symbol, not a second table.
+    assert captured["contracts"] == (("AU0.SHF", "AU0", "沪金主连", "SHF"),)
+
+
+def test_sina_contract_mapping_covers_every_contract():
+    from ashare_lake.adapters.eastmoney.commodity_bars import (
+        CONTINUOUS_CONTRACTS,
+        _sina_contracts,
+    )
+    from ashare_lake.adapters.sina.domestic_futures import DOMESTIC_CONTRACTS
+
+    derived = _sina_contracts(CONTINUOUS_CONTRACTS)
+    assert len(derived) == len(CONTINUOUS_CONTRACTS)
+    # Deriving from the lake symbol must reproduce the hand-written table.
+    assert derived == DOMESTIC_CONTRACTS
