@@ -289,6 +289,27 @@ def test_tick_horizon_guard_does_not_suggest_narrowing_the_scope():
     assert "2024-01-02" in message
 
 
+def test_top_holders_floor_is_the_pit_boundary_not_the_data_boundary():
+    """2003 is where the *disclosure dates* start, not where the data starts.
+
+    RPT_F10_EH_HOLDERS reaches into the 1990s, but it carries no NOTICE_DATE and
+    borrows one from RPT_F10_EH_FREEHOLDERS, which serves 0 rows before 2003
+    (13,853 in 2003). Rows that cannot borrow a date are dropped rather than
+    stamped with the period end, so a backfill reaching further back fetches
+    ~112k rows across 1999-2002 and writes none of them. Refusing the window is
+    the difference between a clear message and four wasted hours.
+    """
+    from ashare_lake.domain.datasets import get_dataset
+
+    assert get_dataset("top_holders").history_floor_date == date(2003, 1, 1)
+    with pytest.raises(cli_main.click.ClickException) as excinfo:
+        cli_main._guard_history_horizon("top_holders", date(2001, 1, 1))
+    message = str(excinfo.value)
+    assert "history floor" in message
+    assert "2003-01-01" in message
+    assert "narrow" not in message, "a fixed floor has no narrower scope that helps"
+
+
 def test_chunked_backfill_keeps_a_warning_status_across_later_successes(monkeypatch):
     class WarnsSecond(FakeEngine):
         def _status(self, index):

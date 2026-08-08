@@ -439,6 +439,9 @@ _SPECS = [
         partition_col="change_date",
         partition_granularity="year",
         date_col="change_date",
+        # Measured 2026-08 against RPT_F10_EH_EQUITY: 1990 serves 19 rows, and
+        # nothing before it. A fixed vendor floor, not a rolling budget.
+        history_floor_date=date(1990, 1, 1),
         watermark=False,
         pit=True,
     ),
@@ -449,6 +452,8 @@ _SPECS = [
         partition_col="count_date",
         partition_granularity="year",
         date_col="count_date",
+        # RPT_F10_EH_HOLDERNUM: 25 rows in 1992, none in 1990/1991.
+        history_floor_date=date(1992, 1, 1),
         watermark=False,
         pit=True,
     ),
@@ -459,6 +464,14 @@ _SPECS = [
         partition_col="record_date",
         partition_granularity="year",
         date_col="record_date",
+        # 2003, and the binding constraint is PIT rather than availability.
+        # RPT_F10_EH_HOLDERS reaches back to the 1990s, but it carries no
+        # NOTICE_DATE and borrows its disclosure date from
+        # RPT_F10_EH_FREEHOLDERS — which starts in 2003 (0 rows in 1999-2002,
+        # 13,853 in 2003). Before that the total-scope rows have nothing to
+        # borrow from and are dropped as undated, so a backfill reaching
+        # further back fetches ~112k rows across four years and writes none.
+        history_floor_date=date(2003, 1, 1),
         watermark=False,
         pit=True,
     ),
