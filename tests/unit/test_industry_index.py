@@ -313,3 +313,64 @@ def test_catchup_after_watermark_keeps_first_day(tmp_path, monkeypatch):
     assert not day.is_empty()
     assert day["ret"][0] == pytest.approx(0.1)
     assert date(2026, 7, 31) not in written["trade_date"].to_list()
+
+
+def test_rows_without_an_exact_factor_are_dropped_not_aborted(monkeypatch):
+    """Regression: the daily `core` group failed here every single run.
+
+    `_priced_universe` filters by symbol — "has a factor at all" — while
+    `strict_adj=True` demanded one on every row. `adj_factors` comes from Sina,
+    whose series carries no 北交所 names on the run date, so 45 BJ symbols had
+    a bar and no factor for exactly the day being derived: past the symbol
+    filter, straight into a ReaderError that took the whole derive with it.
+
+    Rows the reader could not adjust are now dropped. Not kept at factor=1.0 —
+    a raw price inside an hfq return series is the silent corruption that
+    strictness exists to prevent.
+    """
+    bars = pl.DataFrame(
+        [
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 8, 6),
+                "close": 10.0,
+                "amount": 5.0e8,
+                "adj_is_exact": True,
+            },
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 8, 7),
+                "close": 11.0,
+                "amount": 5.0e8,
+                "adj_is_exact": True,
+            },
+            # A 北交所 name priced through yesterday, unpriced on the run date.
+            {
+                "symbol": "920055.BJ",
+                "trade_date": date(2026, 8, 6),
+                "close": 20.0,
+                "amount": 1.0e7,
+                "adj_is_exact": True,
+            },
+            {
+                "symbol": "920055.BJ",
+                "trade_date": date(2026, 8, 7),
+                "close": 22.0,
+                "amount": 1.0e7,
+                "adj_is_exact": False,
+            },
+        ]
+    )
+    seen = {}
+
+    def _fake_load(*args, **kwargs):
+        seen.update(kwargs)
+        return bars
+
+    monkeypatch.setattr("ashare_lake.query.reader.load", _fake_load)
+    out = _hfq_returns(object(), date(2026, 8, 5), date(2026, 8, 7), ["600000.SH", "920055.BJ"])
+
+    assert seen["strict_adj"] is False, "must not abort the derive on a row-level gap"
+    kept = set(zip(out["symbol"].to_list(), out["trade_date"].to_list(), strict=True))
+    assert ("600000.SH", date(2026, 8, 7)) in kept
+    assert ("920055.BJ", date(2026, 8, 7)) not in kept, "unadjusted row must not become a return"

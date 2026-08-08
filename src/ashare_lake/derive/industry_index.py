@@ -82,7 +82,12 @@ def _membership(config: Config) -> pl.DataFrame:
 
 
 def _priced_universe(config: Config) -> set[str]:
-    """Symbols with an adjustment factor: everything else has no hfq series."""
+    """Symbols with an adjustment factor *somewhere* — see `_hfq_returns`.
+
+    Coarse on purpose: this only removes names that have no hfq series at all.
+    It cannot speak for individual sessions, which is why the row-level gap is
+    handled after the load rather than here.
+    """
     from ashare_lake.query.parquet_scan import dataset_has_parquet, parquet_glob
 
     root = config.derived_root / "adj_factors"
@@ -96,9 +101,21 @@ def _priced_universe(config: Config) -> set[str]:
 def _hfq_returns(config: Config, start: date, end: date, symbols: list[str]) -> pl.DataFrame:
     """Daily hfq returns and turnover per symbol.
 
-    `strict_adj=True` with the universe restricted to symbols that *have* a
-    factor: strict so a missing factor can never be silently served as raw
-    price, restricted so the ones known to lack one do not abort the run.
+    Filtering the universe by symbol was not enough. ``_priced_universe`` asks
+    "does this name have a factor at all", while ``strict_adj=True`` asks for
+    one on every single row — so a name that is priced for years but missing the
+    newest session slipped through the first check and aborted the whole derive
+    on the second. That is not hypothetical: ``adj_factors`` comes from Sina,
+    whose series does not carry 北交所 names on the run date, so 45 BJ symbols
+    had bars and no factor for exactly the day being derived. It failed the
+    daily `core` group every run, which is the opposite of what putting this
+    step on the daily path was for.
+
+    So the gap is handled where it actually lives — per row. ``adj_is_exact``
+    marks the rows the reader could not adjust; they are dropped rather than
+    kept at factor=1.0, because a raw price inside an hfq return series is the
+    silent corruption ``strict_adj`` exists to prevent. Dropping them costs
+    those names one session in that day's cross-section and says so in the log.
     """
     from ashare_lake.query.reader import load
 
@@ -108,11 +125,26 @@ def _hfq_returns(config: Config, start: date, end: date, symbols: list[str]) -> 
         end=end,
         adjust="hfq",
         symbols=symbols,
-        strict_adj=True,
+        strict_adj=False,
         config=config,
     )
     if bars.is_empty():
         return bars
+    if "adj_is_exact" in bars.columns:
+        unpriced = bars.filter(~pl.col("adj_is_exact"))
+        if not unpriced.is_empty():
+            logger.info(
+                "industry_index: dropping %d bar row(s) across %d symbol(s) with no "
+                "adj_factor in [%s, %s] (newest: %s)",
+                unpriced.height,
+                unpriced["symbol"].n_unique(),
+                start,
+                end,
+                unpriced["trade_date"].max(),
+            )
+            bars = bars.filter(pl.col("adj_is_exact"))
+        if bars.is_empty():
+            return bars
     return (
         bars.select("symbol", "trade_date", "close", "amount")
         .sort("symbol", "trade_date")
