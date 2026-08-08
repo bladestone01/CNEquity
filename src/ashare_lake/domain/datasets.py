@@ -132,6 +132,14 @@ class DatasetSpec:
     fetch_semantics: FetchSemantics = "by_date"
     watermark: bool = True
     pit: bool = False
+    # Which upstream the daily path actually reads, and what it falls back to.
+    # Kept in the registry rather than in prose because the prose drifted: the
+    # published source table had `sector_bars` on EastMoney long after it moved
+    # to 同花顺, and `fund_flow` in the wrong schedule group entirely. Anything
+    # generated from here — the README data table, the docs — cannot say
+    # something the code does not do, and a test asserts the pairing.
+    primary_source: str = ""
+    backup_source: str | None = None
     backfill_source: str | None = None
     # How many days the freshest data may lag the last trading day before it is
     # flagged STALE. 1 tolerates normal T+1 EOD publication; larger values mark
@@ -221,20 +229,45 @@ _SPECS = [
     # path to a survivorship-free universe.
     DatasetSpec(
         "instruments",
+        primary_source="tdx_protocol",
+        backup_source="baostock",
         tier="L0",
         partition_col=None,
         watermark=False,
         backfill_source="baostock",
     ),
     DatasetSpec(
-        "trading_calendar", tier="L0", partition_col="trade_date", partition_granularity="year"
+        "trading_calendar",
+        primary_source="tdx_protocol",
+        backup_source="exchange",
+        tier="L0",
+        partition_col="trade_date",
+        partition_granularity="year",
     ),
     DatasetSpec(
-        "trading_status", tier="L0", partition_col="trade_date", partition_granularity="month"
+        "trading_status",
+        primary_source="tdx_protocol",
+        backup_source="eastmoney",
+        tier="L0",
+        partition_col="trade_date",
+        partition_granularity="month",
     ),
     # L1 bars
-    DatasetSpec("daily_bars", tier="L1", partition_col="trade_date"),
-    DatasetSpec("index_bars", tier="L1", partition_col="trade_date", partition_granularity="year"),
+    DatasetSpec(
+        "daily_bars",
+        primary_source="tdx_protocol",
+        backup_source="eastmoney",
+        tier="L1",
+        partition_col="trade_date",
+    ),
+    DatasetSpec(
+        "index_bars",
+        primary_source="tdx_protocol",
+        backup_source="eastmoney",
+        tier="L1",
+        partition_col="trade_date",
+        partition_granularity="year",
+    ),
     # 1-minute bars. Day partitions: ~240 bars × the configured scope, which is
     # 1.3M rows a day at full market — the top of the ≥1000 rows/day band, and
     # ~30MB a partition. The schema draft once sketched
@@ -245,6 +278,7 @@ _SPECS = [
     # that never enabled it must not be judged unhealthy for holding no rows.
     DatasetSpec(
         "minute_bars",
+        primary_source="tdx_protocol",
         tier="L1",
         partition_col="trade_date",
         partition_granularity="day",
@@ -274,6 +308,7 @@ _SPECS = [
     # more datasets holding a `group_by_dynamic` away from data already here.
     DatasetSpec(
         "minute_bars_5m",
+        primary_source="tdx_protocol",
         tier="L1",
         partition_col="trade_date",
         partition_granularity="day",
@@ -302,6 +337,7 @@ _SPECS = [
     # on the wrong column. It carries its own step group and its own checks.
     DatasetSpec(
         "trade_ticks",
+        primary_source="tdx_protocol",
         tier="L1",
         partition_col="trade_date",
         partition_granularity="day",
@@ -327,6 +363,8 @@ _SPECS = [
     # gold (Sina COMEX ``GC0.CMX``); not A-share equity.
     DatasetSpec(
         "commodity_bars",
+        primary_source="sina",
+        backup_source="eastmoney",
         tier="L1",
         partition_col="trade_date",
         partition_granularity="year",
@@ -337,12 +375,24 @@ _SPECS = [
     ),
     # L2 corporate events
     DatasetSpec(
-        "corporate_actions", tier="L2", partition_col="ex_date", partition_granularity="year"
+        "corporate_actions",
+        primary_source="tdx_protocol",
+        backup_source="eastmoney",
+        tier="L2",
+        partition_col="ex_date",
+        partition_granularity="year",
     ),
-    DatasetSpec("announcement_index", tier="L2", partition_col="announce_date", pit=True),
+    DatasetSpec(
+        "announcement_index",
+        primary_source="cninfo",
+        tier="L2",
+        partition_col="announce_date",
+        pit=True,
+    ),
     # Current-state timetable (revisions overwrite scheduled_date; not PIT).
     DatasetSpec(
         "earnings_disclosure_schedule",
+        primary_source="eastmoney",
         tier="L2",
         partition_col="report_period",
         partition_granularity="quarter",
@@ -351,6 +401,7 @@ _SPECS = [
     # L3 fundamentals
     DatasetSpec(
         "financial_statement_items",
+        primary_source="eastmoney",
         tier="L3",
         partition_col="report_period",
         partition_granularity="quarter",
@@ -359,37 +410,68 @@ _SPECS = [
     ),
     DatasetSpec(
         "valuation_metrics",
+        primary_source="eastmoney",
         tier="L3",
         partition_col="trade_date",
         fetch_semantics="snapshot",
         backfill_source="baostock",
     ),
     DatasetSpec(
-        "analyst_consensus", tier="L3", partition_col="forecast_date", fetch_semantics="snapshot"
+        "analyst_consensus",
+        primary_source="eastmoney",
+        tier="L3",
+        partition_col="forecast_date",
+        fetch_semantics="snapshot",
     ),
     # L4 capital flows
-    DatasetSpec("fund_flow", tier="L4", partition_col="trade_date", fetch_semantics="snapshot"),
-    DatasetSpec("margin_trading", tier="L4", partition_col="trade_date", max_staleness_days=2),
+    DatasetSpec(
+        "fund_flow",
+        primary_source="eastmoney",
+        tier="L4",
+        partition_col="trade_date",
+        fetch_semantics="snapshot",
+    ),
+    DatasetSpec(
+        "margin_trading",
+        primary_source="eastmoney",
+        tier="L4",
+        partition_col="trade_date",
+        max_staleness_days=2,
+    ),
     # Per-stock northbound holdings are quarterly since Aug 2024; tolerate the
     # gap to the next quarter-end before flagging stale.
     DatasetSpec(
-        "northbound_holdings", tier="L4", partition_col="trade_date", max_staleness_days=100
+        "northbound_holdings",
+        primary_source="eastmoney",
+        tier="L4",
+        partition_col="trade_date",
+        max_staleness_days=100,
     ),
     DatasetSpec(
         "northbound_flows",
+        primary_source="eastmoney",
         tier="L4",
         partition_col="trade_date",
         partition_granularity="year",
         max_staleness_days=2,
     ),
     DatasetSpec(
-        "dragon_tiger", tier="L4", partition_col="trade_date", partition_granularity="month"
+        "dragon_tiger",
+        primary_source="eastmoney",
+        tier="L4",
+        partition_col="trade_date",
+        partition_granularity="month",
     ),
     DatasetSpec(
-        "block_trades", tier="L4", partition_col="trade_date", partition_granularity="month"
+        "block_trades",
+        primary_source="eastmoney",
+        tier="L4",
+        partition_col="trade_date",
+        partition_granularity="month",
     ),
     DatasetSpec(
         "institutional_holdings",
+        primary_source="eastmoney",
         tier="L4",
         partition_col="report_period",
         partition_granularity="quarter",
@@ -397,10 +479,15 @@ _SPECS = [
     ),
     # L5 structure
     DatasetSpec(
-        "sector_members", tier="L5", partition_col="as_of_date", fetch_semantics="snapshot"
+        "sector_members",
+        primary_source="eastmoney",
+        tier="L5",
+        partition_col="as_of_date",
+        fetch_semantics="snapshot",
     ),
     DatasetSpec(
         "index_constituents",
+        primary_source="eastmoney",
         tier="L5",
         partition_col="as_of_date",
         partition_granularity="month",
@@ -411,6 +498,7 @@ _SPECS = [
     ),
     DatasetSpec(
         "industry_members",
+        primary_source="eastmoney",
         tier="L5",
         partition_col="as_of_date",
         fetch_semantics="snapshot",
@@ -419,17 +507,32 @@ _SPECS = [
     ),
     # L6 macro
     DatasetSpec(
-        "macro_indicators", tier="L6", partition_col="obs_date", partition_granularity="year"
+        "macro_indicators",
+        primary_source="eastmoney",
+        backup_source="pboc",
+        tier="L6",
+        partition_col="obs_date",
+        partition_granularity="year",
     ),
     DatasetSpec(
-        "market_breadth", tier="L6", partition_col="trade_date", partition_granularity="year"
+        "market_breadth",
+        primary_source="derived",
+        tier="L6",
+        partition_col="trade_date",
+        partition_granularity="year",
     ),
     # L7 sentiment / rotation
     DatasetSpec(
-        "sentiment_scores", tier="L7", partition_col="trade_date", partition_granularity="month"
+        "sentiment_scores",
+        primary_source="derived",
+        backup_source="eastmoney",
+        tier="L7",
+        partition_col="trade_date",
+        partition_granularity="month",
     ),
     DatasetSpec(
         "hot_rank",
+        primary_source="eastmoney",
         tier="L7",
         partition_col="trade_date",
         partition_granularity="month",
@@ -437,6 +540,7 @@ _SPECS = [
     ),
     DatasetSpec(
         "sector_bars",
+        primary_source="ths",
         tier="L7",
         partition_col="trade_date",
         partition_granularity="month",
@@ -448,6 +552,7 @@ _SPECS = [
     ),
     DatasetSpec(
         "sector_fund_flow",
+        primary_source="eastmoney",
         tier="L7",
         partition_col="trade_date",
         partition_granularity="month",
@@ -455,6 +560,7 @@ _SPECS = [
     ),
     DatasetSpec(
         "news_headlines",
+        primary_source="eastmoney",
         tier="L7",
         partition_col="publish_date",
         partition_granularity="month",
@@ -462,6 +568,7 @@ _SPECS = [
     ),
     DatasetSpec(
         "flash_news_wire",
+        primary_source="eastmoney",
         tier="L7",
         partition_col="publish_date",
         partition_granularity="month",
@@ -471,6 +578,7 @@ _SPECS = [
     # schema/registry for a replacement source, but do not fail lake health.
     DatasetSpec(
         "economic_calendar",
+        primary_source="eastmoney",
         tier="L7",
         partition_col="event_date",
         partition_granularity="year",
@@ -480,16 +588,23 @@ _SPECS = [
     # L8 risk
     DatasetSpec(
         "share_unlock_schedule",
+        primary_source="eastmoney",
         tier="L8",
         partition_col="unlock_date",
         partition_granularity="year",
     ),
     DatasetSpec(
-        "regulatory_events", tier="L8", partition_col="event_date", partition_granularity="year"
+        "regulatory_events",
+        primary_source="cninfo",
+        tier="L8",
+        partition_col="event_date",
+        partition_granularity="year",
     ),
     # derived — ``layer`` is where the parquet lives, ``tier`` what the data is
     # for, so these carry the tier of the question they answer, not "derived".
-    DatasetSpec("adj_factors", tier="L1", layer="derived", partition_col="trade_date"),
+    DatasetSpec(
+        "adj_factors", primary_source="sina", tier="L1", layer="derived", partition_col="trade_date"
+    ),
     # Industry returns computed from 申万 membership × hfq bars rather than
     # fetched, so index and constituents cannot disagree. Yearly partitions:
     # ~3 levels × 2 weightings × ~500 industries a day.
@@ -498,6 +613,7 @@ _SPECS = [
     # membership table that produces it rather than beside the bars.
     DatasetSpec(
         "industry_index",
+        primary_source="derived",
         tier="L5",
         layer="derived",
         partition_col="trade_date",
@@ -508,6 +624,7 @@ _SPECS = [
     # rows total. date_col (not partition_col) so load(start=/end=) still filters.
     DatasetSpec(
         "delisting_events",
+        primary_source="derived",
         tier="L1",
         layer="derived",
         partition_col=None,

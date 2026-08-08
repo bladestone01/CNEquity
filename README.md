@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <b>39 个数据集 · 9 大类</b> · <b>日线回溯约 2001</b> · <b>6 个 MCP 工具</b> · <b>行级溯源</b> · <b>零 token / 零积分 / 零注册</b>
+  <b>39 个数据集 · 9 大类</b> · <b>日线回溯至各股上市日</b> · <b>6 个 MCP 工具</b> · <b>行级溯源</b> · <b>零 token / 零积分 / 零注册</b>
 </p>
 
 ## 为什么要一个湖
@@ -87,7 +87,7 @@ claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.toml"
   <a href="#能回答什么问题">能问什么</a> ·
   <a href="#为什么不是-akshare--tushare--取数-skill">与同类差异</a> ·
   <a href="#有什么数据">数据集</a> ·
-  <a href="#自建日更湖">自建日更湖</a> ·
+  <a href="#让它每天自己跑">日更</a> ·
   <a href="#接给-ai-agent">接给 AI agent</a> ·
   <a href="#看一眼湖">看一眼湖</a> ·
   <a href="#架构">架构</a> ·
@@ -121,21 +121,87 @@ AkShare / 取数 skill 解决「怎么拉数」——拿到的是没有历史口
 
 ## 有什么数据
 
-**39** 个注册数据集（与 `domain/datasets.py` 同步）。字段见 [schema](docs/datasets/schema.md)，编排见 [catalog](docs/datasets/catalog.md)。
+**39 个注册数据集**。下表由 `domain/datasets.py` 生成,测试断言两者一致——
+文档说的就是代码在做的。字段见 [schema](docs/datasets/schema.md),逐源限制见 [sources](docs/datasets/sources.md)。
 
-| 类别 | 数据集（`load()` 名 · 中文） |
-|------|------------------------------|
-| 基础参考（3） | `instruments` 证券主数据 · `trading_calendar` 交易日历 · `trading_status` 交易状态（停复牌 / ST） |
-| 行情（8） | `daily_bars` 日线 · `index_bars` 指数日线 · `minute_bars` 1 分钟线（可选） · `minute_bars_5m` 5 分钟线（可选） · `trade_ticks` 分笔（可选） · `commodity_bars` 商品期货主连（可选） · `adj_factors` 复权因子 · `delisting_events` 退市事件 |
-| 公司事件（3） | `corporate_actions` 公司行为 · `announcement_index` 公告索引 · `earnings_disclosure_schedule` 业绩披露预约 |
-| 基本面 / 估值（3） | `financial_statement_items` 财务报表科目 · `valuation_metrics` 估值指标 · `analyst_consensus` 分析师一致预期 |
-| 资金面（7） | `fund_flow` 个股资金流 · `margin_trading` 融资融券 · `northbound_flows` 北向资金流向 · `northbound_holdings` 北向持股 · `dragon_tiger` 龙虎榜 · `block_trades` 大宗交易 · `institutional_holdings` 机构持股 |
-| 结构 / 行业（4） | `sector_members` 板块成分 · `index_constituents` 指数成分 · `industry_members` 行业分类成分 · `industry_index` 行业指数 |
-| 宏观（3） | `macro_indicators` 宏观指标 · `market_breadth` 市场宽度 · `economic_calendar` 经济日历 |
-| 舆情 / 轮动（6） | `sentiment_scores` 情绪评分 · `hot_rank` 人气榜 · `sector_bars` 板块行情 · `sector_fund_flow` 板块资金流 · `news_headlines` 新闻标题 · `flash_news_wire` 7×24 快讯 |
-| 风险（2） | `share_unlock_schedule` 解禁日程 · `regulatory_events` 监管事件 |
+**数据流**
 
-日内数据（1m / 5m / 分笔）**默认全关**，见 [runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
+```
+上游源 ──▶ step(取数+校验) ──▶ staging/ ──▶ compact ──▶ curated/ ──┬─▶ derive ──▶ derived/
+  │                                                                 │
+  └── 限流:跨进程文件锁,按源独立                                    └─▶ load() / DuckDB / Polars
+```
+
+每行都带 `source` / `data_version` / `fetched_at`,可逐行溯源。单个 step 失败只记
+failed batch,其余照常落盘,`asl retry <run_id>` 只补失败的。
+
+| 数据集 | 说明 | 主源 | 备源 | 历史 | 日更组 |
+|---|---|---|---|---|---|
+| **L0 · 基础参考** | | | | | |
+| `instruments` | 证券主数据 | tdx_protocol | baostock | 可回补 | core |
+| `trading_calendar` | 交易日历 | tdx_protocol | exchange | 可回补 | core |
+| `trading_status` | 交易状态（停复牌/ST） | tdx_protocol | eastmoney | 可回补 | core |
+| **L1 · 行情** | | | | | |
+| `adj_factors` | 复权因子 | sina | — | 可回补 | — |
+| `commodity_bars` ○ | 商品期货主连 | sina | eastmoney | 可回补 | macro_risk |
+| `daily_bars` | 日线 | tdx_protocol | eastmoney | 可回补 | core |
+| `delisting_events` | 退市事件 | derived | — | 可回补 | — |
+| `index_bars` | 指数日线 | tdx_protocol | eastmoney | 可回补 | core |
+| `minute_bars` ○ | 1 分钟线 | tdx_protocol | — | 可回补 | intraday |
+| `minute_bars_5m` ○ | 5 分钟线 | tdx_protocol | — | 可回补 | intraday |
+| `trade_ticks` ○ | 分笔快照 | tdx_protocol | — | 可回补 | ticks |
+| **L2 · 公司事件** | | | | | |
+| `announcement_index` | 公告索引 | cninfo | — | 可回补 | capital |
+| `corporate_actions` | 公司行为 | tdx_protocol | eastmoney | 可回补 | core |
+| `earnings_disclosure_schedule` | 业绩披露预约 | eastmoney | — | 可回补 | fundamentals |
+| **L3 · 基本面** | | | | | |
+| `analyst_consensus` | 分析师一致预期 | eastmoney | — | **仅当日** | research |
+| `financial_statement_items` | 财务报表科目 | eastmoney | — | 可回补 | fundamentals |
+| `valuation_metrics` | 估值指标 | eastmoney | — | 回填 `baostock` | capital |
+| **L4 · 资金面** | | | | | |
+| `block_trades` | 大宗交易 | eastmoney | — | 可回补 | signals |
+| `dragon_tiger` | 龙虎榜 | eastmoney | — | 可回补 | signals |
+| `fund_flow` | 个股资金流 | eastmoney | — | **仅当日** | capital |
+| `institutional_holdings` | 机构持股 | eastmoney | — | 可回补 | research |
+| `margin_trading` | 融资融券 | eastmoney | — | 可回补 | capital |
+| `northbound_flows` | 北向资金流向 | eastmoney | — | 可回补 | capital |
+| `northbound_holdings` | 北向持股 | eastmoney | — | 可回补 | capital |
+| **L5 · 结构行业** | | | | | |
+| `index_constituents` | 指数成分 | eastmoney | — | 回填 `cni` | fundamentals |
+| `industry_index` | 行业指数 | derived | — | 可回补 | — |
+| `industry_members` | 行业分类成分 | eastmoney | — | 回填 `sw` | fundamentals |
+| `sector_members` | 板块成分 | eastmoney | — | **仅当日** | capital |
+| **L6 · 宏观** | | | | | |
+| `macro_indicators` | 宏观指标 | eastmoney | pboc | 可回补 | macro_risk |
+| `market_breadth` | 市场宽度 | derived | — | 可回补 | macro_risk |
+| **L7 · 舆情 / 轮动** | | | | | |
+| `economic_calendar` ○ | 经济日历 | eastmoney | — | **仅当日** | — |
+| `flash_news_wire` | 7×24 快讯 | eastmoney | — | **仅当日** | research |
+| `hot_rank` | 人气榜 | eastmoney | — | **仅当日** | research |
+| `news_headlines` | 新闻标题 | eastmoney | — | **仅当日** | research |
+| `sector_bars` | 板块行情 | ths | — | 回填 `ths` | research |
+| `sector_fund_flow` | 板块资金流 | eastmoney | — | **仅当日** | research |
+| `sentiment_scores` | 情绪评分 | derived | eastmoney | 可回补 | research |
+| **L8 · 风险合规** | | | | | |
+| `regulatory_events` | 监管事件 | cninfo | — | 可回补 | macro_risk |
+| `share_unlock_schedule` | 解禁日程 | eastmoney | — | 可回补 | macro_risk |
+
+○ = 可选数据集(空表不算异常)。日内数据(1m / 5m / 分笔)**默认全关**,见
+[runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
+
+**流量控制**——每个源一把跨进程文件锁,互不影响:
+
+| 源 | 间隔 | 依据 |
+|---|---|---|
+| tdx_protocol | 100ms | 行情主机,建议 `workers ≤ 8` |
+| eastmoney | 0.5s | 实测 40/40 无失败 |
+| sina | 0.3s | 轻量 |
+| ths | 1.0s | 实测 ~1300 次连续请求零失败 |
+| ths_pages | 3.0s | 实测 1.5s 仍安全,取 2 倍余量;1 req/s 会在 ~23 次后 401 |
+| cninfo / pboc / nbs / exchange | 1.0s | 站点抖动,按页限速 |
+| baostock | 1.0s + 每 20 只歇 120s | **实测**:batch 50 / 歇 45s 会被封,当前值跑完 1658 只无一次封禁 |
+
+**时间可以等,封禁成本远高于多等一天。** 全市场回填因此是小时级——这是有意的。
 
 ## 让它每天自己跑
 
