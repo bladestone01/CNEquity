@@ -57,10 +57,50 @@ def _pk_duplicate_count(df: pl.DataFrame, dataset: str) -> int:
     return df.height - df.unique(subset=pk).height
 
 
-def _mutation_ratio(current: int, baseline: int) -> float:
+def _mutation_ratio(current: int, baseline: float) -> float:
     if baseline <= 0:
         return 1.0
     return current / baseline
+
+
+def period_elapsed_fraction(partition_value: str, granularity: str, as_of: date) -> float:
+    """How much of *partition_value*'s period has happened by *as_of*.
+
+    A month partition on the 8th holds eight days against a full prior month,
+    so a straight period-over-period ratio reads ~26% and trips the shrink
+    threshold — for every month-partitioned dataset, for most of every month.
+    That is the alarm that teaches people to stop reading the audit. Scaling
+    the baseline by this fraction compares like with like.
+
+    Returns 1.0 for any period that is already over, and for day granularity,
+    where a partition is whole the moment it exists.
+    """
+    if granularity == "day":
+        return 1.0
+    try:
+        if granularity == "month":
+            year, month = (int(p) for p in partition_value.split("-")[:2])
+            start = date(year, month, 1)
+            end = date(year + (month == 12), (month % 12) + 1, 1)
+        elif granularity == "quarter":
+            year, quarter = int(partition_value[:4]), int(partition_value[-1])
+            start = date(year, 3 * (quarter - 1) + 1, 1)
+            end = date(year + 1, 1, 1) if quarter == 4 else date(year, 3 * quarter + 1, 1)
+        elif granularity == "year":
+            year = int(partition_value[:4])
+            start, end = date(year, 1, 1), date(year + 1, 1, 1)
+        else:
+            return 1.0
+    except (ValueError, IndexError):
+        return 1.0
+
+    if as_of >= end:
+        return 1.0
+    if as_of < start:
+        return 1.0
+    total = (end - start).days
+    elapsed = (as_of - start).days + 1
+    return max(elapsed / total, 0.0) if total else 1.0
 
 
 def check_partition_row_mutation(
@@ -71,18 +111,22 @@ def check_partition_row_mutation(
     previous_value: str,
     current_stats: dict[str, int | None],
     previous_stats: dict[str, int | None],
+    elapsed_fraction: float = 1.0,
 ) -> dict | None:
     """Flag a partition that shrank sharply against the one before it.
 
-    Under month/year granularity the comparison is period-over-period and the
-    current period is usually still filling, so the check only fires once the
-    prior period is large enough to be a meaningful baseline."""
+    *elapsed_fraction* scales the baseline for a period still in progress —
+    see :func:`period_elapsed_fraction`. Without it a month-partitioned dataset
+    warns from the 1st to roughly the 20th, every month, forever.
+    """
     prev_rows = int(previous_stats["rows"])
     cur_rows = int(current_stats["rows"])
     if prev_rows < ROW_COUNT_MUTATION_MIN_BASELINE_ROWS:
         return None
 
-    row_ratio = _mutation_ratio(cur_rows, prev_rows)
+    fraction = min(max(elapsed_fraction, 0.0), 1.0) or 1.0
+    row_baseline = prev_rows * fraction
+    row_ratio = _mutation_ratio(cur_rows, row_baseline)
     row_triggered = row_ratio < ROW_COUNT_MUTATION_MIN_RATIO
 
     symbol_triggered = False
@@ -93,17 +137,23 @@ def check_partition_row_mutation(
         prev_symbols = int(prev_symbols)
         cur_symbols = int(cur_symbols)
         if prev_symbols >= ROW_COUNT_MUTATION_MIN_BASELINE_ROWS:
+            # Distinct symbols do not accumulate the way rows do: a half-month
+            # of daily snapshots already covers the whole universe, so this
+            # comparison stays unprorated.
             symbol_ratio = _mutation_ratio(cur_symbols, prev_symbols)
             symbol_triggered = symbol_ratio < ROW_COUNT_MUTATION_MIN_RATIO
 
     if not row_triggered and not symbol_triggered:
         return None
 
+    prorated = (
+        "" if fraction >= 1.0 else f", prorated to {row_baseline:.0f} at {fraction:.0%} elapsed"
+    )
     parts = [
         (
             f"partition {partition_col}={current_value} has {cur_rows} rows "
-            f"vs {prev_rows} in {previous_value} "
-            f"({row_ratio:.0%} of prior)"
+            f"vs {prev_rows} in {previous_value}{prorated} "
+            f"({row_ratio:.0%} of expected)"
         )
     ]
     if symbol_ratio is not None:
@@ -262,6 +312,7 @@ def audit_curated_dataset(
         previous_stats = partition_row_stats(
             partition_parquet_files(root, partition_col, previous_value)
         )
+        granularity = DATASETS[dataset].partition_granularity if dataset in DATASETS else "day"
         mutation = check_partition_row_mutation(
             dataset,
             partition_col,
@@ -269,6 +320,7 @@ def audit_curated_dataset(
             previous_value=previous_value,
             current_stats=current_stats,
             previous_stats=previous_stats,
+            elapsed_fraction=period_elapsed_fraction(partition_value, granularity, trade_date),
         )
         if mutation is not None:
             findings.append(mutation)

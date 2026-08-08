@@ -277,3 +277,55 @@ def test_refresh_yields_to_a_rebuild_already_running(config):
 
     # Lock released — the same call now does the work.
     assert refresh_stats_if_stale(config) is not None
+
+
+# --- partition mutation proration -------------------------------------------
+# A month partition on the 8th holds eight days against a full prior month, so
+# the raw period-over-period ratio read ~26% and tripped the shrink threshold —
+# for every month-partitioned dataset, for most of every month. Two of those
+# fired in a real audit (sentiment_scores, sector_bars) purely from the calendar.
+
+
+def test_period_elapsed_fraction_tracks_the_calendar():
+    from datetime import date
+
+    from ashare_lake.quality.dataset_checks import period_elapsed_fraction as frac
+
+    assert frac("2026-08", "month", date(2026, 8, 8)) == 8 / 31
+    assert frac("2026-08", "month", date(2026, 8, 31)) == 1.0
+    assert frac("2026-07", "month", date(2026, 8, 8)) == 1.0, "a finished period is whole"
+    assert frac("2026-08-08", "day", date(2026, 8, 8)) == 1.0, "a day partition is never partial"
+    assert 0.4 < frac("2026Q3", "quarter", date(2026, 8, 8)) < 0.45
+    assert frac("garbage", "month", date(2026, 8, 8)) == 1.0, "unparseable must not warn"
+
+
+def test_partial_month_is_not_flagged_as_a_shrink():
+    from ashare_lake.quality.dataset_checks import check_partition_row_mutation
+
+    # Real numbers from the audit that surfaced this: sector_bars, 8 days in.
+    finding = check_partition_row_mutation(
+        "sector_bars",
+        "trade_date",
+        current_value="2026-08",
+        previous_value="2026-07",
+        current_stats={"rows": 2160, "symbols": None},
+        previous_stats={"rows": 9935, "symbols": None},
+        elapsed_fraction=8 / 31,
+    )
+    assert finding is None, "on pace for the month — 2160 vs a prorated ~2564"
+
+
+def test_a_real_shrink_still_fires_mid_period():
+    from ashare_lake.quality.dataset_checks import check_partition_row_mutation
+
+    finding = check_partition_row_mutation(
+        "sector_bars",
+        "trade_date",
+        current_value="2026-08",
+        previous_value="2026-07",
+        current_stats={"rows": 200, "symbols": None},
+        previous_stats={"rows": 9935, "symbols": None},
+        elapsed_fraction=8 / 31,
+    )
+    assert finding is not None, "proration must not blind the check to a genuine collapse"
+    assert "prorated" in finding["message"]

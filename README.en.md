@@ -235,11 +235,19 @@ More: [architecture overview](docs/architecture/overview.md).
 
 **Q: How long does `asl init` take, and how much disk?**
 The default (last 3 years, whole market) is about an hour and GBs.
-`--profile full` (from 2001) measured roughly 3x that. Both fetch the *full*
-cross-section — filtering symbols instead builds survivorship bias into the
-lake. Going shallower than 3 years buys little: once the window is short the
+`--profile full` starts at **2016** and measured roughly 3x that. Both fetch the
+*full* cross-section — filtering symbols instead builds survivorship bias into
+the lake. Going shallower than 3 years buys little: once the window is short the
 per-symbol round trip dominates, so 1 year and 3 years cost about the same
 while only one of them supports a multi-year factor window.
+
+For daily bars back to 2001 — TDX does serve them, but no profile defaults
+there:
+
+```bash
+asl init --since 2001-01-01                    # deep on the first run
+asl backfill daily_bars --start 2001-01-01     # or deepen afterwards
+```
 
 **Q: Why store only back-adjusted factors?**
 Forward-adjusted prices move with "today". Disk stores hfq only; qfq is derived
