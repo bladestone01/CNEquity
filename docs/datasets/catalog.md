@@ -212,7 +212,7 @@ bars_15m = (
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
 | share_structure | report_period | symbol, change_date, announce_date | by_date PIT | — | eastmoney | 总股本/流通/限售/自由流通；按报告期整市场扫 |
 | shareholder_counts | report_period | symbol, report_period, announce_date | by_date PIT | — | eastmoney | 股东户数与户均持股，筹码集中度输入 |
-| top_holders | report_period | symbol, report_period, holder_scope, holder_rank, announce_date | by_date PIT | — | eastmoney | 一张表两个口径：`holder_scope=total`（前十大股东）/ `float`（前十大流通股东）|
+| top_holders | report_period | symbol, report_period, holder_scope, holder_rank, holder_name, announce_date | by_date PIT | — | eastmoney | 一张表两个口径：`holder_scope=total`（前十大股东）/ `float`（前十大流通股东）|
 
 ---
 

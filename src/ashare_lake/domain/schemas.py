@@ -693,11 +693,17 @@ PRIMARY_KEYS = {
     # gone rather than find the figure that was known then.
     "share_structure": ["symbol", "change_date", "announce_date"],
     "shareholder_counts": ["symbol", "report_period", "announce_date"],
+    # holder_name is in the key because holder_rank is NOT unique: holders tied
+    # on share count share a rank. 600010.SH 2025-06-30 rank 9 is both 博时基金
+    # and 易方达基金 at 167,831,580 shares each. Keying without the name drops
+    # one of them — 1,730 rows market-wide in that one period, and concentrated
+    # in the parallel-vehicle holders (中证金融 et al.) worth noticing.
     "top_holders": [
         "symbol",
         "report_period",
         "holder_scope",
         "holder_rank",
+        "holder_name",
         "announce_date",
     ],
     "fund_flow": ["symbol", "trade_date"],

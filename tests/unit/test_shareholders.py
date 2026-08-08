@@ -218,12 +218,33 @@ def test_undated_total_rows_are_dropped_not_stamped_with_the_period(monkeypatch)
     assert df["announce_date"].null_count() == 0
 
 
-def test_rows_without_a_rank_are_skipped(monkeypatch):
-    """rank is part of the primary key; a row without one cannot be identified."""
-    bad = _holder("600519", 1, name="A", pct_field="FREE_HOLDNUM_RATIO", pct=1.0, notice=NOTICE)
-    bad["HOLDER_RANK"] = None
-    _patch(monkeypatch, {sh._FREEHOLDERS_REPORT: [bad]})
-    assert sh.fetch_top_holders(PERIOD, client=_Client()).is_empty()
+def test_rows_without_a_rank_or_name_are_skipped(monkeypatch):
+    """Both are in the primary key; a row missing either cannot be identified."""
+    for field in ("HOLDER_RANK", "HOLDER_NAME"):
+        bad = _holder("600519", 1, name="A", pct_field="FREE_HOLDNUM_RATIO", pct=1.0, notice=NOTICE)
+        bad[field] = None
+        _patch(monkeypatch, {sh._FREEHOLDERS_REPORT: [bad]})
+        assert sh.fetch_top_holders(PERIOD, client=_Client()).is_empty(), field
+
+
+def test_holders_tied_on_share_count_share_a_rank_and_both_survive(monkeypatch):
+    """holder_rank is NOT unique. 600010.SH 2025-06-30 rank 9 is both 博时基金
+    and 易方达基金 at 167,831,580 shares each — the 中证金融 vehicles hold
+    identical allocations, so ties are routine and land on the holders most
+    worth seeing. Keying without holder_name silently deletes one of them."""
+    tied = [
+        _holder("600010", 9, name=n, pct_field="FREE_HOLDNUM_RATIO", pct=1.2, notice=NOTICE)
+        for n in (
+            "博时基金-农业银行-博时中证金融资产管理计划",
+            "易方达基金-农业银行-易方达中证金融资产管理计划",
+        )
+    ]
+    for row in tied:
+        row["HOLD_NUM"] = 167831580
+    _patch(monkeypatch, {sh._FREEHOLDERS_REPORT: tied})
+    df = sh.fetch_top_holders(PERIOD, client=_Client())
+    assert df.height == 2, "a tied holder was dropped"
+    assert df["holder_name"].n_unique() == 2
 
 
 def test_is_org_leaves_unknown_as_null_rather_than_false():
@@ -241,4 +262,5 @@ def test_registered_with_pit_and_the_rank_in_the_key():
         assert DATASETS[name].pit is True, f"{name} must be point-in-time"
         assert "announce_date" in PRIMARY_KEYS[name]
     assert "holder_rank" in PRIMARY_KEYS["top_holders"]
+    assert "holder_name" in PRIMARY_KEYS["top_holders"]
     assert "holder_scope" in PRIMARY_KEYS["top_holders"]

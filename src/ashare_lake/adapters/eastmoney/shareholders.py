@@ -265,11 +265,22 @@ def _holder_rows(
     period_label: str,
 ) -> list[dict]:
     rows: list[dict] = []
+    off_universe = 0
+    unidentifiable = 0
     for item in raw:
         symbol = symbol_from_secucode(item.get("SECUCODE"))
         end = _em_date(item.get("END_DATE"))
         rank = item.get("HOLDER_RANK")
-        if not symbol or end is None or rank is None:
+        name = str(item.get("HOLDER_NAME") or "").strip() or None
+        if not symbol or end is None:
+            # F10 covers B shares (200xxx.SZ / 900xxx.SH) and NEEQ (.NQ); the
+            # lake's universe is A shares. Counted rather than silently skipped
+            # so "fetched < the count the server declared" has an answer.
+            off_universe += 1
+            continue
+        if rank is None or name is None:
+            # Both are in the primary key — see PRIMARY_KEYS["top_holders"].
+            unidentifiable += 1
             continue
         rows.append(
             {
@@ -277,7 +288,7 @@ def _holder_rows(
                 "report_period": end.isoformat(),
                 "holder_scope": scope,
                 "holder_rank": int(rank),
-                "holder_name": str(item.get("HOLDER_NAME") or "") or None,
+                "holder_name": name,
                 "holding_shares": _num(item.get("HOLD_NUM")),
                 "holding_pct": _num(item.get(pct_field)),
                 "is_institution": _is_org(item.get("IS_HOLDORG")),
@@ -285,7 +296,16 @@ def _holder_rows(
                 "announce_date": _em_date(item.get("NOTICE_DATE")),
             }
         )
-    logger.debug("top_holders %s %s: %d row(s)", scope, period_label, len(rows))
+    logger.info(
+        "top_holders %s %s: kept %d of %d raw row(s) "
+        "(%d outside the A-share universe, %d without a rank or name)",
+        scope,
+        period_label,
+        len(rows),
+        len(raw),
+        off_universe,
+        unidentifiable,
+    )
     return rows
 
 
@@ -358,11 +378,26 @@ def fetch_top_holders(
 
     if not frames:
         return pl.DataFrame()
-    return (
-        pl.concat(frames, how="diagonal_relaxed")
-        .unique(
-            subset=["symbol", "report_period", "holder_scope", "holder_rank", "announce_date"],
-            keep="last",
-        )
-        .sort(["report_period", "symbol", "holder_scope", "holder_rank"])
+    combined = pl.concat(frames, how="diagonal_relaxed")
+    deduped = combined.unique(
+        subset=[
+            "symbol",
+            "report_period",
+            "holder_scope",
+            "holder_rank",
+            "holder_name",
+            "announce_date",
+        ],
+        keep="last",
     )
+    # What survives here is a genuine restatement under the same disclosure
+    # date, not a rank tie — ties are two different holders and holder_name
+    # keeps them apart. Logged because collapsing is a second reason the row
+    # count lands under the server's declared `count`.
+    if deduped.height != combined.height:
+        logger.info(
+            "top_holders %s: collapsed %d duplicate key(s)",
+            label,
+            combined.height - deduped.height,
+        )
+    return deduped.sort(["report_period", "symbol", "holder_scope", "holder_rank"])
