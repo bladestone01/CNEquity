@@ -121,6 +121,21 @@ class DatasetSpec:
         that as "624 trading days" would be true on the day it was measured and
         wrong the day after: ``earliest_available`` would walk the floor
         forward and refuse windows the source still happily serves.
+    source_retired_date:
+        Last date the source ever published, for a feed that has stopped. The
+        upper bound to ``history_floor_date``'s lower one.
+
+        Without it a retired feed is indistinguishable from a broken pipeline:
+        its watermark freezes, ``is_stale`` calls it stale forever, and
+        ``asl verify`` offers a backfill that runs the whole window, writes zero
+        rows, and leaves the identical gap behind. Both are the same wrong
+        answer — "you are missing data" — to a dataset that holds everything
+        that exists.
+
+        Set it to the last session with real values, not the first without.
+        ``northbound_flows`` is 2024-08-16: the exchanges stopped publishing
+        daily northbound net flow after that, and every row from 2024-08-19 on
+        carries a null amount (see adapters/eastmoney/capital.py).
     """
 
     name: str
@@ -149,6 +164,7 @@ class DatasetSpec:
     required: bool = True
     history_horizon_days: int | None = None
     history_floor_date: date | None = None
+    source_retired_date: date | None = None
     # Calendar days of history one backfill sub-run may cover. None = one run
     # for the whole window, which is what every daily-cadence dataset wants.
     #
@@ -454,6 +470,11 @@ _SPECS = [
         partition_col="trade_date",
         partition_granularity="year",
         max_staleness_days=2,
+        # The exchanges stopped publishing daily northbound net flow after this
+        # session; every row from 2024-08-19 on carries a null amount, and those
+        # are dropped rather than zero-filled. The lake holds everything that
+        # exists, so this is not staleness and no backfill can change it.
+        source_retired_date=date(2024, 8, 16),
     ),
     DatasetSpec(
         "dragon_tiger",
@@ -718,10 +739,17 @@ def is_stale(dataset: str, mark, anchor) -> bool:
 
     *mark* and *anchor* are ``datetime.date`` (or None). A dataset with no mark
     is not judged here (callers treat empty separately).
+
+    A retired source is never stale once the lake has caught up to its last
+    published session: there is nothing further to fetch, and calling that
+    "stale" forever is how a freshness signal stops being read.
     """
     if mark is None or anchor is None:
         return False
     spec = DATASETS.get(dataset)
+    if spec is not None and spec.source_retired_date is not None:
+        if mark >= spec.source_retired_date:
+            return False
     tolerance = spec.max_staleness_days if spec else 1
     return (anchor - mark).days > tolerance
 

@@ -888,6 +888,25 @@ def _finish_backfill_run(engine, result: dict) -> dict:
     return result
 
 
+def _run_backfill(cfg, dataset: str, start: date | None, end: date | None) -> dict:
+    """Backfill one window, dispatching exactly as `asl backfill` does.
+
+    Shared so `asl verify --repair` cannot drift into a second, subtly
+    different backfill path — the chunking rules below are not incidental
+    (see `_backfill_symbol_chunked`).
+    """
+    if start is not None:
+        cfg._backfill_start = start
+    if end is not None:
+        cfg._backfill_end = end
+    spec = get_dataset(dataset)
+    if spec.backfill_chunk_symbols and start and end:
+        return _backfill_symbol_chunked(cfg, dataset, start, end, spec.backfill_chunk_symbols)
+    if spec.backfill_chunk_days and start and end:
+        return _backfill_chunked(cfg, dataset, start, end, spec.backfill_chunk_days)
+    return _backfill_once(cfg, dataset)
+
+
 def _backfill_once(cfg, dataset: str) -> dict:
     engine = JobEngine(cfg)
     # Do not finish_run until after compact — otherwise a kill between the two
@@ -1210,6 +1229,118 @@ def _last_trading_day(cfg, today: date) -> date:
             return d
         d -= timedelta(days=1)
     return today
+
+
+_GAP_LABELS = {
+    "empty": "空",
+    "stale": "陈旧",
+    "interior": "区间内缺口",
+    "shallow": "历史偏浅",
+}
+
+
+@cli.command()
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--dataset",
+    "only",
+    default=None,
+    help="Verify these datasets only (comma-separated); default is every registered one.",
+)
+@click.option(
+    "--repair",
+    is_flag=True,
+    help="Run the backfills that would close the repairable gaps, newest dataset first.",
+)
+@click.option(
+    "--kind",
+    "kinds",
+    default=None,
+    help="Limit to these gap kinds: empty,stale,interior,shallow.",
+)
+def verify(config_path: str, only: str | None, repair: bool, kinds: str | None):
+    """Check what the lake should hold against what it does.
+
+    `asl audit` asks whether the data that landed is correct. This asks whether
+    the data that should have landed, landed — a different failure, and the one
+    a step that raises on contact produces. Without it a dataset can fail every
+    run for weeks while each individual run merely records a failed batch.
+
+    Gaps are separated by whether anything can be done about them: a `by_date`
+    dataset missing a session is a fault, a snapshot dataset missing one is its
+    shape and no backfill can honestly fill it. `--repair` only ever runs the
+    former.
+    """
+    from ashare_lake.quality.verify import verify_lake
+
+    cfg = _cfg(config_path)
+    anchor = _last_trading_day(cfg, date.today())
+    names = [s.strip() for s in only.split(",") if s.strip()] if only else None
+    wanted = {s.strip() for s in kinds.split(",") if s.strip()} if kinds else None
+
+    gaps = verify_lake(cfg, anchor=anchor, datasets=names)
+    if wanted:
+        gaps = [g for g in gaps if g.kind in wanted]
+
+    click.echo(f"Verify @ {anchor.isoformat()} — {len(gaps)} gap(s)")
+    if not gaps:
+        click.echo("覆盖完整：没有可修复的缺口。")
+        return
+
+    for gap in gaps:
+        label = _GAP_LABELS.get(gap.kind, gap.kind)
+        flag = "可修复" if gap.repairable else "源的形态，无法回填"
+        click.echo(f"  [{label}] {gap.dataset:28} {gap.detail}  ({flag})")
+        if gap.sample:
+            shown = ", ".join(d.isoformat() for d in gap.sample)
+            more = (
+                f" … 还有 {gap.missing_days - len(gap.sample)} 天"
+                if gap.missing_days > len(gap.sample)
+                else ""
+            )
+            click.echo(f"      例：{shown}{more}")
+
+    repairable = [g for g in gaps if g.repairable]
+    if not repair:
+        if repairable:
+            click.echo(f"\n{len(repairable)} 个缺口可修复。加 --repair 执行，或手动跑：")
+            for gap in repairable[:10]:
+                click.echo(f"  {gap.repair_command(config_path)}")
+        raise SystemExit(1)
+
+    if not repairable:
+        click.echo("\n没有可修复的缺口。")
+        raise SystemExit(1)
+
+    click.echo(f"\n修复 {len(repairable)} 个缺口…")
+    failed: list[str] = []
+    for gap in repairable:
+        click.echo(f"  → {gap.dataset} ({_GAP_LABELS.get(gap.kind, gap.kind)})")
+        try:
+            result = _run_backfill(cfg, gap.dataset, gap.start, gap.end)
+        except Exception as exc:  # noqa: BLE001 — one gap must not sink the rest
+            failed.append(gap.dataset)
+            click.echo(f"    失败：{type(exc).__name__}: {exc}", err=True)
+            continue
+        # A failing step does not raise: the engine records a failed batch and
+        # hands back status="failed". Reading only exceptions here reported
+        # "全部修复完成" directly under a printed traceback.
+        status = (result or {}).get("status", "unknown")
+        written = (result or {}).get("rows_written", 0)
+        if status != "success":
+            failed.append(gap.dataset)
+            click.echo(f"    失败：status={status}", err=True)
+        elif not written:
+            # Succeeded and wrote nothing: the window is genuinely empty
+            # upstream, so re-running will not change it. Say so rather than
+            # claiming a repair.
+            click.echo("    源在该区间没有数据，缺口未变（重跑也不会变）")
+        else:
+            click.echo(f"    写入 {written:,} 行")
+    if failed:
+        click.echo(f"\n{len(failed)} 个未能修复：{', '.join(failed)}", err=True)
+        raise SystemExit(1)
+    click.echo("\n修复流程结束。再跑一次 `asl verify` 确认。")
 
 
 @cli.command()
