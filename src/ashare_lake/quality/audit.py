@@ -14,6 +14,7 @@ from ashare_lake.config import Config
 from ashare_lake.domain.datasets import PARTITION_COLS, curated_dataset_names
 from ashare_lake.quality.authority_checks import run_authority_checks
 from ashare_lake.quality.cross_checks import (
+    adj_factor_coverage_findings,
     adj_factor_reconciliation_findings,
     daily_bars_calendar_findings,
     daily_bars_close_crosscheck_findings,
@@ -231,6 +232,7 @@ def _collect_lake_findings(
     )
     findings.extend(valuation_bars_coverage_findings(config, trade_date))
     findings.extend(adj_factor_reconciliation_findings(config, trade_date))
+    findings.extend(adj_factor_coverage_findings(config, trade_date))
     findings.extend(universe_survivorship_findings(config, trade_date))
     # Both sides already in curated — costs no requests (issue #10).
     findings.extend(st_label_crosscheck_findings(config, trade_date))

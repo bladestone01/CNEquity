@@ -37,6 +37,20 @@ MISSING_EVENT_MIN_DIVERGENCE = 0.11
 
 _MAX_RECON_FINDINGS = 50
 
+# --- adjustment-factor coverage ---------------------------------------------
+# adj_factors comes from Sina, daily_bars from TDX, and the two do not cover the
+# same market: Sina's factor series essentially skips 北交所. `load(adjust=…)`
+# defaults to strict_adj=False, so a bar with no factor is returned at
+# factor=1.0 — a raw price inside a result the caller asked to have adjusted,
+# marked only by an `adj_is_exact` column most callers never select.
+#
+# Measured on a full lake: 260 of 6,128 stocks had no factor at all (252 BJ),
+# and a one-year `universe="all_a"` hfq window carried 10,480 such rows, 10,461
+# of them a real close>0. None of it raised, and none of it appeared in an
+# audit — which is what this check is for. Reported per exchange, because
+# "北交所 is uncovered" is one fact and 252 per-symbol findings is noise.
+ADJ_COVERAGE_WARN_RATIO = 0.98
+
 # --- survivorship -----------------------------------------------------------
 # A symbol whose last bar precedes the lake's last bar by more than this has
 # stopped trading (delisted, or suspended long enough to be untradable). Well
@@ -410,6 +424,70 @@ def _trading_day_successors(config: Config, trade_date: date) -> pl.DataFrame | 
 
 def _iso(value) -> str:
     return value.isoformat() if isinstance(value, date) else str(value)
+
+
+def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]:
+    """Flag exchanges whose stocks largely have no adjustment factor.
+
+    See ``ADJ_COVERAGE_WARN_RATIO``. Scoped to ``asset_type='stock'``: ETFs and
+    LOFs legitimately have no hfq factor series and would otherwise bury the
+    signal this exists to raise.
+    """
+    bars_root = config.curated_root / "daily_bars"
+    fac_root = config.derived_root / "adj_factors"
+    inst_root = config.curated_root / "instruments"
+    if not (dataset_has_parquet(bars_root) and dataset_has_parquet(fac_root)):
+        return []
+    if not dataset_has_parquet(inst_root):
+        return []
+
+    instruments = scan_parquet_root(inst_root).collect()
+    if "asset_type" not in instruments.columns:
+        return []
+    stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
+    if not stocks:
+        return []
+
+    priced = set(
+        scan_parquet_root(bars_root).select("symbol").unique().collect()["symbol"].to_list()
+    )
+    with_factor = set(
+        scan_parquet_root(fac_root).select("symbol").unique().collect()["symbol"].to_list()
+    )
+
+    findings: list[dict] = []
+    by_exchange: dict[str, list[str]] = {}
+    for symbol in stocks & priced:
+        by_exchange.setdefault(symbol.rsplit(".", 1)[-1], []).append(symbol)
+
+    for exchange, symbols in sorted(by_exchange.items()):
+        total = len(symbols)
+        if not total:
+            continue
+        covered = sum(1 for s in symbols if s in with_factor)
+        ratio = covered / total
+        if ratio >= ADJ_COVERAGE_WARN_RATIO:
+            continue
+        missing = total - covered
+        findings.append(
+            {
+                "dataset": "adj_factors",
+                "severity": "warning",
+                "check": "adj_factor_coverage",
+                "exchange": exchange,
+                "message": (
+                    f"{exchange}: {missing} of {total} priced stocks have no adjustment "
+                    f"factor ({ratio:.0%} covered). load(adjust='hfq') returns those bars "
+                    "unadjusted at factor=1.0 unless strict_adj=True — check adj_is_exact"
+                ),
+                "symbols_total": total,
+                "symbols_covered": covered,
+                "symbols_missing": missing,
+                "coverage_ratio": round(ratio, 4),
+                "sample": sorted(s for s in symbols if s not in with_factor)[:_SAMPLE],
+            }
+        )
+    return findings
 
 
 def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list[dict]:
