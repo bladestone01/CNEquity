@@ -61,19 +61,19 @@ def test_rows_from_xdxr_cash_bonus_allotment_and_skips():
 
 def test_fetch_xdxr_for_symbol_empty_and_filter(monkeypatch):
     class Boom:
-        def xdxr(self, symbol):
+        def xdxr(self, symbol, market=None):
             raise RuntimeError("offline")
 
     assert ca.fetch_xdxr_for_symbol(Boom(), "600519.SH").is_empty()
 
     class Empty:
-        def xdxr(self, symbol):
+        def xdxr(self, symbol, market=None):
             return None
 
     assert ca.fetch_xdxr_for_symbol(Empty(), "600519.SH").is_empty()
 
     class Ok:
-        def xdxr(self, symbol):
+        def xdxr(self, symbol, market=None):
             return pd.DataFrame(
                 [
                     {
@@ -105,12 +105,52 @@ def test_fetch_xdxr_for_symbol_empty_and_filter(monkeypatch):
     assert df["ex_date"].to_list() == [date(2024, 6, 28)]
 
 
+def test_fetch_xdxr_for_symbol_resolves_bj_to_market_2(monkeypatch):
+    """Regression: BJ symbols silently queried market=0 (深圳) and got nothing.
+
+    ``quotes.xdxr()`` falls back to ``market_for_stock()`` when no market is
+    given, and that heuristic only distinguishes SH/SZ — it has no notion of
+    北交所. Every BJ symbol therefore queried the wrong market and came back
+    with an empty (not erroring) result, which is indistinguishable from "this
+    stock has no corporate actions". Verified live: market=0 returned 0 events
+    for every BJ code sampled; market=2 returned real ones for the same codes
+    (920002.BJ: 15, 920014.BJ: 34, ...). ``fetch_bars_paginated`` already
+    resolves BJ to market=2 correctly for daily bars — this applies the same
+    resolution to xdxr.
+    """
+    monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: None)
+    seen = {}
+
+    class Client:
+        def xdxr(self, symbol, market=None):
+            seen["symbol"] = symbol
+            seen["market"] = market
+            return None
+
+    ca.fetch_xdxr_for_symbol(Client(), "920055.BJ")
+    assert seen == {"symbol": "920055", "market": 2}
+
+
+def test_fetch_xdxr_for_symbol_still_resolves_sh_sz(monkeypatch):
+    monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: None)
+    seen = []
+
+    class Client:
+        def xdxr(self, symbol, market=None):
+            seen.append((symbol, market))
+            return None
+
+    ca.fetch_xdxr_for_symbol(Client(), "600519.SH")
+    ca.fetch_xdxr_for_symbol(Client(), "000001.SZ")
+    assert seen == [("600519", 1), ("000001", 0)]
+
+
 def test_fetch_corporate_actions_tdx_dedupes(monkeypatch):
     monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: None)
     monkeypatch.setattr(ca, "close_quotes_client", lambda client: None)
 
     class Client:
-        def xdxr(self, symbol):
+        def xdxr(self, symbol, market=None):
             return pd.DataFrame(
                 [
                     {

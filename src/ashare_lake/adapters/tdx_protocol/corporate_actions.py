@@ -93,9 +93,18 @@ def fetch_xdxr_for_symbol(
     on_date: date | None = None,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
-    code, _ = symbol.split(".")
+    code, _, exch = symbol.partition(".")
+    # ``quotes.xdxr()`` falls back to ``market_for_stock()`` when market is
+    # omitted, and that heuristic only distinguishes SH/SZ — it has no notion
+    # of 北交所 at all, so every BJ symbol silently queried market=0 (深圳) and
+    # got back an empty (not erroring) result. Confirmed live: market=0 returns
+    # 0 events for every BJ code sampled; market=2 (北京) returns real ones for
+    # the same codes (920002.BJ: 15 events, 920014.BJ: 34, ...). This mirrors
+    # the resolution `fetch_bars_paginated` already does correctly for daily
+    # bars — the fix here is applying that same pattern to xdxr.
+    market = 1 if exch == "SH" else (0 if exch == "SZ" else 2)
     try:
-        raw = client.xdxr(symbol=code)
+        raw = client.xdxr(symbol=code, market=market)
     except Exception as exc:
         logger.debug("TDX xdxr failed for %s: %s", symbol, exc)
         return pl.DataFrame()
