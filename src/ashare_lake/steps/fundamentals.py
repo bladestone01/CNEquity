@@ -249,3 +249,77 @@ def step_financial_statement_items(
     if df.is_empty():
         return {"rows_read": 0, "rows_written": 0}
     return write_fetched(config, run_id, "financial_statement_items", df, source="eastmoney")
+
+
+# --- shareholder structure ---------------------------------------------------
+# All three are period-keyed like financial_statement_items, and fetched per
+# report period rather than per symbol: one period of 前十大流通股东 is ~55k rows
+# market-wide, so a per-symbol sweep would be ~5,500 requests against ~110 pages
+# for the filtered one. Daily runs refresh the open periods; `asl backfill`
+# walks every quarter-end (--start/--end clips the walk).
+
+
+def _shareholder_periods(config: Config, trade_date: date) -> list[date]:
+    """Report periods to fetch: the open ones daily, every quarter on backfill."""
+    from ashare_lake.adapters.eastmoney.fundamentals import _report_period_dates
+
+    if getattr(config, "_backfill", False):
+        periods = _report_period_dates(
+            trade_date,
+            start=getattr(config, "_backfill_start", None),
+            end=getattr(config, "_backfill_end", None),
+        )
+        return [date.fromisoformat(p) for p in periods]
+    # Daily: the two most recent quarter-ends. A period stays open for months —
+    # 半年报 lands from July to late August — so refreshing only the newest one
+    # would miss every filing for the quarter before it.
+    recent = _report_period_dates(trade_date)[:2]
+    return [date.fromisoformat(p) for p in recent]
+
+
+def _run_shareholder_step(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    dataset: str,
+    fetch_fn,
+) -> dict:
+    import polars as pl
+
+    if not config.sources.get("eastmoney", True):
+        raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
+
+    frames = []
+    for period in _shareholder_periods(config, trade_date):
+        part = fetch_fn(period, config=config)
+        if not part.is_empty():
+            frames.append(part)
+    if not frames:
+        return {"rows_read": 0, "rows_written": 0}
+    df = pl.concat(frames, how="diagonal_relaxed")
+    return write_fetched(config, run_id, dataset, df, source="eastmoney")
+
+
+@register_step("share_structure", group="fundamentals", depends_on=["instruments"])
+def step_share_structure(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    from ashare_lake.adapters.eastmoney.shareholders import fetch_share_structure
+
+    return _run_shareholder_step(
+        config, trade_date, run_id, "share_structure", fetch_share_structure
+    )
+
+
+@register_step("shareholder_counts", group="fundamentals", depends_on=["instruments"])
+def step_shareholder_counts(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    from ashare_lake.adapters.eastmoney.shareholders import fetch_shareholder_counts
+
+    return _run_shareholder_step(
+        config, trade_date, run_id, "shareholder_counts", fetch_shareholder_counts
+    )
+
+
+@register_step("top_holders", group="fundamentals", depends_on=["instruments"])
+def step_top_holders(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    from ashare_lake.adapters.eastmoney.shareholders import fetch_top_holders
+
+    return _run_shareholder_step(config, trade_date, run_id, "top_holders", fetch_top_holders)

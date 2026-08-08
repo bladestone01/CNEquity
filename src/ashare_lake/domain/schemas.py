@@ -202,6 +202,65 @@ FINANCIAL_STATEMENT_ITEMS_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# 股本结构. Keyed by the date the structure *changed*, not a report period: a
+# company can restructure twice in one quarter and both rows matter, which is
+# why `change_reason` rides along rather than being dropped as prose.
+SHARE_STRUCTURE_SCHEMA = {
+    "symbol": pl.Utf8,
+    "change_date": pl.Date,
+    "total_shares": pl.Float64,
+    "float_shares": pl.Float64,
+    "restricted_shares": pl.Float64,
+    # 自由流通股 — float minus strategic/locked holdings. The denominator an
+    # index uses for free-float weighting; not the same as `float_shares`.
+    "free_float_shares": pl.Float64,
+    "change_reason": pl.Utf8,
+    "announce_date": pl.Date,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+# 股东户数. The input to 筹码集中度 factors: a falling holder count against a
+# flat share count means concentration.
+SHAREHOLDER_COUNTS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "report_period": pl.Utf8,
+    "holder_count": pl.Float64,
+    "holder_count_change_pct": pl.Float64,
+    "avg_float_shares": pl.Float64,
+    "avg_holding_value": pl.Float64,
+    "announce_date": pl.Date,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+# 前十大股东 / 前十大流通股东 — one table, scope discriminator. Both are the same
+# shape from the same disclosure: a ranked repeating group of ten. That is what
+# the long-format statement table genuinely cannot express, and why this is its
+# own dataset rather than more `item_code` rows.
+#
+# `holding_pct` means different things per scope, deliberately: for `total` it
+# is a share of total shares, for `float` a share of the float. They are not
+# comparable across scopes, and averaging them would invent a number neither
+# source published.
+TOP_HOLDERS_SCHEMA = {
+    "symbol": pl.Utf8,
+    "report_period": pl.Utf8,
+    "holder_scope": pl.Utf8,
+    "holder_rank": pl.Int32,
+    "holder_name": pl.Utf8,
+    "holding_shares": pl.Float64,
+    "holding_pct": pl.Float64,
+    "is_institution": pl.Boolean,
+    "holder_type": pl.Utf8,
+    "announce_date": pl.Date,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 FUND_FLOW_SCHEMA = {
     "symbol": pl.Utf8,
     "trade_date": pl.Date,
@@ -568,6 +627,9 @@ DATASET_SCHEMAS = {
     "corporate_actions": CORPORATE_ACTIONS_SCHEMA,
     "adj_factors": ADJ_FACTORS_SCHEMA,
     "financial_statement_items": FINANCIAL_STATEMENT_ITEMS_SCHEMA,
+    "share_structure": SHARE_STRUCTURE_SCHEMA,
+    "shareholder_counts": SHAREHOLDER_COUNTS_SCHEMA,
+    "top_holders": TOP_HOLDERS_SCHEMA,
     "fund_flow": FUND_FLOW_SCHEMA,
     "margin_trading": MARGIN_TRADING_SCHEMA,
     "northbound_holdings": NORTHBOUND_HOLDINGS_SCHEMA,
@@ -623,6 +685,19 @@ PRIMARY_KEYS = {
         "report_period",
         "statement_type",
         "item_code",
+        "announce_date",
+    ],
+    # announce_date is in the key for the same reason it is in FSI's: a
+    # restatement republishes the same period, and overwriting in place would
+    # make a query as of a date before the restatement find the old figure
+    # gone rather than find the figure that was known then.
+    "share_structure": ["symbol", "change_date", "announce_date"],
+    "shareholder_counts": ["symbol", "report_period", "announce_date"],
+    "top_holders": [
+        "symbol",
+        "report_period",
+        "holder_scope",
+        "holder_rank",
         "announce_date",
     ],
     "fund_flow": ["symbol", "trade_date"],

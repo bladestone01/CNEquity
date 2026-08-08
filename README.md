@@ -157,6 +157,9 @@ failed batch,其余照常落盘,`asl retry <run_id>` 只补失败的。
 | **L3 · 基本面** | | | | | |
 | `analyst_consensus` | 分析师一致预期 | eastmoney | — | **仅当日** | research |
 | `financial_statement_items` | 财务报表科目 | eastmoney | — | 可回补 | fundamentals |
+| `share_structure` | 股本结构 | eastmoney | — | 可回补 | fundamentals |
+| `shareholder_counts` | 股东户数 | eastmoney | — | 可回补 | fundamentals |
+| `top_holders` | 前十大股东 / 流通股东 | eastmoney | — | 可回补 | —（单次 ~440 页，按需回填）|
 | `valuation_metrics` | 估值指标 | eastmoney | — | 回填 `baostock` | capital |
 | **L4 · 资金面** | | | | | |
 | `block_trades` | 大宗交易 | eastmoney | — | 可回补 | signals |

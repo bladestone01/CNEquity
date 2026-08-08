@@ -281,9 +281,18 @@ steps = ["dragon_tiger", "block_trades", "compact"]
 
 [job.daily.groups.fundamentals]
 at = "17:35"
+# share_structure / shareholder_counts are quarterly data, but filings trickle in
+# over the weeks after each period end, so a daily re-sweep of the two most
+# recent periods is how newly-disclosed ones get picked up. Each is ~11 pages.
+#
+# top_holders is deliberately NOT here: two reports × ~110 pages × two periods is
+# ~440 pages, 40× these two, and on a slow link it would overrun the gap to
+# macro_risk and cost that group its whole day (see the spacing note above). Run
+# it on its own cadence: `asl backfill top_holders --start ... --end ...`.
 steps = [
   "financial_statement_items", "earnings_disclosure_schedule",
-  "index_constituents", "industry_members", "compact",
+  "index_constituents", "industry_members",
+  "share_structure", "shareholder_counts", "compact",
 ]
 
 [job.daily.groups.macro_risk]

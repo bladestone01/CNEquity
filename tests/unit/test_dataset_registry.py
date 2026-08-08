@@ -56,6 +56,11 @@ def test_legacy_tables_match_registry():
         "financial_statement_items",
         "institutional_holdings",
         "earnings_disclosure_schedule",
+        # Fetched per report period, not per date — a watermark over trade dates
+        # would advance daily and mean nothing.
+        "share_structure",
+        "shareholder_counts",
+        "top_holders",
     }
     assert set(FETCH_SEMANTICS) == {
         "fund_flow",
@@ -81,7 +86,15 @@ def test_legacy_tables_match_registry():
 def test_layer_partitions():
     assert "adj_factors" in derived_dataset_names()
     assert "adj_factors" not in curated_dataset_names()
-    assert pit_dataset_names() == {"financial_statement_items", "announcement_index"}
+    assert pit_dataset_names() == {
+        "financial_statement_items",
+        "announcement_index",
+        # Disclosed weeks after the period they describe; keyed by period alone
+        # a July backtest would read August's filing.
+        "share_structure",
+        "shareholder_counts",
+        "top_holders",
+    }
     assert get_dataset("daily_bars").partition_col == "trade_date"
 
 

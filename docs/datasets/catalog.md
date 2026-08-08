@@ -1,6 +1,6 @@
 # 数据集目录
 
-ashare-lake 交付 **39 个注册数据集**（36 curated + 3 derived：`adj_factors`、`industry_index`、`delisting_events`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。其中日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。
+ashare-lake 交付 **42 个注册数据集**（39 curated + 3 derived：`adj_factors`、`industry_index`、`delisting_events`），按选股用途分为 L0–L8 八层。另有 **on-demand** 数据集不进 curated 主路径。其中日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -210,6 +210,9 @@ bars_15m = (
 | financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区；`asl backfill` 默认自 2001 起（`--start`/`--end` 分块）；baostock 不用于 FSI |
 | valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 回填：baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
+| share_structure | report_period | symbol, change_date, announce_date | by_date PIT | — | eastmoney | 总股本/流通/限售/自由流通；按报告期整市场扫 |
+| shareholder_counts | report_period | symbol, report_period, announce_date | by_date PIT | — | eastmoney | 股东户数与户均持股，筹码集中度输入 |
+| top_holders | report_period | symbol, report_period, holder_scope, holder_rank, announce_date | by_date PIT | — | eastmoney | 一张表两个口径：`holder_scope=total`（前十大股东）/ `float`（前十大流通股东）|
 
 ---
 

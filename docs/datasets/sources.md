@@ -184,6 +184,28 @@
 | 主键 | announcement_id |
 | 说明 | 正文 on-demand（`announcement_body`）尚未实现；批量路径仅索引 |
 
+#### share_structure / shareholder_counts
+
+| 项 | 值 |
+|------|-------|
+| 主源 | eastmoney（`RPT_F10_EH_EQUITY` / `RPT_F10_EH_HOLDERNUM`） |
+| 分组 | fundamentals@17:35 |
+| 主键 | (symbol, change_date, announce_date) / (symbol, report_period, announce_date) |
+| 采集方式 | **按报告期整市场扫**，不是按标的循环：一期约 5.5k 行 / 11 页，逐个标的则是 5,500 次请求 |
+| 日更范围 | 最近两个报告期。季度数据但公告是逐家陆续披露的，重扫才能捡到新披露的 |
+| PIT | `announce_date` 取自 `NOTICE_DATE`，进主键 |
+
+#### top_holders
+
+| 项 | 值 |
+|------|-------|
+| 主源 | eastmoney（`RPT_F10_EH_HOLDERS` 全口径 + `RPT_F10_EH_FREEHOLDERS` 流通口径） |
+| 分组 | **不在日更波次**。两张报表 × 约 110 页 × 两个报告期 ≈ 440 页，是上面两个的 40 倍；放进 fundamentals 会挤掉 macro_risk 整组。用 `asl backfill top_holders` 单独跑 |
+| 主键 | (symbol, report_period, holder_scope, holder_rank, announce_date) |
+| 口径 | 一张表两个口径，靠 `holder_scope` 区分：`total`=前十大股东，`float`=前十大流通股东。`holding_pct` 两边分母不同（占总股本 vs 占流通股），**不可直接比较** |
+| PIT | `RPT_F10_EH_HOLDERS` 没有 `NOTICE_DATE`，其披露日按 (symbol, report_period) 从 FREEHOLDERS 借；借不到的行**丢弃**而不是拿期末日期充数 |
+| 分页 | 单期超过 EastMoney 的 100 页上限，靠 `keyset_column="SECUCODE"` 换锚点翻过去（见 `datacenter.py`） |
+
 ---
 
 ### 按需数据集（On-demand）

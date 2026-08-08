@@ -424,6 +424,42 @@ _SPECS = [
         watermark=False,
         pit=True,
     ),
+    # Shareholder structure — the dimensions the long-format statement table
+    # cannot hold. `top_holders` is a ranked repeating group of ten, which no
+    # amount of `item_code` rows expresses; the other two are wide fixed
+    # records that would only be item_codes by accident of shape.
+    #
+    # All three are PIT for the reason FSI is: a 半年报 shareholder list is
+    # dated 06-30 and disclosed in late August, so keying it by period alone
+    # would let a July backtest read August's filing.
+    DatasetSpec(
+        "share_structure",
+        primary_source="eastmoney",
+        tier="L3",
+        partition_col="change_date",
+        partition_granularity="year",
+        date_col="change_date",
+        watermark=False,
+        pit=True,
+    ),
+    DatasetSpec(
+        "shareholder_counts",
+        primary_source="eastmoney",
+        tier="L3",
+        partition_col="report_period",
+        partition_granularity="quarter",
+        watermark=False,
+        pit=True,
+    ),
+    DatasetSpec(
+        "top_holders",
+        primary_source="eastmoney",
+        tier="L3",
+        partition_col="report_period",
+        partition_granularity="quarter",
+        watermark=False,
+        pit=True,
+    ),
     DatasetSpec(
         "valuation_metrics",
         primary_source="eastmoney",
