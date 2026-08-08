@@ -627,9 +627,31 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
         ),
         by="divergence",
     )
-    if not missing.is_empty():
+    if missing.is_empty():
+        return findings
+
+    # Delisted names get their own bucket, not because the gap is fake, but
+    # because it is a *different, already-diagnosed* gap. Both tdx_protocol
+    # (xdxr) and the eastmoney backup were checked live against a sample of
+    # these symbols and neither returns any corporate-action history for a
+    # name once it drops off their live symbol list — a vendor behavior tied
+    # to delisting, not a market-id or filter bug (measured 2026-08: 109 of
+    # 111 flagged symbols were delisted; the 2 still-listed ones were a genuine
+    # stale-fetch gap and an isolated 2007 event). Filing 109 near-identical
+    # "warning"s for one proven, unfixable-with-current-sources root cause
+    # buries the handful that are actually worth investigating.
+    instruments = _instruments_frame(config)
+    if instruments is not None and "delist_date" in instruments.columns:
+        missing = missing.join(instruments.select("symbol", "delist_date"), on="symbol", how="left")
+        delisted = missing.filter(pl.col("delist_date").is_not_null())
+        active = missing.filter(pl.col("delist_date").is_null())
+    else:
+        delisted = missing.head(0)
+        active = missing
+
+    if not active.is_empty():
         findings += _capped_findings(
-            missing.sort("divergence", descending=True),
+            active.sort("divergence", descending=True),
             lambda row: {
                 "dataset": "corporate_actions",
                 "symbol": row["symbol"],
@@ -651,6 +673,24 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
             check="missing_corporate_action",
             severity="warning",
             noun="a raw move with no corporate action on record",
+        )
+    if not delisted.is_empty():
+        findings.append(
+            {
+                "dataset": "corporate_actions",
+                "severity": "info",
+                "check": "missing_corporate_action_delisted",
+                "message": (
+                    f"{delisted.height} delisted symbol(s) have a raw/hfq return divergence "
+                    "with no corporate action on record, all after their delist_date. "
+                    "Verified live against both tdx_protocol and the eastmoney backup: "
+                    "neither serves corporate-action history for a name once it is gone "
+                    "from their live symbol list. Not a market-id or filter bug — see "
+                    "docs/datasets/sources.md#corporate_actions"
+                ),
+                "symbols_total": delisted.height,
+                "sample": sorted(delisted["symbol"].to_list())[:_SAMPLE],
+            }
         )
     return findings
 

@@ -110,6 +110,7 @@
 | 频率 | 每日 |
 | 主键 | (symbol, ex_date, action_type) |
 | 输出 | manifest 元数据 `symbols_to_rebackfill` |
+| **已知缺口** | 已退市标的的历史除权除息几乎全缺——2026-08 实测 109/111 个「原始收益率与 hfq 复权收益率不符」的审计发现都是已退市标的（北交所 106 个 + 非北交所 3 个）。**两个源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对这批标的仍返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里这批标的同样一条没有。是两个源都不再对已从其在线标的列表里消失的证券提供除权除息历史，跟标的所在市场、代码前缀无关（92xxxx 前缀里未退市的 328 只覆盖率 96%，同样是 92 前缀但已退市的 1 只覆盖率 0）。baostock 的 `query_dividend_data` 直接拒绝北交所代码（`股票代码未标识sh或sz`），不能顶上。不是本项目的代码缺陷，也不是限流——是这两个源本身对已退市证券的历史除权数据保留策略。`asl audit` 把这批发现单独归为 `missing_corporate_action_delisted`（info 级，一条汇总），不再对仍在交易的标的发出的 `missing_corporate_action`（warning 级）掺在一起 |
 
 #### adj_factors（derived）
 

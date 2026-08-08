@@ -68,6 +68,19 @@ def _write_corp_actions(root, rows):
         ).write_parquet(part / "part.parquet")
 
 
+def _write_instruments(root, rows):
+    """rows: list of (symbol, delist_date | None)."""
+    base = root / "curated" / "instruments"
+    base.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": [s for s, _ in rows],
+            "delist_date": [d for _, d in rows],
+        },
+        schema={"symbol": pl.Utf8, "delist_date": pl.Date},
+    ).write_parquet(base / "part-merged.parquet")
+
+
 def _write_calendar(root, days, *, trading=True):
     """days: list of dates, all marked is_trading=`trading`."""
     base = root / "curated" / "trading_calendar"
@@ -210,6 +223,51 @@ def test_missing_corp_action_on_adjacent_days_with_calendar(tmp_path):
     _write_corp_actions(cfg.data_root, _DECOY)
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
     assert _checks(findings) == {"missing_corporate_action"}
+
+
+def test_missing_corp_action_on_a_delisted_symbol_is_info_not_warning(tmp_path):
+    """tdx_protocol and the eastmoney backup were checked live and neither
+    serves corporate-action history for a name once it is off their live
+    symbol list — a vendor gap correlated with delist_date, not a code bug.
+    Filing one "warning" per delisted symbol (there were 109 of them at once)
+    buries the few findings on still-listed names that are worth investigating,
+    so a delisted symbol gets bucketed into a single info-level summary."""
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 5.0), ("A", _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
+    _write_corp_actions(cfg.data_root, _DECOY)
+    _write_instruments(cfg.data_root, [("A", date(2024, 6, 5))])
+    findings = adj_factor_reconciliation_findings(cfg, _D[-1])
+    assert len(findings) == 1
+    f = findings[0]
+    assert f["check"] == "missing_corporate_action_delisted"
+    assert f["severity"] == "info"
+    assert f["symbols_total"] == 1
+    assert f["sample"] == ["A"]
+
+
+def test_missing_corp_action_on_a_still_listed_symbol_stays_a_warning(tmp_path):
+    """The instruments join must not downgrade a symbol just for existing in
+    that dataset — only a non-null delist_date does."""
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 5.0), ("A", _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
+    _write_corp_actions(cfg.data_root, _DECOY)
+    _write_instruments(cfg.data_root, [("A", None)])
+    findings = adj_factor_reconciliation_findings(cfg, _D[-1])
+    assert len(findings) == 1
+    assert findings[0]["check"] == "missing_corporate_action"
+    assert findings[0]["severity"] == "warning"
 
 
 def test_suspension_resume_without_ca_not_missing_warning(tmp_path):
