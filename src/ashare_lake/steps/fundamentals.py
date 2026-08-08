@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from ashare_lake.adapters.eastmoney.fundamentals import fetch_financial_statement_items
+from ashare_lake.adapters.eastmoney.shareholders import CHANGE_DATE, NOTICE_DATE
 from ashare_lake.adapters.eastmoney.valuation import fetch_valuation_metrics
 from ashare_lake.config import Config
 from ashare_lake.domain.symbols import is_all_a_symbol, parse_symbol
@@ -252,29 +253,35 @@ def step_financial_statement_items(
 
 
 # --- shareholder structure ---------------------------------------------------
-# All three are period-keyed like financial_statement_items, and fetched per
-# report period rather than per symbol: one period of 前十大流通股东 is ~55k rows
-# market-wide, so a per-symbol sweep would be ~5,500 requests against ~110 pages
-# for the filtered one. Daily runs refresh the open periods; `asl backfill`
-# walks every quarter-end (--start/--end clips the walk).
+# All three are swept market-wide with a date filter, never per symbol: one
+# quarter of 前十大流通股东 is ~55k rows, so a per-symbol sweep would be ~5,500
+# requests against ~110 pages for the filtered one.
+#
+# All three are keyed by DATE, not report period, and that was worth getting
+# wrong once to learn. 股本结构's END_DATE is the date the share count changed.
+# 股东户数 is disclosed at 旬末/月末 as well as quarter-ends. Even the holder
+# lists have 10,749 rows in 2025 Q3 dated to something other than 09-30. A
+# quarter-end sweep returns a plausible-looking pile of rows for each of them
+# and quietly omits the rest.
+HISTORY_START = date(2001, 1, 1)
+
+# Daily lookback. Generous on purpose: the cost is one filtered sweep of a few
+# pages, and the failure it prevents — a disclosure landing while the daily job
+# was broken for a week — is silent.
+DAILY_LOOKBACK_DAYS = 30
+
+# top_holders windows on the record date instead (its total-scope report has no
+# NOTICE_DATE), so its daily window has to be wide enough to still cover the
+# last period end when that period's filings arrive months later.
+TOP_HOLDERS_DAILY_LOOKBACK_DAYS = 240
 
 
-def _shareholder_periods(config: Config, trade_date: date) -> list[date]:
-    """Report periods to fetch: the open ones daily, every quarter on backfill."""
-    from ashare_lake.adapters.eastmoney.fundamentals import _report_period_dates
-
-    if getattr(config, "_backfill", False):
-        periods = _report_period_dates(
-            trade_date,
-            start=getattr(config, "_backfill_start", None),
-            end=getattr(config, "_backfill_end", None),
-        )
-        return [date.fromisoformat(p) for p in periods]
-    # Daily: the two most recent quarter-ends. A period stays open for months —
-    # 半年报 lands from July to late August — so refreshing only the newest one
-    # would miss every filing for the quarter before it.
-    recent = _report_period_dates(trade_date)[:2]
-    return [date.fromisoformat(p) for p in recent]
+def _year_windows(start: date, end: date) -> list[tuple[date, date]]:
+    """One calendar year per window, so a killed backfill costs one year."""
+    return [
+        (max(start, date(y, 1, 1)), min(end, date(y, 12, 31)))
+        for y in range(start.year, end.year + 1)
+    ]
 
 
 def _run_shareholder_step(
@@ -283,85 +290,47 @@ def _run_shareholder_step(
     run_id: str,
     dataset: str,
     fetch_fn,
+    *,
+    daily_by: str,
+    daily_lookback_days: int,
 ) -> dict:
+    """Walk date windows, writing each as it lands.
+
+    Backfill windows on the record date so it writes exactly the partitions it
+    names. Daily windows on *daily_by* — the announcement date where the report
+    has one, because a change effective weeks ago can be disclosed today and a
+    record-date window would never see it.
+    """
+    from datetime import timedelta
+
     if not config.sources.get("eastmoney", True):
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
 
+    if getattr(config, "_backfill", False):
+        start = getattr(config, "_backfill_start", None) or HISTORY_START
+        end = getattr(config, "_backfill_end", None) or trade_date
+        windows = _year_windows(start, end)
+        by = CHANGE_DATE
+    else:
+        windows = [(trade_date - timedelta(days=daily_lookback_days), trade_date)]
+        by = daily_by
+
     rows_read = 0
     rows_written = 0
-    periods = _shareholder_periods(config, trade_date)
-    for period in periods:
-        part = fetch_fn(period, config=config)
+    for win_start, win_end in windows:
+        # Write per window rather than concatenating the walk: a full
+        # top_holders backfill is ~110k rows a quarter across ~25 years, and
+        # holding all of it costs both memory and everything fetched so far if
+        # the run is killed. Unique batch id — write_simple's default batch-0
+        # would overwrite the window before it.
+        part = fetch_fn(win_start, win_end, by=by, config=config)
         if part.is_empty():
             continue
-        # Write each period as it lands rather than concatenating the walk: a
-        # full top_holders backfill is ~110k rows per quarter across ~40
-        # quarters, and holding all of it costs both memory and everything
-        # fetched so far if the run is killed. Unique batch id per period —
-        # write_simple's default batch-0 would overwrite the previous one.
         chunk = write_fetched(
             config,
             run_id,
             dataset,
             part,
-            source="eastmoney",
-            batch_id=f"batch-{period.isoformat()}",
-        )
-        rows_read += int(chunk.get("rows_read", 0))
-        rows_written += int(chunk.get("rows_written", 0))
-    return {"rows_read": rows_read, "rows_written": rows_written, "periods": len(periods)}
-
-
-# 股本结构 is keyed by change date, not report period, so it walks a date window
-# rather than the quarter list the other two use.
-SHARE_STRUCTURE_HISTORY_START = date(2001, 1, 1)
-# Daily lookback on NOTICE_DATE. Generous on purpose: the cost is one extra
-# filtered sweep of a few pages, and the failure it prevents — a disclosure
-# landing while the daily job was broken for a week — is silent.
-SHARE_STRUCTURE_DAILY_LOOKBACK_DAYS = 30
-
-
-@register_step("share_structure", group="fundamentals", depends_on=["instruments"])
-def step_share_structure(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    from datetime import timedelta
-
-    from ashare_lake.adapters.eastmoney.shareholders import (
-        CHANGE_DATE,
-        NOTICE_DATE,
-        fetch_share_structure,
-    )
-
-    if not config.sources.get("eastmoney", True):
-        raise RuntimeError("share_structure: eastmoney source disabled in config")
-
-    if getattr(config, "_backfill", False):
-        start = getattr(config, "_backfill_start", None) or SHARE_STRUCTURE_HISTORY_START
-        end = getattr(config, "_backfill_end", None) or trade_date
-        # Window on the change date so a backfill writes exactly the partitions
-        # it names, and one calendar year at a time so a kill costs one year.
-        windows = [
-            (max(start, date(y, 1, 1)), min(end, date(y, 12, 31)))
-            for y in range(start.year, end.year + 1)
-        ]
-        by = CHANGE_DATE
-    else:
-        # Window on the announcement date: a change that took effect weeks ago
-        # can be disclosed today, and a change-date window would never see it.
-        start = trade_date - timedelta(days=SHARE_STRUCTURE_DAILY_LOOKBACK_DAYS)
-        windows = [(start, trade_date)]
-        by = NOTICE_DATE
-
-    rows_read = 0
-    rows_written = 0
-    for win_start, win_end in windows:
-        df = fetch_share_structure(win_start, win_end, by=by, config=config)
-        if df.is_empty():
-            continue
-        chunk = write_fetched(
-            config,
-            run_id,
-            "share_structure",
-            df,
             source="eastmoney",
             batch_id=f"batch-{win_start.isoformat()}",
         )
@@ -370,12 +339,33 @@ def step_share_structure(config: Config, trade_date: date, run_id: str, context:
     return {"rows_read": rows_read, "rows_written": rows_written, "windows": len(windows)}
 
 
+@register_step("share_structure", group="fundamentals", depends_on=["instruments"])
+def step_share_structure(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    from ashare_lake.adapters.eastmoney.shareholders import fetch_share_structure
+
+    return _run_shareholder_step(
+        config,
+        trade_date,
+        run_id,
+        "share_structure",
+        fetch_share_structure,
+        daily_by=NOTICE_DATE,
+        daily_lookback_days=DAILY_LOOKBACK_DAYS,
+    )
+
+
 @register_step("shareholder_counts", group="fundamentals", depends_on=["instruments"])
 def step_shareholder_counts(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     from ashare_lake.adapters.eastmoney.shareholders import fetch_shareholder_counts
 
     return _run_shareholder_step(
-        config, trade_date, run_id, "shareholder_counts", fetch_shareholder_counts
+        config,
+        trade_date,
+        run_id,
+        "shareholder_counts",
+        fetch_shareholder_counts,
+        daily_by=NOTICE_DATE,
+        daily_lookback_days=DAILY_LOOKBACK_DAYS,
     )
 
 
@@ -383,4 +373,14 @@ def step_shareholder_counts(config: Config, trade_date: date, run_id: str, conte
 def step_top_holders(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     from ashare_lake.adapters.eastmoney.shareholders import fetch_top_holders
 
-    return _run_shareholder_step(config, trade_date, run_id, "top_holders", fetch_top_holders)
+    return _run_shareholder_step(
+        config,
+        trade_date,
+        run_id,
+        "top_holders",
+        fetch_top_holders,
+        # Its total-scope report has no NOTICE_DATE, so the daily path windows
+        # on the record date like the backfill does — just a narrower window.
+        daily_by=CHANGE_DATE,
+        daily_lookback_days=TOP_HOLDERS_DAILY_LOOKBACK_DAYS,
+    )

@@ -225,7 +225,11 @@ SHARE_STRUCTURE_SCHEMA = {
 # flat share count means concentration.
 SHAREHOLDER_COUNTS_SCHEMA = {
     "symbol": pl.Utf8,
-    "report_period": pl.Utf8,
+    # The date the count is as of, NOT a report period. Companies disclose
+    # 股东户数 at 旬末/月末 as well as quarter-ends — 2025-07-10 carries 894 rows
+    # and 2025-07-31 another 1,162 — and those interim counts are the timely
+    # half of the signal. A quarter label would collapse them onto each other.
+    "count_date": pl.Date,
     "holder_count": pl.Float64,
     "holder_count_change_pct": pl.Float64,
     "avg_float_shares": pl.Float64,
@@ -247,7 +251,9 @@ SHAREHOLDER_COUNTS_SCHEMA = {
 # source published.
 TOP_HOLDERS_SCHEMA = {
     "symbol": pl.Utf8,
-    "report_period": pl.Utf8,
+    # The list's as-of date. Mostly quarter-ends, but not only: 2025 Q3 has
+    # 10,749 total-scope rows dated to something else (prospectuses, 权益变动).
+    "record_date": pl.Date,
     "holder_scope": pl.Utf8,
     "holder_rank": pl.Int32,
     "holder_name": pl.Utf8,
@@ -692,7 +698,7 @@ PRIMARY_KEYS = {
     # make a query as of a date before the restatement find the old figure
     # gone rather than find the figure that was known then.
     "share_structure": ["symbol", "change_date", "announce_date"],
-    "shareholder_counts": ["symbol", "report_period", "announce_date"],
+    "shareholder_counts": ["symbol", "count_date", "announce_date"],
     # holder_name is in the key because holder_rank is NOT unique: holders tied
     # on share count share a rank. 600010.SH 2025-06-30 rank 9 is both 博时基金
     # and 易方达基金 at 167,831,580 shares each. Keying without the name drops
@@ -700,7 +706,7 @@ PRIMARY_KEYS = {
     # in the parallel-vehicle holders (中证金融 et al.) worth noticing.
     "top_holders": [
         "symbol",
-        "report_period",
+        "record_date",
         "holder_scope",
         "holder_rank",
         "holder_name",

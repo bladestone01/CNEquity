@@ -190,9 +190,9 @@
 |------|-------|
 | 主源 | eastmoney（`RPT_F10_EH_EQUITY` / `RPT_F10_EH_HOLDERNUM`） |
 | 分组 | fundamentals@17:35 |
-| 主键 | (symbol, change_date, announce_date) / (symbol, report_period, announce_date) |
-| 采集方式 | **按报告期整市场扫**，不是按标的循环：一期约 5.5k 行 / 11 页，逐个标的则是 5,500 次请求 |
-| 日更范围 | 最近两个报告期。季度数据但公告是逐家陆续披露的，重扫才能捡到新披露的 |
+| 主键 | (symbol, change_date, announce_date) / (symbol, count_date, announce_date) |
+| 采集方式 | **按日期区间整市场扫**，不是按标的循环，也不是按报告期。`RPT_F10_EH_EQUITY.END_DATE` 是股本变动日；股东户数在旬末/月末也披露（2025-07-10 有 894 行）。只扫季末会捞回一堆看着合理的行，然后静默漏掉其余大部分 |
+| 日更范围 | 按 `NOTICE_DATE` 回看 30 天。窗口开在公告日而不是变动日：几周前生效的变动今天才公告，按变动日开窗永远看不到它 |
 | PIT | `announce_date` 取自 `NOTICE_DATE`，进主键 |
 
 #### top_holders
@@ -201,9 +201,10 @@
 |------|-------|
 | 主源 | eastmoney（`RPT_F10_EH_HOLDERS` 全口径 + `RPT_F10_EH_FREEHOLDERS` 流通口径） |
 | 分组 | **不在日更波次**。两张报表 × 约 110 页 × 两个报告期 ≈ 440 页，是上面两个的 40 倍；放进 fundamentals 会挤掉 macro_risk 整组。用 `asl backfill top_holders` 单独跑 |
-| 主键 | (symbol, report_period, holder_scope, holder_rank, holder_name, announce_date)。**holder_name 必须进主键**：持股数相同的股东共用一个 rank（600010.SH 2025-06-30 第 9 名是博时和易方达两家，各 167,831,580 股），不带名字去重会把其中一家直接删掉，单期全市场 1,730 行 |
+| 主键 | (symbol, record_date, holder_scope, holder_rank, holder_name, announce_date)。**holder_name 必须进主键**：持股数相同的股东共用一个 rank（600010.SH 2025-06-30 第 9 名是博时和易方达两家，各 167,831,580 股），不带名字去重会把其中一家直接删掉，单期全市场 1,730 行 |
 | 口径 | 一张表两个口径，靠 `holder_scope` 区分：`total`=前十大股东，`float`=前十大流通股东。`holding_pct` 两边分母不同（占总股本 vs 占流通股），**不可直接比较** |
 | PIT | `RPT_F10_EH_HOLDERS` 没有 `NOTICE_DATE`，其披露日按 (symbol, report_period) 从 FREEHOLDERS 借；借不到的行**丢弃**而不是拿期末日期充数 |
+| 采集方式 | 按 `END_DATE` 区间扫（全口径报表没有 `NOTICE_DATE`，两张报表若按不同列开窗，借披露日就没得匹配）。日更回看 240 天 |
 | 分页 | 单期超过 EastMoney 的 100 页上限，靠 `keyset_column="SECUCODE"` 换锚点翻过去（见 `datacenter.py`） |
 
 ---

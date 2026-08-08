@@ -110,14 +110,14 @@ def _is_org(value: object) -> bool | None:
     return None
 
 
-def _period_filter(period: date) -> str:
-    return f"(END_DATE='{period.isoformat()}')"
-
-
 def _range_filter(column: str, start: date, end: date) -> str:
-    """Half-inclusive-both-ends range. Date literals here go unquoted — that is
-    the form the datacenter accepts for comparisons on this report."""
-    return f"({column}>={start.isoformat()})({column}<={end.isoformat()})"
+    """Inclusive at both ends.
+
+    Date literals MUST be single-quoted. Unquoted the datacenter answers 9501
+    (``参数预处理错误``) — it does not return fewer rows, it refuses the query,
+    which at least fails loudly rather than looking like an empty window.
+    """
+    return f"({column}>='{start.isoformat()}')({column}<='{end.isoformat()}')"
 
 
 def _fetch_filtered(
@@ -142,17 +142,6 @@ def _fetch_filtered(
         max_retries=_SWEEP_RETRIES,
         retry_backoff_seconds=_SWEEP_BACKOFF_SECONDS,
     )
-
-
-def _fetch_period(
-    client: EastMoneyClient,
-    report: str,
-    columns: str,
-    period: date,
-    *,
-    config: Config | None,
-) -> list[dict]:
-    return _fetch_filtered(client, report, columns, _period_filter(period), config=config)
 
 
 def fetch_share_structure(
@@ -218,17 +207,35 @@ def fetch_share_structure(
 
 
 def fetch_shareholder_counts(
-    period: date,
+    start: date,
+    end: date,
     *,
+    by: str = CHANGE_DATE,
     client: EastMoneyClient | None = None,
     config: Config | None = None,
 ) -> pl.DataFrame:
-    """股东户数 for *period*."""
+    """股东户数 in a date window.
+
+    Not quarter-only, which is the whole reason this takes a window: companies
+    disclose 户数 at 旬末 and 月末 too — 2025-07-10 carries 894 rows, 2025-07-31
+    another 1,162, against 5,635 at the quarter-end. Sweeping quarter-ends
+    collects the least timely third of a signal whose value is its timeliness.
+
+    *by* windows on ``count_date`` (END_DATE, matching the partition column) or
+    ``notice_date`` (NOTICE_DATE, for daily runs — see fetch_share_structure).
+    """
+    column = "END_DATE" if by == CHANGE_DATE else "NOTICE_DATE"
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
     try:
-        raw = _fetch_period(client, _HOLDERNUM_REPORT, _HOLDERNUM_COLUMNS, period, config=config)
+        raw = _fetch_filtered(
+            client,
+            _HOLDERNUM_REPORT,
+            _HOLDERNUM_COLUMNS,
+            _range_filter(column, start, end),
+            config=config,
+        )
     finally:
         if owns:
             client.close()
@@ -236,13 +243,13 @@ def fetch_shareholder_counts(
     rows: list[dict] = []
     for item in raw:
         symbol = symbol_from_secucode(item.get("SECUCODE"))
-        end = _em_date(item.get("END_DATE"))
-        if not symbol or end is None:
+        count_date = _em_date(item.get("END_DATE"))
+        if not symbol or count_date is None:
             continue
         rows.append(
             {
                 "symbol": symbol,
-                "report_period": end.isoformat(),
+                "count_date": count_date,
                 "holder_count": _num(item.get("HOLDER_TOTAL_NUM")),
                 "holder_count_change_pct": _num(item.get("TOTAL_NUM_RATIO")),
                 "avg_float_shares": _num(item.get("AVG_FREE_SHARES")),
@@ -252,9 +259,7 @@ def fetch_shareholder_counts(
         )
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).unique(
-        subset=["symbol", "report_period", "announce_date"], keep="last"
-    )
+    return pl.DataFrame(rows).unique(subset=["symbol", "count_date", "announce_date"], keep="last")
 
 
 def _holder_rows(
@@ -262,7 +267,7 @@ def _holder_rows(
     *,
     scope: str,
     pct_field: str,
-    period_label: str,
+    window_label: str,
 ) -> list[dict]:
     rows: list[dict] = []
     off_universe = 0
@@ -285,7 +290,7 @@ def _holder_rows(
         rows.append(
             {
                 "symbol": symbol,
-                "report_period": end.isoformat(),
+                "record_date": end,
                 "holder_scope": scope,
                 "holder_rank": int(rank),
                 "holder_name": name,
@@ -300,7 +305,7 @@ def _holder_rows(
         "top_holders %s %s: kept %d of %d raw row(s) "
         "(%d outside the A-share universe, %d without a rank or name)",
         scope,
-        period_label,
+        window_label,
         len(rows),
         len(raw),
         off_universe,
@@ -310,35 +315,61 @@ def _holder_rows(
 
 
 def fetch_top_holders(
-    period: date,
+    start: date,
+    end: date,
     *,
+    by: str = CHANGE_DATE,
     client: EastMoneyClient | None = None,
     config: Config | None = None,
 ) -> pl.DataFrame:
-    """前十大股东 + 前十大流通股东 for *period*, one frame.
+    """前十大股东 + 前十大流通股东 over a record-date window, one frame.
 
-    The float report is fetched first because it carries the disclosure date
-    the total report omits; the total rows take theirs from it by
-    (symbol, period).
+    Mostly quarter-ends but not only — 2025 Q3 has 10,749 total-scope rows dated
+    to something else (prospectuses, 权益变动), so this windows on END_DATE
+    rather than naming periods.
+
+    The window is always on END_DATE, never the announcement date: the total
+    report carries no ``NOTICE_DATE`` at all, and windowing the two reports on
+    different columns would leave total rows with no float row to borrow a
+    disclosure date from. The float report is fetched first for that reason.
+
+    *by* exists only to keep the three fetchers callable the same way; anything
+    but ``change_date`` is refused rather than silently ignored.
     """
+    if by != CHANGE_DATE:
+        raise ValueError(
+            f"fetch_top_holders cannot window on {by!r}: {_HOLDERS_REPORT} has no NOTICE_DATE, "
+            "so the two reports would cover different rows and the disclosure-date borrow "
+            "would have nothing to match against"
+        )
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
     try:
-        free_raw = _fetch_period(
-            client, _FREEHOLDERS_REPORT, _FREEHOLDERS_COLUMNS, period, config=config
+        free_raw = _fetch_filtered(
+            client,
+            _FREEHOLDERS_REPORT,
+            _FREEHOLDERS_COLUMNS,
+            _range_filter("END_DATE", start, end),
+            config=config,
         )
-        total_raw = _fetch_period(client, _HOLDERS_REPORT, _HOLDERS_COLUMNS, period, config=config)
+        total_raw = _fetch_filtered(
+            client,
+            _HOLDERS_REPORT,
+            _HOLDERS_COLUMNS,
+            _range_filter("END_DATE", start, end),
+            config=config,
+        )
     finally:
         if owns:
             client.close()
 
-    label = period.isoformat()
+    label = f"{start.isoformat()}..{end.isoformat()}"
     free_rows = _holder_rows(
-        free_raw, scope=SCOPE_FLOAT, pct_field="FREE_HOLDNUM_RATIO", period_label=label
+        free_raw, scope=SCOPE_FLOAT, pct_field="FREE_HOLDNUM_RATIO", window_label=label
     )
     total_rows = _holder_rows(
-        total_raw, scope=SCOPE_TOTAL, pct_field="HOLD_NUM_RATIO", period_label=label
+        total_raw, scope=SCOPE_TOTAL, pct_field="HOLD_NUM_RATIO", window_label=label
     )
 
     frames: list[pl.DataFrame] = []
@@ -352,12 +383,12 @@ def fetch_top_holders(
         if free_rows:
             notices = (
                 pl.DataFrame(free_rows)
-                .select("symbol", "report_period", "announce_date")
+                .select("symbol", "record_date", "announce_date")
                 .drop_nulls("announce_date")
-                .unique(subset=["symbol", "report_period"], keep="last")
+                .unique(subset=["symbol", "record_date"], keep="last")
                 .rename({"announce_date": "_notice"})
             )
-            total_df = total_df.join(notices, on=["symbol", "report_period"], how="left")
+            total_df = total_df.join(notices, on=["symbol", "record_date"], how="left")
             total_df = total_df.with_columns(
                 pl.col("announce_date").fill_null(pl.col("_notice"))
             ).drop("_notice")
@@ -382,7 +413,7 @@ def fetch_top_holders(
     deduped = combined.unique(
         subset=[
             "symbol",
-            "report_period",
+            "record_date",
             "holder_scope",
             "holder_rank",
             "holder_name",
@@ -400,4 +431,4 @@ def fetch_top_holders(
             label,
             combined.height - deduped.height,
         )
-    return deduped.sort(["report_period", "symbol", "holder_scope", "holder_rank"])
+    return deduped.sort(["record_date", "symbol", "holder_scope", "holder_rank"])

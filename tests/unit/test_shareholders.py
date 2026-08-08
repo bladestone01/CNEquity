@@ -16,6 +16,8 @@ import polars as pl
 from ashare_lake.adapters.eastmoney import shareholders as sh
 
 PERIOD = date(2025, 6, 30)
+WIN_START = date(2025, 1, 1)
+WIN_END = date(2025, 12, 31)
 NOTICE = "2025-08-23 00:00:00"
 
 
@@ -71,7 +73,7 @@ def test_share_structure_maps_the_four_share_counts(monkeypatch):
             ]
         },
     )
-    df = sh.fetch_share_structure(date(2025, 1, 1), date(2025, 12, 31), client=_Client())
+    df = sh.fetch_share_structure(WIN_START, WIN_END, client=_Client())
     row = df.row(0, named=True)
     assert row["symbol"] == "000001.SZ"
     assert row["change_date"] == PERIOD
@@ -93,10 +95,10 @@ def test_share_structure_is_swept_by_date_window_never_by_quarter_end(monkeypatc
     """
     seen: dict[str, str] = {}
     _patch(monkeypatch, {sh._EQUITY_REPORT: []}, seen)
-    sh.fetch_share_structure(date(2025, 1, 1), date(2025, 12, 31), client=_Client())
+    sh.fetch_share_structure(WIN_START, WIN_END, client=_Client())
     expr = seen[sh._EQUITY_REPORT]
-    assert "END_DATE>=2025-01-01" in expr
-    assert "END_DATE<=2025-12-31" in expr
+    assert "END_DATE>='2025-01-01'" in expr
+    assert "END_DATE<='2025-12-31'" in expr
     assert "END_DATE=2025" not in expr, "an equality filter would be the period-sweep bug"
 
 
@@ -108,7 +110,7 @@ def test_share_structure_can_window_on_the_announcement_date_instead(monkeypatch
     sh.fetch_share_structure(
         date(2025, 8, 1), date(2025, 8, 31), by=sh.NOTICE_DATE, client=_Client()
     )
-    assert "NOTICE_DATE>=2025-08-01" in seen[sh._EQUITY_REPORT]
+    assert "NOTICE_DATE>='2025-08-01'" in seen[sh._EQUITY_REPORT]
     assert "END_DATE" not in seen[sh._EQUITY_REPORT]
 
 
@@ -132,10 +134,10 @@ def test_shareholder_counts_maps_the_concentration_inputs(monkeypatch):
             ]
         },
     )
-    row = sh.fetch_shareholder_counts(PERIOD, client=_Client()).row(0, named=True)
+    row = sh.fetch_shareholder_counts(WIN_START, WIN_END, client=_Client()).row(0, named=True)
     assert row["holder_count"] == 443583
     assert row["holder_count_change_pct"] == -12.0341
-    assert row["report_period"] == "2025-06-30"
+    assert row["count_date"] == PERIOD
     assert row["announce_date"] == date(2025, 8, 23)
 
 
@@ -163,7 +165,7 @@ def test_both_scopes_land_in_one_frame_with_their_own_pct_field(monkeypatch):
             ],
         },
     )
-    df = sh.fetch_top_holders(PERIOD, client=_Client())
+    df = sh.fetch_top_holders(WIN_START, WIN_END, client=_Client())
     assert set(df["holder_scope"].to_list()) == {sh.SCOPE_FLOAT, sh.SCOPE_TOTAL}
 
     float_row = df.filter(pl.col("holder_scope") == sh.SCOPE_FLOAT).row(0, named=True)
@@ -190,7 +192,7 @@ def test_total_scope_borrows_its_disclosure_date_from_the_float_report(monkeypat
             ],
         },
     )
-    df = sh.fetch_top_holders(PERIOD, client=_Client())
+    df = sh.fetch_top_holders(WIN_START, WIN_END, client=_Client())
     total = df.filter(pl.col("holder_scope") == sh.SCOPE_TOTAL)
     assert total.height == 2
     assert total["announce_date"].to_list() == [date(2025, 8, 23)] * 2
@@ -213,7 +215,7 @@ def test_undated_total_rows_are_dropped_not_stamped_with_the_period(monkeypatch)
             ],
         },
     )
-    df = sh.fetch_top_holders(PERIOD, client=_Client())
+    df = sh.fetch_top_holders(WIN_START, WIN_END, client=_Client())
     assert "000001.SH" not in df["symbol"].to_list()
     assert df["announce_date"].null_count() == 0
 
@@ -224,7 +226,7 @@ def test_rows_without_a_rank_or_name_are_skipped(monkeypatch):
         bad = _holder("600519", 1, name="A", pct_field="FREE_HOLDNUM_RATIO", pct=1.0, notice=NOTICE)
         bad[field] = None
         _patch(monkeypatch, {sh._FREEHOLDERS_REPORT: [bad]})
-        assert sh.fetch_top_holders(PERIOD, client=_Client()).is_empty(), field
+        assert sh.fetch_top_holders(WIN_START, WIN_END, client=_Client()).is_empty(), field
 
 
 def test_holders_tied_on_share_count_share_a_rank_and_both_survive(monkeypatch):
@@ -242,7 +244,7 @@ def test_holders_tied_on_share_count_share_a_rank_and_both_survive(monkeypatch):
     for row in tied:
         row["HOLD_NUM"] = 167831580
     _patch(monkeypatch, {sh._FREEHOLDERS_REPORT: tied})
-    df = sh.fetch_top_holders(PERIOD, client=_Client())
+    df = sh.fetch_top_holders(WIN_START, WIN_END, client=_Client())
     assert df.height == 2, "a tied holder was dropped"
     assert df["holder_name"].n_unique() == 2
 

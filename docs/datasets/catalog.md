@@ -210,9 +210,9 @@ bars_15m = (
 | financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区；`asl backfill` 默认自 2001 起（`--start`/`--end` 分块）；baostock 不用于 FSI |
 | valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 回填：baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
-| share_structure | report_period | symbol, change_date, announce_date | by_date PIT | — | eastmoney | 总股本/流通/限售/自由流通；按报告期整市场扫 |
-| shareholder_counts | report_period | symbol, report_period, announce_date | by_date PIT | — | eastmoney | 股东户数与户均持股，筹码集中度输入 |
-| top_holders | report_period | symbol, report_period, holder_scope, holder_rank, holder_name, announce_date | by_date PIT | — | eastmoney | 一张表两个口径：`holder_scope=total`（前十大股东）/ `float`（前十大流通股东）|
+| share_structure | change_date | symbol, change_date, announce_date | by_date PIT | — | eastmoney | 总股本/流通/限售/自由流通。**按变动日期扫，不是按报告期**：END_DATE 是股本变动日，2025Q3 有 88 个不同日期 |
+| shareholder_counts | count_date | symbol, count_date, announce_date | by_date PIT | — | eastmoney | 股东户数与户均持股，筹码集中度输入。**旬末/月末也披露**：2025Q3 区间 13,356 行 / 71 个日期，只扫季末仅 5,635 行 |
+| top_holders | record_date | symbol, record_date, holder_scope, holder_rank, holder_name, announce_date | by_date PIT | — | eastmoney | 一张表两个口径：`holder_scope=total`（前十大股东）/ `float`（前十大流通股东）。2025Q3 有 10,749 行全口径不落在季末 |
 
 ---
 
