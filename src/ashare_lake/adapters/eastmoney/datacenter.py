@@ -108,7 +108,12 @@ def fetch_datacenter(
             f"&pageNumber={page}"
         )
         if effective_filter:
-            params += f"&filter={quote(effective_filter, safe='()>=<=')}"
+            # `>` and `<` must NOT be in the safe set. Left raw they are illegal
+            # in a query, so httpx re-quotes the whole component on its way out
+            # and every %27 already written here becomes %2527 — the server then
+            # rejects the filter with InputMismatchException. Encoding them to
+            # %3E/%3C ourselves leaves nothing for httpx to normalize.
+            params += f"&filter={quote(effective_filter, safe='()=')}"
         if sort_columns:
             params += f"&sortColumns={sort_columns}&sortTypes={sort_types or '-1'}"
         url = f"{DATACENTER_BASE}?{params}"

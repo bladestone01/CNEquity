@@ -38,8 +38,10 @@ class FakeDatacenter:
         self.rows = rows
         self.cap = cap
         self.filters: list[str] = []
+        self.urls: list[str] = []
 
     def get(self, url: str, **kwargs):
+        self.urls.append(url)
         page = int(re.search(r"pageNumber=(\d+)", url).group(1))
         size = int(re.search(r"pageSize=(\d+)", url).group(1))
         raw_filter = re.search(r"filter=([^&]*)", url)
@@ -124,6 +126,22 @@ def test_re_anchor_lands_on_a_key_boundary_never_mid_group():
         counts[row["SECUCODE"]] = counts.get(row["SECUCODE"], 0) + 1
     short = {k: v for k, v in counts.items() if v != _HOLDERS_PER_SYMBOL}
     assert not short, f"symbols with the wrong number of holder rows: {short}"
+
+
+def test_the_anchored_filter_is_encoded_exactly_once():
+    """`>` left raw is illegal in a query, so httpx re-quotes the whole
+    component on the way out and every %27 becomes %2527. The server answers
+    200 and then rejects the filter with InputMismatchException — a live-only
+    failure that unit tests miss unless they look at the wire format."""
+    client = FakeDatacenter(_table())
+    _fetch(client, keyset_column="SECUCODE", filter_expr="(END_DATE='2025-06-30')")
+    filters = [u.split("filter=")[-1].split("&")[0] for u in client.urls]
+    anchored = [f for f in filters if "SECUCODE" in f]
+    assert anchored, "expected a re-anchored request"
+    for query in anchored:
+        assert "%25" not in query, f"double-encoded filter: {query}"
+        assert "%27" in query, f"lost the quoting of the date literal: {query}"
+        assert "%3E" in query, f"`>` left raw for httpx to re-quote: {query}"
 
 
 def test_without_a_keyset_column_it_names_the_cap_instead_of_blaming_load():

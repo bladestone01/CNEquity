@@ -104,13 +104,13 @@ def test_build_eastmoney_headers_push2_domain_no_nid_lookup(monkeypatch):
 
 
 def test_build_eastmoney_headers_eastmoney_domain_sets_cookie(monkeypatch):
-    monkeypatch.setattr(em, "get_nid", lambda: "nid-xyz")
+    monkeypatch.setattr(em, "get_nid", lambda client=None: "nid-xyz")
     headers = em.build_eastmoney_headers("https://datacenter-web.eastmoney.com/api/data/v1/get")
     assert headers["Cookie"] == "nid=nid-xyz"
 
 
 def test_build_eastmoney_headers_eastmoney_domain_no_nid(monkeypatch):
-    monkeypatch.setattr(em, "get_nid", lambda: "")
+    monkeypatch.setattr(em, "get_nid", lambda client=None: "")
     headers = em.build_eastmoney_headers("https://datacenter-web.eastmoney.com/api/data/v1/get")
     assert "Cookie" not in headers
 

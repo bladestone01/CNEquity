@@ -32,6 +32,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NID_CACHE: dict = {"nid": None, "expires": 0.0}
+# How long a fetched nid is reused, and how long a *failed* fetch is remembered.
+# The failure side is the load-bearing one: before it existed, only a successful
+# fetch set an expiry, so a route where anonflow2 refuses (403 from a non-mainland
+# IP) re-attempted the handshake ahead of every single request — a 220-page sweep
+# paid 220 pointless round trips. The datacenter answers fine without the cookie,
+# so backing off costs nothing.
+_NID_TTL_SECONDS = 300.0
+_NID_FAILURE_COOLDOWN_SECONDS = 600.0
 
 _EASTMONEY_DOMAINS = (
     "eastmoney.com",
@@ -61,6 +69,12 @@ _CHROME_UA = (
 
 
 def fetch_nid(client: httpx.Client | None = None) -> str:
+    """Handshake for the ``nid`` cookie the datacenter endpoints like to see.
+
+    Pass the caller's client whenever there is one: anonflow2 is an EastMoney
+    host like any other, so a bare client here would leave the proxy that makes
+    the rest of the traffic reachable and get refused on its own.
+    """
     url = "https://anonflow2.eastmoney.com/backend/api/webreport"
     payload = {
         "deviceType": "web",
@@ -88,17 +102,21 @@ def fetch_nid(client: httpx.Client | None = None) -> str:
     return ""
 
 
-def get_nid() -> str:
+def get_nid(client: httpx.Client | None = None) -> str:
+    """Cached nid cookie. *client* should be the caller's own — see fetch_nid."""
     now = time.time()
     if now > _NID_CACHE["expires"]:
-        nid = fetch_nid()
+        nid = fetch_nid(client)
         if nid:
             _NID_CACHE["nid"] = nid
-            _NID_CACHE["expires"] = now + 20
+            _NID_CACHE["expires"] = now + _NID_TTL_SECONDS
+        else:
+            # Back off on failure too, or every request retries the handshake.
+            _NID_CACHE["expires"] = now + _NID_FAILURE_COOLDOWN_SECONDS
     return _NID_CACHE["nid"] or ""
 
 
-def build_eastmoney_headers(url: str) -> dict[str, str]:
+def build_eastmoney_headers(url: str, client: httpx.Client | None = None) -> dict[str, str]:
     headers = {
         "User-Agent": _CHROME_UA,
         "Accept": "*/*",
@@ -108,7 +126,10 @@ def build_eastmoney_headers(url: str) -> dict[str, str]:
         headers["Referer"] = _QUOTE_REFERER
         return headers
     if any(d in url for d in _EASTMONEY_DOMAINS):
-        nid = get_nid()
+        # Don't recurse: the nid handshake is itself an EastMoney URL.
+        if "anonflow2.eastmoney.com" in url:
+            return headers
+        nid = get_nid(client)
         if nid:
             headers["Cookie"] = f"nid={nid}"
     return headers
@@ -210,7 +231,7 @@ class EastMoneyClient:
     def get(self, url: str, **kwargs) -> httpx.Response:
         self._throttle()
         headers = kwargs.pop("headers", {})
-        headers.update(build_eastmoney_headers(url))
+        headers.update(build_eastmoney_headers(url, self._client))
         params = apply_push2_token(url, kwargs.pop("params", None))
         if params is not None:
             kwargs["params"] = params
@@ -219,7 +240,7 @@ class EastMoneyClient:
     def post(self, url: str, **kwargs) -> httpx.Response:
         self._throttle()
         headers = kwargs.pop("headers", {})
-        headers.update(build_eastmoney_headers(url))
+        headers.update(build_eastmoney_headers(url, self._client))
         return self._client.post(url, headers=headers, **kwargs)
 
     def close(self) -> None:
