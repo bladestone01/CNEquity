@@ -24,11 +24,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import tempfile
 from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -36,7 +37,7 @@ import polars as pl
 
 from ashare_lake.config import Config
 from ashare_lake.domain.symbols import issued_code_space
-from ashare_lake.steps.common import load_symbols
+from ashare_lake.steps.common import is_trading_day, load_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,19 @@ def _read_catalog(config: Config) -> dict:
 
 def _write_catalog(config: Config, payload: dict) -> None:
     path = catalog_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+    except Exception:
+        with suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp")
     try:
@@ -323,7 +337,12 @@ def _instruments_rows(config: Config, spans: dict[str, tuple[date | None, date]]
     )
 
 
-def _bar_spans(config: Config, symbols: list[str]) -> dict[str, tuple[date, date]]:
+def _bar_spans(
+    config: Config,
+    symbols: list[str],
+    *,
+    positive_volume_only: bool = False,
+) -> dict[str, tuple[date, date]]:
     """``symbol -> (first_bar, last_bar)`` for symbols that already have daily_bars."""
     if not symbols:
         return {}
@@ -332,10 +351,11 @@ def _bar_spans(config: Config, symbols: list[str]) -> dict[str, tuple[date, date
         return {}
     from ashare_lake.query.parquet_scan import parquet_glob
 
+    bars = pl.scan_parquet(parquet_glob(root)).filter(pl.col("symbol").is_in(symbols))
+    if positive_volume_only and "volume" in bars.collect_schema().names():
+        bars = bars.filter(pl.col("volume") > 0)
     frame = (
-        pl.scan_parquet(parquet_glob(root))
-        .filter(pl.col("symbol").is_in(symbols))
-        .group_by("symbol")
+        bars.group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("first"),
             pl.col("trade_date").max().alias("last"),
@@ -505,6 +525,152 @@ def delisted_coverage_report(
             "Does not verify every expected trading session inside each observed price series.",
         ],
     }
+
+
+def delisted_catalog_reconciliation_report(config: Config, *, sample: int = 15) -> dict:
+    """Compare swept catalogue terminals with curated independent evidence.
+
+    A correction is considered safe only when curated positive-volume bars
+    establish a different terminal, that terminal does not exceed the formal
+    instrument delisting date, and the catalogue terminal is independently
+    impossible (after formal delisting or not an exchange trading day). Other
+    mismatches remain visible but are never changed automatically.
+    """
+    if sample < 0:
+        raise ValueError("sample must be non-negative")
+
+    # The raw sweep also holds codes that still quote near the lake watermark
+    # (notably the live BJ board missing from an older instrument snapshot).
+    # They are coverage gaps, not retired names, and do not belong in terminal
+    # reconciliation.
+    catalog = classify_catalog(config)[0]
+    symbols = sorted(catalog)
+    spans = _bar_spans(config, symbols, positive_volume_only=True)
+
+    instrument_dates: dict[str, date | None] = {}
+    instruments_path = config.curated_root / "instruments" / "part-merged.parquet"
+    if instruments_path.exists():
+        instruments = pl.read_parquet(instruments_path, columns=["symbol", "delist_date"])
+        instrument_dates = {
+            row["symbol"]: row["delist_date"] for row in instruments.iter_rows(named=True)
+        }
+
+    safe: list[dict] = []
+    unresolved: list[dict] = []
+    missing_bars: list[dict] = []
+    matching = 0
+    for symbol in symbols:
+        catalog_last = catalog[symbol]
+        span = spans.get(symbol)
+        formal = instrument_dates.get(symbol)
+        if span is None:
+            missing_bars.append({"symbol": symbol, "catalog_last_traded": catalog_last.isoformat()})
+            continue
+        observed = span[1]
+        if observed == catalog_last:
+            matching += 1
+            continue
+
+        catalog_after_formal = formal is not None and catalog_last > formal
+        catalog_not_trading = not is_trading_day(config, catalog_last)
+        observed_within_identity = formal is not None and observed <= formal
+        finding = {
+            "symbol": symbol,
+            "catalog_last_traded": catalog_last.isoformat(),
+            "observed_last_positive_volume_bar": observed.isoformat(),
+            "instrument_delist_date": formal.isoformat() if formal else None,
+            "catalog_after_formal_delist": catalog_after_formal,
+            "catalog_not_trading_day": catalog_not_trading,
+        }
+        if observed_within_identity and (catalog_after_formal or catalog_not_trading):
+            finding["proposed_last_traded"] = observed.isoformat()
+            finding["evidence"] = [
+                reason
+                for reason, present in (
+                    ("catalog_after_formal_delist", catalog_after_formal),
+                    ("catalog_not_trading_day", catalog_not_trading),
+                    ("curated_positive_volume_terminal", True),
+                )
+                if present
+            ]
+            safe.append(finding)
+        else:
+            finding["reason"] = (
+                "observed_terminal_exceeds_formal_delist"
+                if formal is not None and observed > formal
+                else "catalog_terminal_not_independently_disproven"
+            )
+            unresolved.append(finding)
+
+    return {
+        "claim": "delisted_catalog_terminal_reconciliation",
+        "read_only": True,
+        "counts": {
+            "catalogued": len(catalog),
+            "matching": matching,
+            "safe_correction": len(safe),
+            "unresolved_mismatch": len(unresolved),
+            "missing_curated_bars": len(missing_bars),
+        },
+        "samples": {
+            "safe_correction": safe[:sample],
+            "unresolved_mismatch": unresolved[:sample],
+            "missing_curated_bars": missing_bars[:sample],
+        },
+        # The complete safe set is retained for deterministic apply even when
+        # the human-readable samples are capped.
+        "safe_corrections": safe,
+    }
+
+
+def reconcile_delisted_catalog(config: Config, *, sample: int = 15) -> dict:
+    """Apply only high-confidence terminal corrections with backup and receipt."""
+    from ashare_lake.orchestrator.manifest import Manifest
+    from ashare_lake.orchestrator.run_lock import run_lock
+
+    with run_lock(config.meta_root, "delisted_catalog_reconciliation"):
+        running = [
+            {"run_id": row["run_id"], "job_name": row["job_name"]}
+            for row in Manifest(config.manifest_path).list_runs()
+            if row["status"] == "running"
+        ]
+        if running:
+            names = ", ".join(f"{row['job_name']}:{row['run_id']}" for row in running[:5])
+            raise RuntimeError(
+                "refusing to reconcile the delisted catalogue while ingestion runs are active: "
+                + names
+            )
+
+        report = delisted_catalog_reconciliation_report(config, sample=sample)
+        corrections = report["safe_corrections"]
+        now = datetime.now(timezone.utc)
+        stamp = now.strftime("%Y%m%dT%H%M%SZ")
+        source = catalog_path(config)
+        if not source.exists():
+            raise RuntimeError("delisted catalogue does not exist")
+
+        backup = config.meta_root / "state" / "history" / f"delisted_catalog-{stamp}.json"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, backup)
+
+        payload = _read_catalog(config)
+        for correction in corrections:
+            payload["delisted"][correction["symbol"]] = correction["proposed_last_traded"]
+        payload["last_reconciled_at"] = now.isoformat()
+        _write_catalog(config, payload)
+
+        receipt = {
+            **report,
+            "read_only": False,
+            "applied": len(corrections),
+            "applied_at": now.isoformat(),
+            "backup": str(backup),
+        }
+        receipt_path = (
+            config.meta_root / "quality" / f"delisted-catalog-reconciliation-{stamp}.json"
+        )
+        _write_json_atomic(receipt_path, receipt)
+        return {**receipt, "receipt": str(receipt_path)}
 
 
 def _strip_subscription_placeholders(df: pl.DataFrame) -> pl.DataFrame:

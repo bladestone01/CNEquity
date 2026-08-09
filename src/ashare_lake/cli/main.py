@@ -2027,6 +2027,33 @@ def delisted_coverage(config_path: str, start: str, end: str | None, sample: int
         raise SystemExit(1)
 
 
+@delisted_grp.command("reconcile")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--apply", is_flag=True, help="Apply high-confidence corrections.")
+@click.option("--sample", default=15, show_default=True, type=click.IntRange(min=0))
+def delisted_reconcile(config_path: str, apply: bool, sample: int):
+    """Audit catalogue terminals and optionally apply independently proven fixes.
+
+    Dry-run by default. ``--apply`` refuses to run during any active ingestion,
+    backs up the catalogue, and writes a quality receipt.
+    """
+    from ashare_lake.steps.delisted import (
+        delisted_catalog_reconciliation_report,
+        reconcile_delisted_catalog,
+    )
+
+    cfg = _cfg(config_path)
+    try:
+        report = (
+            reconcile_delisted_catalog(cfg, sample=sample)
+            if apply
+            else delisted_catalog_reconciliation_report(cfg, sample=sample)
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(report, indent=2))
+
+
 @delisted_grp.command("repair")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(

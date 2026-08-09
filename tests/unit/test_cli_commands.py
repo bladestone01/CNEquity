@@ -597,6 +597,27 @@ def test_delisted_coverage_uses_exit_status_as_a_strict_gate(cfg_path, monkeypat
     assert json.loads(result.output)["verified"] is False
 
 
+def test_delisted_reconcile_is_dry_run_unless_apply_is_explicit(cfg_path, monkeypatch):
+    seen = []
+    report = {"read_only": True, "counts": {"safe_correction": 1}}
+    monkeypatch.setattr(
+        "ashare_lake.steps.delisted.delisted_catalog_reconciliation_report",
+        lambda cfg, sample=15: seen.append("dry-run") or report,
+    )
+    monkeypatch.setattr(
+        "ashare_lake.steps.delisted.reconcile_delisted_catalog",
+        lambda cfg, sample=15: seen.append("apply") or {**report, "read_only": False},
+    )
+
+    result = CliRunner().invoke(cli, ["delisted", "reconcile", "--config", cfg_path])
+    assert result.exit_code == 0, result.output
+    assert seen == ["dry-run"]
+
+    result = CliRunner().invoke(cli, ["delisted", "reconcile", "--config", cfg_path, "--apply"])
+    assert result.exit_code == 0, result.output
+    assert seen == ["dry-run", "apply"]
+
+
 def test_delisted_repair(cfg_path, monkeypatch):
     class FakeManifest:
         def start_run(self, *a, **k):
