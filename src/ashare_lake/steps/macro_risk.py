@@ -99,6 +99,14 @@ _UNLOCK_HORIZON_DAYS = 180
 # landed exactly wrong; 150 leaves 30 days of slack on both sides.
 _UNLOCK_STRIDE_DAYS = 150
 
+# Each stride re-walks a 63-page market-wide report from page 1. Measured:
+# three backfill runs each failed once, on three different pages (8, 27, 28) —
+# a transient-load pattern, not one broken page — and the default 3/5s budget
+# (sized for the single-page daily call) wasn't enough. 5/15s mirrors the same
+# fix already proven on the F10 shareholder sweeps for the same failure shape.
+_UNLOCK_SWEEP_RETRIES = 5
+_UNLOCK_SWEEP_BACKOFF_SECONDS = 15.0
+
 
 def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: str) -> dict:
     """Walk in ~150-day strides, not daily.
@@ -128,7 +136,12 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
     n_parts = 0
     while cursor <= end:
         config.rate_limit("eastmoney")
-        df = fetch_share_unlock_schedule(cursor, horizon_days=_UNLOCK_HORIZON_DAYS)
+        df = fetch_share_unlock_schedule(
+            cursor,
+            horizon_days=_UNLOCK_HORIZON_DAYS,
+            max_retries=_UNLOCK_SWEEP_RETRIES,
+            retry_backoff_seconds=_UNLOCK_SWEEP_BACKOFF_SECONDS,
+        )
         if not df.is_empty():
             part = with_provenance(
                 df, source="eastmoney", data_version=data_version_for("share_unlock_schedule")

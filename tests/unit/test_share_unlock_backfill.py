@@ -36,7 +36,7 @@ def test_strides_under_the_horizon_not_every_day(tmp_path, monkeypatch):
     cfg._backfill_end = date(2026, 6, 30)  # ~181 days: exactly one full stride
     calls: list[date] = []
 
-    def fake_fetch(d: date, *, horizon_days: int = 180) -> pl.DataFrame:
+    def fake_fetch(d: date, *, horizon_days: int = 180, **_kw) -> pl.DataFrame:
         calls.append(d)
         return pl.DataFrame([_row(d + timedelta(days=30))])
 
@@ -63,7 +63,7 @@ def test_flushes_per_stride_not_once_at_the_end(tmp_path, monkeypatch):
     cfg._backfill_start = date(2026, 1, 1)
     cfg._backfill_end = date(2026, 6, 30)  # two strides: day 0 and day 150
 
-    def fake_fetch(d: date, *, horizon_days: int = 180) -> pl.DataFrame:
+    def fake_fetch(d: date, *, horizon_days: int = 180, **_kw) -> pl.DataFrame:
         return pl.DataFrame([_row(d + timedelta(days=30))])
 
     monkeypatch.setattr("ashare_lake.steps.macro_risk.fetch_share_unlock_schedule", fake_fetch)
@@ -74,6 +74,34 @@ def test_flushes_per_stride_not_once_at_the_end(tmp_path, monkeypatch):
     staged = list((cfg.staging_root / "share_unlock_schedule").glob("**/*.parquet"))
     assert len(staged) == 2
     assert out["rows_written"] == sum(pl.read_parquet(f).height for f in staged)
+
+
+def test_uses_the_patient_sweep_retry_budget_not_the_daily_default(tmp_path, monkeypatch):
+    """Measured: three backfill runs each failed once, on three different
+    pages (8, 27, 28) of the 63-page market-wide report every stride re-walks
+    from page 1 — a transient-load pattern the daily call's 3/5s budget isn't
+    sized for. The backfill must ask for the more patient one."""
+    from ashare_lake.steps.macro_risk import (
+        _UNLOCK_SWEEP_BACKOFF_SECONDS,
+        _UNLOCK_SWEEP_RETRIES,
+    )
+
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill_start = date(2026, 1, 1)
+    cfg._backfill_end = date(2026, 1, 2)  # a single stride
+    seen: dict = {}
+
+    def fake_fetch(d: date, *, horizon_days: int = 180, **kw) -> pl.DataFrame:
+        seen.update(kw)
+        return pl.DataFrame()
+
+    monkeypatch.setattr("ashare_lake.steps.macro_risk.fetch_share_unlock_schedule", fake_fetch)
+    monkeypatch.setattr(cfg, "rate_limit", lambda source: None)
+
+    _backfill_share_unlock_schedule(cfg, date(2026, 7, 1), "run-1")
+
+    assert seen["max_retries"] == _UNLOCK_SWEEP_RETRIES
+    assert seen["retry_backoff_seconds"] == _UNLOCK_SWEEP_BACKOFF_SECONDS
 
 
 def test_empty_range_writes_nothing(tmp_path, monkeypatch):

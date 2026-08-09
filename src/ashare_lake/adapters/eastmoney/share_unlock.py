@@ -34,6 +34,8 @@ def fetch_share_unlock_schedule(
     *,
     horizon_days: int = 180,
     client: EastMoneyClient | None = None,
+    max_retries: int = 3,
+    retry_backoff_seconds: float = 5.0,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
@@ -52,6 +54,13 @@ def fetch_share_unlock_schedule(
     start = trade_date
     end = trade_date + timedelta(days=horizon_days)
 
+    # This walks a market-wide report (63 pages of 500), and the backfill's
+    # ~40 strides each restart that walk from page 1 — so a transient EastMoney
+    # timeout on any one page is common at this volume. Measured: three
+    # failures across three backfill attempts, on three different pages
+    # (8, 27, 28), not one specific broken request. The default 3 retries / 5s
+    # backoff is sized for the single-page daily call; the backfill caller
+    # passes a more patient budget.
     def _page_is_past_window(batch: list[dict]) -> bool:
         for item in reversed(batch):
             parsed = _free_date(item)
@@ -66,6 +75,8 @@ def fetch_share_unlock_schedule(
         sort_columns="FREE_DATE",
         sort_types="-1",
         stop_after=_page_is_past_window,
+        max_retries=max_retries,
+        retry_backoff_seconds=retry_backoff_seconds,
     )
     if owns:
         client.close()
