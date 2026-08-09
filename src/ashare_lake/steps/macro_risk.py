@@ -122,6 +122,17 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
     production: one stride's page 28 hit an unretried EastMoney timeout 38
     minutes into a ~40-stride sweep, and because nothing had been written yet,
     all 38 minutes of prior strides were lost with it.
+
+    Walks newest-to-oldest, not oldest-to-newest. RPT_LIFT_STAGE is sorted
+    FREE_DATE descending and each stride pages until it reaches rows past its
+    own window — so a stride targeting 2026 reads the ~7 pages the module
+    docstring describes, but a stride targeting 2010 has to page through
+    nearly the whole 63-page report to get there. The old oldest-first order
+    ran the most expensive, most failure-prone strides first: four
+    consecutive attempts each died on an early stride, on four different
+    pages (8, 27, 28, 33), losing the cheap, high-value recent strides to a
+    failure in the expensive tail every time. Newest-first means a failure
+    anywhere still leaves the most-likely-to-be-queried years landed.
     """
     from datetime import timedelta
 
@@ -130,11 +141,17 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
 
     start = getattr(config, "_backfill_start", None) or BACKFILL_START
     end = getattr(config, "_backfill_end", None) or trade_date
-    writer = StagingWriter(config.staging_root)
+    cursors = []
     cursor = start
+    while cursor <= end:
+        cursors.append(cursor)
+        cursor += timedelta(days=_UNLOCK_STRIDE_DAYS)
+    cursors.reverse()
+
+    writer = StagingWriter(config.staging_root)
     rows_written = 0
     n_parts = 0
-    while cursor <= end:
+    for cursor in cursors:
         config.rate_limit("eastmoney")
         df = fetch_share_unlock_schedule(
             cursor,
@@ -149,7 +166,6 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
             writer.write_batch("share_unlock_schedule", run_id, f"bf-{n_parts:04d}", part)
             n_parts += 1
             rows_written += part.height
-        cursor += timedelta(days=_UNLOCK_STRIDE_DAYS)
     return {"rows_read": rows_written, "rows_written": rows_written}
 
 

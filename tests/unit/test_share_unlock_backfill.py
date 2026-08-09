@@ -45,9 +45,35 @@ def test_strides_under_the_horizon_not_every_day(tmp_path, monkeypatch):
 
     _backfill_share_unlock_schedule(cfg, date(2026, 7, 1), "run-1")
 
-    # 181-day window at a 150-day stride: calls at day 0 and day 150, not 181
-    # separate daily calls.
-    assert calls == [date(2026, 1, 1), date(2026, 1, 1) + timedelta(days=_UNLOCK_STRIDE_DAYS)]
+    # 181-day window at a 150-day stride: two calls, at day 0 and day 150, not
+    # 181 separate daily ones.
+    assert set(calls) == {date(2026, 1, 1), date(2026, 1, 1) + timedelta(days=_UNLOCK_STRIDE_DAYS)}
+
+
+def test_walks_newest_stride_first(tmp_path, monkeypatch):
+    """RPT_LIFT_STAGE is sorted FREE_DATE descending, so a stride targeting a
+    recent date pages only the ~7 pages nearest the top, while one targeting
+    an old date has to page through nearly the whole 63-page report to reach
+    it. Four consecutive production runs died on an early (old, expensive)
+    stride and lost every cheap recent one queued behind it. Newest-first
+    means a failure anywhere still leaves the years most likely to be queried
+    already landed."""
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill_start = date(2010, 1, 1)
+    cfg._backfill_end = date(2010, 1, 1) + timedelta(days=_UNLOCK_STRIDE_DAYS * 3)
+    calls: list[date] = []
+
+    def fake_fetch(d: date, *, horizon_days: int = 180, **_kw) -> pl.DataFrame:
+        calls.append(d)
+        return pl.DataFrame()
+
+    monkeypatch.setattr("ashare_lake.steps.macro_risk.fetch_share_unlock_schedule", fake_fetch)
+    monkeypatch.setattr(cfg, "rate_limit", lambda source: None)
+
+    _backfill_share_unlock_schedule(cfg, date(2026, 7, 1), "run-1")
+
+    assert calls == sorted(calls, reverse=True)
+    assert calls[0] > calls[-1]
 
 
 def test_flushes_per_stride_not_once_at_the_end(tmp_path, monkeypatch):
