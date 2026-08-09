@@ -4,7 +4,10 @@ import { disposeAll, heatmap, provenanceSeries, runGantt, severityTimeline } fro
 
 const qs = new URLSearchParams(location.search);
 const TOKEN = qs.get("token");
-const DAYS = Number(qs.get("days") || 250);
+// Keep the default window compact enough to read on the overview.  The API
+// supports longer windows through ?days=..., but 250 sessions makes sparse
+// snapshot datasets look like a large unexplained blank block.
+const DAYS = Number(qs.get("days") || 90);
 const app = document.getElementById("app");
 
 const NAV_ITEMS = [
@@ -126,6 +129,10 @@ async function renderOverview() {
     )
     .join("");
 
+  const visibleHeatmapRows = hm.rows.filter((row) => /[#.]/.test(row.cells));
+  const hiddenHeatmapRows = hm.rows.length - visibleHeatmapRows.length;
+  const heatmapData = { ...hm, rows: visibleHeatmapRows };
+
   setPage(`
     <section class="page-heading">
       <div class="eyebrow">数据湖控制台 / 概览</div>
@@ -148,15 +155,16 @@ async function renderOverview() {
       ${kpi(`<span class="${sev.error ? "err" : ""}">${sev.error || 0}</span><span class="metric-secondary"> / ${sev.warning || 0}</span>`, "审计", "error / warning")}
     </section>
     <section class="overview-grid">
-      <article class="surface-panel heat-panel"><div class="panel-header"><div><div class="eyebrow">Coverage</div><h2>覆盖热力</h2></div><span class="panel-meta">${hm.days.length} 个交易日</span></div>
+      <article class="surface-panel heat-panel"><div class="panel-header"><div><div class="eyebrow">Coverage</div><h2>覆盖热力</h2></div><span class="panel-meta">${visibleHeatmapRows.length}/${hm.rows.length} 个数据集 · ${hm.days.length} 个交易日</span></div>
         <div id="heat" aria-label="覆盖热力图"></div>
         <p class="legend"><span><i class="swatch" style="background:var(--cell-covered)"></i> 有分区覆盖</span><span><i class="swatch" style="background:var(--cell-gap)"></i> 日更源缺口</span><span><i class="swatch" style="background:var(--cell-cadence)"></i> 按源节奏间隔</span><span><i class="swatch" style="background:var(--cell-outside)"></i> 区间外</span></p>
+        <p class="heatmap-note">灰色表示当前窗口外，或该数据集按快照 / 月度 / 季度节奏采集，不等同于采集失败。${hiddenHeatmapRows ? ` ${hiddenHeatmapRows} 个当前没有分区的数据集已留在“数据层”中。` : ""}</p>
       </article>
       <aside class="surface-panel action-panel"><div class="panel-header"><div><div class="eyebrow">Attention</div><h2>行动项</h2></div><span class="panel-meta">${notes.length || 0} 项</span></div><ul class="issue-list">${actionItems}</ul></aside>
     </section>
     <section class="surface-panel dataset-panel" id="dataset-list"><div class="panel-header"><div><div class="eyebrow">Data catalog</div><h2>数据层</h2></div><a class="panel-link" href="#/datasets">查看全部数据集 →</a></div><div class="tier-grid">${tierCards}</div></section>
   `);
-  heatmap(document.getElementById("heat"), hm);
+  heatmap(document.getElementById("heat"), heatmapData);
 }
 
 async function renderDatasets() {

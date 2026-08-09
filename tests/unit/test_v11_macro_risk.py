@@ -342,7 +342,11 @@ def test_lake_health_snapshot(tmp_path):
     from ashare_lake.config import Config
     from ashare_lake.quality.audit import lake_health
 
-    cfg = Config(data_root=tmp_path / "data")
+    # The health snapshot is an offline unit test. Without a curated
+    # instruments file, the delisted-universe report falls back to the source
+    # adapter; opt into the deterministic TDX fixture instead of letting CI
+    # probe the public network.
+    cfg = Config(data_root=tmp_path / "data", tdx_allow_mock=True)
     # one populated dataset up to date, calendar seed present via bundled seed
     part = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
     part.mkdir(parents=True)

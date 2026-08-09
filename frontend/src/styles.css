@@ -61,6 +61,7 @@ td.n, th.n { text-align: right; }
 .legend { color: var(--muted); font-size: .75rem; margin: .6rem 0 0; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
 .legend span { display: flex; align-items: center; gap: .3rem; }
 .swatch { width: .65rem; height: .65rem; border-radius: 2px; display: inline-block; }
+.heatmap-note { margin: .45rem 0 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
 code { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: .05rem .3rem; font-size: .8rem; }
 .err { color: var(--error); }
 .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--line); margin: 1.5rem 0 1rem; }

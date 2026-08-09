@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,22 +32,13 @@ jobs:
           ruff check .
           ruff format --check .
 
-  bundle:
-    # The dashboard bundle is committed so `pip install` needs no node. This
-    # rebuilds it and fails if the committed file does not match the source, so
-    # the two cannot drift — the only way that would show up otherwise is a
-    # dashboard silently running last month's JavaScript.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Rebuild and compare
+      - name: Check dashboard bundle
         working-directory: frontend
         run: |
           npm ci
@@ -57,8 +48,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Keep the minimum supported interpreter and the current stable one.
+      # Windows below covers the platform-specific file-lock/path behavior.
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
@@ -69,8 +62,7 @@ jobs:
 
       - name: Install
         # No extras: every runtime source is a hard dependency now. The pip
-        # upgrade is required — PEP 735 `--group` needs 25.1+, and the bundled
-        # pip is 24.0 on 3.11 and 25.0.1 on 3.12.
+        # upgrade is required — PEP 735 `--group` needs 25.1+.
         run: |
           python -m pip install --upgrade pip
           pip install -e . --group dev
@@ -87,8 +79,9 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # Windows is a first-class runtime target (file locks, path forms, wheels).
-  # One Python version is enough to catch platform regressions; Ubuntu already
-  # covers the 3.10–3.13 matrix. Network tests stay deselected via addopts.
+  # One Python version is enough to catch platform regressions; Ubuntu covers
+  # the minimum supported and current stable interpreters. Network tests stay
+  # deselected via addopts.
   test-windows:
     runs-on: windows-latest
     env:
