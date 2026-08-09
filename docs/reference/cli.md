@@ -190,13 +190,17 @@ asl backfill sector_bars --config configs/ashare-lake.toml --retry-failed
 | `discover [--limit N]` | 扫 issued code space，分类为曾上市 / 从未发行（可续跑） |
 | `status [--since]` | 目录摘要：数量、年份、尚未 ingest |
 | `coverage [--start] [--end]` | **只读严格门禁**：验证发现完整性、窗口重叠、末根有效成交和 instruments 身份；未通过时退出码为 1 |
+| `reconcile [--apply]` | 默认只读核对目录终点；`--apply` 仅修正被正式退市日、交易日历和正成交量行情共同证伪的终点，并生成备份及 SHA-256 回执 |
 | `repair [--since]` | **不重新拉行情**：用已有 `daily_bars` 跨度写 `instruments.delist_date`，并清掉 `认购款` 占位 |
 | `backfill [--since]` | 对目录中尚未有行情的退市股拉 Sina 历史并 compact |
 
-推荐顺序：`discover` → `repair`（bars 已在湖里时）→ `backfill`（补缺口）。
+推荐顺序：`discover` → `reconcile`（先 dry-run，确认后 `--apply`）→ `repair`
+（bars 已在湖里时）→ `backfill`（补缺口）→ `coverage`。
 
 ```bash
 asl delisted status
+asl delisted reconcile
+asl delisted reconcile --apply   # 仅在没有 active ingestion run 时执行
 asl delisted coverage --start 2016-01-01 --end 2025-12-31
 asl delisted repair
 asl delisted backfill --since 2016-01-01
@@ -204,6 +208,12 @@ asl delisted discover --limit 500   # 扩大 band 后的续扫
 ```
 
 `coverage` 的通过声明刻意很窄：它证明退市目录已扫完，且已知与窗口重叠的退市标的具备一致的末根有效成交和证券主数据；它不证明两端之间每个交易日都连续。数据源在停牌或正式摘牌前可能保留零成交占位行，门禁不会把它们误当成末次交易。目录末日晚于窗口、但窗口内又没有行情可证明已经上市的标的会进入 `unknown_overlap`，不会被静默排除。
+
+`reconcile --apply` 不以单一供应商返回的“最后一条记录”为真相：必须有 curated
+正成交量终点，且该终点不晚于 `instruments.delist_date`，同时旧目录日期还必须落在
+正式退市日之后或非交易日，才允许自动修改。命令检测到任何 active ingestion run
+都会拒绝执行；修改前的目录保存在 `meta/state/history/`，质量回执写入
+`meta/quality/`，并记录修改前备份和修改后目录的 SHA-256。
 
 ---
 
