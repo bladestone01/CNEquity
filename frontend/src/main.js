@@ -526,38 +526,42 @@ const DURATION = (a, b) => {
 
 async function renderRuns() {
   const runs = await api("/api/runs?limit=40");
+  const succeeded = runs.filter((r) => r.status === "success").length;
+  const running = runs.filter((r) => r.status === "running").length;
+  const failed = runs.filter((r) => r.status === "failed").length;
+  const written = runs.reduce((sum, r) => sum + (r.rows_written || 0), 0);
   const rows = runs
     .map((r) => {
       const bad = Object.keys(r.batch_status).some((s) => s === "failed" || s === "stale");
-      const cls = r.status === "success" ? "fresh" : r.status === "running" ? "" : "stale";
       const tally = Object.entries(r.batch_status)
         .map(([s, n]) => `${s} ${n}`)
         .join(" · ");
-      return `<tr class="tier-row" data-run="${esc(r.run_id)}">
-        <td><span class="dot ${cls}"></span>${esc(r.job_name)}</td>
-        <td class="${bad || r.status === "failed" ? "err" : ""}">${esc(r.status)}</td>
+      return `<tr>
+        <td><a class="table-link" href="#/runs/${encodeURIComponent(r.run_id)}">${esc(r.job_name)}</a></td>
+        <td>${statusPill(r.status)}</td>
         <td class="muted">${AGO(r.started_at)}</td>
         <td class="n">${DURATION(r.started_at, r.finished_at)}</td>
         <td class="n">${fmt(r.rows_written)}</td>
-        <td class="muted">${esc(tally) || "—"}</td>
+        <td class="muted ${bad ? "err" : ""}">${esc(tally) || "—"}</td>
         <td class="muted">${esc((r.error_message || "").slice(0, 60))}</td>
       </tr>`;
     })
     .join("");
 
   setPage(`
-    <div class="back" id="back">← 返回总览</div>
-    <h1>跑批</h1>
-    <div class="sub">最近 ${runs.length} 个 run · 点一行看它的 batch 甘特</div>
-    <div class="scroll"><table>
+    <section class="page-heading"><div class="eyebrow">数据湖控制台 / 跑批</div><div class="heading-row"><div><h1>跑批</h1><p class="sub">最近 ${runs.length} 个 run，查看执行状态、写入规模与 batch 时间线。</p></div></div></section>
+    <section class="metric-grid run-metrics" aria-label="跑批关键指标">
+      ${kpi(runs.length, "最近运行", "最多 40 个")}
+      ${kpi(succeeded, "成功", "success")}
+      ${kpi(`<span class="${running ? "live" : ""}">${running}</span>`, "运行中", "running")}
+      ${kpi(`<span class="${failed ? "err" : ""}">${failed}</span>`, "失败", "failed")}
+      ${kpi(`<span title="${fmt(written)} 行">${compact(written)}</span>`, "累计写入", "当前列表")}
+    </section>
+    <section class="surface-panel table-panel"><div class="panel-header"><div><div class="eyebrow">Run history</div><h2>运行记录</h2></div><span class="panel-meta">点击任务名查看详情</span></div><div class="scroll"><table class="data-table">
       <tr><th>job</th><th>状态</th><th>开始</th><th class="n">耗时</th>
           <th class="n">写入</th><th>batch</th><th>错误</th></tr>
-      ${rows}
-    </table></div>`, "runs");
-  document.getElementById("back").onclick = () => { location.hash = "#/"; };
-  app.querySelectorAll("[data-run]").forEach((tr) => {
-    tr.onclick = () => { location.hash = `#/runs/${tr.dataset.run}`; };
-  });
+      ${rows || '<tr><td colspan="7" class="empty-table">还没有运行记录。</td></tr>'}
+    </table></div></section>`, "runs");
 }
 
 let runStream = null;
@@ -622,7 +626,7 @@ function paintRun(detail) {
 
   const failed = detail.batches.filter((b) => b.error_message);
   document.getElementById("run-errors").innerHTML = failed.length
-    ? `<h3>失败的 batch</h3><div class="scroll"><table>
+    ? `<section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Failures</div><h2>失败的 Batch</h2></div><span class="panel-meta">${failed.length} 项</span></div><div class="scroll"><table>
         <tr><th>数据集</th><th>状态</th><th class="n">重试</th><th>错误</th></tr>
         ${failed
           .map(
@@ -630,28 +634,30 @@ function paintRun(detail) {
             <td class="n">${b.retry_count || ""}</td>
             <td class="muted">${esc(b.error_message)}</td></tr>`,
           )
-          .join("")}</table></div>`
+          .join("")}</table></div></section>`
     : "";
 }
 
 async function renderRunDetail(runId) {
   const detail = await api(`/api/runs/${encodeURIComponent(runId)}`);
   setPage(`
-    <div class="back" id="back">← 返回跑批列表</div>
-    <h1>${esc(detail.job_name)}</h1>
-    <div class="sub"><span id="run-status"></span> · <code>${esc(detail.run_id)}</code></div>
+    <section class="page-heading"><div class="eyebrow">数据湖控制台 / 跑批 / 运行详情</div><div class="heading-row"><div><h1>${esc(detail.job_name)}</h1><p class="sub"><span id="run-status"></span> · <code>${esc(detail.run_id)}</code></p></div><div class="action-row"><a class="button button-ghost" href="#/runs">← 返回跑批</a></div></div></section>
+    <section class="metric-grid detail-metrics" aria-label="运行关键指标">
+      ${kpi(DURATION(detail.started_at, detail.finished_at), "耗时", detail.status === "running" ? "持续更新" : "已结束")}
+      ${kpi(`<span title="${fmt(detail.rows_written)} 行">${compact(detail.rows_written)}</span>`, "写入", "行")}
+      ${kpi(detail.batches.length, "Batch", "数据集任务")}
+      ${kpi(AGO(detail.started_at), "开始", esc((detail.started_at || "").slice(0, 19)))}
+    </section>
     <div id="run-note"></div>
-    <h3>batch 甘特（按数据集分道）</h3>
-    <div id="run-gantt"></div>
+    <section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Timeline</div><h2>Batch 时间线</h2></div><span class="panel-meta">按数据集分道</span></div><div id="run-gantt"></div>
     <p class="legend">
       <span><i class="swatch" style="background:var(--cell-covered)"></i> success</span>
       <span><i class="swatch" style="background:var(--series-1)"></i> running</span>
       <span><i class="swatch" style="background:var(--cell-gap)"></i> failed</span>
       <span><i class="swatch" style="background:var(--series-4)"></i> stale</span>
       <span>橙色描边 = 有重试；斜纹 = 已静默</span>
-    </p>
-    <div id="run-errors"></div>`, "runs");
-  document.getElementById("back").onclick = () => { location.hash = "#/runs"; };
+    </p></section>
+    <div id="run-errors" class="report-stack"></div>`, "runs");
   paintRun(detail);
 
   // Only a running job can change. Subscribing to a finished one would hold a
@@ -674,12 +680,16 @@ async function renderRunDetail(runId) {
 
 async function renderQuality() {
   const q = await api("/api/quality");
+  const latestFindings = q.findings_runs[0]?.by_severity || {};
+  const quarantineFiles = q.quarantine.reduce((sum, item) => sum + (item.files || 0), 0);
+  const quarantineBytes = q.quarantine.reduce((sum, item) => sum + (item.bytes || 0), 0);
+  const cacheEntries = q.on_demand.reduce((sum, item) => sum + (item.entries || 0), 0);
 
   const findingsRows = q.findings_runs
     .map((r) => {
       const sev = r.by_severity;
-      return `<tr class="tier-row" data-qrun="${esc(r.run_id)}">
-        <td>${esc(r.trade_date || "—")}</td>
+      return `<tr>
+        <td><a class="table-link" href="#/quality/${encodeURIComponent(r.run_id)}">${esc(r.trade_date || "—")}</a></td>
         <td class="n ${sev.error ? "err" : ""}">${sev.error || ""}</td>
         <td class="n">${sev.warning || ""}</td>
         <td class="n muted">${sev.info || ""}</td>
@@ -690,8 +700,8 @@ async function renderQuality() {
 
   const diffRows = q.diff_runs
     .map(
-      (r) => `<tr class="tier-row" data-qrun="${esc(r.run_id)}">
-        <td>${esc(r.trade_date || "—")}</td>
+      (r) => `<tr>
+        <td><a class="table-link" href="#/quality/${encodeURIComponent(r.run_id)}">${esc(r.trade_date || "—")}</a></td>
         <td class="n">${r.diff_count}</td>
         <td class="muted">${Object.entries(r.by_check).map(([c, n]) => `${esc(c)}×${n}`).join("、")}</td>
       </tr>`,
@@ -718,46 +728,47 @@ async function renderQuality() {
        <code>research_reports</code>）——这是正常状态，不是缺口。</td></tr>`;
 
   setPage(`
-    <div class="back" id="back">← 返回总览</div>
-    <h1>质量</h1>
-    <div class="sub">来自 <code>meta/quality/</code> 与 <code>_quarantine/</code> 的已落盘产物</div>
-
-    <h2>审计 findings（按审计日）</h2>
+    <section class="page-heading"><div class="eyebrow">数据湖控制台 / 质量</div><div class="heading-row"><div><h1>质量</h1><p class="sub">审计、跨源比对、隔离区与按需缓存的只读证据面板。</p></div></div></section>
+    <section class="metric-grid quality-metrics" aria-label="质量关键指标">
+      ${kpi(q.findings_runs.length, "审计快照", q.findings_runs[0]?.trade_date || "暂无")}
+      ${kpi(`<span class="${latestFindings.error ? "err" : ""}">${latestFindings.error || 0}</span>`, "最新错误", "error")}
+      ${kpi(latestFindings.warning || 0, "最新警告", "warning")}
+      ${kpi(quarantineFiles, "隔离文件", mb(quarantineBytes))}
+      ${kpi(cacheEntries, "按需缓存", "entries")}
+    </section>
+    <div class="report-stack">
+    <section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Audit findings</div><h2>审计趋势</h2></div><span class="panel-meta">按审计日</span></div>
     <div id="sev-chart"></div>
     <div class="scroll"><table>
       <tr><th>审计日</th><th class="n">error</th><th class="n">warning</th><th class="n">info</th><th>主要 check</th></tr>
       ${findingsRows || '<tr><td colspan="5" class="muted">还没有 findings。</td></tr>'}
-    </table></div>
+    </table></div></section>
 
-    <h2>跨源比对</h2>
+    <section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Cross-source</div><h2>跨源比对</h2></div><span class="panel-meta">主源 vs 备源</span></div>
     <p class="muted">主源与备源在同一天同一字段上的分歧。<code>no_overlap</code> 是「两边没有共同主键可比」，
       不是「一致」——那是这张表最容易被读反的一行。</p>
     <div class="scroll"><table>
       <tr><th>审计日</th><th class="n">差异</th><th>按 check</th></tr>
       ${diffRows || '<tr><td colspan="3" class="muted">还没有跨源比对产物。</td></tr>'}
-    </table></div>
+    </table></div></section>
 
-    <h2>隔离区</h2>
+    <section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Quarantine</div><h2>隔离区</h2></div><span class="panel-meta">保留问题证据</span></div>
     <p class="muted"><strong>不是垃圾桶。</strong>这些是因为有问题而被撤出 curated 的数据，留着当证据。
       删之前先看清楚是什么。</p>
     <div class="scroll"><table>
       <tr><th>目录</th><th class="n">文件</th><th class="n">体积</th><th>最后修改</th></tr>
       ${quarantineRows}
-    </table></div>
+    </table></div></section>
 
-    <h2>On-demand 缓存</h2>
+    <section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">On-demand</div><h2>按需缓存</h2></div><span class="panel-meta">不进入 curated</span></div>
     <p class="muted">按 symbol 抓取、缓存在 <code>meta/on_demand/</code>，不进 curated——
       面板别处看不到它们。</p>
     <div class="scroll"><table>
       <tr><th>数据集</th><th class="n">条目</th><th class="n">体积</th><th>最新</th></tr>
       ${onDemandRows}
-    </table></div>`, "quality");
+    </table></div></section></div>`, "quality");
 
-  document.getElementById("back").onclick = () => { location.hash = "#/"; };
   severityTimeline(document.getElementById("sev-chart"), q.findings_runs);
-  app.querySelectorAll("[data-qrun]").forEach((tr) => {
-    tr.onclick = () => { location.hash = `#/quality/${tr.dataset.qrun}`; };
-  });
 }
 
 async function renderQualityRun(runId) {
@@ -779,14 +790,10 @@ async function renderQualityRun(runId) {
       : '<p class="muted">无。</p>';
 
   setPage(`
-    <div class="back" id="back">← 返回质量</div>
-    <h1>${esc(d.trade_date || runId.slice(0, 8))}</h1>
-    <div class="sub"><code>${esc(d.run_id)}</code></div>
-    <h3>findings（${d.findings.length}）</h3>
-    ${table(d.findings, ["severity", "dataset", "check", "message"])}
-    <h3>跨源差异（${d.diffs.length}）</h3>
-    ${table(d.diffs, ["severity", "dataset", "check", "field", "bps", "message"])}`, "quality");
-  document.getElementById("back").onclick = () => { location.hash = "#/quality"; };
+    <section class="page-heading"><div class="eyebrow">数据湖控制台 / 质量 / 审计详情</div><div class="heading-row"><div><h1>${esc(d.trade_date || runId.slice(0, 8))}</h1><p class="sub"><code>${esc(d.run_id)}</code></p></div><div class="action-row"><a class="button button-ghost" href="#/quality">← 返回质量</a></div></div></section>
+    <section class="metric-grid detail-metrics" aria-label="审计关键指标">${kpi(d.findings.length, "Findings", "审计发现")}${kpi(d.diffs.length, "Diffs", "跨源差异")}</section>
+    <div class="report-stack"><section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Findings</div><h2>审计发现</h2></div><span class="panel-meta">${d.findings.length} 项</span></div>${table(d.findings, ["severity", "dataset", "check", "message"])}</section>
+    <section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Cross-source</div><h2>跨源差异</h2></div><span class="panel-meta">${d.diffs.length} 项</span></div>${table(d.diffs, ["severity", "dataset", "check", "field", "bps", "message"])}</section></div>`, "quality");
 }
 
 // --- routing ----------------------------------------------------------------
