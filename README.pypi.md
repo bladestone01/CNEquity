@@ -79,7 +79,7 @@ roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 详细 schema、runbook、定位对照与合规说明以 GitHub 为准：
 
 - [仓库](https://github.com/rootSunc/ashare-lake)
-- [文档](https://github.com/rootSunc/ashare-lake/tree/main/docs)
+- [文档站](https://rootsunc.github.io/ashare-lake/) · [仓库文档](https://github.com/rootSunc/ashare-lake/tree/main/docs)
 - [Changelog](https://github.com/rootSunc/ashare-lake/blob/main/CHANGELOG.md)
 
 代码 Apache-2.0。落盘行情 / 公告仍受上游条款约束——本包不附带、也不再分发数据湖。

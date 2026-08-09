@@ -11,11 +11,13 @@ ordered around one promise: make reproducible A-share history easy to build, ins
   defaults and history semantics.
 - Publish source-health and coverage evidence that can be checked without trusting a marketing claim.
 - Add small, runnable recipes for survivorship-safe universes, point-in-time fundamentals, and
-  adjustment handling.
+  adjustment handling. Adjustment and PIT recipes are now published under the docs site.
+- Keep the docs site buildable in pull requests and deploy the searchable site from `main`.
 
 ## Next · 0.7
 
-- Provide stable integration recipes for DuckDB, Polars, and common quant research workflows.
+- Provide stable integration recipes for DuckDB, Polars, and common quant research workflows. The
+  first DuckDB / Polars / MCP recipe is now available; expand it with tested downstream examples.
 - Publish the read-only MCP server metadata through the official MCP Registry once the package
   metadata and installation contract are ready.
 - Improve contributor onboarding with focused good-first issues and a small set of source-adapter

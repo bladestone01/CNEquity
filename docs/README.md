@@ -10,6 +10,8 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install ashare-lake`
 
 产品边界与近期方向：[ROADMAP](../ROADMAP.md)。
 
+可搜索的在线文档站：[rootsunc.github.io/ashare-lake](https://rootsunc.github.io/ashare-lake/)。
+
 面向使用者的文档以中文为准；[CHANGELOG](../CHANGELOG.md) 与 [ADR](adr/) 保持英文。英文简介见 [README.en.md](../README.en.md)。
 
 ### 术语约定
@@ -37,6 +39,11 @@ CLI 是 `asl`，Python 包是 `ashare_lake`。推荐：`pip install ashare-lake`
 - [数据集目录](datasets/catalog.md) · [Schema](datasets/schema.md)
 - [查询指南](datasets/query-guide.md) · [逐源限制](datasets/sources.md)
 - [CLI](reference/cli.md) · [Python API](reference/python-api.md) · [MCP（接给 AI agent）](reference/mcp.md)
+
+## 研究 Recipes
+
+- [复权研究基线](recipes/research-baseline.md) · [PIT 财报截面](recipes/pit-rebalance.md)
+- [DuckDB 与 Polars](recipes/duckdb-polars.md) · [Recipe 索引](recipes/README.md)
 
 ## 运维
 

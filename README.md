@@ -6,6 +6,7 @@
   <a href="https://pypi.org/project/ashare-lake/"><img src="https://img.shields.io/pypi/v/ashare-lake.svg" alt="PyPI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://rootsunc.github.io/ashare-lake/"><img src="https://img.shields.io/badge/docs-site-2f80ed.svg" alt="Docs site"></a>
   <a href="README.en.md"><img src="https://img.shields.io/badge/docs-English-lightgrey.svg" alt="English"></a>
 </p>
 

@@ -5,6 +5,7 @@ __pycache__/
 .eggs/
 dist/
 build/
+site/
 
 # Test / lint caches
 .pytest_cache/

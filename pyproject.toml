@@ -97,7 +97,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/rootSunc/ashare-lake"
-Documentation = "https://github.com/rootSunc/ashare-lake/tree/main/docs"
+Documentation = "https://rootsunc.github.io/ashare-lake/"
 Source = "https://github.com/rootSunc/ashare-lake"
 Changelog = "https://github.com/rootSunc/ashare-lake/blob/main/CHANGELOG.md"
 Issues = "https://github.com/rootSunc/ashare-lake/issues"

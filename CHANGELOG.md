@@ -72,6 +72,10 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Published a searchable documentation site and copy-paste research Recipes.** The GitHub Pages
+  build covers first-run onboarding, adjustment semantics, PIT financials, DuckDB / Polars, MCP,
+  and operations; pull requests build it in strict mode so navigation drift is visible before merge.
+
 - **Modernized package license metadata.** The build now uses the SPDX license expression and
   `project.license-files`, avoiding deprecated setuptools tables while preserving the Apache-2.0
   license and bundled NOTICE file.
