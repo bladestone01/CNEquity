@@ -1,7 +1,8 @@
 # README assets
 
-READMEs embed four visuals: survivorship chart, `asl-demo.png`,
-`asl-serve-hero.png` (cropped scorecard), and `architecture-overview.png`.
+READMEs embed three raster/vector assets: survivorship chart, `asl-demo.png`,
+and `asl-serve-hero.png`. Architecture is rendered from Mermaid in each README
+so that it stays reviewable beside code changes.
 Other PNGs below are for docs / social / re-exports.
 PyPI uses the short `README.pypi.md`, which points at absolute
 `raw.githubusercontent.com` URLs for the one demo screenshot it embeds.
@@ -36,9 +37,10 @@ python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.
 
 ## Architecture
 
-| File | Shows |
-|------|--------|
-| `architecture-overview.png` | Four-layer overview — embedded in both READMEs under Architecture |
+`architecture-overview.png` is a legacy export and is no longer embedded. The
+current diagram lives as Mermaid in `README.md` and `README.en.md`; update both
+when storage layers, orchestration, quality, query, operations, Serve, or MCP
+boundaries change.
 
 ## Terminal screenshots
 
@@ -62,28 +64,21 @@ lake with something in it.
 
 | File | Shows |
 |------|--------|
-| `asl-serve-hero.png` | Cropped overview: KPI row + L0–L8 tier table (no heatmap) — in both READMEs |
-| `asl-serve.png` | Full overview including coverage heatmap (source / docs) |
+| `asl-serve-hero.png` | 1440×820 current overview: health, 42 datasets, KPIs, coverage heatmap and action state — in both READMEs |
+| `asl-serve.png` | 1440px-wide full-page overview (source / docs) |
 | `asl-serve-dataset.png` | `trade_ticks` metadata tab (for docs; not in README) |
 
-Regenerate the hero crop after re-capturing `asl-serve.png`:
-
 ```bash
-ffmpeg -y -i docs/assets/asl-serve.png -vf "crop=2560:1320:0:0" docs/assets/asl-serve-hero.png
-```
-
-```bash
+asl stats rebuild
 asl serve --config configs/ashare-lake.toml --port 8791
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --disable-gpu --hide-scrollbars \
-  --force-device-scale-factor=2 --window-size=1280,1530 \
-  --virtual-time-budget=9000 --screenshot=docs/assets/asl-serve.png \
+  --window-size=1440,820 --virtual-time-budget=9000 \
+  --screenshot=docs/assets/asl-serve-hero.png \
   "http://127.0.0.1:8791/"
 ```
 
-`--force-device-scale-factor=2` is what makes the text readable when GitHub
-scales the image down to ~860px. Pick `--window-size` height from
-`document.body.scrollHeight` on the loaded page, or the capture cuts off
-mid-heatmap. Wait for the "度量表过期" banner to clear (background stats
-rebuild) before capturing — it is a transient state, not something the README
-should advertise.
+Capture `asl-serve.png` separately as a full-page screenshot at the same
+1440px viewport width. Before saving either image, confirm the page shows
+“运行正常”; “度量表过期” is a transient stats state and should be cleared with
+`asl stats rebuild` rather than advertised in the README.

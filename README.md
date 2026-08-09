@@ -1,5 +1,5 @@
 <h1 align="center">ASL · ashare-lake</h1>
-<p align="center"><b>免费、零注册、自托管的 A 股历史数据层</b></p>
+<p align="center"><b>把 A 股公开数据沉淀成自己的本地研究数据湖</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -11,141 +11,157 @@
 </p>
 
 <p align="center">
-  <b>别再每次重拉、自己拼复权了。</b> 一条命令，把可日更的研究数据落到本地。<br>
-  自动保存历史口径，供 Python、DuckDB、Polars 和 AI agent 使用。
+  免费、免注册、自托管。一次采集，持续日更；用 Python、DuckDB、Polars 或 AI agent 查询。<br>
+  <b>42 个数据集 · L0–L8 九类研究数据 · 复权 / 历史股票池 / PIT · 行级溯源</b>
 </p>
 
 <p align="center">
-  <b>39 个数据集 · 9 大类</b> · <b>复权 / 历史股票池 / PIT</b> · <b>6 个 MCP 工具</b> · <b>行级溯源</b>
+  <img src="docs/assets/asl-serve-hero.png" alt="ashare-lake 当前版本控制台：42 个数据集、湖状态、质量与覆盖热力图" width="1100" />
 </p>
 
-## 30 秒拿到真数
+> 上图来自当前版本的真实 `asl serve`，不是设计稿。控制台只读，不会修改数据湖。
 
-```bash
-pip install ashare-lake    # 不需要 token、积分或注册
-asl demo                   # 真实数据：5 只票 × 30 个交易日
+## 先看它是否适合你
+
+ashare-lake 不是又一个“临时请求一次行情”的接口。它更适合这些场景：
+
+- 你要反复研究多年行情，不想每次重拉、清洗和拼复权；
+- 你在意退市股、历史成分股和 PIT，不能接受不知不觉使用未来数据；
+- 你希望数据保存在自己电脑或服务器上，格式开放、来源可追溯；
+- 你想给 Python 研究代码、DuckDB、Polars 或 AI agent 共用同一份数据。
+
+如果只想查一只股票的最新价格，直接取数通常更轻；如果要做可复查的历史研究，这个项目才真正有价值。
+
+第一次使用，按这条路径即可：
+
+```text
+asl demo → asl init → asl run daily → load() / asl serve → asl mcp（可选）
 ```
 
-实测约 25 秒。需要能访问 **TDX 行情主机**（大陆直连更稳）；不通先运行
-`asl sources --only tdx_protocol`。demo 会写入独立的
-`data/ashare-lake-demo/`，不会覆盖全量湖。
+## 30 秒跑通
+
+需要 Python 3.10+，无需 token、积分或账号：
+
+```bash
+pip install ashare-lake
+asl demo
+```
+
+`asl demo` 默认拉取 5 只股票最近约 30 个交易日的真实数据，写入独立目录
+`data/ashare-lake-demo/`，不会覆盖正式数据湖。需要能访问 TDX 行情主机；若连接失败，先检查：
+
+```bash
+asl sources --only tdx_protocol
+```
 
 <p align="center">
-  <img src="docs/assets/asl-demo.png" alt="asl demo：分阶段拉数并打印样例日线" width="820" />
+  <img src="docs/assets/asl-demo.png" alt="asl demo 分阶段采集真实日线并打印结果" width="820" />
 </p>
+
+然后在 Python 中读取：
 
 ```python
 from ashare_lake.query import load
 
 bars = load("daily_bars", data_root="data/ashare-lake-demo")
+print(bars.tail())
 ```
 
-如果你只需要现价，取数接口就够了；如果你需要复查历史、避免幸存者偏差或做 PIT 研究，继续建湖。
-
-想直接看到复权口径的差异（会额外访问 Sina，并自动扩展到约 3 年历史）：
+想直接比较原始价格与后复权口径：
 
 ```bash
 asl demo --research --symbols 600519.SH
-# raw return -24.25% → hfq return -14.39%（示例输出，随交易日变化）
 ```
 
-## 为什么要一个湖
+## 5 分钟开始建湖
+
+```bash
+pip install ashare-lake
+asl config init            # 生成 configs/ashare-lake.toml
+asl init                   # 全市场标的，默认回溯最近 3 年
+asl run daily              # 之后每个交易日执行这一条
+```
+
+默认策略是“浅而不窄”：历史先取最近 3 年，但全市场标的一个不缺。这样不会因为只保留今天仍上市的股票，提前把幸存者偏差写进数据湖。每个数据集的真实起点会记录在 `coverage_start`。
+
+需要更长历史时可以一次拉满，也可以以后补深：
+
+```bash
+asl init --profile full
+
+# 或对单个数据集补历史
+asl backfill daily_bars --start 2016-01-01 --end <coverage_start>
+```
+
+默认初始化通常是小时级、GB 级，实际取决于网络、数据源状态和机器配置。详细安装说明见[快速开始](docs/getting-started/quickstart.md)和[安装指南](docs/getting-started/installation.md)。
+
+## 为什么要一个数据湖
 
 <p align="center">
-  <img src="docs/assets/survivorship-gap.zh.svg" alt="同一篮子、同一区间，唯一差别是退市股还在不在里面" width="820" />
+  <img src="docs/assets/survivorship-gap.zh.svg" alt="使用当前股票名单会造成幸存者偏差" width="820" />
 </p>
 
-同一个等权买入持有，同样的起止日期，唯一差别是**后来退市的票还在不在篮子里**。用「今天还在的股票」当历史股票池——几乎所有按当前名单发数的源只能给你这个——2016–2021 五年收益从 **5.9% 变成 12.0%**，虚高一倍。
+同一个等权买入持有、同样的起止日期，唯一差别是后来退市的股票是否仍在历史股票池中。用“今天还在的股票”回看历史，2016–2021 五年收益会从 **5.9% 变成 12.0%**，看起来几乎翻倍。
 
-这类错误**看不出来**：那些票不是零，是不在。退市股、复权因子、PIT 在这里是一等公民，不是覆盖面上的第 40 个数据集。
+这类错误很难从结果里发现：那些股票不是收益为零，而是根本没有进入计算。ashare-lake 因此把退市股、复权因子、历史成分与 PIT 当作基础能力，而不是附加字段。
+
+复现实验：
 
 ```bash
 python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.zh.svg
 ```
 
-## 建你自己的湖：四条命令
+## 能回答哪些问题
 
-```bash
-pip install ashare-lake
-asl config init            # 写出 configs/ashare-lake.toml
-asl init                   # 全市场标的 × 最近 3 年（约 1 小时）
-asl run daily              # 之后每个交易日跑这一条
-```
-
-`asl init` 默认**浅而不窄**：最近 3 年，标的一个不缺。按标的裁剪会把幸存者偏差直接建进湖里，
-而浅是诚实的——`coverage_start` 会如实记录。想要全量历史：`asl init --profile full`（约 3 倍时间），
-或随时加深：
-
-```bash
-asl backfill daily_bars --start 2016-01-01 --end <你的 coverage_start>
-```
-
-**接给 AI**（可选，湖建好之后）：
-
-```bash
-claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.toml"
-```
-
-接上 MCP 之后，直接用中文问：
-
-- 「茅台过去五年复权后涨了多少？」
-- 「茅台现在的 PE 在自己五年历史里处于什么分位？」★
-- 「2018 年这个财报因子的 IC，别用未来数据。」★
-- 「过去三年退市的票，退市前 60 天什么形态？」★
-
-★ 需要本地历史序列——现拉现给的工具结构上答不了。**取数工具给你现在，湖给你历史。**
-
-<p align="center">
-  <a href="#能回答什么问题">能问什么</a> ·
-  <a href="#为什么不是-akshare--tushare--取数-skill">与同类差异</a> ·
-  <a href="#有什么数据">数据集</a> ·
-  <a href="#让它每天自己跑">日更</a> ·
-  <a href="#接给-ai-agent">接给 AI agent</a> ·
-  <a href="#看一眼湖">看一眼湖</a> ·
-  <a href="#架构">架构</a> ·
-  <a href="#faq">FAQ</a>
-</p>
-
-## 能回答什么问题
-
-| 你想知道 | 怎么拿 |
-|--|--|
+| 研究问题 | 推荐入口 |
+|---|---|
 | 茅台过去五年复权后涨了多少 | `load("daily_bars", symbols=[...], adjust="hfq")` |
-| ★ 茅台 PE 的历史分位数 | `valuation_metrics` + 窗口分位 |
-| ★ 2018 年财报因子 IC，别用未来数据 | `load("financial_statement_items", as_of="2018-04-30")` |
-| ★ 退市股退市前 60 天形态 | `delisting_events` + `daily_bars` |
-| ★ 全市场等权收益，剔除幸存者偏差 | `scripts/survivorship_gap.py`（上面那张图） |
-| 今天龙虎榜 / 未来解禁 / 板块资金流 | `dragon_tiger` · `share_unlock_schedule` · `sector_fund_flow` |
-| ★ 三年前的沪深300成分 / 申万行业 | `index_constituents` · `industry_members` |
+| 茅台 PE 在自身五年历史中的分位数 | `valuation_metrics` + 窗口分位 |
+| 2018 年财报因子的 IC，且不使用未来数据 | `load("financial_statement_items", as_of="2018-04-30")` |
+| 退市股退市前 60 天的价格形态 | `delisting_events` + `daily_bars` |
+| 三年前的沪深 300 成分或申万行业 | `index_constituents` · `industry_members` |
+| 今天的龙虎榜、未来解禁和板块资金流 | `dragon_tiger` · `share_unlock_schedule` · `sector_fund_flow` |
 
-## 为什么不是 AkShare / Tushare / 取数 skill
+常用查询：
 
-AkShare / 取数 skill 解决「怎么拉数」——拿到的是没有历史口径的当下快照。Tushare 是云端宽表。Qlib / vn.py 是研究/交易平台。**ASL** 做中间层：多源进同一契约，落成可日更、可溯源的本地 Parquet 湖。
+```python
+from ashare_lake.query import load
 
-| 你在意什么 | **ashare-lake** | AkShare / 取数 skill | Tushare Pro | Qlib / vn.py |
-|--|--|--|--|--|
-| 本地可续跑的数据底座 | **湖 + 日更编排** | 现拉，编排自管 | 云端积分 | 绑在平台里 |
-| 数据能否复查 | **行级溯源** | 通常无统一契约 | 平台字段 | 视模块 |
-| 研究口径 | **`load()`：复权 / universe / PIT** | 自己拼 | 自己拼 | 平台口径 |
-| 源挂了 | **fail batch**，可按批 retry | 看调用方 | 看平台 | 视模块 |
+bars = load(
+    "daily_bars",
+    start="2020-01-01",
+    end="2025-12-31",
+    symbols=["600519.SH"],
+    adjust="hfq",
+)
 
-逐条展开：[comparison](docs/comparison.md)。
-
-## 有什么数据
-
-**39 个注册数据集**。下表由 `domain/datasets.py` 生成,测试断言两者一致——
-文档说的就是代码在做的。字段见 [schema](docs/datasets/schema.md),逐源限制见 [sources](docs/datasets/sources.md)。
-
-**数据流**
-
-```
-上游源 ──▶ step(取数+校验) ──▶ staging/ ──▶ compact ──▶ curated/ ──┬─▶ derive ──▶ derived/
-  │                                                                 │
-  └── 限流:跨进程文件锁,按源独立                                    └─▶ load() / DuckDB / Polars
+roe = load(
+    "financial_statement_items",
+    items=["roe"],
+    as_of="2024-04-30",
+)
 ```
 
-每行都带 `source` / `data_version` / `fetched_at`,可逐行溯源。单个 step 失败只记
-failed batch,其余照常落盘,`asl retry <run_id>` 只补失败的。
+## 数据范围
+
+当前注册表包含 **42 个数据集：39 个 curated + 3 个 derived**。按研究用途分为 L0–L8 九类；完整字段、主键、历史模式和源端限制见[数据集目录](docs/datasets/catalog.md)。
+
+| 层次 | 研究用途 | 代表数据集 |
+|---|---|---|
+| L0 | 基础参考 | 证券主数据、交易日历、交易状态 |
+| L1 | 行情 | 日线、指数、复权因子、分钟线、分笔、退市事件 |
+| L2 | 公司事件 | 公司行为、公告索引、预约披露 |
+| L3 | 基本面 | 财报、估值、股本、股东、一致预期 |
+| L4 | 资金面 | 北向、融资融券、龙虎榜、大宗交易、资金流 |
+| L5 | 结构行业 | 指数成分、行业与板块成分 |
+| L6 | 宏观 | 宏观指标、市场宽度 |
+| L7 | 舆情与轮动 | 新闻、情绪、人气、板块行情与资金流 |
+| L8 | 风险合规 | 解禁日程、监管事件 |
+
+所有 curated 行都包含 `source`、`data_version` 和 `fetched_at`，可以追到来源与采集批次。分钟线、5 分钟线和分笔默认关闭，按需启用；部分只能获取当日快照的数据集不会伪造成历史序列。
+
+<details>
+<summary><b>展开查看 42 个数据集及主备数据源</b></summary>
 
 | 数据集 | 说明 | 主源 | 备源 | 历史 | 日更组 |
 |---|---|---|---|---|---|
@@ -167,16 +183,16 @@ failed batch,其余照常落盘,`asl retry <run_id>` 只补失败的。
 | `corporate_actions` | 公司行为 | tdx_protocol | eastmoney | 可回补 | core |
 | `earnings_disclosure_schedule` | 业绩披露预约 | eastmoney | — | 可回补 | fundamentals |
 | **L3 · 基本面** | | | | | |
-| `analyst_consensus` | 分析师一致预期 | eastmoney | — | **仅当日** | research |
+| `analyst_consensus` | 分析师一致预期 | eastmoney | — | 仅当日 | research |
 | `financial_statement_items` | 财务报表科目 | eastmoney | — | 可回补 | fundamentals |
 | `share_structure` | 股本结构 | eastmoney | — | 可回补 | fundamentals |
 | `shareholder_counts` | 股东户数 | eastmoney | — | 可回补 | fundamentals |
-| `top_holders` | 前十大股东 / 流通股东 | eastmoney | — | 可回补 | —（单次 ~440 页，按需回填）|
+| `top_holders` | 前十大股东 / 流通股东 | eastmoney | — | 可回补 | 按需回填 |
 | `valuation_metrics` | 估值指标 | eastmoney | — | 回填 `baostock` | capital |
 | **L4 · 资金面** | | | | | |
 | `block_trades` | 大宗交易 | eastmoney | — | 可回补 | signals |
 | `dragon_tiger` | 龙虎榜 | eastmoney | — | 可回补 | signals |
-| `fund_flow` | 个股资金流 | eastmoney | — | **仅当日** | capital |
+| `fund_flow` | 个股资金流 | eastmoney | — | 仅当日 | capital |
 | `institutional_holdings` | 机构持股 | eastmoney | — | 可回补 | research |
 | `margin_trading` | 融资融券 | eastmoney | — | 可回补 | capital |
 | `northbound_flows` | 北向资金流向 | eastmoney | — | 可回补 | capital |
@@ -185,147 +201,163 @@ failed batch,其余照常落盘,`asl retry <run_id>` 只补失败的。
 | `index_constituents` | 指数成分 | eastmoney | — | 回填 `cni` | fundamentals |
 | `industry_index` | 行业指数 | derived | — | 可回补 | — |
 | `industry_members` | 行业分类成分 | eastmoney | — | 回填 `sw` | fundamentals |
-| `sector_members` | 板块成分 | eastmoney | — | **仅当日** | capital |
+| `sector_members` | 板块成分 | eastmoney | — | 仅当日 | capital |
 | **L6 · 宏观** | | | | | |
 | `macro_indicators` | 宏观指标 | eastmoney | pboc | 可回补 | macro_risk |
 | `market_breadth` | 市场宽度 | derived | — | 可回补 | macro_risk |
 | **L7 · 舆情 / 轮动** | | | | | |
-| `economic_calendar` ○ | 经济日历 | eastmoney | — | **仅当日** | — |
-| `flash_news_wire` | 7×24 快讯 | eastmoney | — | **仅当日** | research |
-| `hot_rank` | 人气榜 | eastmoney | — | **仅当日** | research |
-| `news_headlines` | 新闻标题 | eastmoney | — | **仅当日** | research |
+| `economic_calendar` ○ | 经济日历 | eastmoney | — | 仅当日 | — |
+| `flash_news_wire` | 7×24 快讯 | eastmoney | — | 仅当日 | research |
+| `hot_rank` | 人气榜 | eastmoney | — | 仅当日 | research |
+| `news_headlines` | 新闻标题 | eastmoney | — | 仅当日 | research |
 | `sector_bars` | 板块行情 | ths | — | 回填 `ths` | research |
-| `sector_fund_flow` | 板块资金流 | eastmoney | — | **仅当日** | research |
+| `sector_fund_flow` | 板块资金流 | eastmoney | — | 仅当日 | research |
 | `sentiment_scores` | 情绪评分 | derived | eastmoney | 可回补 | research |
 | **L8 · 风险合规** | | | | | |
 | `regulatory_events` | 监管事件 | cninfo | — | 可回补 | macro_risk |
 | `share_unlock_schedule` | 解禁日程 | eastmoney | — | 可回补 | macro_risk |
 
-○ = 可选数据集(空表不算异常)。日内数据(1m / 5m / 分笔)**默认全关**,见
-[runbook](docs/operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
+○ 表示可选数据集，空表不算异常。逐项说明见[数据集目录](docs/datasets/catalog.md)，源端限制见[数据源说明](docs/datasets/sources.md)。
 
-**流量控制**——每个源一把跨进程文件锁,互不影响:
+</details>
 
-| 源 | 间隔 | 依据 |
-|---|---|---|
-| tdx_protocol | 100ms | 行情主机,建议 `workers ≤ 8` |
-| eastmoney | 0.5s | 实测 40/40 无失败 |
-| sina | 0.3s | 轻量 |
-| ths | 1.0s | 实测 ~1300 次连续请求零失败 |
-| ths_pages | 3.0s | 实测 1.5s 仍安全,取 2 倍余量;1 req/s 会在 ~23 次后 401 |
-| cninfo / pboc / nbs / exchange | 1.0s | 站点抖动,按页限速 |
-| baostock | 1.0s + 每 20 只歇 120s | **实测**:batch 50 / 歇 45s 会被封,当前值跑完 1658 只无一次封禁 |
-
-**时间可以等,封禁成本远高于多等一天。** 全市场回填因此是小时级——这是有意的。
-
-## 让它每天自己跑
-
-`asl run daily` 跑完当天全部分组。挂进 crontab 就是日更：
+## 日常使用与运维
 
 ```bash
-# 交易日收盘后跑一次；非交易日会自己跳过
+asl run daily                 # 执行当天全部日更分组
+asl status                    # 查看 FRESH / STALE / EMPTY
+asl serve                     # 打开 http://127.0.0.1:8787
+asl sources                   # 检查上游数据源健康度
+asl retry --run-id <run_id>   # 只重试失败批次
+```
+
+单个 step 失败时，系统会记录 failed batch，其他步骤继续落盘；重试不会把整条任务重新跑一遍。浏览器控制台就是 README 首图中的界面，可查看覆盖、新鲜度、容量、跑批和质量结果。
+
+挂入 crontab 即可自动日更：
+
+```bash
+# 交易日收盘后执行；非交易日会自动跳过
 30 16 * * 1-5  cd /path/to/lake && asl run daily >> logs/daily.log 2>&1
 ```
 
-```bash
-asl status        # 各数据集新鲜度：FRESH / STALE / EMPTY
-asl serve         # http://127.0.0.1:8787 看覆盖、体积、分层
-asl sources       # 14 个上游主机健康度
-asl retry <run_id>  # 只重跑失败的批次
-```
-
-一条命令跑不动的时候不会静默:失败的 step 记成 failed batch,其余照常写入,
-`asl retry` 只补失败的那些。
-
-```python
-from ashare_lake.query import load
-
-bars = load("daily_bars", start="2020-01-01", end="2025-12-31", adjust="hfq", universe="all_a")
-roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
-```
-
-demo 线（`data/ashare-lake-demo/`）与日更线互不覆盖。安装与调度：[installation](docs/getting-started/installation.md) · [runbook](docs/operations/runbook.md)。
+更多运维方式见[运行手册](docs/operations/runbook.md)、[数据源健康检查](docs/operations/source-health.md)和[故障排查](docs/operations/troubleshooting.md)。
 
 ## 接给 AI agent
 
-`asl mcp` 把湖给模型用（只读；采集仍在 CLI）。
+`asl mcp` 以只读方式把本地湖提供给模型；采集、重试和清理仍由 CLI 完成。
 
 ```bash
-# 已有湖 —— 完整口径
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml
-
-# 还没有 —— 先 asl demo，再用 demo 配置
-# 完全不想建湖 —— 加 --live（无复权 / universe / PIT，响应里会标明）
+claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.toml"
 ```
 
-`--config` **必须绝对路径**。6 个工具按问题形状切（不是 39 个数据集各一个），口径写在响应里。细节：[MCP 参考](docs/reference/mcp.md)。
+`--config` 必须使用绝对路径。接好后可以直接问：
 
-## 看一眼湖
+- “茅台过去五年复权后涨了多少？”
+- “茅台当前 PE 在自己五年历史里处于什么分位？”
+- “计算 2018 年财报因子的 IC，不要使用未来数据。”
+- “过去三年退市的股票，退市前 60 天有什么共同形态？”
 
-建好之后，`asl serve` 给人看覆盖、新鲜度、分层体积（只读，不写湖）：
-
-```bash
-asl serve     # http://127.0.0.1:8787
-asl sources   # 14 个上游主机健康度（探测在 CLI，展示在 serve）
-```
-
-<p align="center">
-  <img src="docs/assets/asl-serve-hero.png" alt="asl serve：FRESH/STALE/EMPTY、总行数与体积、按分层的数据集概况" width="860" />
-</p>
-
-细节：[serve](docs/modules/serve.md) · [source-health](docs/operations/source-health.md)。
+还没有正式湖时，可以先运行 `asl demo`，再使用生成的 demo 配置。完整说明见[MCP 参考](docs/reference/mcp.md)。
 
 ## 架构
 
-多源进编排，落 staging → curated → derived，再用 `load()` / DuckDB / Polars 消费：
+```mermaid
+flowchart LR
+    Sources["公开数据源<br/>TDX · Eastmoney · Sina · CNInfo · …"]
+    Adapters["Adapters<br/>协议 · 分页 · 限流 · 源切换"]
+    Engine["Orchestrator + Steps<br/>Wave DAG · manifest · retry"]
 
-<p align="center">
-  <img src="docs/assets/architecture-overview.png" alt="ashare-lake 架构：数据源 → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
-</p>
+    subgraph Lake["本地 Parquet 数据湖"]
+        Staging["staging<br/>原始批次"] --> Curated["curated<br/>统一契约"] --> Derived["derived<br/>复权因子 · 退市事件 · 行业指数"]
+        Meta["meta<br/>水位 · manifest · stats"]
+    end
 
-展开：[architecture overview](docs/architecture/overview.md)。
+    Quality["Quality<br/>审计 · 对账 · 跨源差异"]
+    Query["Query<br/>load() · DuckDB · Polars"]
+    Readonly["只读服务<br/>asl serve · asl mcp"]
+    Ops["Operations<br/>cron · launchd · backup"]
 
-## FAQ
-
-**Q：`asl init` 要跑多久、占多少磁盘？**  
-默认（最近 3 年、全市场）约 1 小时、GB 级。`--profile full` 从 **2016** 起,实测约 3 倍时间。
-两者都是**全市场标的一个不缺**——按标的裁剪会把幸存者偏差建进湖里。
-
-再浅意义不大:窗口一短,成本就由「每只标的一次往返」主导,1 年和 3 年差不了多少,
-却拉不出多数因子需要的多年窗口。
-
-想要 2001 起的日线(TDX 确实供到那里,但不是任何 profile 的默认)：
-
-```bash
-asl init --since 2001-01-01                    # 首次就拉满
-asl backfill daily_bars --start 2001-01-01     # 或事后加深
+    Sources --> Adapters --> Engine --> Staging
+    Engine --> Meta
+    Curated --> Quality
+    Derived --> Quality
+    Curated --> Query
+    Derived --> Query
+    Curated --> Readonly
+    Derived --> Readonly
+    Ops -. 调度与保障 .-> Engine
 ```
 
-**Q：为什么只存后复权因子？**  
-前复权价格会随「今天」变。落盘只存 hfq，qfq 在 `load(adjust="qfq")` 现算（[ADR-0004](docs/adr/0004-store-hfq-derive-qfq-at-query.md)）。
+核心边界很简单：适配器负责把多源数据取回来；编排层负责 DAG、批次和重试；数据先进入 staging，再压实为 curated 并计算 derived；质量层持续审计；查询和服务层只读消费。展开见[架构说明](docs/architecture/overview.md)。
 
-**Q：东财 403 / 连接重置？**  
-先 `asl sources --only eastmoney_push2,eastmoney_push2his`。日更主路径行情走 TDX，不受东财风控影响。
+## 与 AkShare、Tushare、Qlib 有什么不同
 
-**Q：分钟线为什么拉不到两年前？**  
-源端只保留约 95 个交易日的 1m、491 个交易日的 5m——是供应商保留期，不是本湖待办。
+AkShare 和取数工具解决“怎样调用数据源”，Tushare 提供云端数据服务，Qlib / vn.py 更偏研究或交易平台。ashare-lake 做的是中间的数据基础设施：把多源数据落成可日更、可复查、可溯源的本地 Parquet 湖。
 
-**Q：这些数据能商用 / 再分发吗？**  
-代码 Apache-2.0，**落盘行情和公告不是**。见 [legal](docs/legal-and-data-sources.md)。
+| 你在意的能力 | ashare-lake | 常规取数工具 | 云端数据服务 | 研究 / 交易平台 |
+|---|---|---|---|---|
+| 本地可续跑的数据底座 | **内置** | 通常自建 | 通常不提供 | 依平台而定 |
+| 历史结果能否复查 | **行级溯源** | 缺少统一契约 | 依平台字段 | 依模块而定 |
+| 复权 / universe / PIT | **统一在 `load()`** | 自己拼接 | 自己拼接 | 使用平台口径 |
+| 单一数据源故障 | **按批失败，可单独重试** | 调用方处理 | 平台处理 | 依模块而定 |
 
-更多：[排障](docs/operations/troubleshooting.md) · 完整 [FAQ 与运维](docs/operations/runbook.md)。
+更完整的逐项比较见[项目对比](docs/comparison.md)。
 
-用于论文或研究报告时，仓库提供标准 [CITATION.cff](CITATION.cff)；请同时记录版本、覆盖范围和复权 / PIT 口径。
+## 常见问题
 
-## 项目状态与文档
+<details>
+<summary><b>初始化要多久、占多少磁盘？</b></summary>
 
-个人项目：issue / PR 欢迎，响应尽力而为。当前路线见 [ROADMAP](ROADMAP.md)。
-[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) · [CHANGELOG](CHANGELOG.md)。
+默认配置拉取全市场最近 3 年，通常约 1 小时、GB 级；`--profile full` 从 2016 年开始，实测约 3 倍时间。网络环境与数据源状态会影响结果。
 
-完整索引：[docs/README.md](docs/README.md)。常用：[MCP](docs/reference/mcp.md) · [安装](docs/getting-started/installation.md) · [数据集目录](docs/datasets/catalog.md) · [CLI](docs/reference/cli.md)。
+需要从 2001 年开始的日线：
 
-代码 [Apache-2.0](LICENSE)。落盘数据受上游条款约束；仓库不附带数据湖，也不授予再分发权。
+```bash
+asl init --since 2001-01-01
+# 或事后补深
+asl backfill daily_bars --start 2001-01-01
+```
+
+</details>
+
+<details>
+<summary><b>为什么落盘只存后复权因子？</b></summary>
+
+前复权价格会随“今天”变化。落盘只存 hfq，qfq 在 `load(adjust="qfq")` 时计算，详见 [ADR-0004](docs/adr/0004-store-hfq-derive-qfq-at-query.md)。
+
+</details>
+
+<details>
+<summary><b>东财返回 403 或连接重置怎么办？</b></summary>
+
+先运行 `asl sources --only eastmoney_push2,eastmoney_push2his`。日更主路径行情走 TDX，不受东财行情接口风控影响。
+
+</details>
+
+<details>
+<summary><b>为什么分钟线没有更早历史？</b></summary>
+
+源端当前只保留约 95 个交易日的 1 分钟线、491 个交易日的 5 分钟线。这是上游保留期，不是数据湖尚未完成的回填任务。
+
+</details>
+
+<details>
+<summary><b>数据可以商用或再分发吗？</b></summary>
+
+项目代码使用 Apache-2.0；落盘的行情、公告等数据不随代码授权。使用与分发前请阅读[法律与数据源说明](docs/legal-and-data-sources.md)。
+
+</details>
+
+## 文档与项目状态
+
+- [快速开始](docs/getting-started/quickstart.md) · [CLI 参考](docs/reference/cli.md) · [完整文档索引](docs/README.md)
+- [数据集目录](docs/datasets/catalog.md) · [MCP 参考](docs/reference/mcp.md) · [运维手册](docs/operations/runbook.md)
+- [ROADMAP](ROADMAP.md) · [CHANGELOG](CHANGELOG.md) · [贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)
+
+这是个人维护的开源项目，issue 和 PR 都欢迎。用于论文或研究报告时，可引用仓库中的 [CITATION.cff](CITATION.cff)，并记录版本、覆盖范围及复权 / PIT 口径。
+
+代码使用 [Apache-2.0](LICENSE)。仓库不附带数据湖，也不授予上游数据的再分发权。
 
 ---
 
-如果它省了你搭数据底座的时间，点个 ⭐ 让更多做 A 股研究的人看到。
+如果 ashare-lake 帮你省下了搭建数据底座的时间，欢迎点个 ⭐，让更多做 A 股研究的人看到它。

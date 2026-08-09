@@ -225,7 +225,7 @@ asl sources   # health of 14 upstream hosts (probe on CLI, display on serve)
 ```
 
 <p align="center">
-  <img src="docs/assets/asl-serve-hero.png" alt="asl serve: FRESH/STALE/EMPTY, total rows and bytes, datasets by tier" width="860" />
+  <img src="docs/assets/asl-serve-hero.png" alt="asl serve: lake health, 42 registered datasets, storage metrics, coverage heatmap, and action items" width="860" />
 </p>
 
 Details: [serve](docs/modules/serve.md) ·
@@ -233,12 +233,32 @@ Details: [serve](docs/modules/serve.md) ·
 
 ## Architecture
 
-Many sources into one pipeline, landed as staging → curated → derived, then
-consumed with `load()` / DuckDB / Polars:
+```mermaid
+flowchart LR
+    Sources["Public sources<br/>TDX · Eastmoney · Sina · CNInfo · …"]
+    Adapters["Adapters<br/>protocols · pagination · rate limits · fallback"]
+    Engine["Orchestrator + Steps<br/>Wave DAG · manifest · retry"]
 
-<p align="center">
-  <img src="docs/assets/architecture-overview.png" alt="ashare-lake architecture: sources → ASL Daily Pipeline → staging/curated/derived → load()/DuckDB/Polars" width="900" />
-</p>
+    subgraph Lake["Local Parquet lake"]
+        Staging["staging<br/>raw batches"] --> Curated["curated<br/>shared contracts"] --> Derived["derived<br/>factors · delistings · industry indexes"]
+        Meta["meta<br/>watermarks · manifest · stats"]
+    end
+
+    Quality["Quality<br/>audits · reconciliation · cross-source diffs"]
+    Query["Query<br/>load() · DuckDB · Polars"]
+    Readonly["Read-only services<br/>asl serve · asl mcp"]
+    Ops["Operations<br/>cron · launchd · backup"]
+
+    Sources --> Adapters --> Engine --> Staging
+    Engine --> Meta
+    Curated --> Quality
+    Derived --> Quality
+    Curated --> Query
+    Derived --> Query
+    Curated --> Readonly
+    Derived --> Readonly
+    Ops -. schedules and protects .-> Engine
+```
 
 More: [architecture overview](docs/architecture/overview.md).
 
