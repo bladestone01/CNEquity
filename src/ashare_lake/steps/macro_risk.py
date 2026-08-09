@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import date
 
-import polars as pl
-
 from ashare_lake.adapters.cninfo.regulatory import fetch_regulatory_events
 from ashare_lake.adapters.eastmoney.share_unlock import fetch_share_unlock_schedule
 from ashare_lake.adapters.macro.indicators import fetch_macro_indicators
@@ -111,6 +109,11 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
     up to ~180 times before it aged out of the window; striding under the
     horizon covers the same ground once, with 30 days of overlap as a margin
     against an unlock landing exactly on a stride boundary.
+
+    Flushes after every stride rather than once at the end — measured in
+    production: one stride's page 28 hit an unretried EastMoney timeout 38
+    minutes into a ~40-stride sweep, and because nothing had been written yet,
+    all 38 minutes of prior strides were lost with it.
     """
     from datetime import timedelta
 
@@ -119,24 +122,21 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
 
     start = getattr(config, "_backfill_start", None) or BACKFILL_START
     end = getattr(config, "_backfill_end", None) or trade_date
+    writer = StagingWriter(config.staging_root)
     cursor = start
-    frames = []
     rows_written = 0
+    n_parts = 0
     while cursor <= end:
         config.rate_limit("eastmoney")
         df = fetch_share_unlock_schedule(cursor, horizon_days=_UNLOCK_HORIZON_DAYS)
         if not df.is_empty():
-            frames.append(df)
+            part = with_provenance(
+                df, source="eastmoney", data_version=data_version_for("share_unlock_schedule")
+            )
+            writer.write_batch("share_unlock_schedule", run_id, f"bf-{n_parts:04d}", part)
+            n_parts += 1
+            rows_written += part.height
         cursor += timedelta(days=_UNLOCK_STRIDE_DAYS)
-    if not frames:
-        return {"rows_read": 0, "rows_written": 0}
-    part = with_provenance(
-        pl.concat(frames, how="diagonal_relaxed"),
-        source="eastmoney",
-        data_version=data_version_for("share_unlock_schedule"),
-    )
-    StagingWriter(config.staging_root).write_batch("share_unlock_schedule", run_id, "bf-0000", part)
-    rows_written = part.height
     return {"rows_read": rows_written, "rows_written": rows_written}
 
 

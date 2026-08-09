@@ -50,17 +50,21 @@ def test_strides_under_the_horizon_not_every_day(tmp_path, monkeypatch):
     assert calls == [date(2026, 1, 1), date(2026, 1, 1) + timedelta(days=_UNLOCK_STRIDE_DAYS)]
 
 
-def test_writes_a_single_deduped_batch(tmp_path, monkeypatch):
+def test_flushes_per_stride_not_once_at_the_end(tmp_path, monkeypatch):
+    """A failure on a later stride must not cost the ones already fetched.
+
+    Measured in production: a stride's page 28 hit an unretried EastMoney
+    timeout 38 minutes into a ~40-stride sweep. The old single-batch-at-the-end
+    write meant every prior stride was lost with it. Two strides here must
+    land as two staged parts, not one — a compact-time PK dedup on the
+    (symbol, unlock_date) overlap is a separate concern from this.
+    """
     cfg = Config(data_root=tmp_path / "data")
     cfg._backfill_start = date(2026, 1, 1)
-    cfg._backfill_end = date(2026, 6, 30)
-
-    # Overlapping strides both see the same unlock event — the PK (symbol,
-    # unlock_date) is what collapses it at compact, not this step.
-    shared_unlock = date(2026, 3, 1)
+    cfg._backfill_end = date(2026, 6, 30)  # two strides: day 0 and day 150
 
     def fake_fetch(d: date, *, horizon_days: int = 180) -> pl.DataFrame:
-        return pl.DataFrame([_row(shared_unlock)])
+        return pl.DataFrame([_row(d + timedelta(days=30))])
 
     monkeypatch.setattr("ashare_lake.steps.macro_risk.fetch_share_unlock_schedule", fake_fetch)
     monkeypatch.setattr(cfg, "rate_limit", lambda source: None)
@@ -68,8 +72,8 @@ def test_writes_a_single_deduped_batch(tmp_path, monkeypatch):
     out = _backfill_share_unlock_schedule(cfg, date(2026, 7, 1), "run-1")
 
     staged = list((cfg.staging_root / "share_unlock_schedule").glob("**/*.parquet"))
-    assert len(staged) == 1
-    assert out["rows_written"] == pl.read_parquet(staged[0]).height
+    assert len(staged) == 2
+    assert out["rows_written"] == sum(pl.read_parquet(f).height for f in staged)
 
 
 def test_empty_range_writes_nothing(tmp_path, monkeypatch):
