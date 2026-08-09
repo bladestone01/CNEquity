@@ -11,6 +11,7 @@
 | 文件 | 职责 |
 |------|------|
 | `audit.py` | `run_audit()`, `lake_health()` |
+| `historical_validity.py` | all-A 历史窗口的机器可读严格合同 |
 | `dataset_checks.py` | PK 重复、mock、空集、行数突变 |
 | `cross_checks.py` | bars×calendar、valuation×bars、adj 对账、ST 标签对照 |
 | `macro_checks.py` | 宏观月度序列的陈旧检测与修订留痕 |
@@ -44,6 +45,20 @@
 | `findings_by_severity` | error / warning / info 计数 |
 | `adj_factor_reconciliation` | 复权收益极值 + 缺 corporate_actions |
 | `healthy` | 无 error 级 finding |
+
+此外写入 `meta/quality/historical-validity-latest.json`。它把以下三项组合为独立的 `historical_all_a_universe_validity` 合同：
+
+- `daily_bars` 是否完整包住请求窗口
+- 历史 ST 标签覆盖是否早于窗口起点
+- 退市目录发现、末次有效成交与 instruments 身份是否通过
+
+这不会改变运维 `healthy` 的含义；日更可以健康，但长窗口研究仍被标记为 `universe_ready=false`。需要让命令对研究缺口返回非零时，显式运行：
+
+```bash
+asl audit --full --research-start 2020-01-01 --research-end 2024-12-31
+```
+
+该合同不替下游证明复权精确性、特征覆盖或财报 PIT 语义，这些由研究工作台继续组合门禁。
 
 ---
 

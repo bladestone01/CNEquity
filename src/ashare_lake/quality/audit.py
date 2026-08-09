@@ -276,9 +276,16 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
     return len(findings) + len(diffs)
 
 
-def lake_health(config: Config, trade_date: date) -> dict:
+def lake_health(
+    config: Config,
+    trade_date: date,
+    *,
+    research_start: date | None = None,
+    research_end: date | None = None,
+) -> dict:
     """Lake health: findings + freshness → ``meta/quality/health-latest.json``."""
     from ashare_lake.domain.datasets import is_stale
+    from ashare_lake.quality.historical_validity import historical_universe_validity
     from ashare_lake.query.reader import list_datasets
 
     findings = _collect_lake_findings(config, trade_date, None)
@@ -301,6 +308,11 @@ def lake_health(config: Config, trade_date: date) -> dict:
         if is_stale(row["dataset"], mark, anchor):
             stale.append(row["dataset"])
 
+    historical_validity = historical_universe_validity(
+        config,
+        start=research_start,
+        end=research_end,
+    )
     health = {
         "trade_date": trade_date.isoformat(),
         "last_trading_day": anchor.isoformat(),
@@ -309,6 +321,10 @@ def lake_health(config: Config, trade_date: date) -> dict:
         "warning_findings": [f for f in findings if f.get("severity") == "warning"],
         "stale_datasets": sorted(stale),
         "empty_datasets": sorted(empty),
+        # Research readiness is intentionally independent of operational
+        # health. A fresh lake can still be unsafe for a long backtest, while a
+        # stale optional dataset need not invalidate a closed historical study.
+        "historical_universe_validity": historical_validity,
         "healthy": by_severity.get("error", 0) == 0 and not stale,
     }
 
@@ -316,6 +332,8 @@ def lake_health(config: Config, trade_date: date) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "health-latest.json", "w", encoding="utf-8") as f:
         json.dump(health, f, ensure_ascii=False, indent=2, default=str)
+    with open(out_dir / "historical-validity-latest.json", "w", encoding="utf-8") as f:
+        json.dump(historical_validity, f, ensure_ascii=False, indent=2, default=str)
     return health
 
 

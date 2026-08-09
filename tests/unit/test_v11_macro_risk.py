@@ -364,7 +364,9 @@ def test_lake_health_snapshot(tmp_path):
 
     health = lake_health(cfg, date(2024, 6, 28))
     assert "findings_by_severity" in health
+    assert "historical_universe_validity" in health
     assert "daily_bars" not in health["empty_datasets"]
     # most datasets have no data in this minimal lake
     assert "fund_flow" in health["empty_datasets"]
     assert (cfg.meta_root / "quality" / "health-latest.json").exists()
+    assert (cfg.meta_root / "quality" / "historical-validity-latest.json").exists()

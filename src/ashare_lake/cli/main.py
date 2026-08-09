@@ -1190,14 +1190,44 @@ def derive(name: str, config_path: str, full: bool, start_str: str | None, end_s
     is_flag=True,
     help="Whole-lake health snapshot (current state + freshness), not a per-run file.",
 )
-def audit(config_path: str, run_id: str | None, full: bool):
+@click.option(
+    "--research-start",
+    default=None,
+    help="Strictly validate an all-A research window starting here (requires --full).",
+)
+@click.option(
+    "--research-end",
+    default=None,
+    help="Research window end (default: latest daily_bars; requires --research-start).",
+)
+def audit(
+    config_path: str,
+    run_id: str | None,
+    full: bool,
+    research_start: str | None,
+    research_end: str | None,
+):
     """Run quality audit, or --full for a current whole-lake health snapshot."""
     cfg = _cfg(config_path)
+
+    if research_start and not full:
+        raise click.ClickException("--research-start requires --full")
+    if research_end and not research_start:
+        raise click.ClickException("--research-end requires --research-start")
 
     if full:
         from ashare_lake.quality.audit import lake_health
 
-        health = lake_health(cfg, date.today())
+        start_date = date.fromisoformat(research_start) if research_start else None
+        end_date = date.fromisoformat(research_end) if research_end else None
+        if start_date and end_date and start_date > end_date:
+            raise click.ClickException("--research-start must be on or before --research-end")
+        health = lake_health(
+            cfg,
+            date.today(),
+            research_start=start_date,
+            research_end=end_date,
+        )
         sev = health["findings_by_severity"]
         click.echo(f"Lake health @ last trading day {health['last_trading_day']}")
         click.echo(
@@ -1212,8 +1242,16 @@ def audit(config_path: str, run_id: str | None, full: bool):
             click.echo(f"  [error]   {f.get('dataset', ''):22} {f.get('message', '')}")
         for f in health["warning_findings"]:
             click.echo(f"  [warning] {f.get('dataset', ''):22} {f.get('message', '')}")
+        validity = health["historical_universe_validity"]
+        research_state = "READY" if validity["universe_ready"] else "BLOCKED"
+        click.echo(
+            f"  historical all-A {validity['window']['start']}.."
+            f"{validity['window']['end']}: {research_state}"
+        )
+        for blocker in validity["blockers"]:
+            click.echo(f"  [research] {blocker['message']}")
         click.echo("HEALTHY" if health["healthy"] else "UNHEALTHY")
-        if not health["healthy"]:
+        if not health["healthy"] or (research_start and not validity["universe_ready"]):
             raise SystemExit(1)
         return
 

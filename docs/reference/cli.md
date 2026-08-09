@@ -249,8 +249,10 @@ asl derive trading_status --start 2001-01-01 --end 2001-12-31
 |------|------|
 | `--run-id` | 指定 run 的 findings（默认最近 run） |
 | `--full` | 湖级健康快照（非 per-run 文件） |
+| `--research-start YYYY-MM-DD` | 与 `--full` 合用；严格验证 all-A 历史宇宙，未通过时退出 1 |
+| `--research-end YYYY-MM-DD` | 研究窗口末日；默认取 `daily_bars` 最新分区 |
 
-`--full` 且 UNHEALTHY 退出 1。
+`--full` 且 UNHEALTHY 退出 1。未显式传 `--research-start` 时，历史宇宙状态仍写入 health 与 `historical-validity-latest.json`，但不会改变运维健康的退出码。
 
 ---
 

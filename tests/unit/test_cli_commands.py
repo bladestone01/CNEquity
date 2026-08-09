@@ -425,13 +425,18 @@ def test_repartition_dataset_dry_run(cfg_path, monkeypatch):
 def test_audit_full_healthy(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "ashare_lake.quality.audit.lake_health",
-        lambda cfg, d: {
+        lambda cfg, d, **kwargs: {
             "last_trading_day": "2024-06-28",
             "findings_by_severity": {"error": 0, "warning": 0, "info": 1},
             "empty_datasets": [],
             "stale_datasets": [],
             "error_findings": [],
             "warning_findings": [],
+            "historical_universe_validity": {
+                "window": {"start": "2020-01-01", "end": "2024-06-28"},
+                "universe_ready": True,
+                "blockers": [],
+            },
             "healthy": True,
         },
     )
@@ -443,19 +448,54 @@ def test_audit_full_healthy(cfg_path, monkeypatch):
 def test_audit_full_unhealthy(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "ashare_lake.quality.audit.lake_health",
-        lambda cfg, d: {
+        lambda cfg, d, **kwargs: {
             "last_trading_day": "2024-06-28",
             "findings_by_severity": {"error": 1, "warning": 0, "info": 0},
             "empty_datasets": ["news_headlines"],
             "stale_datasets": ["fund_flow"],
             "error_findings": [{"dataset": "daily_bars", "message": "pk dup"}],
             "warning_findings": [],
+            "historical_universe_validity": {
+                "window": {"start": "2020-01-01", "end": "2024-06-28"},
+                "universe_ready": False,
+                "blockers": [{"message": "ST history starts too late"}],
+            },
             "healthy": False,
         },
     )
     result = CliRunner().invoke(cli, ["audit", "--full", "--config", cfg_path])
     assert result.exit_code == 1
     assert "UNHEALTHY" in result.output
+
+
+def test_audit_full_research_window_is_a_strict_independent_gate(cfg_path, monkeypatch):
+    monkeypatch.setattr(
+        "ashare_lake.quality.audit.lake_health",
+        lambda cfg, d, **kwargs: {
+            "last_trading_day": "2024-06-28",
+            "findings_by_severity": {},
+            "empty_datasets": [],
+            "stale_datasets": [],
+            "error_findings": [],
+            "warning_findings": [],
+            "historical_universe_validity": {
+                "window": {"start": "2020-01-01", "end": "2024-06-28"},
+                "universe_ready": False,
+                "blockers": [{"message": "delisted coverage is unverified"}],
+            },
+            "healthy": True,
+        },
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["audit", "--full", "--config", cfg_path, "--research-start", "2020-01-01"],
+    )
+
+    assert result.exit_code == 1
+    assert "historical all-A" in result.output
+    assert "BLOCKED" in result.output
+    assert "HEALTHY" in result.output
 
 
 def test_derive_trading_status_and_orphans(cfg_path, monkeypatch):
