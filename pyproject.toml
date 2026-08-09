@@ -124,6 +124,7 @@ ashare_lake = [
     # external asset into a page that does not load.
     "serve/static/*.html",
     "serve/static/*.js",
+    "serve/static/*.css",
     # MIT requires the notice to travel with every copy of the vendored code.
     "adapters/tdx_protocol/_wire/LICENSE.tdxpy",
 ]

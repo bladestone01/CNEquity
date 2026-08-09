@@ -510,6 +510,17 @@ def test_the_bundle_ships_beside_the_page(client):
     assert len(bundle.content) > 100_000
 
 
+def test_the_stylesheet_ships_beside_the_page(client):
+    """The dashboard remains self-contained while keeping CSS out of HTML."""
+    body = client.get("/").text
+    assert "/static/styles.css" in body
+    assert "<style>" not in body
+    stylesheet = client.get("/static/styles.css")
+    assert stylesheet.status_code == 200
+    assert "text/css" in stylesheet.headers["content-type"]
+    assert len(stylesheet.content) > 1_000
+
+
 def test_static_serves_only_what_is_packaged(client):
     assert client.get("/static/nope.js").status_code == 404
     assert client.get("/static/../../pyproject.toml").status_code in (403, 404)
@@ -561,7 +572,7 @@ def test_dates_serialise_as_plain_iso_days(client):
     assert date.fromisoformat(body["anchor"])
 
 
-def test_the_bundle_url_is_stamped_so_an_upgrade_is_not_served_from_cache(client):
+def test_static_asset_urls_are_stamped_so_an_upgrade_is_not_served_from_cache(client):
     """StaticFiles sends no Cache-Control, so the URL has to change instead.
 
     Without this an upgraded install can pair a new API with the browser's
@@ -570,9 +581,10 @@ def test_the_bundle_url_is_stamped_so_an_upgrade_is_not_served_from_cache(client
     import re
 
     body = client.get("/").text
-    match = re.search(r"/static/bundle\.js\?v=(\d+)", body)
-    assert match, "bundle URL is not version-stamped"
-    assert client.get(f"/static/bundle.js?v={match.group(1)}").status_code == 200
+    for asset in ("bundle.js", "styles.css"):
+        match = re.search(rf"/static/{re.escape(asset)}\?v=(\d+)", body)
+        assert match, f"{asset} URL is not version-stamped"
+        assert client.get(f"/static/{asset}?v={match.group(1)}").status_code == 200
 
 
 # --- quality -----------------------------------------------------------------

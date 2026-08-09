@@ -6,14 +6,15 @@ Source for the `asl serve` dashboard bundle.
 cd frontend && npm ci && npm run build
 ```
 
-Output is `src/ashare_lake/serve/static/bundle.js`, and it is **committed**.
-That is the trade this directory exists to make:
+Outputs are `src/ashare_lake/serve/static/bundle.js` and
+`src/ashare_lake/serve/static/styles.css`, and both are **committed**. That is
+the trade this directory exists to make:
 
 - `pip install ashare-lake` needs no node. The bundle ships in the wheel.
 - Only a contributor changing the dashboard needs npm, and only to re-run
   `npm run build` before committing.
-- CI runs `npm run check`, which rebuilds and fails if the committed bundle does
-  not match the source — so the two cannot drift.
+- CI runs `npm run check`, which rebuilds and fails if the committed assets do
+  not match the source — so generated JavaScript and CSS cannot drift.
 
 ECharts is imported through `echarts/core` with explicit chart and component
 registrations rather than the prebuilt `echarts.min.js`: tree-shaking takes it

@@ -37,19 +37,19 @@ STATIC_DIR = Path(__file__).parent / "static"
 # minutes, so this is responsive without making the manifest a hot file.
 _STREAM_POLL_SECONDS = 2.0
 
-_BUNDLE_SRC = "/static/bundle.js"
+_STATIC_ASSETS = ("/static/styles.css", "/static/bundle.js")
 
 
-def _bundle_stamp() -> str:
-    """Cache-busting stamp for the bundle URL.
+def _asset_stamp(source: str) -> str:
+    """Cache-busting stamp for a dashboard asset URL.
 
     The file's mtime rather than the package version: installing a wheel
     refreshes it, so upgrades bust the cache — and so does a local rebuild,
     which a version string would not, leaving a developer testing yesterday's
     JavaScript against today's code. One stat per page load.
     """
-    bundle = STATIC_DIR / "bundle.js"
-    return str(int(bundle.stat().st_mtime)) if bundle.exists() else "dev"
+    asset = STATIC_DIR / Path(source).name
+    return str(int(asset.stat().st_mtime)) if asset.exists() else "dev"
 
 
 class Health(BaseModel):
@@ -384,13 +384,13 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
         page = STATIC_DIR / "index.html"
         if not page.exists():  # pragma: no cover — packaging failure
             raise HTTPException(500, "dashboard page missing from the installed package")
-        # Version-stamp the bundle URL. StaticFiles sends no Cache-Control, so a
-        # browser is free to reuse a cached /static/bundle.js by heuristic
-        # freshness without revalidating — which after an upgrade means new API,
-        # old JavaScript, and a dashboard that misbehaves in ways neither side
-        # can explain. A changed query string is a changed URL.
+        # Version-stamp the built assets. StaticFiles sends no Cache-Control, so
+        # a browser may otherwise reuse stale CSS or JavaScript after an upgrade.
+        # A changed query string is a changed URL.
         html = page.read_text(encoding="utf-8")
-        return HTMLResponse(html.replace(_BUNDLE_SRC, f"{_BUNDLE_SRC}?v={_bundle_stamp()}"))
+        for source in _STATIC_ASSETS:
+            html = html.replace(source, f"{source}?v={_asset_stamp(source)}")
+        return HTMLResponse(html)
 
     @app.get("/source-health", response_class=HTMLResponse, include_in_schema=False)
     def source_health(request: Request) -> HTMLResponse:
