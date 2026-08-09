@@ -13,6 +13,8 @@ ordered around one promise: make reproducible A-share history easy to build, ins
 - Add small, runnable recipes for survivorship-safe universes, point-in-time fundamentals, and
   adjustment handling. Adjustment and PIT recipes are now published under the docs site.
 - Keep the docs site buildable in pull requests and deploy the searchable site from `main`.
+- Keep source availability and releases observable: weekly health artifacts, tag/version checks,
+  and a PyPI Trusted Publishing path are now checked into `.github/workflows/`.
 
 ## Next · 0.7
 

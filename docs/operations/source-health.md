@@ -82,13 +82,18 @@ URL 常量、东财的鉴权头、上交所需要的 Chrome TLS 伪装、同花�
 
 `{data_root}/meta/source_health/<vantage>.json`，和湖的其它元数据放在一起。`asl serve` 启动时不读，访问 `/source-health` 时才读——所以先跑探测再刷新页面即可，不用重启。
 
-**没有内置的定时发布。** 想每天自动跑就挂进你现有的调度里（见 [runbook](runbook.md)）：
+**本地没有强制的定时发布。** 想每天自动跑就挂进你现有的调度里（见 [runbook](runbook.md)）：
 
 ```bash
 asl sources --vantage cn >> logs/source-health.log 2>&1
 ```
 
-**探测失败不会让命令失败。** 源变红是这条命令的**输出**而不是它的错误；非零退出会让调度在最该记录的那天报错并跳过。
+**探测失败不会让命令失败。** 源变红是这条命令的**输出**而不是它的错误；如果调度需要门禁，请解析 JSON 中的 `status`，按业务决定是否阻断日更。
+
+仓库还提供一个每周运行的 GitHub Actions workflow：它从海外 runner 探测 TDX、Sina、东财和巨潮，
+把文本摘要写入 Job Summary，并上传 JSON artifact。这个报告只代表
+`github-actions` 视角；大陆机器仍应运行 `asl sources --vantage cn`，不要把海外的 `blocked`
+误读成全局故障。
 
 ## 加一个源
 

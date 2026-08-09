@@ -72,6 +72,10 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Added maintenance automation.** Weekly source-health probes publish a clearly labelled
+  GitHub Actions / overseas report, and version tags now require a matching package version,
+  `twine check`, and a clean distribution build before optional PyPI Trusted Publishing.
+
 - **Published a searchable documentation site and copy-paste research Recipes.** The GitHub Pages
   build covers first-run onboarding, adjustment semantics, PIT financials, DuckDB / Polars, MCP,
   and operations; pull requests build it in strict mode so navigation drift is visible before merge.
