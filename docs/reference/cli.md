@@ -15,11 +15,20 @@
 | `--symbols` | 逗号分隔标的（默认茅台/平安银行/五粮液/宁德/中国平安） |
 | `--days` | 约多少个交易日的 `daily_bars`（默认 30） |
 | `--intraday` | 额外抓同一批标的的 1m 线（最多约 5 个交易日），打印一根完整会话 |
+| `--research` | 额外从 Sina 派生 hfq 因子，并打印 raw / hfq 收益对照；会把窗口扩展到约 3 年 |
 | `--data-root` | 独立湖根目录（默认 `data/ashare-lake-demo`） |
 | `--trade-date` | 截至日 YYYY-MM-DD（默认今天 / 最近交易日） |
 | `--config-out` | 写出供后续 `asl query` 使用的小配置（默认 `configs/ashare-lake.demo.toml`） |
 
-流程：建目录 → 探测 TDX → 拉 instruments 并裁成 demo 宇宙 → 交易日历 → `daily_bars` + compact → 打印样例表；加 `--intraday` 时再跑 `minute_bars`。终端有分阶段进度与 INFO 日志。需要能访问 TDX；`allow_mock` 不会打开。
+流程：建目录 → 探测 TDX → 拉 instruments 并裁成 demo 宇宙 → 交易日历 → `daily_bars` + compact → 打印样例表；加 `--research` 时再派生 Sina hfq 并校验 exact 覆盖，加 `--intraday` 时再跑 `minute_bars`。终端有分阶段进度与 INFO 日志。需要能访问 TDX；`allow_mock` 不会打开。
+
+只想验证研究口径，不必初始化全市场：
+
+```bash
+asl demo --research --symbols 600519.SH
+```
+
+`--research` 需要额外访问 Sina；网络受限时先运行不带该选项的基础 demo。
 
 ---
 

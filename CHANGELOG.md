@@ -72,6 +72,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Synchronized the CLI reference with `asl demo --research`.** The public command table now
+  documents the Sina hfq comparison and no longer describes removed EastMoney sticky state.
+
 - **Added maintenance automation.** Weekly source-health probes publish a clearly labelled
   GitHub Actions / overseas report, and version tags now require a matching package version,
   `twine check`, and a clean distribution build before optional PyPI Trusted Publishing.

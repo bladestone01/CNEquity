@@ -444,7 +444,7 @@ PROBES: tuple[SourceProbe, ...] = (
         host="push2his.eastmoney.com",
         powers=("daily_bars", "commodity_bars", "sector_bars"),
         run=_probe_em_push2his,
-        note="对非大陆出口最敏感的一个；本项目为它内置了 Chrome TLS 伪装与 CDN sticky。",
+        note="对非大陆出口最敏感的一个；可用 [sources.eastmoney].proxy 为整组东财主机配置出口。",
         blast_radius="eastmoney",
         config_key="eastmoney",
     ),
