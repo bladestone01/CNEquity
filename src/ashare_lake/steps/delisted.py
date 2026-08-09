@@ -345,6 +345,168 @@ def _bar_spans(config: Config, symbols: list[str]) -> dict[str, tuple[date, date
     return {r["symbol"]: (r["first"], r["last"]) for r in frame.iter_rows(named=True)}
 
 
+def delisted_coverage_report(
+    config: Config,
+    start: date,
+    end: date | None = None,
+    *,
+    sample: int = 15,
+) -> dict:
+    """Verify catalogued-delisting coverage for a research window, read-only.
+
+    This deliberately proves a narrow claim: discovery is complete and every
+    catalogued name known to overlap ``[start, end]`` has traded bars and a
+    consistent instruments row. It does *not* claim that every session between
+    the first and last bar exists; continuous-series checks belong to the
+    research gate.
+
+    A catalogue terminal after ``end`` does not prove that the security was
+    already listed during the requested window. If no bar establishes that
+    overlap, the name is reported as ``unknown_overlap`` instead of being
+    silently treated as out of scope.
+    """
+    end = end or _reference_date(config)
+    if start > end:
+        raise ValueError("start must be on or before end")
+    if sample < 0:
+        raise ValueError("sample must be non-negative")
+
+    catalog = load_delisted_catalog(config)
+    candidates = {symbol: last for symbol, last in catalog.items() if last >= start}
+    symbols = sorted(candidates)
+
+    spans: dict[str, tuple[date, date]] = {}
+    bars_root = config.curated_root / "daily_bars"
+    if symbols and bars_root.exists() and any(bars_root.rglob("*.parquet")):
+        from ashare_lake.query.parquet_scan import scan_parquet_root
+
+        bars = scan_parquet_root(
+            bars_root,
+            partition_col="trade_date",
+            start=start,
+            end=end,
+            symbols=symbols,
+        )
+        # EastMoney and baostock may retain suspended/formally-delisting rows
+        # with zero volume after the final actual trade. The catalogue records
+        # the last *traded* session, so those placeholders must not move the
+        # terminal date. Older/minimal lakes without volume retain the best
+        # evidence they have instead of failing schema discovery.
+        if "volume" in bars.collect_schema().names():
+            bars = bars.filter(pl.col("volume") > 0)
+        frame = (
+            bars.group_by("symbol")
+            .agg(
+                pl.col("trade_date").min().alias("first"),
+                pl.col("trade_date").max().alias("last"),
+            )
+            .collect()
+        )
+        spans = {r["symbol"]: (r["first"], r["last"]) for r in frame.iter_rows(named=True)}
+
+    instrument_dates: dict[str, date | None] = {}
+    instruments_path = config.curated_root / "instruments" / "part-merged.parquet"
+    if instruments_path.exists():
+        instruments = pl.read_parquet(instruments_path, columns=["symbol", "delist_date"])
+        instrument_dates = {
+            row["symbol"]: row["delist_date"] for row in instruments.iter_rows(named=True)
+        }
+
+    missing_bars: list[dict] = []
+    unknown_overlap: list[dict] = []
+    terminal_mismatches: list[dict] = []
+    missing_instruments: list[dict] = []
+    invalid_delist_dates: list[dict] = []
+    proven_overlap = 0
+
+    for symbol in symbols:
+        catalog_last = candidates[symbol]
+        span = spans.get(symbol)
+        overlap_is_definite = catalog_last <= end
+        if span is None:
+            finding = {"symbol": symbol, "catalog_last_traded": catalog_last.isoformat()}
+            if overlap_is_definite:
+                missing_bars.append(finding)
+            else:
+                unknown_overlap.append(finding)
+                continue
+        else:
+            proven_overlap += 1
+            if overlap_is_definite and span[1] != catalog_last:
+                terminal_mismatches.append(
+                    {
+                        "symbol": symbol,
+                        "catalog_last_traded": catalog_last.isoformat(),
+                        "observed_last_bar": span[1].isoformat(),
+                    }
+                )
+
+        # A definite catalogue terminal proves overlap even when its bars are
+        # absent, so the security master must still represent the delisting.
+        if symbol not in instrument_dates:
+            missing_instruments.append(
+                {"symbol": symbol, "catalog_last_traded": catalog_last.isoformat()}
+            )
+        # instruments.delist_date is the formal delisting date, which may be
+        # later than the last traded session after a suspension. Only null or a
+        # date before the final trade contradicts the catalogue.
+        elif instrument_dates[symbol] is None or instrument_dates[symbol] < catalog_last:
+            actual = instrument_dates[symbol]
+            invalid_delist_dates.append(
+                {
+                    "symbol": symbol,
+                    "catalog_last_traded": catalog_last.isoformat(),
+                    "instrument_delist_date": actual.isoformat() if actual else None,
+                }
+            )
+
+    pending = pending_codes(config)
+    known_coverage_complete = not any(
+        (
+            missing_bars,
+            unknown_overlap,
+            terminal_mismatches,
+            missing_instruments,
+            invalid_delist_dates,
+        )
+    )
+    discovery_complete = not pending
+
+    def limited(rows: list) -> list:
+        return rows[:sample]
+
+    return {
+        "window": {"start": start.isoformat(), "end": end.isoformat()},
+        "claim": "catalog_terminal_survivorship_coverage",
+        "discovery_complete": discovery_complete,
+        "known_coverage_complete": known_coverage_complete,
+        "verified": discovery_complete and known_coverage_complete,
+        "counts": {
+            "catalogued_delistings": len(catalog),
+            "catalogue_candidates": len(candidates),
+            "proven_overlap": proven_overlap,
+            "pending_probe": len(pending),
+            "missing_bars": len(missing_bars),
+            "unknown_overlap": len(unknown_overlap),
+            "terminal_mismatch": len(terminal_mismatches),
+            "missing_instrument": len(missing_instruments),
+            "invalid_delist_date": len(invalid_delist_dates),
+        },
+        "samples": {
+            "pending_probe": limited(pending),
+            "missing_bars": limited(missing_bars),
+            "unknown_overlap": limited(unknown_overlap),
+            "terminal_mismatch": limited(terminal_mismatches),
+            "missing_instrument": limited(missing_instruments),
+            "invalid_delist_date": limited(invalid_delist_dates),
+        },
+        "limitations": [
+            "Verifies catalogue discovery, window overlap, last traded bars, and instruments identity.",
+            "Does not verify every expected trading session inside each observed price series.",
+        ],
+    }
+
+
 def _strip_subscription_placeholders(df: pl.DataFrame) -> pl.DataFrame:
     from ashare_lake.domain.symbols import is_subscription_placeholder
 

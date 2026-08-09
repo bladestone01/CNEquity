@@ -522,6 +522,41 @@ def test_delisted_discover_and_status(cfg_path, monkeypatch):
     assert payload["pending_probe"] == 1
 
 
+def test_delisted_coverage_uses_exit_status_as_a_strict_gate(cfg_path, monkeypatch):
+    report = {
+        "window": {"start": "2020-01-01", "end": "2024-12-31"},
+        "verified": True,
+    }
+    monkeypatch.setattr(
+        "ashare_lake.steps.delisted.delisted_coverage_report",
+        lambda cfg, start, end, sample=15: report,
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "delisted",
+            "coverage",
+            "--config",
+            cfg_path,
+            "--start",
+            "2020-01-01",
+            "--end",
+            "2024-12-31",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["verified"] is True
+
+    report["verified"] = False
+    result = CliRunner().invoke(
+        cli, ["delisted", "coverage", "--config", cfg_path, "--start", "2020-01-01"]
+    )
+    assert result.exit_code == 1
+    assert json.loads(result.output)["verified"] is False
+
+
 def test_delisted_repair(cfg_path, monkeypatch):
     class FakeManifest:
         def start_run(self, *a, **k):

@@ -189,6 +189,7 @@ asl backfill sector_bars --config configs/ashare-lake.toml --retry-failed
 |--------|------|
 | `discover [--limit N]` | 扫 issued code space，分类为曾上市 / 从未发行（可续跑） |
 | `status [--since]` | 目录摘要：数量、年份、尚未 ingest |
+| `coverage [--start] [--end]` | **只读严格门禁**：验证发现完整性、窗口重叠、末根有效成交和 instruments 身份；未通过时退出码为 1 |
 | `repair [--since]` | **不重新拉行情**：用已有 `daily_bars` 跨度写 `instruments.delist_date`，并清掉 `认购款` 占位 |
 | `backfill [--since]` | 对目录中尚未有行情的退市股拉 Sina 历史并 compact |
 
@@ -196,10 +197,13 @@ asl backfill sector_bars --config configs/ashare-lake.toml --retry-failed
 
 ```bash
 asl delisted status
+asl delisted coverage --start 2016-01-01 --end 2025-12-31
 asl delisted repair
 asl delisted backfill --since 2016-01-01
 asl delisted discover --limit 500   # 扩大 band 后的续扫
 ```
+
+`coverage` 的通过声明刻意很窄：它证明退市目录已扫完，且已知与窗口重叠的退市标的具备一致的末根有效成交和证券主数据；它不证明两端之间每个交易日都连续。数据源在停牌或正式摘牌前可能保留零成交占位行，门禁不会把它们误当成末次交易。目录末日晚于窗口、但窗口内又没有行情可证明已经上市的标的会进入 `unknown_overlap`，不会被静默排除。
 
 ---
 

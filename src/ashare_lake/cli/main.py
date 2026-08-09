@@ -1966,6 +1966,29 @@ def delisted_status(config_path: str, since: str, sample: int):
     )
 
 
+@delisted_grp.command("coverage")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--start", default="2016-01-01", show_default=True, help="Research window start.")
+@click.option("--end", default=None, help="Research window end (default: latest lake session).")
+@click.option("--sample", default=15, show_default=True, type=click.IntRange(min=0))
+def delisted_coverage(config_path: str, start: str, end: str | None, sample: int):
+    """Fail unless the requested window has verified delisting coverage.
+
+    Read-only. The JSON separates incomplete discovery, definite missing bars,
+    uncertain overlap, terminal mismatches, and instruments identity gaps.
+    """
+    from ashare_lake.steps.delisted import delisted_coverage_report
+
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end) if end else None
+    if end_date is not None and start_date > end_date:
+        raise click.ClickException("--start must be on or before --end")
+    report = delisted_coverage_report(_cfg(config_path), start_date, end_date, sample=sample)
+    click.echo(json.dumps(report, indent=2))
+    if not report["verified"]:
+        raise SystemExit(1)
+
+
 @delisted_grp.command("repair")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(
