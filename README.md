@@ -315,6 +315,8 @@ asl backfill daily_bars --start 2001-01-01     # 或事后加深
 
 更多：[排障](docs/operations/troubleshooting.md) · 完整 [FAQ 与运维](docs/operations/runbook.md)。
 
+用于论文或研究报告时，仓库提供标准 [CITATION.cff](CITATION.cff)；请同时记录版本、覆盖范围和复权 / PIT 口径。
+
 ## 项目状态与文档
 
 个人项目：issue / PR 欢迎，响应尽力而为。当前路线见 [ROADMAP](ROADMAP.md)。

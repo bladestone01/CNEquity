@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If ashare-lake supports your research or data work, please cite this repository."
+type: software
+title: "ashare-lake"
+abstract: >-
+  A free, self-hosted historical data layer for A-shares with multi-source
+  ingestion, provenance, adjustment semantics, point-in-time fundamentals,
+  and reproducible Parquet storage.
+version: 0.5.0
+date-released: 2026-08-03
+authors:
+  - name: "ashare-lake Contributors"
+license: Apache-2.0
+repository-code: "https://github.com/rootSunc/ashare-lake"
+url: "https://rootsunc.github.io/ashare-lake/"
+keywords:
+  - A-shares
+  - financial data
+  - data lake
+  - quantitative finance
+  - Parquet
+  - point-in-time data

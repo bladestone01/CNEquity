@@ -150,6 +150,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Standard citation metadata.** `CITATION.cff`, the docs citation page, and the package metadata
+  URL make it easy to cite a versioned research dependency without implying data redistribution rights.
+
 - **`asl mcp`: the lake as an MCP server, read-only, over stdio.** Six tools cut
   by question shape rather than one per dataset — `describe_lake`,
   `resolve_symbol`, `query_bars`, `query_fundamentals`, `query_dataset`,

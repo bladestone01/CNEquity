@@ -84,6 +84,7 @@ nav:
       - 开发约定: development/conventions.md
       - 测试: development/testing.md
       - 新增数据集: development/adding-dataset.md
+      - 引用项目: citation.md
       - 数据许可: legal-and-data-sources.md
 
 extra:

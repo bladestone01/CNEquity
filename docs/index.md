@@ -27,6 +27,7 @@ asl demo --research --symbols 600519.SH
 | 直接接 DuckDB / Polars | [DuckDB 与 Polars Recipe](recipes/duckdb-polars.md) |
 | 接给 AI agent | [MCP 参考](reference/mcp.md) |
 | 线上跑批与故障恢复 | [Runbook](operations/runbook.md) |
+| 论文 / 报告引用 | [引用 ashare-lake](citation.md) |
 
 ## 设计边界
 

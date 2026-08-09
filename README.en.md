@@ -295,6 +295,9 @@ Full index: [docs/README.md](docs/README.md). Common entry points:
 Code is [Apache-2.0](LICENSE). Landed market data remains under upstream terms; this
 repo ships no data lake and grants no redistribution rights.
 
+For papers or research reports, use the standard [CITATION.cff](CITATION.cff) and record the
+package version, coverage window, and adjustment / PIT contract alongside your results.
+
 ---
 
 If it saved you the work of building a data base layer, a ⭐ helps other A-share
