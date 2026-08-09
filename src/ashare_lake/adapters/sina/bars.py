@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 import polars as pl
@@ -60,6 +60,8 @@ _HEADERS = {
 # series (2753 bars) for 600001.SH and larger values return no more, so this is
 # the endpoint's ceiling rather than an arbitrary page size.
 _FULL_HISTORY_LEN = 5000
+_PROBE_TAIL_LEN = 10
+_SYNTHETIC_COPY_GAP = timedelta(days=90)
 
 _OUTPUT_COLS = [c for c in DAILY_BARS_SCHEMA if c not in ("source", "data_version", "fetched_at")]
 
@@ -102,21 +104,73 @@ def _request(
             client.close()
 
 
+def _row_date(row: dict) -> date | None:
+    try:
+        return date.fromisoformat(str(row["day"])[:10])
+    except (KeyError, ValueError):
+        return None
+
+
+def _same_bar(left: dict, right: dict) -> bool:
+    """Whether two vendor rows carry the same OHLCV observation."""
+    fields = ("open", "high", "low", "close", "volume")
+    try:
+        return all(float(left[field]) == float(right[field]) for field in fields)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _without_synthetic_terminal_copies(rows: list[dict]) -> list[dict]:
+    """Remove Sina's known post-delisting duplicate terminal observation.
+
+    For some retired ChiNext codes Sina appends the genuine final bar again on
+    2021-06-27, preserving every OHLCV value but changing the date. That date
+    is a Sunday and can be years after the formal delisting. Restricting the
+    rule to an exact OHLCV copy after a 90-day gap avoids treating an ordinary
+    unchanged bar, suspension, or zero-volume formal-delisting row as corrupt.
+    """
+    cleaned = list(rows)
+    while len(cleaned) >= 2:
+        previous, terminal = cleaned[-2:]
+        previous_date = _row_date(previous)
+        terminal_date = _row_date(terminal)
+        if (
+            previous_date is None
+            or terminal_date is None
+            or terminal_date - previous_date <= _SYNTHETIC_COPY_GAP
+            or not _same_bar(previous, terminal)
+        ):
+            break
+        logger.warning(
+            "Sina kline: dropping synthetic terminal copy dated %s (source bar %s)",
+            terminal_date,
+            previous_date,
+        )
+        cleaned.pop()
+    return cleaned
+
+
 def symbol_exists(symbol: str, *, client: httpx.Client | None = None) -> date | None:
     """Last trading date Sina has for *symbol*, or None if it never traded.
 
-    A one-bar request, so it is cheap enough to sweep the whole A-share code
-    space. This is how delisted codes are discovered without a vendor's
-    delisting list: a code absent from today's instruments that still answers
-    here used to trade, and the date it stops is roughly when it left.
+    A short tail request is cheap enough to sweep the whole A-share code space
+    while still letting us reject zero-volume placeholders and Sina's known
+    post-delisting duplicate terminal row. This is how delisted codes are
+    discovered without treating the vendor's final record as unquestioned
+    evidence.
     """
-    rows = _request(symbol, 1, client)
+    rows = _request(symbol, _PROBE_TAIL_LEN, client)
     if not rows:
         return None
-    try:
-        return date.fromisoformat(str(rows[-1]["day"])[:10])
-    except (KeyError, ValueError):
-        return None
+    for row in reversed(_without_synthetic_terminal_copies(rows)):
+        trade_date = _row_date(row)
+        try:
+            volume = float(row["volume"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if trade_date is not None and volume > 0:
+            return trade_date
+    return None
 
 
 def fetch_daily_bars_sina(
@@ -136,6 +190,7 @@ def fetch_daily_bars_sina(
     rows = _request(symbol, datalen, client)
     if not rows:
         return pl.DataFrame(schema={c: DAILY_BARS_SCHEMA[c] for c in _OUTPUT_COLS})
+    rows = _without_synthetic_terminal_copies(rows)
 
     out: list[dict] = []
     for item in rows:

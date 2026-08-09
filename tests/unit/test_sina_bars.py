@@ -62,6 +62,48 @@ def test_fetch_unknown_symbol_empty_schema(monkeypatch):
     assert "symbol" in df.schema
 
 
+def test_synthetic_post_delisting_terminal_copy_is_rejected(monkeypatch):
+    rows = [
+        {
+            "day": "2020-07-31",
+            "open": "0.31",
+            "high": "0.31",
+            "low": "0.29",
+            "close": "0.30",
+            "volume": "14132651",
+        },
+        {
+            "day": "2021-06-27",
+            "open": "0.310",
+            "high": "0.310",
+            "low": "0.290",
+            "close": "0.300",
+            "volume": "14132651",
+        },
+    ]
+    monkeypatch.setattr(sina, "_request", lambda symbol, datalen, client: rows)
+
+    assert sina.symbol_exists("300028.SZ") == date(2020, 7, 31)
+    assert sina.fetch_daily_bars_sina("300028.SZ")["trade_date"].to_list() == [date(2020, 7, 31)]
+
+
+def test_symbol_probe_uses_last_positive_volume_bar(monkeypatch):
+    rows = [
+        {"day": "2026-06-08", "volume": "100"},
+        {"day": "2026-06-09", "volume": "0"},
+    ]
+    seen = {}
+
+    def request(symbol, datalen, client):
+        seen["datalen"] = datalen
+        return rows
+
+    monkeypatch.setattr(sina, "_request", request)
+
+    assert sina.symbol_exists("688287.SH") == date(2026, 6, 8)
+    assert seen["datalen"] > 1
+
+
 def test_request_uses_client(monkeypatch):
     class Resp:
         text = '[{"day":"2024-01-02","open":"1","high":"1","low":"1","close":"1","volume":"100"}]'
