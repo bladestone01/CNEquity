@@ -29,7 +29,9 @@ _COLUMNS = (
     "SECUCODE,SECURITY_CODE,REPORT_DATE,APPOINT_PUBLISH_DATE,FIRST_APPOINT_DATE,ACTUAL_PUBLISH_DATE"
 )
 
-_BACKFILL_START_YEAR = 2016
+# Measured 2026-08: RPT_PUBLIC_BS_APPOIN returns real rows at 2006-12-31
+# (1,262) and is empty at 2005-12-31 — 2016 was a guess, not a probed floor.
+_BACKFILL_START_YEAR = 2006
 _QUARTER_END_MMDD = ((3, 31), (6, 30), (9, 30), (12, 31))
 
 # Annual reports may be disclosed up to 4 months after period end (Apr 30);

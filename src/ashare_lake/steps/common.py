@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import date, timedelta
 
@@ -10,8 +11,11 @@ import polars as pl
 from ashare_lake.adapters.tdx_protocol.client import fetch_instruments
 from ashare_lake.config import Config
 from ashare_lake.domain.datasets import fetch_semantics
+from ashare_lake.domain.schemas import data_version_for, with_provenance
 from ashare_lake.storage import StagingWriter
 from ashare_lake.storage.state import StateStore
+
+logger = logging.getLogger(__name__)
 
 INCREMENTAL_LOOKBACK_DAYS = 5
 BACKFILL_START = date(2016, 1, 1)
@@ -229,3 +233,102 @@ def load_bar_universe(config: Config) -> set[str]:
     if not files:
         return set()
     return set(pl.scan_parquet(files).select("symbol").unique().collect()["symbol"].to_list())
+
+
+def _existing_dates(config: Config, dataset: str, date_col: str) -> set[date]:
+    root = config.curated_root / dataset
+    files = list(root.glob("**/*.parquet")) if root.exists() else []
+    if not files:
+        return set()
+    return set(pl.scan_parquet(files).select(date_col).unique().collect()[date_col].to_list())
+
+
+def walk_day_backfill(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    dataset: str,
+    fetch_one: Callable[[date], pl.DataFrame],
+    *,
+    source: str,
+    date_col: str = "trade_date",
+    floor: date = BACKFILL_START,
+    flush_days: int = 60,
+) -> dict:
+    """Walk trading days for a dataset whose fetch answers one day at a time.
+
+    Generalizes ``_backfill_margin_trading`` (steps/capital.py): several
+    by-date snapshot datasets — dragon_tiger, block_trades,
+    share_unlock_schedule, announcement_index, regulatory_events,
+    market_breadth — have an adapter that genuinely serves any historical
+    *date_col* value, but until now nothing ever walked a range through it,
+    so ``asl backfill <name> --start ...`` silently did nothing: the daily
+    step only ever asked for ``trade_date``, never iterated a window.
+
+    Resumable — days already in curated are skipped — and staged every
+    *flush_days* so a kill costs only the unflushed chunk, not the sweep so
+    far. Single-threaded on purpose: unlike margin_trading this has not been
+    measured safe at higher concurrency for these sources, and getting a
+    correct sweep once is worth more than a faster wrong one.
+    """
+    start = getattr(config, "_backfill_start", None) or floor
+    end = getattr(config, "_backfill_end", None) or trade_date
+    days = list_trading_dates(config, start, min(end, trade_date))
+    have = _existing_dates(config, dataset, date_col)
+    todo = [d for d in days if d not in have]
+    if not todo:
+        return {"rows_read": 0, "rows_written": 0, "days_skipped": len(days)}
+
+    writer = StagingWriter(config.staging_root)
+    frames: list[pl.DataFrame] = []
+    rows_written = 0
+    empty_days: list[date] = []
+    n_parts = 0
+
+    def flush() -> None:
+        nonlocal frames, rows_written, n_parts
+        if not frames:
+            return
+        part = with_provenance(
+            pl.concat(frames, how="diagonal_relaxed"),
+            source=source,
+            data_version=data_version_for(dataset),
+        )
+        writer.write_batch(dataset, run_id, f"bf-{n_parts:04d}", part)
+        n_parts += 1
+        rows_written += part.height
+        frames = []
+
+    for i, d in enumerate(todo, 1):
+        df = fetch_one(d)
+        if df.is_empty():
+            empty_days.append(d)
+        else:
+            frames.append(df)
+        if i % flush_days == 0:
+            flush()
+            logger.info(
+                "%s backfill: %d/%d days (at %s, %d rows staged)",
+                dataset,
+                i,
+                len(todo),
+                d.isoformat(),
+                rows_written,
+            )
+    flush()
+
+    if empty_days:
+        logger.warning(
+            "%s backfill: %d trading day(s) returned no rows (e.g. %s) — "
+            "left absent; a rerun retries them",
+            dataset,
+            len(empty_days),
+            empty_days[0].isoformat(),
+        )
+    return {
+        "rows_read": rows_written,
+        "rows_written": rows_written,
+        "days_fetched": len(todo) - len(empty_days),
+        "days_skipped": len(days) - len(todo),
+        "days_empty": len(empty_days),
+    }

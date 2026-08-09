@@ -9,6 +9,7 @@ import polars as pl
 from ashare_lake.adapters.eastmoney.common import report_period_from_date
 from ashare_lake.adapters.eastmoney.earnings_disclosure import (
     _active_report_dates,
+    _backfill_report_dates,
     _parse_rows,
     fetch_earnings_disclosure_schedule,
 )
@@ -29,6 +30,14 @@ def test_active_report_dates_covers_nearby_quarters():
     dates = _active_report_dates(date(2026, 7, 16))
     assert "2026-03-31" in dates
     assert "2026-06-30" in dates
+
+
+def test_backfill_report_dates_floor_is_2006_not_2016():
+    """Measured 2026-08: RPT_PUBLIC_BS_APPOIN returns real rows at 2006-12-31
+    and is empty at 2005-12-31 — 2016 was an unverified guess."""
+    dates = _backfill_report_dates(date(2026, 7, 16))
+    assert "2006-12-31" in dates
+    assert "2005-12-31" not in dates
 
 
 def test_parse_rows_maps_a_share_and_skips_neeq():

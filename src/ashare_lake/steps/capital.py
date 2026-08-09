@@ -228,11 +228,46 @@ def step_margin_trading(config: Config, trade_date: date, run_id: str, context: 
     return _run_capital_step(config, trade_date, run_id, "margin_trading", fetch_margin_trading)
 
 
+def _backfill_daily_report(
+    config: Config, trade_date: date, run_id: str, dataset: str, fetch_fn, floor: date
+) -> dict:
+    """dragon_tiger / block_trades: each day's fetch works standalone and the
+    daily step never walked a range through it — see ``walk_day_backfill``."""
+    from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
+    from ashare_lake.steps.common import walk_day_backfill
+
+    client = EastMoneyClient(config=config)
+    try:
+        return walk_day_backfill(
+            config,
+            trade_date,
+            run_id,
+            dataset,
+            lambda d: fetch_fn(d, client=client, config=config),
+            source="eastmoney",
+            floor=floor,
+        )
+    finally:
+        client.close()
+
+
 @register_step("dragon_tiger", group="signals", depends_on=["instruments"])
 def step_dragon_tiger(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    if getattr(config, "_backfill", False):
+        # Confirmed live 2007-01-04 has rows, 2006-01-04 does not.
+        return _backfill_daily_report(
+            config, trade_date, run_id, "dragon_tiger", fetch_dragon_tiger, date(2007, 1, 1)
+        )
     return _run_capital_step(config, trade_date, run_id, "dragon_tiger", fetch_dragon_tiger)
 
 
 @register_step("block_trades", group="signals", depends_on=["instruments"])
 def step_block_trades(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    if getattr(config, "_backfill", False):
+        # Confirmed live from 2010-01-04; older single-day probes were
+        # ambiguous (block trades are sparse — a quiet day and "no report yet"
+        # look identical), so this floor is the conservative, confirmed one.
+        return _backfill_daily_report(
+            config, trade_date, run_id, "block_trades", fetch_block_trades, date(2010, 1, 1)
+        )
     return _run_capital_step(config, trade_date, run_id, "block_trades", fetch_block_trades)

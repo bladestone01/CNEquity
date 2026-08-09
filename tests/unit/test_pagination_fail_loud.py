@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 
+from ashare_lake.adapters.cninfo import announcements as cninfo_announcements
 from ashare_lake.adapters.cninfo.regulatory import fetch_regulatory_events
 from ashare_lake.adapters.eastmoney import clist
 from ashare_lake.adapters.eastmoney.clist import fetch_clist_pages
@@ -53,7 +54,9 @@ def test_clist_raises_on_midpagination_truncation(monkeypatch):
         fetch_clist_pages(FailSecondPage(), fields="f12,f13", page_size=5000)
 
 
-def test_regulatory_raises_on_page_failure():
+def test_regulatory_raises_on_page_failure(monkeypatch):
+    monkeypatch.setattr(cninfo_announcements.time, "sleep", lambda *_: None)
+
     class FailPost:
         def post(self, url, **kwargs):
             raise RuntimeError("cninfo 503")
@@ -63,3 +66,36 @@ def test_regulatory_raises_on_page_failure():
 
     with pytest.raises(RuntimeError, match="regulatory pagination failed"):
         fetch_regulatory_events(date(2024, 6, 28), client=FailPost())
+
+
+def test_regulatory_survives_one_transient_error(monkeypatch):
+    """A single 504 must not kill a multi-year backfill walk over one page.
+
+    Hit in production: `regulatory_events` backfilled 2010-2026 died on page 8
+    with a 504 from cninfo, and because `walk_day_backfill` restarts the whole
+    step on any raise, that one blip meant redoing the entire walk from day 1.
+    """
+    monkeypatch.setattr(cninfo_announcements.time, "sleep", lambda *_: None)
+
+    calls = {"n": 0}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"announcements": [], "hasMore": False}
+
+    class FlakyOnceThenOk:
+        def post(self, url, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("cninfo 504")
+            return Response()
+
+        def close(self):
+            return None
+
+    df = fetch_regulatory_events(date(2024, 6, 28), client=FlakyOnceThenOk())
+    assert df.is_empty()  # no announcements this run, but no raise either
+    assert calls["n"] >= 2, "expected a retry, not a fail on the first attempt"

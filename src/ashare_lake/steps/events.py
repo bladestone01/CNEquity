@@ -128,6 +128,19 @@ def step_earnings_disclosure_schedule(
 def step_announcement_index(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("cninfo", True):
         raise RuntimeError("announcement_index: cninfo source disabled in config")
+    if getattr(config, "_backfill", False):
+        from ashare_lake.steps.common import walk_day_backfill
+
+        return walk_day_backfill(
+            config,
+            trade_date,
+            run_id,
+            "announcement_index",
+            lambda d: fetch_announcement_index(d, config=config),
+            source="cninfo",
+            date_col="announce_date",
+            floor=date(2010, 1, 1),
+        )
     return run_incremental_fetched(
         config,
         trade_date,

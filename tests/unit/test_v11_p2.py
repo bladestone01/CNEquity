@@ -5,7 +5,10 @@ import pytest
 
 import ashare_lake.steps  # noqa: F401
 from ashare_lake.adapters.eastmoney.consensus import fetch_analyst_consensus
-from ashare_lake.adapters.eastmoney.institutional import fetch_institutional_holdings
+from ashare_lake.adapters.eastmoney.institutional import (
+    _quarter_end_dates,
+    fetch_institutional_holdings,
+)
 from ashare_lake.config import Config
 from ashare_lake.derive.sentiment_scores import compute_sentiment_scores
 from ashare_lake.domain.schemas import validate_dataframe
@@ -40,6 +43,14 @@ class FakeDatacenterClient:
 def test_p2_steps_registered():
     for name in ("institutional_holdings", "analyst_consensus", "sentiment_scores"):
         assert get_step(name).fn is not None
+
+
+def test_quarter_end_dates_floor_is_2001_not_2016():
+    """Measured 2026-08: RPT_MAIN_ORGHOLD returns real rows at 2001-12-31
+    (1,276) — 2016 was an unverified guess, not a probed floor."""
+    dates = _quarter_end_dates(date(2026, 7, 16))
+    assert "2001-12-31" in dates
+    assert "2000-12-31" not in dates
 
 
 def test_institutional_holdings_parses():

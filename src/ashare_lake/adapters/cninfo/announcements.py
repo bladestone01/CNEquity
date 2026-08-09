@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 
 import httpx
@@ -13,6 +14,30 @@ from ashare_lake.domain.symbols import format_symbol, is_all_a_symbol
 logger = logging.getLogger(__name__)
 
 _CNINFO_URL = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
+
+# A single unretried request killing a multi-year backfill walk over a
+# transient 504 is how a 30-minute cninfo hiccup turns into hours of redone
+# work — see `walk_day_backfill`, which restarts a whole step on any raise
+# from its per-day fetch. Retrying here, close to the actual HTTP call, keeps
+# the caller's "fail loud on a page" contract for a genuinely broken source
+# while surviving the blip. Measured hitting this in production: a 504 on
+# `regulatory_events` page 8 of a ~16-year sweep.
+_POST_RETRIES = 3
+_POST_BACKOFF_SECONDS = 3.0
+
+
+def post_with_retry(client: httpx.Client, url: str, *, data: dict) -> dict:
+    last_exc: Exception | None = None
+    for attempt in range(_POST_RETRIES):
+        try:
+            resp = client.post(url, data=data)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:  # noqa: BLE001 — retried uniformly, re-raised below
+            last_exc = exc
+            if attempt + 1 < _POST_RETRIES:
+                time.sleep(_POST_BACKOFF_SECONDS * (attempt + 1))
+    raise last_exc  # type: ignore[misc]
 
 
 def _symbol_from_cninfo(code: str, org_id: str | None = None) -> str | None:
@@ -59,9 +84,7 @@ def fetch_announcement_index(
                 "seDate": f"{ds}~{ds}",
             }
             try:
-                resp = client.post(_CNINFO_URL, data=payload)
-                resp.raise_for_status()
-                data = resp.json()
+                data = post_with_retry(client, _CNINFO_URL, data=payload)
             except Exception as exc:
                 logger.warning("CNINFO announcement page failed (%s p%s): %s", column, page, exc)
                 raise RuntimeError(

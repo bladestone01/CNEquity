@@ -9,7 +9,7 @@ from datetime import date
 import httpx
 import polars as pl
 
-from ashare_lake.adapters.cninfo.announcements import _symbol_from_cninfo
+from ashare_lake.adapters.cninfo.announcements import _symbol_from_cninfo, post_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +66,10 @@ def fetch_regulatory_events(
                 "seDate": f"{ds}~{ds}",
             }
             try:
-                resp = client.post(_CNINFO_URL, data=payload)
-                resp.raise_for_status()
-                data = resp.json()
+                data = post_with_retry(client, _CNINFO_URL, data=payload)
             except Exception as exc:
-                # Don't truncate: short pages drop blacklist rows. Fail loud.
+                # Don't truncate: short pages drop blacklist rows. Fail loud
+                # once retries (post_with_retry) are exhausted.
                 logger.warning("CNINFO regulatory page failed (%s p%s): %s", column, page, exc)
                 raise RuntimeError(
                     f"CNINFO regulatory pagination failed for {column} page {page}"
