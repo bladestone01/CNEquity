@@ -32,6 +32,15 @@ asl query --config configs/ashare-lake.demo.toml --sql "
 "
 ```
 
+只想验证复权研究口径，不必初始化全市场：
+
+```bash
+asl demo --research --symbols 600519.SH
+```
+
+research demo 会把窗口扩展到约三年，读取 Sina 的 hfq 因子，并打印 raw return 与 hfq return 的对照。
+它需要额外访问 Sina；网络受限时，先使用不带 `--research` 的基础 demo。
+
 下面从第 1 步起是全量湖路径。
 
 ## 1. 准备全量配置

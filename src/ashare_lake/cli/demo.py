@@ -33,6 +33,7 @@ DEFAULT_SYMBOLS = (
 )
 DEFAULT_DAYS = 30
 DEFAULT_DATA_ROOT = Path("data/ashare-lake-demo")
+RESEARCH_MIN_DAYS = 756  # roughly three trading years; enough to cross corporate actions
 
 
 def _banner(step: str, title: str) -> None:
@@ -196,6 +197,84 @@ def _sample_query(cfg: Config, symbol: str) -> pl.DataFrame:
     )
 
 
+def _return_summary(raw: pl.DataFrame, adjusted: pl.DataFrame) -> dict[str, object]:
+    """Compare a raw and adjusted close series without hiding missing factors."""
+    if raw.is_empty() or adjusted.is_empty():
+        raise click.ClickException("research demo returned no daily bars")
+    raw = raw.sort("trade_date")
+    adjusted = adjusted.sort("trade_date")
+    first_raw = float(raw["close"][0])
+    last_raw = float(raw["close"][-1])
+    first_adj = float(adjusted["adj_close"][0])
+    last_adj = float(adjusted["adj_close"][-1])
+    if min(first_raw, first_adj) <= 0:
+        raise click.ClickException("research demo returned a non-positive starting close")
+    return {
+        "start": raw["trade_date"][0].isoformat(),
+        "end": raw["trade_date"][-1].isoformat(),
+        "raw_return": last_raw / first_raw - 1.0,
+        "adjusted_return": last_adj / first_adj - 1.0,
+        "rows": adjusted.height,
+        "exact": bool(adjusted["adj_is_exact"].all()),
+    }
+
+
+def _run_research_demo(
+    cfg: Config,
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> dict[str, object]:
+    """Derive a small exact hfq series and show why query-time adjustment matters."""
+    from ashare_lake.derive.adj_factors import compute_adj_factors
+    from ashare_lake.query.reader import load
+
+    click.echo("Deriving hfq factors from Sina for the demo symbols…")
+    result = compute_adj_factors(
+        cfg,
+        adjust_type="hfq",
+        refresh_symbols=symbols,
+        full=True,
+    )
+    if result.failed:
+        failed = ", ".join(result.failed)
+        raise click.ClickException(
+            f"Sina returned no adjustment factor for: {failed}. "
+            "Run `asl demo` without --research to test TDX only."
+        )
+    errors = [finding for finding in result.findings if finding.get("severity") == "error"]
+    if errors:
+        raise click.ClickException(
+            "Sina adjustment validation failed: "
+            + "; ".join(str(finding.get("message", "unknown finding")) for finding in errors)
+        )
+
+    sample_symbol = symbols[0]
+    raw = load(
+        "daily_bars",
+        start=start,
+        end=end,
+        symbols=[sample_symbol],
+        config=cfg,
+    )
+    adjusted = load(
+        "daily_bars",
+        start=start,
+        end=end,
+        symbols=[sample_symbol],
+        adjust="hfq",
+        strict_adj=True,
+        config=cfg,
+    )
+    summary = _return_summary(raw, adjusted)
+    click.echo(
+        f"{sample_symbol}: raw return {summary['raw_return']:+.2%} → "
+        f"hfq return {summary['adjusted_return']:+.2%} "
+        f"({summary['rows']} exact rows, {summary['start']}..{summary['end']})"
+    )
+    return {"symbol": sample_symbol, **summary}
+
+
 def _intraday_hint(summary: dict | None, cfg: Config, symbol: str) -> str:
     """Follow-up snippet for the intraday leg, or nothing when it did not run."""
     if summary is None:
@@ -280,6 +359,7 @@ def run_demo(
     trade_date: date | None = None,
     config_out: Path | None = None,
     intraday: bool = False,
+    research: bool = False,
 ) -> dict:
     """Run the mini real-source demo. Returns a small summary dict."""
     _configure_logging()
@@ -290,7 +370,7 @@ def run_demo(
         raise click.ClickException("--days must be >= 1")
 
     config_out = config_out or Path("configs/ashare-lake.demo.toml")
-    steps = 7 if intraday else 6
+    steps = 8 if research and intraday else 7 if (research or intraday) else 6
     _banner(f"1/{steps}", f"Prepare demo lake at {data_root}")
     _write_demo_toml(config_out, data_root)
     cfg = _demo_config(data_root, config_path=config_out.resolve())
@@ -328,8 +408,16 @@ def run_demo(
     if cal.get("status") not in ("success", "warning"):
         raise click.ClickException(f"trading_calendar failed: {cal}")
     end = _last_trading_day(cfg, as_of)
-    start = _start_for_days(cfg, end, days)
-    click.echo(f"Demo window: {start.isoformat()} → {end.isoformat()} ({days} trading days target)")
+    window_days = max(days, RESEARCH_MIN_DAYS) if research else days
+    start = _start_for_days(cfg, end, window_days)
+    click.echo(
+        f"Demo window: {start.isoformat()} → {end.isoformat()} ({window_days} trading days target)"
+    )
+    if research and window_days != days:
+        click.echo(
+            f"Research mode expanded the window from {days} to {window_days} sessions "
+            "so corporate-action adjustments can be observed."
+        )
 
     _banner(f"5/{steps}", f"daily_bars for {len(kept)} symbols")
     cfg._backfill = True
@@ -381,9 +469,15 @@ def run_demo(
             )
         )
 
+    research_summary = None
+    if research:
+        _banner(f"7/{steps}", "Research: raw vs hfq return")
+        research_summary = _run_research_demo(cfg, kept, start, end)
+
     intraday_summary = None
     if intraday:
-        _banner(f"7/{steps}", f"minute_bars (1m) for {len(kept)} symbols")
+        step = 8 if research else 7
+        _banner(f"{step}/{steps}", f"minute_bars (1m) for {len(kept)} symbols")
         intraday_summary = _run_intraday_demo(cfg, engine, kept, end, days)
 
     click.echo(
@@ -417,5 +511,6 @@ Do not reuse this demo data_root for production.
         "sample_symbol": sample_symbol,
         "sample_rows": sample.height,
         "bars_run_id": bars.get("run_id"),
+        "research": research_summary,
         "intraday": intraday_summary,
     }

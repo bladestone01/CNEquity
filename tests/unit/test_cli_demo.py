@@ -154,6 +154,76 @@ def test_demo_help_lists_command():
     assert result.exit_code == 0
     assert "--symbols" in result.output
     assert "--days" in result.output
+    assert "--research" in result.output
+
+
+def test_return_summary_compares_raw_and_adjusted_series():
+    from ashare_lake.cli.demo import _return_summary
+
+    raw = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 6, 27), date(2024, 6, 28)],
+            "close": [10.0, 12.0],
+        }
+    )
+    adjusted = raw.with_columns(
+        pl.Series("adj_close", [20.0, 30.0]),
+        pl.Series("adj_is_exact", [True, True]),
+    )
+
+    result = _return_summary(raw, adjusted)
+
+    assert result["raw_return"] == pytest.approx(0.2)
+    assert result["adjusted_return"] == pytest.approx(0.5)
+    assert result["exact"] is True
+    assert result["rows"] == 2
+
+
+def test_research_demo_derives_factors_and_requires_exact_rows(monkeypatch):
+    from ashare_lake.cli.demo import _run_research_demo
+
+    calls: dict[str, object] = {}
+
+    class Result:
+        failed: list[str] = []
+        findings: list[dict] = []
+
+    def fake_compute(config, **kwargs):
+        calls["derive"] = kwargs
+        return Result()
+
+    raw = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 6, 27), date(2024, 6, 28)],
+            "close": [10.0, 12.0],
+        }
+    )
+    adjusted = raw.with_columns(
+        pl.Series("adj_close", [20.0, 30.0]),
+        pl.Series("adj_is_exact", [True, True]),
+    )
+
+    def fake_load(dataset, **kwargs):
+        calls.setdefault("loads", []).append((dataset, kwargs))
+        return adjusted if kwargs.get("adjust") else raw
+
+    monkeypatch.setattr("ashare_lake.derive.adj_factors.compute_adj_factors", fake_compute)
+    monkeypatch.setattr("ashare_lake.query.reader.load", fake_load)
+
+    result = _run_research_demo(
+        object(),
+        ["600519.SH"],
+        date(2024, 6, 27),
+        date(2024, 6, 28),
+    )
+
+    assert calls["derive"] == {
+        "adjust_type": "hfq",
+        "refresh_symbols": ["600519.SH"],
+        "full": True,
+    }
+    assert calls["loads"][1][1]["strict_adj"] is True
+    assert result["adjusted_return"] == pytest.approx(0.5)
 
 
 def test_write_demo_toml_escapes_windows_paths(tmp_path):

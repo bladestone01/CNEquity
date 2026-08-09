@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import sys
 from datetime import date, datetime, timedelta, timezone
 
@@ -67,6 +68,17 @@ def test_manifest_accepts_str_db_path(tmp_path):
     assert manifest.db_path == db
     run_id = manifest.start_run("test")
     assert run_id
+
+
+def test_manifest_connection_context_closes_connection(tmp_path):
+    manifest = Manifest(tmp_path / "meta" / "manifest.db")
+
+    conn = manifest._connect()
+    with conn:
+        conn.execute("SELECT 1")
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        conn.execute("SELECT 1")
 
 
 @pytest.mark.skipif(

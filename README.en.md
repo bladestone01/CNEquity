@@ -44,6 +44,13 @@ bars = load("daily_bars", data_root="data/ashare-lake-demo")
 If you only need a current quote, a fetch API may be enough. Build a lake when you need reproducible history,
 survivorship-safe universes, or point-in-time research.
 
+To see why the adjustment contract matters (this also queries Sina and expands to about three years):
+
+```bash
+asl demo --research --symbols 600519.SH
+# raw return -24.25% → hfq return -14.39% (example output; changes with the as-of date)
+```
+
 ## Why a lake
 
 <p align="center">

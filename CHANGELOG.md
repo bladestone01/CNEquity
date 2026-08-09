@@ -72,6 +72,10 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Modernized package license metadata.** The build now uses the SPDX license expression and
+  `project.license-files`, avoiding deprecated setuptools tables while preserving the Apache-2.0
+  license and bundled NOTICE file.
+
 - **The EastMoney client is plain `httpx` again, and `[sources.eastmoney].proxy`
   is the one overseas lever.** Removed the curl_cffi Chrome-JA3 impersonation,
   the `CURLOPT_RESOLVE` CDN pinning with its DoH / `dig` / hardcoded-seed-IP

@@ -44,6 +44,22 @@ class BatchRecord:
     error_message: str | None = None
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """SQLite context manager that also closes the connection on exit.
+
+    ``sqlite3.Connection.__exit__`` commits or rolls back, but deliberately does
+    not close the connection. Manifest methods open short-lived connections, so
+    leaving them for garbage collection leaks file descriptors and produces
+    ``ResourceWarning`` on Python 3.13 during a full pipeline run.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class Manifest:
     def __init__(self, db_path: Path | str):
         # Worker-pool children pass a str path across process boundaries.
@@ -52,7 +68,7 @@ class Manifest:
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
         # Concurrent writers (worker processes + engine) need WAL and a
         # bounded wait instead of immediate "database is locked" errors.

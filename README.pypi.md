@@ -4,7 +4,7 @@
 
 CLI：`asl` · 包名：`ashare_lake` · **Python ≥ 3.10** · **只做数据层**（回测和信号留给下游）。
 
-- **真数上手**：`asl demo` 几分钟出可复权日线（不是 mock）
+- **真数上手**：`asl demo` 几分钟出真实日线（不是 mock）；`--research` 可验证复权口径
 - **日更能挂着跑**：水位 / 失败重试 / 质量审计
 - **研究口径一次定好**：复权 · universe · PIT；相对拉数库多编排，相对云端宽表可本地续跑
 
@@ -18,6 +18,9 @@ asl demo
 ```
 
 写入 `data/ashare-lake-demo/`（几只流动性股票 × 约 30 个交易日），并打印样例表。
+
+要验证复权口径，可运行 `asl demo --research --symbols 600519.SH`；它会额外读取 Sina 复权因子，
+并打印约三年窗口的 raw / hfq 收益对照。
 
 ```bash
 asl query --config configs/ashare-lake.demo.toml --sql "

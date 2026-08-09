@@ -145,6 +145,11 @@ def cli():
     help="Also capture 1-minute bars for the same symbols (up to 5 sessions) "
     "and print a session, so the bar_time convention is visible.",
 )
+@click.option(
+    "--research",
+    is_flag=True,
+    help="Also derive Sina hfq factors and print a raw-vs-adjusted return (slower; needs Sina).",
+)
 def demo_cmd(
     symbols: str,
     days: int,
@@ -152,6 +157,7 @@ def demo_cmd(
     trade_date_str: str | None,
     config_out: str,
     intraday: bool,
+    research: bool,
 ):
     """Fetch a tiny real-source lake so you can see progress and results quickly.
 
@@ -168,6 +174,7 @@ def demo_cmd(
         trade_date=td,
         config_out=Path(config_out),
         intraday=intraday,
+        research=research,
     )
 
 

@@ -41,6 +41,13 @@ bars = load("daily_bars", data_root="data/ashare-lake-demo")
 
 如果你只需要现价，取数接口就够了；如果你需要复查历史、避免幸存者偏差或做 PIT 研究，继续建湖。
 
+想直接看到复权口径的差异（会额外访问 Sina，并自动扩展到约 3 年历史）：
+
+```bash
+asl demo --research --symbols 600519.SH
+# raw return -24.25% → hfq return -14.39%（示例输出，随交易日变化）
+```
+
 ## 为什么要一个湖
 
 <p align="center">
