@@ -7,6 +7,38 @@ const TOKEN = qs.get("token");
 const DAYS = Number(qs.get("days") || 250);
 const app = document.getElementById("app");
 
+const NAV_ITEMS = [
+  ["overview", "概览", "#/"],
+  ["datasets", "数据集", "#/datasets"],
+  ["runs", "跑批", "#/runs"],
+  ["quality", "质量", "#/quality"],
+];
+
+function pageShell(content, active = "overview") {
+  const nav = NAV_ITEMS.map(
+    ([key, label, href]) =>
+      `<a class="nav-link ${active === key ? "active" : ""}" href="${href}" data-nav="${key}">${label}</a>`,
+  ).join("");
+  return `<div class="app-shell">
+    <header class="topbar">
+      <a class="brand-lockup" href="#/" aria-label="返回概览">
+        <span class="brand-mark">ASL</span>
+        <span class="brand-copy"><strong>ashare-lake</strong><small>research lake</small></span>
+      </a>
+      <nav class="nav" aria-label="主导航">${nav}</nav>
+      <div class="topbar-meta"><span class="console-mode">只读控制台</span>
+        <button class="button button-ghost" id="refresh-page" type="button">刷新</button>
+      </div>
+    </header>
+    <main class="page-main">${content}</main>
+  </div>`;
+}
+
+function setPage(content, active = "overview") {
+  app.innerHTML = pageShell(content, active);
+  document.getElementById("refresh-page")?.addEventListener("click", () => location.reload());
+}
+
 async function api(path) {
   const sep = path.includes("?") ? "&" : "?";
   const url = TOKEN ? `${path}${sep}token=${encodeURIComponent(TOKEN)}` : path;
@@ -28,13 +60,15 @@ async function api(path) {
 }
 
 const fmt = (n) => (n ?? 0).toLocaleString();
+const compact = (n) => new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(n ?? 0);
 const mb = (b) => (!b ? "—" : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 1e6).toFixed(0)} MB`);
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // --- overview ---------------------------------------------------------------
 
-const kpi = (n, label) => `<div class="kpi"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+const kpi = (n, label, note = "") => `<article class="metric-card"><div class="metric-label">${label}</div>
+  <div class="metric-value">${n}</div>${note ? `<div class="metric-note">${note}</div>` : ""}</article>`;
 
 // storage/stats.py emits exactly two of these; anything else falls through
 // unchanged rather than being silently mistranslated.
@@ -71,56 +105,70 @@ async function renderOverview() {
   const byTier = {};
   for (const d of datasets) (byTier[d.tier] ||= []).push(d);
 
-  app.innerHTML = `
-    <h1>ashare-lake</h1>
-    <div class="sub">最后交易日 ${h.anchor} · ${h.datasets} 个注册数据集
-      · 审计快照 ${h.audit_trade_date || "无"}
-      · <span class="ds-link" id="to-runs">跑批记录 →</span>
-      · <span class="ds-link" id="to-quality">质量 →</span></div>
-    ${notes.length ? `<div class="banner">${notes.join("<br>")}</div>` : ""}
-    <div class="kpis">
-      ${kpi(h.fresh, "fresh")}
-      ${kpi(`<span class="${h.stale ? "err" : ""}">${h.stale}</span>`, "stale")}
-      ${kpi(h.empty, "empty")}
-      ${kpi(fmt(h.rows), "行")}
-      ${kpi(mb(h.bytes), "体积")}
-      ${kpi(`<span class="${sev.error ? "err" : ""}">${sev.error || 0}</span> / ${sev.warning || 0}`, "error / warning")}
-    </div>
-    <h2>分层（点击展开数据集）</h2>
-    <div class="scroll"><table id="tiers"><tbody></tbody></table></div>
-    <h2>覆盖热力（${hm.days.length} 个交易日，可拖拽缩放）</h2>
-    <div id="heat"></div>
-    <p class="legend">
-      <span><i class="swatch" style="background:var(--cell-covered)"></i> 有分区覆盖</span>
-      <span><i class="swatch" style="background:var(--cell-gap)"></i> 缺口（日更 by_date 源）</span>
-      <span><i class="swatch" style="background:var(--cell-cadence)"></i> 属其形态的间隔（非日更 / snapshot）</span>
-      <span><i class="swatch" style="background:var(--cell-outside)"></i> 覆盖区间外 / 无分区</span>
-      <span>月/季/年分区的格子按其周期着色，不代表单日有行</span>
-    </p>`;
+  const state = sev.error ? "error" : notes.length ? "attention" : "healthy";
+  const stateLabel = { healthy: "运行正常", attention: "需要关注", error: "存在错误" }[state];
+  const actionItems = notes.length
+    ? notes.map((note) => `<li class="issue-item">${note}</li>`).join("")
+    : `<li class="empty-state"><span class="empty-icon">✓</span><span><strong>没有待处理事项</strong><small>数据、度量表与审计快照均在预期状态。</small></span></li>`;
+  const tierCards = tiers
+    .map(
+      (t) => `<details class="tier-card" ${t.stale || t.empty ? "open" : ""}>
+        <summary><span class="tier-summary"><span class="tier-name"><span class="tier-tag">${esc(t.tier)}</span>${esc(t.label)}</span>
+          <span class="tier-counts"><b>${t.datasets}</b> 个数据集 · <b>${fmt(t.rows)}</b> 行</span>
+          <span class="tier-status ${t.stale ? "is-stale" : t.empty ? "is-empty" : "is-fresh"}">${t.stale ? `${t.stale} stale` : t.empty ? `${t.empty} empty` : "全部 fresh"}</span></span></summary>
+        <div class="tier-members">${membersTable(byTier[t.tier] || [])}</div>
+      </details>`,
+    )
+    .join("");
 
-  const body = document.querySelector("#tiers tbody");
-  body.innerHTML = `<tr><th>分层</th><th class="n">数据集</th><th class="n">fresh</th>
-    <th class="n">stale</th><th class="n">empty</th><th class="n">行</th><th class="n">体积</th></tr>`;
-  for (const t of tiers) {
-    const tr = document.createElement("tr");
-    tr.className = "tier-row";
-    tr.innerHTML = `<td><span class="tier-tag">${t.tier}</span>${esc(t.label)}</td>
-      <td class="n">${t.datasets}</td><td class="n">${t.fresh}</td>
-      <td class="n ${t.stale ? "err" : ""}">${t.stale || ""}</td>
-      <td class="n">${t.empty || ""}</td><td class="n">${fmt(t.rows)}</td><td class="n">${mb(t.bytes)}</td>`;
-    const detail = document.createElement("tr");
-    detail.className = "members";
-    detail.style.display = "none";
-    detail.innerHTML = `<td colspan="7">${membersTable(byTier[t.tier] || [])}</td>`;
-    tr.onclick = () => {
-      detail.style.display = detail.style.display === "none" ? "" : "none";
-    };
-    body.append(tr, detail);
-  }
-
-  document.getElementById("to-runs").onclick = () => { location.hash = "#/runs"; };
-  document.getElementById("to-quality").onclick = () => { location.hash = "#/quality"; };
+  setPage(`
+    <section class="page-heading">
+      <div class="eyebrow">数据湖控制台 / 概览</div>
+      <div class="heading-row"><div><h1>湖状态</h1>
+        <p class="sub">最后交易日 ${esc(h.anchor)} · ${h.datasets} 个注册数据集 · 审计快照 ${esc(h.audit_trade_date || "无")}</p></div>
+        <div class="action-row"><a class="button button-ghost" href="#/runs">查看跑批</a><a class="button button-primary" href="#/quality">查看质量</a></div>
+      </div>
+    </section>
+    <section class="status-hero status-${state}" aria-live="polite">
+      <span class="status-icon" aria-hidden="true">${state === "healthy" ? "✓" : state === "error" ? "!" : "•"}</span>
+      <div><strong>${stateLabel}</strong><span>${state === "healthy" ? "核心数据集已覆盖最新交易日。" : `${notes.length} 项事项需要核查，数据仍可只读访问。`}</span></div>
+      <span class="status-anchor">anchor ${esc(h.anchor || "—")}</span>
+    </section>
+    <section class="metric-grid" aria-label="关键指标">
+      ${kpi(h.datasets, "数据集", "已注册")}
+      ${kpi(h.fresh, "Fresh", "最新水位")}
+      ${kpi(`<span class="${h.stale ? "err" : ""}">${h.stale}</span>`, "Stale", "超过容忍窗口")}
+      ${kpi(`<span title="${fmt(h.rows)} 行">${compact(h.rows)}</span>`, "行数", "curated")}
+      ${kpi(mb(h.bytes), "存储", "curated")}
+      ${kpi(`<span class="${sev.error ? "err" : ""}">${sev.error || 0}</span><span class="metric-secondary"> / ${sev.warning || 0}</span>`, "审计", "error / warning")}
+    </section>
+    <section class="overview-grid">
+      <article class="surface-panel heat-panel"><div class="panel-header"><div><div class="eyebrow">Coverage</div><h2>覆盖热力</h2></div><span class="panel-meta">${hm.days.length} 个交易日</span></div>
+        <div id="heat" aria-label="覆盖热力图"></div>
+        <p class="legend"><span><i class="swatch" style="background:var(--cell-covered)"></i> 有分区覆盖</span><span><i class="swatch" style="background:var(--cell-gap)"></i> 日更源缺口</span><span><i class="swatch" style="background:var(--cell-cadence)"></i> 按源节奏间隔</span><span><i class="swatch" style="background:var(--cell-outside)"></i> 区间外</span></p>
+      </article>
+      <aside class="surface-panel action-panel"><div class="panel-header"><div><div class="eyebrow">Attention</div><h2>行动项</h2></div><span class="panel-meta">${notes.length || 0} 项</span></div><ul class="issue-list">${actionItems}</ul></aside>
+    </section>
+    <section class="surface-panel dataset-panel" id="dataset-list"><div class="panel-header"><div><div class="eyebrow">Data catalog</div><h2>数据层</h2></div><a class="panel-link" href="#/datasets">查看全部数据集 →</a></div><div class="tier-grid">${tierCards}</div></section>
+  `);
   heatmap(document.getElementById("heat"), hm);
+}
+
+async function renderDatasets() {
+  const datasets = await api("/api/datasets");
+  const rows = (items) => items.map((d) => `<tr class="dataset-row"><td><span class="dot ${d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty"}"></span><span class="ds-link" data-ds="${esc(d.dataset)}">${esc(d.dataset)}</span></td><td>${esc(d.tier_label || d.tier)}</td><td>${esc(d.history_mode)}</td><td>${esc(d.granularity || "merge")}</td><td>${esc(d.watermark || "—")}</td><td class="n">${fmt(d.row_count)}</td><td class="n">${mb(d.bytes)}</td></tr>`).join("");
+  setPage(`<section class="page-heading"><div class="eyebrow">数据湖控制台 / 数据集</div><div class="heading-row"><div><h1>数据集</h1><p class="sub">按注册契约浏览 ${datasets.length} 个数据集，点击名称查看状态、元数据与数据。</p></div></div></section>
+    <section class="surface-panel catalog-panel"><div class="catalog-toolbar"><label class="search-field"><span aria-hidden="true">⌕</span><input id="dataset-search" type="search" placeholder="搜索数据集、层级或语义" autocomplete="off"></label><span class="panel-meta" id="dataset-count">${datasets.length} 个结果</span></div><div class="scroll"><table id="dataset-table"><thead><tr><th>数据集</th><th>分层</th><th>语义</th><th>粒度</th><th>水位</th><th class="n">行</th><th class="n">体积</th></tr></thead><tbody></tbody></table></div></section>`, "datasets");
+  const table = document.querySelector("#dataset-table tbody");
+  const count = document.getElementById("dataset-count");
+  const render = (query = "") => {
+    const q = query.trim().toLowerCase();
+    const filtered = datasets.filter((d) => [d.dataset, d.tier, d.tier_label, d.history_mode, d.granularity].some((v) => String(v || "").toLowerCase().includes(q)));
+    table.innerHTML = filtered.length ? rows(filtered) : '<tr><td colspan="7" class="empty-table">没有匹配的数据集。</td></tr>';
+    count.textContent = `${filtered.length} 个结果`;
+  };
+  document.getElementById("dataset-search").addEventListener("input", (e) => render(e.target.value));
+  render();
 }
 
 function membersTable(rows) {
@@ -406,7 +454,7 @@ async function dataTab(d, host) {
 }
 
 async function renderDetail(name, tab) {
-  app.innerHTML = `<div class="sub">加载 ${esc(name)}…</div>`;
+  setPage(`<div class="loading-state"><span class="spinner" aria-hidden="true"></span><span>加载 ${esc(name)}…</span></div>`, "datasets");
   const enc = encodeURIComponent(name);
   const [d, series, prov] = await Promise.all([
     api(`/api/datasets/${enc}`),
@@ -414,7 +462,7 @@ async function renderDetail(name, tab) {
     api(`/api/datasets/${enc}/provenance`),
   ]);
   const cls = d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty";
-  app.innerHTML = `
+  setPage(`
     <div class="back" id="back">← 返回总览</div>
     <h1><span class="dot ${cls}"></span>${esc(d.dataset)}</h1>
     <div class="sub">${d.tier} ${esc(d.tier_label)} · ${d.layer} · ${d.history_mode}
@@ -430,7 +478,7 @@ async function renderDetail(name, tab) {
         )
         .join("")}
     </div>
-    <div id="tabbody">${tab === "meta" ? metaTab(d) : tab === "data" ? "" : stateTab(d, prov)}</div>`;
+    <div id="tabbody">${tab === "meta" ? metaTab(d) : tab === "data" ? "" : stateTab(d, prov)}</div>`, "datasets");
 
   if (tab === "state") {
     provenanceSeries(document.getElementById("prov"), series);
@@ -490,7 +538,7 @@ async function renderRuns() {
     })
     .join("");
 
-  app.innerHTML = `
+  setPage(`
     <div class="back" id="back">← 返回总览</div>
     <h1>跑批</h1>
     <div class="sub">最近 ${runs.length} 个 run · 点一行看它的 batch 甘特</div>
@@ -498,7 +546,7 @@ async function renderRuns() {
       <tr><th>job</th><th>状态</th><th>开始</th><th class="n">耗时</th>
           <th class="n">写入</th><th>batch</th><th>错误</th></tr>
       ${rows}
-    </table></div>`;
+    </table></div>`, "runs");
   document.getElementById("back").onclick = () => { location.hash = "#/"; };
   app.querySelectorAll("[data-run]").forEach((tr) => {
     tr.onclick = () => { location.hash = `#/runs/${tr.dataset.run}`; };
@@ -581,7 +629,7 @@ function paintRun(detail) {
 
 async function renderRunDetail(runId) {
   const detail = await api(`/api/runs/${encodeURIComponent(runId)}`);
-  app.innerHTML = `
+  setPage(`
     <div class="back" id="back">← 返回跑批列表</div>
     <h1>${esc(detail.job_name)}</h1>
     <div class="sub"><span id="run-status"></span> · <code>${esc(detail.run_id)}</code></div>
@@ -595,7 +643,7 @@ async function renderRunDetail(runId) {
       <span><i class="swatch" style="background:var(--series-4)"></i> stale</span>
       <span>橙色描边 = 有重试；斜纹 = 已静默</span>
     </p>
-    <div id="run-errors"></div>`;
+    <div id="run-errors"></div>`, "runs");
   document.getElementById("back").onclick = () => { location.hash = "#/runs"; };
   paintRun(detail);
 
@@ -662,7 +710,7 @@ async function renderQuality() {
     : `<tr><td colspan="4" class="muted">还没有人查过 on-demand 数据集（<code>stock_news</code> /
        <code>research_reports</code>）——这是正常状态，不是缺口。</td></tr>`;
 
-  app.innerHTML = `
+  setPage(`
     <div class="back" id="back">← 返回总览</div>
     <h1>质量</h1>
     <div class="sub">来自 <code>meta/quality/</code> 与 <code>_quarantine/</code> 的已落盘产物</div>
@@ -696,7 +744,7 @@ async function renderQuality() {
     <div class="scroll"><table>
       <tr><th>数据集</th><th class="n">条目</th><th class="n">体积</th><th>最新</th></tr>
       ${onDemandRows}
-    </table></div>`;
+    </table></div>`, "quality");
 
   document.getElementById("back").onclick = () => { location.hash = "#/"; };
   severityTimeline(document.getElementById("sev-chart"), q.findings_runs);
@@ -723,14 +771,14 @@ async function renderQualityRun(runId) {
             .join("")}</table></div>`
       : '<p class="muted">无。</p>';
 
-  app.innerHTML = `
+  setPage(`
     <div class="back" id="back">← 返回质量</div>
     <h1>${esc(d.trade_date || runId.slice(0, 8))}</h1>
     <div class="sub"><code>${esc(d.run_id)}</code></div>
     <h3>findings（${d.findings.length}）</h3>
     ${table(d.findings, ["severity", "dataset", "check", "message"])}
     <h3>跨源差异（${d.diffs.length}）</h3>
-    ${table(d.diffs, ["severity", "dataset", "check", "field", "bps", "message"])}`;
+    ${table(d.diffs, ["severity", "dataset", "check", "field", "bps", "message"])}`, "quality");
   document.getElementById("back").onclick = () => { location.hash = "#/quality"; };
 }
 
@@ -748,10 +796,11 @@ async function route() {
     else if (location.hash.startsWith("#/runs")) await renderRuns();
     else if (qrun) await renderQualityRun(decodeURIComponent(qrun[1]));
     else if (location.hash.startsWith("#/quality")) await renderQuality();
+    else if (location.hash.startsWith("#/datasets")) await renderDatasets();
     else await renderOverview();
     window.scrollTo(0, 0);
   } catch (err) {
-    app.innerHTML = `<h1>ashare-lake</h1><div class="sub err">加载失败：${esc(err.message)}</div>`;
+    setPage(`<section class="error-state"><div class="eyebrow">ashare-lake</div><h1>加载失败</h1><p class="sub err">${esc(err.message)}</p><a class="button button-primary" href="#/">返回概览</a></section>`);
   }
 }
 
