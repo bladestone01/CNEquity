@@ -101,6 +101,18 @@ def _get(url: str, *, config: Config | None, timeout: float = 20.0) -> str:
             # retrying cannot produce one, so fail immediately and loudly.
             if resp.status_code in (401, 403):
                 raise ThsError(f"{url} -> HTTP {resp.status_code} (token-gated endpoint)")
+            # 404 means the year file itself does not exist — routine for a
+            # board younger than the year being asked for (see
+            # fetch_board_bars, which already treats a per-year miss as
+            # normal and moves on). Retrying cannot make a missing file
+            # appear. Measured cost of not doing this: a deep sweep (2010
+            # onward) against a young thematic board like 芬太尼/华为概念 hits
+            # a decade of guaranteed 404s, each retried 3x with backoff —
+            # ~12s wasted per missing year, compounding into whole boards
+            # that take 15-20 minutes apiece and make a 432-board sweep look
+            # hung.
+            if resp.status_code == 404:
+                raise ThsError(f"{url} -> HTTP 404 (no data for this period)")
             last_exc = ThsError(f"{url} -> HTTP {resp.status_code}")
         if attempt + 1 < _MAX_RETRIES:
             time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))

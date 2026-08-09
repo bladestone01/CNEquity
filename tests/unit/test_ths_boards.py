@@ -10,6 +10,58 @@ from ashare_lake.adapters.ths import boards as ths
 from ashare_lake.config import Config
 
 
+def test_get_fails_fast_on_404_without_retrying(monkeypatch):
+    """A missing year file for a young thematic board (芬太尼, 华为概念, ...)
+    is routine — fetch_board_bars already treats it as normal and moves on —
+    but retrying a 404 three times with backoff cannot make the file appear.
+    Measured cost of not fixing this: a deep sweep (2010 onward) against a
+    board created in, say, 2022 hits ~12 guaranteed-404 years, each costing
+    ~12s to retry-and-give-up, turning one board into 15-20 minutes and
+    making a 432-board sweep look hung."""
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    class Resp:
+        status_code = 404
+
+    def fake_get(url, **kwargs):
+        calls["n"] += 1
+        return Resp()
+
+    monkeypatch.setattr(ths.httpx, "get", fake_get)
+    monkeypatch.setattr(ths.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(ths, "_throttle", lambda url, config: None)
+
+    with pytest.raises(ths.ThsError, match="404"):
+        ths._get("https://d.10jqka.com.cn/v6/line/zs_885805/00/2010.js", config=None)
+
+    assert calls["n"] == 1, "404 must not be retried like a transient failure"
+    assert sleeps == [], "no retry means no backoff sleep either"
+
+
+def test_get_still_retries_a_genuinely_transient_status(monkeypatch):
+    """The 404 fix must not swallow real transient failures — a 500 (or any
+    non-401/403/404 status) keeps the existing retry-with-backoff behavior."""
+
+    class Resp:
+        status_code = 500
+
+    calls = {"n": 0}
+
+    def fake_get(url, **kwargs):
+        calls["n"] += 1
+        return Resp()
+
+    monkeypatch.setattr(ths.httpx, "get", fake_get)
+    monkeypatch.setattr(ths.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ths, "_throttle", lambda url, config: None)
+
+    with pytest.raises(ths.ThsError):
+        ths._get("https://d.10jqka.com.cn/v6/line/zs_881121/00/2010.js", config=None)
+
+    assert calls["n"] == ths._MAX_RETRIES
+
+
 def test_unwrap_jsonp_and_errors():
     payload = ths._unwrap_jsonp('quotebridge_v6_line_bk_881121_01_2025({"data":"x"});')
     assert payload == {"data": "x"}
