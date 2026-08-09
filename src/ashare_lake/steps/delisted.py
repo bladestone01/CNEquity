@@ -21,6 +21,7 @@ the catalogue is worth reading before committing to a bulk backfill.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -99,6 +100,14 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
         with suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # A code the vendor still quotes close to the market's latest session is
@@ -652,12 +661,14 @@ def reconcile_delisted_catalog(config: Config, *, sample: int = 15) -> dict:
         backup = config.meta_root / "state" / "history" / f"delisted_catalog-{stamp}.json"
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, backup)
+        before_sha256 = _file_sha256(backup)
 
         payload = _read_catalog(config)
         for correction in corrections:
             payload["delisted"][correction["symbol"]] = correction["proposed_last_traded"]
         payload["last_reconciled_at"] = now.isoformat()
         _write_catalog(config, payload)
+        after_sha256 = _file_sha256(source)
 
         receipt = {
             **report,
@@ -665,6 +676,8 @@ def reconcile_delisted_catalog(config: Config, *, sample: int = 15) -> dict:
             "applied": len(corrections),
             "applied_at": now.isoformat(),
             "backup": str(backup),
+            "backup_sha256": before_sha256,
+            "catalog_sha256": after_sha256,
         }
         receipt_path = (
             config.meta_root / "quality" / f"delisted-catalog-reconciliation-{stamp}.json"

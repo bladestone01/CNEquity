@@ -1,5 +1,6 @@
 """Safe repair path for vendor-polluted delisted catalogue terminals."""
 
+import hashlib
 import json
 from datetime import date
 from pathlib import Path
@@ -88,7 +89,10 @@ def test_apply_backs_up_catalog_and_writes_receipt(tmp_path):
     assert payload["delisted"]["300028.SZ"] == "2020-07-31"
     assert payload["delisted"]["600001.SH"] == "2020-01-06"
     assert result["applied"] == 1
-    assert json.loads(Path(result["backup"]).read_text())["delisted"]["300028.SZ"] == "2021-06-27"
+    backup = Path(result["backup"])
+    assert json.loads(backup.read_text())["delisted"]["300028.SZ"] == "2021-06-27"
+    assert result["backup_sha256"] == hashlib.sha256(backup.read_bytes()).hexdigest()
+    assert result["catalog_sha256"] == hashlib.sha256(catalog_path(cfg).read_bytes()).hexdigest()
     assert Path(result["receipt"]).exists()
 
 
