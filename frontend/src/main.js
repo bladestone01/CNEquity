@@ -70,6 +70,11 @@ const esc = (s) =>
 const kpi = (n, label, note = "") => `<article class="metric-card"><div class="metric-label">${label}</div>
   <div class="metric-value">${n}</div>${note ? `<div class="metric-note">${note}</div>` : ""}</article>`;
 
+const statusPill = (status, label = status) => {
+  const tone = status === "fresh" || status === "success" ? "fresh" : status === "stale" || status === "failed" ? "stale" : status === "empty" ? "empty" : "running";
+  return `<span class="status-pill status-pill-${tone}"><span class="dot ${tone === "running" ? "" : tone}"></span>${esc(label)}</span>`;
+};
+
 // storage/stats.py emits exactly two of these; anything else falls through
 // unchanged rather than being silently mistranslated.
 function statsReason(reason) {
@@ -463,22 +468,32 @@ async function renderDetail(name, tab) {
   ]);
   const cls = d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty";
   setPage(`
-    <div class="back" id="back">← 返回总览</div>
-    <h1><span class="dot ${cls}"></span>${esc(d.dataset)}</h1>
-    <div class="sub">${d.tier} ${esc(d.tier_label)} · ${d.layer} · ${d.history_mode}
-      · 水位 ${d.watermark || "—"} · ${fmt(d.row_count)} 行 · ${mb(d.bytes)}
-      ${d.required ? "" : " · <span style='opacity:.7'>可选（required=false）</span>"}</div>
-    <div class="tabs">
+    <section class="page-heading">
+      <div class="eyebrow">数据湖控制台 / 数据集 / ${esc(d.tier)}</div>
+      <div class="heading-row"><div><div class="page-title-with-status"><h1>${esc(d.dataset)}</h1>${statusPill(cls)}</div>
+        <p class="sub">${esc(d.tier_label)} · ${esc(d.layer)} · ${esc(d.history_mode)}${d.required ? "" : " · 可选数据集"}</p></div>
+        <div class="action-row"><a class="button button-ghost" href="#/datasets">← 返回数据集</a></div>
+      </div>
+    </section>
+    <section class="metric-grid detail-metrics" aria-label="数据集关键指标">
+      ${kpi(`<span title="${fmt(d.row_count)} 行">${compact(d.row_count)}</span>`, "行数", "curated")}
+      ${kpi(mb(d.bytes), "存储", "curated")}
+      ${kpi(esc(d.watermark || "—"), "水位", d.watermarked ? "维护中" : "不维护水位")}
+      ${kpi(esc(d.coverage_end || "—"), "覆盖至", d.granularity || "merge")}
+    </section>
+    <section class="surface-panel detail-workspace">
+    <nav class="tabs" aria-label="数据集详情标签页">
       ${["state", "meta", "data"]
         .map(
           (t) =>
-            `<div class="tab ${tab === t ? "on" : ""}" data-tab="${t}">${
+            `<a class="tab ${tab === t ? "on" : ""}" href="#/dataset/${enc}/${t}" aria-current="${tab === t ? "page" : "false"}">${
               { state: "状态", meta: "元数据", data: "数据" }[t]
-            }</div>`,
+            }</a>`,
         )
         .join("")}
-    </div>
-    <div id="tabbody">${tab === "meta" ? metaTab(d) : tab === "data" ? "" : stateTab(d, prov)}</div>`, "datasets");
+    </nav>
+    <div id="tabbody" class="tab-body">${tab === "meta" ? metaTab(d) : tab === "data" ? "" : stateTab(d, prov)}</div>
+    </section>`, "datasets");
 
   if (tab === "state") {
     provenanceSeries(document.getElementById("prov"), series);
@@ -487,14 +502,6 @@ async function renderDetail(name, tab) {
     await dataTab(d, document.getElementById("tabbody"));
   }
 
-  document.getElementById("back").onclick = () => {
-    location.hash = "#/";
-  };
-  app.querySelectorAll(".tab").forEach((el) => {
-    el.onclick = () => {
-      location.hash = `#/dataset/${enc}/${el.dataset.tab}`;
-    };
-  });
   app.querySelectorAll("button[data-copy]").forEach((b) => {
     b.onclick = () => navigator.clipboard?.writeText(document.getElementById(b.dataset.copy).textContent);
   });

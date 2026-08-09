@@ -247,8 +247,22 @@
   .back { display: inline-flex; margin-bottom: 18px; color: var(--muted); }
   .back:hover { color: var(--brand); }
   .tabs { gap: 6px; margin-top: 24px; }
-  .tab { border-radius: 7px 7px 0 0; font-size: 12px; }
+  .tab { border-radius: 7px 7px 0 0; font-size: 12px; text-decoration: none; }
   .tab.on { color: var(--brand); border-bottom-color: var(--brand); background: var(--brand-soft); }
+  .page-title-with-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .status-pill { width: max-content; display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 999px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .status-pill .dot { margin-right: 6px; box-shadow: none; }
+  .status-pill-fresh { background: var(--fresh-soft); color: var(--fresh); }
+  .status-pill-stale { background: var(--stale-soft); color: var(--stale); }
+  .status-pill-empty { background: var(--card); border: 1px solid var(--line); color: var(--muted); }
+  .status-pill-running { background: var(--brand-soft); color: var(--brand); }
+  .detail-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .detail-workspace { overflow: hidden; }
+  .detail-workspace .tabs { margin: 0; padding: 10px 16px 0; background: var(--card-subtle); }
+  .detail-workspace .tab { padding: 9px 14px; }
+  .tab-body { padding: 4px 22px 24px; }
+  .tab-body > h3 { margin-top: 24px; padding-bottom: 8px; border-bottom: 1px solid var(--line); color: var(--fg); font-size: 11px; }
+  .tab-body > h3:first-child { margin-top: 18px; }
   .banner { border-color: var(--stale); background: var(--stale-soft); }
   .loading-state { min-height: 50vh; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); }
   .spinner { width: 18px; height: 18px; border: 2px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .7s linear infinite; }
@@ -266,6 +280,7 @@
     .console-mode { display: none; }
     .page-main { padding: 38px 24px 60px; }
     .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .detail-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .overview-grid { grid-template-columns: 1fr; }
     .empty-state { min-height: 96px; }
   }
@@ -281,6 +296,7 @@
     .status-hero { grid-template-columns: auto 1fr; }
     .status-anchor { display: none; }
     .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .detail-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .metric-card { padding: 14px; }
     .heat-panel, .action-panel, .dataset-panel, .catalog-panel { padding: 15px; }
     .tier-summary { grid-template-columns: 1fr auto; gap: 6px; }
