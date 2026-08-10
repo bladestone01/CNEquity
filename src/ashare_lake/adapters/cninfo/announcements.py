@@ -94,6 +94,7 @@ def fetch_announcement_index(
             batch = data.get("announcements") or []
             if not batch:
                 break
+            total_pages = data.get("totalpages")
             for item in batch:
                 sym = _symbol_from_cninfo(str(item.get("secCode", "")))
                 if not sym:
@@ -109,6 +110,14 @@ def fetch_announcement_index(
                         "url": str(item.get("adjunctUrl") or ""),
                     }
                 )
+            if isinstance(total_pages, int) and page >= total_pages:
+                # `hasMore` cannot be trusted past the server's own reported
+                # total: measured live, requesting page 2000 of a 105-page
+                # day still returns page 1's rows with hasMore still true —
+                # an infinite loop with no other exit. total_pages stays
+                # correct even on those overshot pages, so it is the one
+                # authoritative stop condition.
+                break
             if not data.get("hasMore"):
                 break
             page += 1

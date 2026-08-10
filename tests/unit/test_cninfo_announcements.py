@@ -142,6 +142,45 @@ def test_fetch_announcement_index_uses_rate_limiter_when_config_given():
     assert calls == ["cninfo", "cninfo"]
 
 
+class _OverrunClient:
+    """Reproduces a measured live cninfo behavior: past its own reported
+    ``totalpages``, the server keeps re-serving page 1's rows with
+    ``hasMore`` still true, forever. Without a cap on ``totalpages`` itself,
+    the pagination loop never exits — this is what actually happened in
+    production (one day's szse column reached page 7727+ before an unrelated
+    network blip finally killed the run)."""
+
+    def __init__(self, total_pages: int):
+        self.total_pages = total_pages
+        self.calls = 0
+
+    def post(self, url, data):
+        self.calls += 1
+        page = data["pageNum"]
+        real_page = min(page, self.total_pages)
+        item = {
+            "secCode": "000001",
+            "announcementId": f"P{real_page}",
+            "announcementTitle": "x",
+            "adjunctUrl": "/x.pdf",
+        }
+        if data["column"] == "sse":
+            return _FakeResponse({"announcements": [], "hasMore": False, "totalpages": 0})
+        return _FakeResponse(
+            {"announcements": [item], "hasMore": True, "totalpages": self.total_pages}
+        )
+
+    def close(self):
+        pass
+
+
+def test_fetch_announcement_index_stops_at_totalpages_even_when_hasmore_lies():
+    client = _OverrunClient(total_pages=3)
+    df = fetch_announcement_index(date(2024, 1, 31), client=client)
+    assert client.calls == 4  # szse pages 1..3, then sse's single (empty) page
+    assert df.height == 3
+
+
 def test_fetch_announcement_index_raises_runtime_error_on_transport_failure():
     class _BoomClient:
         def post(self, url, data):

@@ -121,7 +121,25 @@ def test_chunked_backfill_stops_at_a_failed_slice_and_reports_where_to_resume(
     # The first slice stays in curated; the caller resumes from the one that broke.
     assert result["resume_from"] == date(2026, 7, 11)
     assert len(result["slices"]) == 2
-    assert FailingSecond.instances[0].compacted == ["run-1"]
+    # The failed slice is compacted too — whatever it staged before failing
+    # must not be stranded (see test_finish_backfill_run_compacts_on_failure).
+    assert FailingSecond.instances[0].compacted == ["run-1", "run-2"]
+
+
+def test_finish_backfill_run_compacts_on_failure():
+    """A single (unchunked) backfill call that raises partway through — e.g.
+    announcement_index, which is not date-chunked — must not strand whatever
+    walk_day_backfill already flushed to staging just because the overall
+    call's status is "failed". Measured in production: a run that flushed 21
+    clean days before an exception on day 22 kept those 21 days sitting in
+    staging, invisible to `load()`, until this was fixed."""
+    engine = FakeEngine(cfg=None)
+    result = {"run_id": "run-x", "status": "failed", "rows_read": 5, "rows_written": 5}
+
+    out = cli_main._finish_backfill_run(engine, result)
+
+    assert out["compact"] == {"rows_written": 10}
+    assert engine.compacted == ["run-x"]
 
 
 def test_minute_bars_declares_symbol_chunking_not_date_chunking():
@@ -188,7 +206,8 @@ def test_symbol_chunked_backfill_stops_and_reports_resume_symbol(monkeypatch):
     assert result["status"] == "failed"
     assert result["resume_from_symbol"] == "000200.SH"
     assert len(result["chunks"]) == 2
-    assert FailingSecond.instances[0].compacted == ["run-1"]
+    # The failed chunk is compacted too — see test_finish_backfill_run_compacts_on_failure.
+    assert FailingSecond.instances[0].compacted == ["run-1", "run-2"]
 
 
 def _backfill_argv(dataset: str, *extra: str) -> list[str]:

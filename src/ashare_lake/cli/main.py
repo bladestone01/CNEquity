@@ -877,14 +877,17 @@ def _guard_history_horizon(dataset: str, start: date | None) -> None:
 def _finish_backfill_run(engine, result: dict) -> dict:
     """Compact this run's staging, then close the run out."""
     run_id = result["run_id"]
-    # Compact partial sweeps too. `compact` only ever drains the *current* run's
-    # staging, so skipping it on a warning would strand every row the sweep did
-    # fetch — while its resume checkpoint already counts those boards as done,
-    # which is how a partial backfill turns into a silent hole in curated.
-    if result["status"] in ("success", "warning"):
-        # Through the engine, not step_compact directly: the recorded compact
-        # batch is what later lets `asl clean` release this run's staging.
-        result["compact"] = engine.run_step("compact", date.today(), run_id)
+    # Compact partial sweeps too, including failed ones. `compact` only ever
+    # drains the *current* run's staging, so skipping it here would strand
+    # every row the sweep did fetch before the failure — measured in
+    # production: a walk_day_backfill window that flushed 21 clean days to
+    # staging before an exception on day 22 still lost all 21, because this
+    # used to skip compact on status=="failed". A run with nothing staged
+    # compacts to a no-op (`step_compact` only touches datasets with files
+    # under this run_id), so there is no cost to always trying.
+    # Through the engine, not step_compact directly: the recorded compact
+    # batch is what later lets `asl clean` release this run's staging.
+    result["compact"] = engine.run_step("compact", date.today(), run_id)
     engine.manifest.finish_run(
         run_id,
         result["status"],

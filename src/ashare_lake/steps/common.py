@@ -300,7 +300,15 @@ def walk_day_backfill(
         frames = []
 
     for i, d in enumerate(todo, 1):
-        df = fetch_one(d)
+        try:
+            df = fetch_one(d)
+        except Exception:
+            # The docstring's "a kill costs only the unflushed chunk" promise
+            # is empty if a raise skips this flush — measured in production:
+            # announcement_index ran 9.6h and landed zero new days because the
+            # failure hit mid-window, taking every already-fetched day with it.
+            flush()
+            raise
         if df.is_empty():
             empty_days.append(d)
         else:

@@ -78,6 +78,7 @@ def fetch_regulatory_events(
             batch = data.get("announcements") or []
             if not batch:
                 break
+            total_pages = data.get("totalpages")
             for item in batch:
                 title = str(item.get("announcementTitle") or "")
                 if not pattern.search(title):
@@ -95,6 +96,11 @@ def fetch_regulatory_events(
                         "title": title,
                     }
                 )
+            if isinstance(total_pages, int) and page >= total_pages:
+                # See announcements.fetch_announcement_index: hasMore cannot
+                # be trusted past the server's own reported total — measured
+                # live, it stays true forever while replaying page 1's rows.
+                break
             if not data.get("hasMore"):
                 break
             page += 1
