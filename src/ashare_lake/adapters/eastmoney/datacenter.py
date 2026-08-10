@@ -23,6 +23,13 @@ _BUSY_MESSAGES = ("服务器繁忙", "系统繁忙", "请求过于频繁")
 # EastMoney datacenter caps pageSize at 500; requesting more returns only 500
 # rows and — because the short page looks like the last one — silently
 # truncates every high-volume report. Clamp so pagination stays correct.
+#
+# The cap is per report, not global. Measured 2026-08-11: RPT_BOARD_CONSTITUENT
+# serves a full 5000-row page, while RPT_SHAREBONUS_DET answers a pageSize=1000
+# request with 500 rows and a pages count computed at 500. So the clamp stays
+# the default and a caller that measured a bigger page opts out with
+# trust_page_size — safe because a report that stops honoring it trips the
+# short-page guard below and raises instead of truncating.
 _MAX_PAGE_SIZE = 500
 
 # pageNumber is capped at 100 and the refusal is a *lie*: page 101 answers
@@ -68,6 +75,7 @@ def fetch_datacenter(
     retry_backoff_seconds: float = 5.0,
     stop_after: Callable[[list[dict]], bool] | None = None,
     keyset_column: str | None = None,
+    trust_page_size: bool = False,
 ) -> list[dict]:
     """Page a datacenter report to exhaustion, or until *stop_after* says stop.
 
@@ -84,8 +92,13 @@ def fetch_datacenter(
     are dropped before re-anchoring — a page boundary falling mid-key (a symbol
     with ten holder rows) would otherwise lose the remainder of that group.
     Without it, a report over the cap raises rather than silently truncating.
+
+    ``trust_page_size`` sends ``page_size`` past the 500 clamp for the reports
+    measured to honor it (see ``_MAX_PAGE_SIZE``). Fewer pages is the point:
+    it is what keeps a 90k-row report clear of the pageNumber cap.
     """
-    page_size = min(page_size, _MAX_PAGE_SIZE)
+    if not trust_page_size:
+        page_size = min(page_size, _MAX_PAGE_SIZE)
     stopped_early = False
     rows: list[dict] = []
     # First page's result.pages/count; a transient "返回数据为空" on a later

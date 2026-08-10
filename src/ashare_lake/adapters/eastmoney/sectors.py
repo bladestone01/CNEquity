@@ -29,7 +29,12 @@ def fetch_sector_members(
         client,
         _BOARD_REPORT,
         _BOARD_COLUMNS,
+        # Every board type, ~92k rows: clamped to 500 that is 185 pages, past
+        # the pageNumber cap, and the step failed every capital run. This report
+        # honors a full 5000-row page (measured 2026-08-11) — 19 pages, with
+        # room for the board list to keep growing.
         page_size=5000,
+        trust_page_size=True,
     )
     rows = []
     for item in raw:

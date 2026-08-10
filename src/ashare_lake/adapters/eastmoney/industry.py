@@ -29,7 +29,12 @@ def fetch_industry_members(
         _BOARD_REPORT,
         _BOARD_COLUMNS,
         filter_expr=f'(BOARD_TYPE_NEW="{_INDUSTRY_BOARD_TYPE}")',
+        # Same report as sector_members, same measured 5000-row page. The
+        # industry slice is only ~17k rows today, but at the 500 clamp that is
+        # 34 pages and a third of the way to the pageNumber cap that broke
+        # sector_members; 5000 keeps it at 4.
         page_size=5000,
+        trust_page_size=True,
     )
     rows: list[dict] = []
     for item in raw:
