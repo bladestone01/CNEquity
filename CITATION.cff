@@ -6,8 +6,8 @@ abstract: >-
   A free, self-hosted historical data layer for A-shares with multi-source
   ingestion, provenance, adjustment semantics, point-in-time fundamentals,
   and reproducible Parquet storage.
-version: 0.5.0
-date-released: 2026-08-03
+version: 0.6.0
+date-released: 2026-08-10
 authors:
   - name: "ashare-lake Contributors"
 license: Apache-2.0

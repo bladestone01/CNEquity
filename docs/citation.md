@@ -6,7 +6,7 @@
 
 ```text
 ashare-lake Contributors. (2026). ashare-lake: A free, self-hosted historical
-data layer for A-shares (Version 0.5.0). Apache-2.0.
+data layer for A-shares (Version 0.6.0). Apache-2.0.
 https://github.com/rootSunc/ashare-lake
 ```
 

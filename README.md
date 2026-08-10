@@ -1,5 +1,5 @@
 <h1 align="center">ASL · ashare-lake</h1>
-<p align="center"><b>把 A 股公开数据沉淀成自己的本地研究数据湖</b></p>
+<p align="center"><b>本地可日更的 A 股研究湖，为人和 AI agent 保存可复查的历史</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -11,15 +11,24 @@
 </p>
 
 <p align="center">
-  免费、免注册、自托管。一次采集，持续日更；用 Python、DuckDB、Polars 或 AI agent 查询。<br>
-  <b>42 个数据集 · L0–L8 九类研究数据 · 复权 / 历史股票池 / PIT · 行级溯源</b>
+  无需 token、免注册、自托管。一次采集，支持持续日更；用 Python、DuckDB、Polars 或 AI agent 查询。<br>
+  <b>42 个注册数据集 · L0–L8 九类研究数据 · 复权 / 历史股票池 / PIT · 行级溯源 · MCP</b>
 </p>
 
 <p align="center">
-  <img src="docs/assets/asl-serve-hero.png" alt="ashare-lake 当前版本控制台：42 个数据集、湖状态、质量与覆盖热力图" width="1100" />
+  <img src="docs/assets/asl-serve-hero-demo.png" alt="ashare-lake 示意控制台：合成的全覆盖热力图演示" width="1100" />
 </p>
 
-> 上图来自当前版本的真实 `asl serve`，不是设计稿。控制台只读，不会修改数据湖。
+> 上图是用于 README 的合成演示图，覆盖热力图明确标注为 `ILLUSTRATIVE DEMO`，不代表当前生产数据状态。真实控制台只读，不会修改数据湖。
+
+## 架构
+
+<p align="center">
+  <img src="architecture-diagram-v2.png" alt="ashare-lake 架构图" width="1100" />
+</p>
+<p align="center"><sub>公开数据源 → 适配与编排 → 本地 Parquet 湖 → 质量、查询与只读服务</sub></p>
+
+核心边界很简单：适配器负责把多源数据取回来；编排层负责 DAG、批次和重试；数据先进入 staging，再压实为 curated 并计算 derived；质量层持续审计；查询和服务层只读消费。展开见[架构说明](docs/architecture/overview.md)。
 
 ## 先看它是否适合你
 
@@ -258,37 +267,6 @@ claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.toml"
 - “过去三年退市的股票，退市前 60 天有什么共同形态？”
 
 还没有正式湖时，可以先运行 `asl demo`，再使用生成的 demo 配置。完整说明见[MCP 参考](docs/reference/mcp.md)。
-
-## 架构
-
-```mermaid
-flowchart LR
-    Sources["公开数据源<br/>TDX · Eastmoney · Sina · CNInfo · …"]
-    Adapters["Adapters<br/>协议 · 分页 · 限流 · 源切换"]
-    Engine["Orchestrator + Steps<br/>Wave DAG · manifest · retry"]
-
-    subgraph Lake["本地 Parquet 数据湖"]
-        Staging["staging<br/>原始批次"] --> Curated["curated<br/>统一契约"] --> Derived["derived<br/>复权因子 · 退市事件 · 行业指数"]
-        Meta["meta<br/>水位 · manifest · stats"]
-    end
-
-    Quality["Quality<br/>审计 · 对账 · 跨源差异"]
-    Query["Query<br/>load() · DuckDB · Polars"]
-    Readonly["只读服务<br/>asl serve · asl mcp"]
-    Ops["Operations<br/>cron · launchd · backup"]
-
-    Sources --> Adapters --> Engine --> Staging
-    Engine --> Meta
-    Curated --> Quality
-    Derived --> Quality
-    Curated --> Query
-    Derived --> Query
-    Curated --> Readonly
-    Derived --> Readonly
-    Ops -. 调度与保障 .-> Engine
-```
-
-核心边界很简单：适配器负责把多源数据取回来；编排层负责 DAG、批次和重试；数据先进入 staging，再压实为 curated 并计算 derived；质量层持续审计；查询和服务层只读消费。展开见[架构说明](docs/architecture/overview.md)。
 
 ## 与 AkShare、Tushare、Qlib 有什么不同
 

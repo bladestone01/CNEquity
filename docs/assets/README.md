@@ -1,8 +1,9 @@
 # README assets
 
-READMEs embed three raster/vector assets: survivorship chart, `asl-demo.png`,
-and `asl-serve-hero.png`. Architecture is rendered from Mermaid in each README
-so that it stays reviewable beside code changes.
+READMEs embed the survivorship chart, `asl-demo.png`, the clearly labelled
+illustrative `asl-serve-hero-demo.png`, and the root-level
+`architecture-diagram-v2.png` architecture diagram. The factual dashboard
+capture remains available as `asl-serve-hero.png` for documentation and QA.
 Other PNGs below are for docs / social / re-exports.
 PyPI uses the short `README.pypi.md`, which points at absolute
 `raw.githubusercontent.com` URLs for the one demo screenshot it embeds.
@@ -38,8 +39,9 @@ python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.
 ## Architecture
 
 `architecture-overview.png` is a legacy export and is no longer embedded. The
-current diagram lives as Mermaid in `README.md` and `README.en.md`; update both
-when storage layers, orchestration, quality, query, operations, Serve, or MCP
+current diagram is `architecture-diagram-v2.png` in the repository root and is
+embedded in both `README.md` and `README.en.md`; update both references when
+storage layers, orchestration, quality, query, operations, Serve, or MCP
 boundaries change.
 
 ## Terminal screenshots
@@ -64,7 +66,8 @@ lake with something in it.
 
 | File | Shows |
 |------|--------|
-| `asl-serve-hero.png` | 1440×820 current overview: health, 42 datasets, KPIs, coverage heatmap and action state — in both READMEs |
+| `asl-serve-hero-demo.png` | Synthetic README illustration: a clearly labelled full-coverage heatmap |
+| `asl-serve-hero.png` | 1440×820 factual current overview: health, 42 datasets, KPIs, coverage heatmap and action state |
 | `asl-serve.png` | 1440px-wide full-page overview (source / docs) |
 | `asl-serve-dataset.png` | `trade_ticks` metadata tab (for docs; not in README) |
 

@@ -6,6 +6,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-10
+
 ### Fixed
 
 - **Shenwan (`sw`) fetches failed TLS verification on every attempt.**
@@ -639,6 +641,7 @@ First public release of the self-hosted A-share Parquet data layer.
 - TLS verify on by default for HTTP clients
 - Project URLs point at `rootSunc/ashare-lake`
 
+[0.6.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.6.0
 [0.5.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.5.0
 [0.4.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.4.0
 [0.3.1]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.1

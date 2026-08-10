@@ -1,5 +1,5 @@
 <h1 align="center">ASL · ashare-lake</h1>
-<p align="center"><b>A free, self-hosted historical data layer for A-shares</b></p>
+<p align="center"><b>A daily-refreshable local A-share research lake for humans and AI agents</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -11,15 +11,24 @@
 </p>
 
 <p align="center">
-  <b>Stop re-fetching and hand-rolling adjust factors.</b>
-  One command drops a daily-refreshable research data layer onto your machine.<br>
-  Keep historical semantics for Python, DuckDB, Polars, and AI agents.
+  No token or signup. Self-hosted, daily-refreshable, and queryable from Python, DuckDB, Polars, or AI agents.<br>
+  <b>42 registered datasets · adjustment / historical universes / PIT · 6 MCP tools · row-level provenance</b>
 </p>
 
 <p align="center">
-  <b>39 datasets · 9 categories</b> · <b>adjustment / historical universes / PIT</b> ·
-  <b>6 MCP tools</b> · <b>row-level provenance</b>
+  <img src="docs/assets/asl-serve-hero-demo.png" alt="ashare-lake illustrative dashboard with synthetic full-coverage heatmap" width="1100" />
 </p>
+
+> This is a synthetic README demo, explicitly marked `ILLUSTRATIVE DEMO`; the full-coverage heatmap is not a claim about current production data.
+
+## Architecture
+
+<p align="center">
+  <img src="architecture-diagram-v2.png" alt="ashare-lake architecture diagram" width="1100" />
+</p>
+<p align="center"><sub>Public sources → adapters and orchestration → local Parquet lake → quality, query, and read-only services</sub></p>
+
+The boundary is deliberate: adapters fetch, the orchestrator schedules and retries, staging becomes curated and derived, quality audits the result, and query / service layers stay read-only. More: [architecture overview](docs/architecture/overview.md).
 
 ## Data in ~30 seconds
 
@@ -65,8 +74,8 @@ you — and the 2016–2021 five-year return goes from **5.9% to 12.0%**, twice
 what it was.
 
 The error **is not visible**: those names are not zero, they are absent.
-Delisted names, adjustment factors, and PIT are first-class here — not a 40th
-dataset on a coverage list.
+Delisted names, adjustment factors, and PIT are first-class here — not an
+afterthought on a coverage list.
 
 ```bash
 python scripts/survivorship_gap.py --svg docs/assets/survivorship-gap.svg
@@ -224,43 +233,8 @@ asl serve     # http://127.0.0.1:8787
 asl sources   # health of 14 upstream hosts (probe on CLI, display on serve)
 ```
 
-<p align="center">
-  <img src="docs/assets/asl-serve-hero.png" alt="asl serve: lake health, 42 registered datasets, storage metrics, coverage heatmap, and action items" width="860" />
-</p>
-
 Details: [serve](docs/modules/serve.md) ·
 [source-health](docs/operations/source-health.md).
-
-## Architecture
-
-```mermaid
-flowchart LR
-    Sources["Public sources<br/>TDX · Eastmoney · Sina · CNInfo · …"]
-    Adapters["Adapters<br/>protocols · pagination · rate limits · fallback"]
-    Engine["Orchestrator + Steps<br/>Wave DAG · manifest · retry"]
-
-    subgraph Lake["Local Parquet lake"]
-        Staging["staging<br/>raw batches"] --> Curated["curated<br/>shared contracts"] --> Derived["derived<br/>factors · delistings · industry indexes"]
-        Meta["meta<br/>watermarks · manifest · stats"]
-    end
-
-    Quality["Quality<br/>audits · reconciliation · cross-source diffs"]
-    Query["Query<br/>load() · DuckDB · Polars"]
-    Readonly["Read-only services<br/>asl serve · asl mcp"]
-    Ops["Operations<br/>cron · launchd · backup"]
-
-    Sources --> Adapters --> Engine --> Staging
-    Engine --> Meta
-    Curated --> Quality
-    Derived --> Quality
-    Curated --> Query
-    Derived --> Query
-    Curated --> Readonly
-    Derived --> Readonly
-    Ops -. schedules and protects .-> Engine
-```
-
-More: [architecture overview](docs/architecture/overview.md).
 
 ## FAQ
 
