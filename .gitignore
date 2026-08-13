@@ -38,6 +38,10 @@ logs/
 
 # Local AI / editor tooling
 .claude/
+.codex/
+.gemini/
+.agents
+.mcp.json
 .cursor/
 
 # Editor / OS
