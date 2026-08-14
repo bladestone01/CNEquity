@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, time, timedelta, timezone
 
 from ashare_lake.adapters.tdx_protocol.client import (
     fetch_index_bars,
@@ -13,9 +13,52 @@ from ashare_lake.config import Config
 from ashare_lake.domain.symbols import split_by_quote_source
 from ashare_lake.orchestrator.registry import register_step
 from ashare_lake.orchestrator.worker_pool import fetch_daily_bars_parallel
-from ashare_lake.steps.common import BACKFILL_START, incremental_window, load_symbols
+from ashare_lake.steps.common import (
+    BACKFILL_START,
+    incremental_window,
+    is_trading_day,
+    load_symbols,
+)
 
 logger = logging.getLogger(__name__)
+
+_SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+# The closing auction ends at 15:00. Leave a small settlement buffer before
+# trusting TDX's current daily bar; the default core schedule starts at 16:00.
+_DAILY_BAR_FINAL_AT = time(15, 5)
+
+
+def _reject_unfinished_daily_bar_window(
+    config: Config,
+    end: date,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Reject a window whose newest daily bar is still forming in Shanghai.
+
+    TDX ``start=0`` includes the current daily K. Once trading begins that row
+    has plausible OHLC and non-zero volume, so content checks cannot distinguish
+    it from a settled bar. Refuse the fetch before any symbol batch starts: a
+    market-wide sweep that crosses 15:00 would otherwise mix partial and final
+    bars in one curated partition.
+
+    Historical windows and non-trading days are unaffected. ``now`` is
+    injectable so the timezone boundary is deterministic in tests.
+    """
+    anchor = now or datetime.now(timezone.utc)
+    if anchor.tzinfo is None:
+        raise ValueError("daily_bars finality clock must be timezone-aware")
+    shanghai_now = anchor.astimezone(_SHANGHAI_TZ)
+    if end != shanghai_now.date() or shanghai_now.time() >= _DAILY_BAR_FINAL_AT:
+        return
+    if not is_trading_day(config, end):
+        return
+    raise RuntimeError(
+        f"daily_bars {end}: the current A-share session is not final until "
+        f"{_DAILY_BAR_FINAL_AT.strftime('%H:%M')} Asia/Shanghai "
+        f"(now {shanghai_now.strftime('%H:%M:%S')}); refusing to stage an "
+        "in-progress daily bar. Re-run after the cutoff."
+    )
 
 
 def _backfill_window(config: Config, trade_date: date) -> tuple[date, date]:
@@ -44,6 +87,7 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         windows = {(s, e) for _, _, s, e in batch_specs}
         start = min(s for s, _ in windows)
         end = max(e for _, e in windows)
+        _reject_unfinished_daily_bar_window(config, end)
         expected = [sym for _, syms, _, _ in batch_specs for sym in syms]
         result = fetch_daily_bars_parallel(
             config,
@@ -65,16 +109,17 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
             sina_result=None,
         )
 
-    symbols = load_symbols(config)
-    rebackfill = context.get("symbols_to_rebackfill") or []
-    if rebackfill:
-        symbols = list(dict.fromkeys(rebackfill + symbols))
-
     if getattr(config, "_backfill", False):
         start, end = _backfill_window(config, trade_date)
     else:
         start = incremental_window(config, "daily_bars", trade_date)
         end = trade_date
+    _reject_unfinished_daily_bar_window(config, end)
+
+    symbols = load_symbols(config)
+    rebackfill = context.get("symbols_to_rebackfill") or []
+    if rebackfill:
+        symbols = list(dict.fromkeys(rebackfill + symbols))
 
     # TDX has no Beijing exchange route at all — the protocol rejects the market id —
     # so BJ symbols must come from the fallback vendor or they silently never
