@@ -15,7 +15,7 @@ DEST="$DEST_DIR/$LABEL.plist"
 
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "install_scheduler: launchd is macOS-only. On Linux use cron:" >&2
-  echo "  5 16 * * *  $REPO_ROOT/scripts/daily_pipeline.sh" >&2
+  echo "  15 11 * * *  $REPO_ROOT/scripts/daily_pipeline.sh" >&2
   exit 1
 fi
 if [[ ! -x "$REPO_ROOT/.venv/bin/asl" ]]; then
@@ -32,7 +32,7 @@ launchctl load "$DEST"
 
 echo "install_scheduler: loaded $LABEL"
 echo "  plist:    $DEST"
-echo "  schedule: daily 16:05 local"
+echo "  schedule: daily 11:15 local (Europe/Helsinki deployment)"
 echo "  logs:     $REPO_ROOT/data/ashare-lake/logs/"
 echo "  verify:   launchctl list | grep asharelake"
 echo "  test now: launchctl start $LABEL"

@@ -14,16 +14,15 @@
     <string>__REPO_ROOT__/scripts/daily_pipeline.sh</string>
   </array>
 
-  <!-- Fire at 16:05 local time every day; non-trading days are cheap no-ops.
-       16:05 assumes a China-local Mac (after the 15:00 CST close). Overseas
-       timezones should edit the installed plist — re-running this installer
-       overwrites custom hours. -->
+  <!-- Fire at 11:15 Europe/Helsinki time every day. This is 16:15 CST in
+       summer and 17:15 CST in winter, safely after the A-share close while
+       leaving enough time for Workbench's 13:30 local run. -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
-    <integer>16</integer>
+    <integer>11</integer>
     <key>Minute</key>
-    <integer>5</integer>
+    <integer>15</integer>
   </dict>
 
   <key>RunAtLoad</key>

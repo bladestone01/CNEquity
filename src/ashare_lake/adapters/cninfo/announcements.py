@@ -22,8 +22,11 @@ _CNINFO_URL = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
 # the caller's "fail loud on a page" contract for a genuinely broken source
 # while surviving the blip. Measured hitting this in production: a 504 on
 # `regulatory_events` page 8 of a ~16-year sweep.
-_POST_RETRIES = 3
-_POST_BACKOFF_SECONDS = 3.0
+# 504 Gateway Time-out is common on deep sse pages of busy disclosure days;
+# three tries with a short backoff still lost a 16h announcement walk at
+# page 270. Be more patient here — a few extra minutes beats redoing months.
+_POST_RETRIES = 6
+_POST_BACKOFF_SECONDS = 5.0
 
 
 def post_with_retry(client: httpx.Client, url: str, *, data: dict) -> dict:

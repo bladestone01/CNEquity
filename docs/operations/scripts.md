@@ -126,7 +126,7 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --appl
 `scripts/launchd/com.asharelake.daily.plist.template`
 
 - `ProgramArguments` 指向 `daily_pipeline.sh`
-- `StartCalendarInterval`：Hour=16, Minute=5
+- `StartCalendarInterval`：Hour=11, Minute=15（Europe/Helsinki；夏令时 16:15 CST、冬令时 17:15 CST）
 - 标准输出/错误重定向到 `{data.root}/logs/launchd.*.log`
 
 ---

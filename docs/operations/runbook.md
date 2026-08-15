@@ -11,7 +11,7 @@
 | 能力 | 脚本 | 作用 |
 |------|------|------|
 | 调度 | `scripts/daily_pipeline.sh` | 串行跑 6 个 schedule group + 健康检查 + 备份 |
-| 调度 | `scripts/install_scheduler.sh` | 安装 macOS launchd（每天 16:05） |
+| 调度 | `scripts/install_scheduler.sh` | 安装 macOS launchd（Helsinki 每天 11:15） |
 | 调度 | `scripts/uninstall_scheduler.sh` | 卸载 launchd |
 | 告警 | `scripts/health_notify.sh` | `audit --full` + `status --datasets` + macOS 通知 |
 | 备份 | `scripts/backup_meta.sh` | manifest + state + quality 的 tar 轮换 |
@@ -28,7 +28,7 @@ scripts/install_scheduler.sh
 ```
 
 - 生成 `~/Library/LaunchAgents/com.asharelake.daily.plist`
-- **每天本地 16:05** 触发（收盘后）
+- **Europe/Helsinki 每天 11:15** 触发（夏令时 16:15 CST、冬令时 17:15 CST，均在收盘后）
 - 非交易日自动跳过（退出 0）
 - **漏跑 / 周末补数**：`uv run asl run catchup`（门禁 core + breadth；水位已齐则
   `skipped_already_fresh`），或 `scripts/daily_pipeline.sh YYYY-MM-DD` /
@@ -46,7 +46,7 @@ scripts/uninstall_scheduler.sh
 **Linux cron**（建议跑在大陆出口）：
 
 ```cron
-5 16 * * * /path/to/ashare-lake/scripts/daily_pipeline.sh
+15 11 * * * /path/to/ashare-lake/scripts/daily_pipeline.sh
 ```
 
 **Windows 任务计划程序**（原生 Win10/11；`daily_pipeline.sh` 不适用于 PowerShell）：
