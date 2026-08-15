@@ -415,9 +415,13 @@ asl stats refresh
 
 ```bash
 asl demo                                   # 没湖想先试试：30 秒真数据
-claude mcp add ashare-lake -- asl mcp --config /abs/path/ashare-lake.toml
-claude mcp add ashare-lake -- asl mcp --config /abs/path/ashare-lake.toml --live
+asl mcp --config /abs/path/ashare-lake.toml
+asl mcp --config /abs/path/ashare-lake.toml --live
 ```
+
+上面的 `asl mcp ...` 是标准 MCP stdio server 命令，Claude 只是其中一种
+客户端。Codex、Cline、Cursor、Windsurf、Gemini CLI 或其它兼容客户端，均
+使用相同的 `command` / `args`；客户端的注册入口不同，但不需要改 server。
 
 `--live` **默认关，永不自动推断**：湖坏了的用户必须拿到 `no parquet data` 去修，而不是悄悄拿到一份来自别处、看起来差不多的答案。每次调用最多 50 个标的 / 800 天，且必须显式给 `symbols`。每条响应带 `origin: "lake" | "live"`。
 

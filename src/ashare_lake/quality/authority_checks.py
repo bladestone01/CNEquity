@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import date
 
 import polars as pl
@@ -49,6 +50,14 @@ PMI_TOLERANCE = 0.05
 ST_MAX_DISAGREEMENT = 3
 
 
+@dataclass(frozen=True)
+class AuthorityCheckOutcome:
+    """Result state for a publisher comparison, including non-findings."""
+
+    status: str
+    findings: list[dict]
+
+
 def _curated_value(config: Config, indicator_id: str, obs_date: date) -> float | None:
     root = config.curated_root / "macro_indicators"
     if not dataset_has_parquet(root):
@@ -62,47 +71,55 @@ def _curated_value(config: Config, indicator_id: str, obs_date: date) -> float |
     return None if out.is_empty() else float(out.get_column("value")[-1])
 
 
-def macro_pmi_vs_nbs(config: Config, trade_date: date) -> list[dict]:
+def _macro_pmi_vs_nbs_outcome(config: Config, trade_date: date) -> AuthorityCheckOutcome:
     """Newest curated ``pmi_manufacturing`` against the NBS release for that month."""
     # Default off, like the sina close cross-check: absent config means an
     # offline lake, and `asl audit` must not silently start making requests.
     if not config.sources.get("nbs", False):
-        return []
+        return AuthorityCheckOutcome("skipped_disabled", [])
     from ashare_lake.adapters.nbs.pmi_release import fetch_latest_pmi
 
     published = fetch_latest_pmi(config=config)
     if published is None:
-        return []
+        return AuthorityCheckOutcome("unavailable", [])
 
     obs_date = published["obs_date"]
     if obs_date > trade_date:
         # The bureau has published a month the run has not reached yet.
-        return []
+        return AuthorityCheckOutcome("skipped_not_due", [])
 
     ours = _curated_value(config, "pmi_manufacturing", obs_date)
     if ours is None:
         # Missing coverage is `macro_indicator_stale`'s job, not a disagreement.
-        return []
+        return AuthorityCheckOutcome("skipped_no_curated", [])
     if abs(ours - published["value"]) <= PMI_TOLERANCE:
-        return []
+        return AuthorityCheckOutcome("agreed", [])
 
-    return [
-        {
-            "dataset": "macro_indicators",
-            "severity": "error",
-            "check": "macro_pmi_vs_nbs",
-            "message": (
-                f"pmi_manufacturing for {obs_date.isoformat()} is {ours} in curated but "
-                f"{published['value']} in the 国家统计局 release — the vendor has drifted "
-                "from the publisher"
-            ),
-            "indicator_id": "pmi_manufacturing",
-            "obs_date": obs_date.isoformat(),
-            "curated_value": ours,
-            "published_value": published["value"],
-            "source_url": published["url"],
-        }
-    ]
+    return AuthorityCheckOutcome(
+        "disagreed",
+        [
+            {
+                "dataset": "macro_indicators",
+                "severity": "error",
+                "check": "macro_pmi_vs_nbs",
+                "message": (
+                    f"pmi_manufacturing for {obs_date.isoformat()} is {ours} in curated but "
+                    f"{published['value']} in the 国家统计局 release — the vendor has drifted "
+                    "from the publisher"
+                ),
+                "indicator_id": "pmi_manufacturing",
+                "obs_date": obs_date.isoformat(),
+                "curated_value": ours,
+                "published_value": published["value"],
+                "source_url": published["url"],
+            }
+        ],
+    )
+
+
+def macro_pmi_vs_nbs(config: Config, trade_date: date) -> list[dict]:
+    """Return only disagreement findings for backwards-compatible callers."""
+    return _macro_pmi_vs_nbs_outcome(config, trade_date).findings
 
 
 def _curated_status(config: Config, trade_date: date) -> tuple[set[str], set[str]] | None:
@@ -124,7 +141,7 @@ def _curated_status(config: Config, trade_date: date) -> tuple[set[str], set[str
     return covered, labeled
 
 
-def st_labels_vs_exchange(config: Config, trade_date: date) -> list[dict]:
+def _st_labels_vs_exchange_outcome(config: Config, trade_date: date) -> AuthorityCheckOutcome:
     """Curated ST labels against the 简称 the exchanges publish.
 
     Compared over the **shared universe** only. The exchanges carry a company
@@ -134,17 +151,17 @@ def st_labels_vs_exchange(config: Config, trade_date: date) -> list[dict]:
     permanently.
     """
     if not config.sources.get("exchange", False):
-        return []
+        return AuthorityCheckOutcome("skipped_disabled", [])
     status = _curated_status(config, trade_date)
     if status is None:
-        return []
+        return AuthorityCheckOutcome("skipped_no_curated", [])
     covered, labeled = status
 
     from ashare_lake.adapters.exchange.st_lists import fetch_exchange_names, is_st_name
 
     names = fetch_exchange_names(config=config)
     if not names:
-        return []
+        return AuthorityCheckOutcome("unavailable", [])
 
     # Both directions are judged only on symbols both sides carry. Restricting
     # one side is not enough: SSE designates two names as ST that no quote feed
@@ -158,25 +175,33 @@ def st_labels_vs_exchange(config: Config, trade_date: date) -> list[dict]:
     extra = sorted(labeled_shared - by_exchange)
     total = len(missing) + len(extra)
     if total <= ST_MAX_DISAGREEMENT:
-        return []
+        return AuthorityCheckOutcome("agreed", [])
 
-    return [
-        {
-            "dataset": "trading_status",
-            "severity": "error",
-            "check": "st_labels_vs_exchange",
-            "message": (
-                f"ST labels disagree with the exchange listings on {trade_date.isoformat()}: "
-                f"{len(missing)} designated ST by the exchange but not labeled, "
-                f"{len(extra)} labeled but not designated"
-            ),
-            "trade_date": trade_date.isoformat(),
-            "shared_universe": len(shared),
-            "designated_not_labeled": len(missing),
-            "labeled_not_designated": len(extra),
-            "symbols": (missing + extra)[:_SAMPLE],
-        }
-    ]
+    return AuthorityCheckOutcome(
+        "disagreed",
+        [
+            {
+                "dataset": "trading_status",
+                "severity": "error",
+                "check": "st_labels_vs_exchange",
+                "message": (
+                    f"ST labels disagree with the exchange listings on {trade_date.isoformat()}: "
+                    f"{len(missing)} designated ST by the exchange but not labeled, "
+                    f"{len(extra)} labeled but not designated"
+                ),
+                "trade_date": trade_date.isoformat(),
+                "shared_universe": len(shared),
+                "designated_not_labeled": len(missing),
+                "labeled_not_designated": len(extra),
+                "symbols": (missing + extra)[:_SAMPLE],
+            }
+        ],
+    )
+
+
+def st_labels_vs_exchange(config: Config, trade_date: date) -> list[dict]:
+    """Return only disagreement findings for backwards-compatible callers."""
+    return _st_labels_vs_exchange_outcome(config, trade_date).findings
 
 
 def run_authority_checks(config: Config, trade_date: date) -> list[dict]:
@@ -184,13 +209,13 @@ def run_authority_checks(config: Config, trade_date: date) -> list[dict]:
 
     Findings go back to the caller for the ordinary audit stream; the same
     comparison is also written to ``meta/quality/source_diffs/`` so that a clean
-    run leaves evidence it happened. A findings file only records disagreement,
-    which cannot distinguish "checked, agreed" from "never checked".
+    run leaves evidence it happened. The persisted status distinguishes an
+    effective comparison from a disabled, unavailable, or not-yet-covered check.
     """
     findings: list[dict] = []
     checks = {
-        "macro_pmi_vs_nbs": macro_pmi_vs_nbs,
-        "st_labels_vs_exchange": st_labels_vs_exchange,
+        "macro_pmi_vs_nbs": _macro_pmi_vs_nbs_outcome,
+        "st_labels_vs_exchange": _st_labels_vs_exchange_outcome,
     }
     ran: dict[str, str] = {}
     for name, fn in checks.items():
@@ -201,8 +226,8 @@ def run_authority_checks(config: Config, trade_date: date) -> list[dict]:
             logger.warning("authority check %s failed: %s", name, exc)
             ran[name] = f"error: {exc}"
             continue
-        ran[name] = "disagreed" if result else "agreed"
-        findings.extend(result)
+        ran[name] = result.status
+        findings.extend(result.findings)
 
     out_dir = config.meta_root / "quality" / "source_diffs"
     try:

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from ashare_lake import file_lock
-from ashare_lake.file_lock import LockUnavailable, exclusive_lock, is_locked
+from ashare_lake.file_lock import LockUnavailable, exclusive_lock, is_locked, lake_mutation_lock
 
 # ---------------------------------------------------------------- real backend
 
@@ -68,6 +68,16 @@ def test_is_locked_reports_holder_state(tmp_path):
     with exclusive_lock(path):
         assert is_locked(path) is True
     assert is_locked(path) is False
+
+
+def test_lake_mutation_lock_shares_compact_lock_with_run_lock(tmp_path):
+    """Maintenance must contend with the orchestrator's compact lock."""
+    from ashare_lake.orchestrator.run_lock import RunLockError, run_lock
+
+    with lake_mutation_lock(tmp_path):
+        with pytest.raises(RunLockError):
+            with run_lock(tmp_path, "compact", blocking=False):
+                pass
 
 
 def _hold_lock(path: str, seconds: float) -> bool:

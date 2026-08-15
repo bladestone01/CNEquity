@@ -146,3 +146,16 @@ def is_locked(path: Path | str) -> bool:
         # "Cannot even look at it" is indistinguishable from "held", and the
         # callers (skip this run / keep this lock file) want the same answer.
         return True
+
+
+@contextlib.contextmanager
+def lake_mutation_lock(meta_root: Path, *, blocking: bool = True) -> Iterator[IO]:
+    """Serialize every curated/derived read-modify-write operation.
+
+    The orchestrator's ``compact`` step already uses this exact lock path via
+    ``run_lock``.  Exposing the path from the low-level lock module lets
+    maintenance and derive code participate without importing the orchestrator
+    package (which would introduce a dependency cycle).
+    """
+    with exclusive_lock(meta_root / "locks" / "compact.lock", blocking=blocking) as handle:
+        yield handle

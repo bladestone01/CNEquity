@@ -14,6 +14,7 @@ from pathlib import Path
 import polars as pl
 
 from ashare_lake.config import Config
+from ashare_lake.file_lock import lake_mutation_lock
 from ashare_lake.steps.common import load_bar_universe
 from ashare_lake.storage.atomic import write_parquet_atomic
 
@@ -26,6 +27,14 @@ def purge_valuation_orphan_symbols(config: Config) -> dict:
     Returns ``{orphan_symbols, partitions_rewritten, rows_removed}``. No-op when
     bars are empty (cannot reconcile) or when no orphans exist.
     """
+    # This is a read-modify-write over curated partitions and must not race
+    # compact, repartition, or another maintenance operation.
+    with lake_mutation_lock(config.meta_root, blocking=True):
+        return _purge_valuation_orphan_symbols_locked(config)
+
+
+def _purge_valuation_orphan_symbols_locked(config: Config) -> dict:
+    """Implementation of :func:`purge_valuation_orphan_symbols` under lock."""
     bar_universe = load_bar_universe(config)
     if not bar_universe:
         return {

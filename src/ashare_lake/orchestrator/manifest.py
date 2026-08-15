@@ -210,6 +210,18 @@ class Manifest:
                 (_utcnow(), run_id, batch_id),
             )
 
+    def set_batch_dataset(self, run_id: str, batch_id: str, dataset: str) -> None:
+        """Set the physical dataset a step's staging batch will compact into."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_batches
+                SET dataset = ?
+                WHERE run_id = ? AND batch_id = ?
+                """,
+                (dataset, run_id, batch_id),
+            )
+
     def finish_batch(
         self,
         run_id: str,
@@ -225,7 +237,11 @@ class Manifest:
                 """
                 UPDATE ingestion_batches
                 SET status = ?, finished_at = ?, rows_read = ?, rows_written = ?,
-                    error_message = ?, retry_count = ?
+                    error_message = ?, retry_count = ?,
+                    blocks_compaction = CASE
+                        WHEN ? IN ('warning', 'failed', 'stale') THEN 1
+                        ELSE blocks_compaction
+                    END
                 WHERE run_id = ? AND batch_id = ?
                 """,
                 (
@@ -235,6 +251,7 @@ class Manifest:
                     rows_written,
                     error_message,
                     retry_count,
+                    status,
                     run_id,
                     batch_id,
                 ),

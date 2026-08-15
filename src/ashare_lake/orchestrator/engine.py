@@ -34,6 +34,27 @@ from ashare_lake.steps.common import is_trading_day
 logger = logging.getLogger(__name__)
 
 
+def _has_partial_failures(result: dict[str, Any]) -> bool:
+    """Return whether a step reported a non-empty failed-* scope.
+
+    A few source steps report ``failed_symbols`` while intraday/tick steps use
+    ``failed_symbol_days``.  Treating either as a warning keeps a step from
+    being recorded as successful merely because it staged some rows.
+    """
+    for key, value in result.items():
+        if not (key.startswith("failed") or key in {"aborted", "empty_days", "days_empty"}):
+            continue
+        if isinstance(value, bool):
+            if value:
+                return True
+        elif isinstance(value, (int, float)):
+            if value > 0:
+                return True
+        elif value:
+            return True
+    return False
+
+
 class JobEngine:
     """Wave-based ingestion orchestrator."""
 
@@ -279,9 +300,10 @@ class JobEngine:
         uses_worker_batches = entry.requires_workers
         batch_id = str(uuid.uuid4())
         if not uses_worker_batches:
-            # This row tracks step completion/retry, not the validity of each
-            # staged data batch. A warning must remain retryable while compact
-            # is still allowed to drain the successfully staged subset.
+            # A warning is both retryable and a data-integrity gate. The step
+            # may have staged a valid subset, but compact must wait until the
+            # missing scope has been retried rather than advancing its
+            # dataset watermark over a hole.
             self.manifest.start_batch(
                 run_id,
                 batch_id,
@@ -295,9 +317,14 @@ class JobEngine:
             out = entry.fn(self.config, trade_date, run_id, context)
             elapsed = time.perf_counter() - t0
             step_status = out.pop("status", "success")
+            if step_status == "success" and _has_partial_failures(out):
+                step_status = "warning"
             if step_status not in ("success", "warning", "failed"):
                 raise ValueError(f"step {name} returned invalid status {step_status!r}")
             if not uses_worker_batches:
+                physical_dataset = out.get("dataset")
+                if physical_dataset and physical_dataset != name:
+                    self.manifest.set_batch_dataset(run_id, batch_id, physical_dataset)
                 self.manifest.finish_batch(
                     run_id,
                     batch_id,

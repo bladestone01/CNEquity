@@ -1793,10 +1793,15 @@ def query(config_path: str, sql: str, dataset: str | None, symbol: str | None):
 def mcp_cmd(config_path: str, live: bool):
     """Serve this lake to an AI agent over MCP (stdio).
 
-    Not meant to be typed: an MCP client spawns it and talks JSON-RPC on the
-    pipe. Register it once, e.g.
+    Not meant to be typed interactively: any MCP-compatible client spawns it
+    and talks JSON-RPC on the pipe. The client-specific registration UI varies;
+    the portable command and arguments are simply::
 
-      claude mcp add ashare-lake -- asl mcp --config /path/to/ashare-lake.toml
+      asl mcp --config /path/to/ashare-lake.toml
+
+    Use that command as the ``command``/``args`` entry in the client's MCP
+    configuration. This implementation uses the standard stdio transport, not
+    a vendor-specific Claude integration.
 
     Read-only, like `asl serve`. The tools query the lake; ingestion stays on
     the CLI, where a person runs it.

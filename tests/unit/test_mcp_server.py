@@ -294,6 +294,35 @@ def test_run_sql_comment_cannot_smuggle_a_second_statement(lake):
     assert payload["rows"] == [[1]]
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM read_text('/etc/hosts')",
+        "SELECT * FROM read_csv('https://example.com/data.csv')",
+    ],
+)
+def test_run_sql_cannot_access_external_files_or_urls(lake, sql):
+    """A read-only DuckDB connection must not become a host file oracle."""
+    with pytest.raises(tools.ToolError):
+        tools.run_sql(lake, sql=sql)
+
+
+def test_run_sql_cannot_access_a_file_outside_the_lake(lake, tmp_path):
+    secret = tmp_path / "outside-lake-secret.txt"
+    secret.write_text("must not be exposed", encoding="utf-8")
+
+    with pytest.raises(tools.ToolError):
+        tools.run_sql(lake, sql=f"SELECT * FROM read_text('{secret.as_posix()}')")
+
+
+def test_run_sql_cannot_access_external_parquet(lake, tmp_path):
+    outside = tmp_path / "outside-lake-secret.parquet"
+    pl.DataFrame({"secret": ["must not be exposed"]}).write_parquet(outside)
+
+    with pytest.raises(tools.ToolError):
+        tools.run_sql(lake, sql=f"SELECT * FROM read_parquet('{outside.as_posix()}')")
+
+
 # --- protocol --------------------------------------------------------------
 
 

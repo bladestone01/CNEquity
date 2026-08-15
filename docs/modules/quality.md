@@ -191,7 +191,9 @@ findings，然后照常写入。curated 仍然只持有最新发布值，finding
 ### 留痕
 
 结果同时写入 `meta/quality/source_diffs/authority-{date}.json`，
-即使全部一致也写。findings 只记录分歧，无法区分「查过、一致」和「压根没查」。
+即使没有分歧也写。`checks` 会明确记录 `agreed`、`disagreed`、
+`skipped_disabled`、`skipped_no_curated`、`skipped_not_due`、`unavailable` 或 `error`；
+返回给普通 audit 流的 findings 仍只包含实际分歧。
 
 ---
 

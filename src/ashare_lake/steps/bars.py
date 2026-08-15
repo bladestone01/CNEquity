@@ -819,6 +819,7 @@ def step_daily_bars_history(config: Config, trade_date: date, run_id: str, conte
 
     failed = sweep_stock_bars_planned(plan, end, config=config, on_batch=_flush)
     return {
+        "dataset": "daily_bars",
         "rows_read": written,
         "rows_written": written,
         "symbols": len(plan),
@@ -991,6 +992,7 @@ def step_daily_bars_delisted(config: Config, trade_date: date, run_id: str, cont
         StagingWriter(config.staging_root).write_batch("daily_bars", run_id, "delisted-0000", df)
         written = df.height
     return {
+        "dataset": "daily_bars",
         "rows_read": written,
         "rows_written": written,
         "symbols": len(symbols),

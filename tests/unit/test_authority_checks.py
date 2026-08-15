@@ -244,3 +244,28 @@ def test_audit_stays_offline_when_the_sources_are_off(tmp_path, flag):
     cfg.sources = flag
     # No monkeypatching: a network call here would be a real request.
     assert ac.run_authority_checks(cfg, TD) == []
+    payload = json.loads(
+        (cfg.meta_root / "quality" / "source_diffs" / f"authority-{TD.isoformat()}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["checks"] == {
+        "macro_pmi_vs_nbs": "skipped_disabled",
+        "st_labels_vs_exchange": "skipped_disabled",
+    }
+
+
+def test_publisher_check_records_missing_curated_state(monkeypatch, tmp_path):
+    _publish(monkeypatch, 49.2)
+    cfg = _lake(tmp_path)
+
+    assert ac.run_authority_checks(cfg, TD) == []
+    payload = json.loads(
+        (cfg.meta_root / "quality" / "source_diffs" / f"authority-{TD.isoformat()}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["checks"] == {
+        "macro_pmi_vs_nbs": "skipped_no_curated",
+        "st_labels_vs_exchange": "skipped_no_curated",
+    }

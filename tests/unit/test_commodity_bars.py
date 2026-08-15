@@ -72,6 +72,7 @@ def test_fetch_commodity_bars_parses_kline():
             date(2026, 7, 21),
             contracts=only,
             include_offshore=True,
+            config=_EastMoneyOnly(),
         )
 
     assert df.height == 2

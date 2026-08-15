@@ -557,6 +557,33 @@ def _guard_sql(sql: str) -> str:
     return text
 
 
+def _configure_sql_connection(con: Any, config: Config) -> None:
+    """Restrict the DuckDB connection used for agent-controlled SQL.
+
+    ``read_only=True`` protects the DuckDB catalog, not the host filesystem:
+    DuckDB SELECT table functions can still read local files or fetch remote
+    resources.  The views created by :func:`ensure_duckdb_views` only need the
+    curated and derived roots, so make those the sole allowed directories and
+    disable all other external access before locking the settings.
+    """
+    allowed = [
+        str(config.curated_root.resolve()),
+        str(config.derived_root.resolve()),
+    ]
+    # This must be configured before enable_external_access is disabled.  Use
+    # a bound list parameter so paths containing quotes cannot alter SQL.
+    con.execute("SET allowed_directories = ?", [allowed])
+    con.execute("SET enable_external_access = false")
+    con.execute("SET autoinstall_known_extensions = false")
+    con.execute("SET autoload_known_extensions = false")
+    con.execute("SET allow_community_extensions = false")
+    con.execute("SET memory_limit = ?", [config.duckdb_memory_limit])
+    con.execute("SET threads = ?", [config.duckdb_threads])
+    # Prevent a query from re-enabling filesystem, extension, or network
+    # capabilities after this function returns.
+    con.execute("SET lock_configuration = true")
+
+
 def run_sql(config: Config, *, sql: str, limit: int | None = None) -> dict:
     """One read-only DuckDB SELECT across every dataset in the lake.
 
@@ -581,6 +608,7 @@ def run_sql(config: Config, *, sql: str, limit: int | None = None) -> dict:
     db_path = ensure_duckdb_views(config)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
+        _configure_sql_connection(con, config)
         df = con.execute(text).pl()
     except Exception as exc:  # noqa: BLE001 — surfaced as a fixable tool error
         raise ToolError(f"query failed: {exc}") from exc

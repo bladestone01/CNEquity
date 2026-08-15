@@ -174,7 +174,7 @@ def test_receipt_is_published_only_after_successful_compact(tmp_path, monkeypatc
     assert st_evidence_coverage_report(cfg, date(2016, 1, 1), date(2026, 7, 1))["verified"] is True
 
 
-def test_partial_st_rows_compact_but_do_not_publish_coverage(tmp_path, monkeypatch):
+def test_partial_st_rows_do_not_compact_or_publish_coverage(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "data")
     _write_instruments(cfg, ["600000.SH", "600001.SH"])
     monkeypatch.setattr(
@@ -195,10 +195,12 @@ def test_partial_st_rows_compact_but_do_not_publish_coverage(tmp_path, monkeypat
 
     assert result["status"] == "warning"
     assert engine.manifest.incomplete_batch_count(result["run_id"]) == 1
-    assert engine.manifest.incomplete_batch_counts_by_dataset(result["run_id"]) == {}
+    assert engine.manifest.incomplete_batch_counts_by_dataset(result["run_id"]) == {
+        "trading_status": 1
+    }
 
     compact = engine.run_step("compact", date(2026, 7, 1), result["run_id"])
 
-    assert compact["rows_written"] == 1
+    assert compact["rows_written"] == 0
     assert "coverage_receipts" not in compact
     assert st_evidence_coverage_report(cfg, date(2016, 1, 1), date(2026, 7, 1))["verified"] is False

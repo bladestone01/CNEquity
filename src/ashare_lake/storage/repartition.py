@@ -27,6 +27,7 @@ from ashare_lake.config import Config
 from ashare_lake.domain.datasets import DATASETS
 from ashare_lake.domain.partitions import partition_value
 from ashare_lake.domain.schemas import PRIMARY_KEYS, validate_dataframe
+from ashare_lake.file_lock import lake_mutation_lock
 from ashare_lake.query.parquet_scan import list_partitions, partition_dir
 from ashare_lake.storage.atomic import write_parquet_atomic
 
@@ -67,6 +68,20 @@ def repartition_dataset(
     dry_run: bool = False,
 ) -> RepartitionResult:
     """Rewrite *dataset* so each directory spans its configured period."""
+    # Repartition swaps the live dataset root after reading the old one.  It
+    # must share compact's mutation lock or it can promote a stale snapshot and
+    # discard rows compact wrote concurrently.
+    with lake_mutation_lock(config.meta_root, blocking=True):
+        return _repartition_dataset_locked(config, dataset, dry_run=dry_run)
+
+
+def _repartition_dataset_locked(
+    config: Config,
+    dataset: str,
+    *,
+    dry_run: bool = False,
+) -> RepartitionResult:
+    """Implementation of :func:`repartition_dataset` under the mutation lock."""
     spec = DATASETS.get(dataset)
     if spec is None:
         raise RepartitionError(f"unknown dataset {dataset!r}")

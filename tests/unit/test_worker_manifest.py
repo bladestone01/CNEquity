@@ -135,6 +135,7 @@ def test_symbol_batch_ids_unique_per_window(worker_config, monkeypatch):
 
 def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
     from ashare_lake.adapters.tdx_protocol import client as tdx
+    from ashare_lake.derive.adj_factors import AdjFactorsResult
 
     calls: list[list[str]] = []
 
@@ -149,6 +150,10 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
         return tdx._mock_bars(symbols, start, end)
 
     monkeypatch.setattr("ashare_lake.orchestrator.worker_pool.fetch_daily_bars", _fetch)
+    monkeypatch.setattr(
+        "ashare_lake.derive.adj_factors.compute_adj_factors",
+        lambda *args, **kwargs: AdjFactorsResult(0, 0, [], []),
+    )
     monkeypatch.setattr(
         "ashare_lake.steps.bars.load_symbols",
         lambda _cfg: ["600519.SH", "000001.SZ"],
@@ -186,6 +191,7 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
 
 def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
     from ashare_lake.adapters.tdx_protocol import client as tdx
+    from ashare_lake.derive.adj_factors import AdjFactorsResult
 
     calls: list[list[str]] = []
     worker_config.batch_stale_seconds = 60
@@ -195,6 +201,10 @@ def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
         return tdx._mock_bars(symbols, start, end)
 
     monkeypatch.setattr("ashare_lake.orchestrator.worker_pool.fetch_daily_bars", _fetch)
+    monkeypatch.setattr(
+        "ashare_lake.derive.adj_factors.compute_adj_factors",
+        lambda *args, **kwargs: AdjFactorsResult(0, 0, [], []),
+    )
 
     init_data_layout(worker_config)
     manifest = Manifest(worker_config.manifest_path)

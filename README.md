@@ -256,8 +256,26 @@ asl retry --run-id <run_id>   # 只重试失败批次
 `asl mcp` 以只读方式把本地湖提供给模型；采集、重试和清理仍由 CLI 完成。
 
 ```bash
-claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.toml"
+asl mcp --config "$(pwd)/configs/ashare-lake.toml"
 ```
+
+把上面的命令作为 MCP server 注册到任意兼容客户端即可。大多数客户端
+使用等价的配置（客户端名称和界面可能不同）：
+
+```json
+{
+  "mcpServers": {
+    "ashare-lake": {
+      "command": "asl",
+      "args": ["mcp", "--config", "/abs/path/to/ashare-lake.toml"]
+    }
+  }
+}
+```
+
+因此 Codex、Claude、Cline、Cursor、Windsurf、Gemini CLI 以及其它支持
+MCP stdio 的 agent 都可以复用同一条 `command` / `args` 配置；ashare-lake
+不依赖任何特定模型或厂商 SDK。
 
 `--config` 必须使用绝对路径。接好后可以直接问：
 

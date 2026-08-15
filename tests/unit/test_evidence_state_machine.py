@@ -33,7 +33,31 @@ def test_warning_batch_is_retryable_and_not_success(tmp_path, monkeypatch):
     assert len(retryable) == 1
     assert retryable[0]["status"] == "warning"
     assert engine.manifest.incomplete_batch_count(run_id) == 1
-    assert engine.manifest.incomplete_batch_counts_by_dataset(run_id) == {}
+    assert engine.manifest.incomplete_batch_counts_by_dataset(run_id) == {"trading_status": 1}
+
+
+def test_partial_failure_fields_are_promoted_to_warning(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    run_id = engine.manifest.start_run("ticks")
+    monkeypatch.setattr(
+        "ashare_lake.orchestrator.engine.get_step",
+        lambda name: StepEntry(
+            fn=lambda *args: {
+                "rows_read": 10,
+                "rows_written": 8,
+                "failed_symbol_days": 2,
+            },
+            group="test",
+            requires_workers=False,
+        ),
+    )
+
+    result = engine._run_step("trade_ticks", date(2024, 6, 28), run_id, {})
+
+    assert result["status"] == "warning"
+    assert engine.manifest.incomplete_batch_counts_by_dataset(run_id) == {"trade_ticks": 1}
 
 
 def test_one_successful_retry_supersedes_all_prior_attempts(tmp_path, monkeypatch):

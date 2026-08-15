@@ -282,6 +282,22 @@ def derive_industry_index(
     written days do not change — ``full`` is for a weighting or definition
     change, not for routine catch-up.
     """
+    from ashare_lake.file_lock import lake_mutation_lock
+
+    # This derive merges existing yearly partitions and must share compact's
+    # mutation lock with other curated/derived writers.
+    with lake_mutation_lock(config.meta_root, blocking=True):
+        return _derive_industry_index_locked(config, start=start, end=end, full=full)
+
+
+def _derive_industry_index_locked(
+    config: Config,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    full: bool = False,
+) -> dict:
+    """Implementation of :func:`derive_industry_index` under the mutation lock."""
     from ashare_lake.domain.schemas import with_provenance
     from ashare_lake.storage.atomic import write_parquet_atomic
     from ashare_lake.storage.state import StateStore

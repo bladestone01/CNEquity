@@ -13,6 +13,7 @@ from ashare_lake.config import Config
 from ashare_lake.domain.rate_limit import wait_source
 from ashare_lake.domain.schemas import with_provenance
 from ashare_lake.domain.symbols import is_cdr_symbol, parse_symbol
+from ashare_lake.file_lock import lake_mutation_lock
 from ashare_lake.storage.atomic import write_parquet_atomic
 
 logger = logging.getLogger(__name__)
@@ -481,6 +482,25 @@ def compute_adj_factors(
     watermark are written, plus full-history merge for ex-date / new-listing /
     explicit refresh symbols. Pass ``full=True`` to rewrite every partition.
     """
+    # The derive reads existing partitions and then merges/replaces them.  It
+    # must not overlap compact, repartition, or another derive invocation.
+    with lake_mutation_lock(config.meta_root, blocking=True):
+        return _compute_adj_factors_locked(
+            config,
+            adjust_type,
+            refresh_symbols=refresh_symbols,
+            full=full,
+        )
+
+
+def _compute_adj_factors_locked(
+    config: Config,
+    adjust_type: str | None = None,
+    *,
+    refresh_symbols: list[str] | None = None,
+    full: bool = False,
+) -> AdjFactorsResult:
+    """Implementation of :func:`compute_adj_factors` under the mutation lock."""
     adjust_types = [adjust_type] if adjust_type else list(config.adj_factors_types)
     skipped = [t for t in adjust_types if t != STORED_ADJUST_TYPE]
     if skipped:
