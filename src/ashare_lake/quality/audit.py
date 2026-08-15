@@ -31,6 +31,7 @@ from ashare_lake.quality.dataset_checks import (
 from ashare_lake.quality.intraday_checks import minute_bars_findings
 from ashare_lake.quality.macro_checks import macro_staleness_findings
 from ashare_lake.quality.source_diff import run_source_diffs
+from ashare_lake.quality.st_coverage import st_evidence_coverage_report
 from ashare_lake.quality.tick_checks import trade_ticks_findings
 from ashare_lake.quality.unit_checks import daily_bars_volume_unit_findings
 from ashare_lake.query.parquet_scan import dataset_has_parquet, scan_parquet_root
@@ -191,31 +192,29 @@ def _collect_lake_findings(
     ts_start = trading_status_coverage_start(config)
     if ts_start is not None:
         bars_start = coverage_start_date(config, "daily_bars")
-        st_start = st_coverage_start(config)
-        # Suspension from bar gaps; residual gap is ST labels before st_start.
-        st_gap = st_start is not None and bars_start is not None and st_start > bars_start
-        if st_start is None:
+        observed_st_start = st_coverage_start(config)
+        evidence = st_evidence_coverage_report(config, bars_start, trade_date)
+        if evidence["verified"]:
             message = (
-                "trading_status has suspension history (from bar gaps) but no ST "
-                "labels yet; universe=all_a does not exclude ST names — run the "
-                "trading_status step (EastMoney ST), or backfill from baostock"
-            )
-        elif st_gap:
-            message = (
-                f"suspension covered from {ts_start.isoformat()}; ST labels only "
-                f"from {st_start.isoformat()} (daily_bars start {bars_start.isoformat()}) "
-                "— ST names not excluded in earlier backtest windows"
+                "trading_status has complete versioned ST/normal evidence for "
+                f"{evidence['coverage_start']}..{evidence['coverage_end']}"
             )
         else:
-            message = f"trading_status: suspension + ST labels cover from {ts_start.isoformat()}"
+            message = (
+                "trading_status rows exist, but no complete current-scope ST evidence "
+                f"receipt covers the bar window ({evidence['reason']})"
+            )
         findings.append(
             {
                 "dataset": "trading_status",
-                "severity": "warning" if (st_gap or st_start is None) else "info",
+                "severity": "info" if evidence["verified"] else "warning",
                 "check": "trading_status_coverage_start",
                 "message": message,
                 "coverage_start": ts_start.isoformat(),
-                "st_coverage_start": st_start.isoformat() if st_start else None,
+                "st_coverage_start": observed_st_start.isoformat() if observed_st_start else None,
+                "st_evidence_coverage_start": evidence.get("coverage_start"),
+                "st_evidence_coverage_end": evidence.get("coverage_end"),
+                "st_evidence_verified": evidence["verified"],
                 "daily_bars_start": bars_start.isoformat() if bars_start else None,
             }
         )

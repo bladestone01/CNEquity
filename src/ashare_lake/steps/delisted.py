@@ -38,7 +38,7 @@ import polars as pl
 
 from ashare_lake.config import Config
 from ashare_lake.domain.symbols import issued_code_space
-from ashare_lake.steps.common import is_trading_day, load_symbols
+from ashare_lake.steps.common import instrument_metadata, is_trading_day, load_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,16 @@ def load_live_missing(config: Config) -> dict[str, date]:
 
 def pending_codes(config: Config) -> list[str]:
     """Issued codes neither listed today nor already classified by a prior sweep."""
-    live = set(load_symbols(config))
+    metadata = instrument_metadata(config)
+    if metadata.is_empty():
+        live = set(load_symbols(config))
+    else:
+        reference = _reference_date(config)
+        live = set(
+            metadata.filter(pl.col("delist_date").is_null() | (pl.col("delist_date") > reference))[
+                "symbol"
+            ].to_list()
+        )
     catalog = _read_catalog(config)
     done = set(catalog["delisted"]) | set(catalog["never_issued"])
     return [s for s in issued_code_space() if s not in live and s not in done]
@@ -233,6 +242,10 @@ def discover_delisted(
 # --- ingest -----------------------------------------------------------------
 
 _INGESTED_STATE = "delisted_ingested"
+_RECOVERY_EVIDENCE_VERSION = 2
+_RECOVERY_CLAIM = "delisted_daily_bars_recovery"
+_IDENTITY_EVIDENCE_VERSION = 1
+_IDENTITY_CLAIM = "delisted_security_identity"
 # Stage every N symbols so a long sweep that dies keeps what it already fetched.
 _INGEST_CHUNK = 50
 
@@ -279,6 +292,248 @@ def delisted_symbols_in_window(config: Config, start: date) -> list[str]:
     catalog = load_delisted_catalog(config)
     already = _ingested_symbols(config)
     return sorted(s for s, last in catalog.items() if last >= start and s not in already)
+
+
+def _identity_evidence_path(config: Config) -> Path:
+    return (
+        config.meta_root
+        / "quality"
+        / "evidence"
+        / _IDENTITY_CLAIM
+        / f"baostock-v{_IDENTITY_EVIDENCE_VERSION}.json"
+    )
+
+
+def write_delisted_identity_evidence(config: Config, delisted: pl.DataFrame) -> Path:
+    """Persist a complete source observation of formal delisting identity.
+
+    ``instruments.delist_date`` is intentionally not sufficient evidence here:
+    compaction can also populate it from snapshot absence and the recovery path
+    can populate it from a last traded bar.  This record is written only after
+    Baostock's full security-master query succeeds, preserving the distinction
+    between vendor identity and an observed terminal date.
+    """
+    symbols = {
+        row["symbol"]: row["delist_date"].isoformat()
+        for row in delisted.select("symbol", "delist_date").iter_rows(named=True)
+        if row["delist_date"] is not None
+    }
+    payload = {
+        "schema_version": 1,
+        "claim": _IDENTITY_CLAIM,
+        "evidence_version": _IDENTITY_EVIDENCE_VERSION,
+        "status": "complete",
+        "source": "baostock.query_stock_basic",
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "delisted_symbols": dict(sorted(symbols.items())),
+    }
+    path = _identity_evidence_path(config)
+    _write_json_atomic(path, payload)
+    return path
+
+
+def known_delisted_instruments(config: Config, as_of: date) -> dict[str, date]:
+    """Formal delisting identity from source evidence, independent of probes."""
+    path = _identity_evidence_path(config)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            payload.get("claim") != _IDENTITY_CLAIM
+            or payload.get("evidence_version") != _IDENTITY_EVIDENCE_VERSION
+            or payload.get("status") != "complete"
+            or payload.get("source") != "baostock.query_stock_basic"
+        ):
+            return {}
+        evidence = {
+            symbol: date.fromisoformat(value)
+            for symbol, value in payload.get("delisted_symbols", {}).items()
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+    return {symbol: value for symbol, value in evidence.items() if value <= as_of}
+
+
+def delisted_recovery_targets(
+    config: Config,
+    start: date,
+    end: date,
+) -> dict[str, dict[str, str]]:
+    """Return every target with an explicit fetch/no-data ownership state.
+
+    Formal identity and actual window overlap are separate. A formal delisting
+    before the window, or an independently probed terminal before it, is
+    expected-no-data. Everything else with formal or aged catalogue authority
+    belongs to the dedicated fetch path. Probe-only recent names remain outside
+    the set until identity is authoritative.
+    """
+    formal = known_delisted_instruments(config, end)
+    catalog = load_delisted_catalog(config)
+    targets: dict[str, dict[str, str]] = {}
+    for symbol, formal_date in formal.items():
+        terminal = catalog.get(symbol)
+        expected_no_data = formal_date < start or (terminal is not None and terminal < start)
+        targets[symbol] = {
+            "ownership": "expected_no_data" if expected_no_data else "dedicated_fetch",
+            "basis": "formal_delist_date",
+            "formal_delist_date": formal_date.isoformat(),
+            **({"last_traded_date": terminal.isoformat()} if terminal else {}),
+        }
+    for symbol, terminal in catalog.items():
+        if terminal < start or symbol in targets:
+            continue
+        targets[symbol] = {
+            "ownership": "dedicated_fetch",
+            "basis": "aged_probe_terminal",
+            "last_traded_date": terminal.isoformat(),
+        }
+    return dict(sorted(targets.items()))
+
+
+def _recovery_scope(start: date, end: date, targets: dict[str, dict[str, str]]) -> dict:
+    identity = {
+        "evidence_version": _RECOVERY_EVIDENCE_VERSION,
+        "source": "sina",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "targets_sha256": hashlib.sha256(
+            json.dumps(targets, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
+    return {
+        **identity,
+        "scope_id": hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "targets": targets,
+        "targets_count": len(targets),
+    }
+
+
+def _recovery_checkpoint_path(config: Config, scope_id: str) -> Path:
+    return (
+        config.meta_root
+        / "state"
+        / _RECOVERY_CLAIM
+        / f"v{_RECOVERY_EVIDENCE_VERSION}"
+        / f"{scope_id}.json"
+    )
+
+
+def _load_recovery_checkpoint(config: Config, scope: dict) -> dict:
+    path = _recovery_checkpoint_path(config, scope["scope_id"])
+    if not path.exists():
+        expected = [
+            symbol
+            for symbol, evidence in scope["targets"].items()
+            if evidence["ownership"] == "expected_no_data"
+        ]
+        return {
+            "schema_version": 1,
+            "claim": _RECOVERY_CLAIM,
+            "scope": scope,
+            "status": "pending",
+            "recovered_spans": {},
+            "expected_no_data_symbols": expected,
+            "unresolved_symbols": [],
+        }
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("scope") != scope:
+        raise RuntimeError(f"delisted recovery checkpoint identity mismatch: {path}")
+    return payload
+
+
+def _write_recovery_checkpoint(config: Config, payload: dict) -> Path:
+    payload = dict(payload)
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    path = _recovery_checkpoint_path(config, payload["scope"]["scope_id"])
+    _write_json_atomic(path, payload)
+    return path
+
+
+def _publish_recovery_receipt(config: Config, checkpoint: dict) -> Path:
+    scope = checkpoint["scope"]
+    targets = set(scope["targets"])
+    recovered = set(checkpoint.get("recovered_spans", {}))
+    no_data = set(checkpoint.get("expected_no_data_symbols", []))
+    unresolved = set(checkpoint.get("unresolved_symbols", []))
+    if recovered | no_data != targets or recovered & no_data or unresolved:
+        raise ValueError("cannot publish incomplete delisted recovery evidence")
+    persisted = _bar_spans(config, sorted(recovered))
+    missing = []
+    for symbol, expected in checkpoint.get("recovered_spans", {}).items():
+        observed = persisted.get(symbol)
+        expected_first = date.fromisoformat(expected["first_trade_date"])
+        expected_last = date.fromisoformat(expected["last_trade_date"])
+        if observed is None or observed[0] > expected_first or observed[1] < expected_last:
+            missing.append(symbol)
+    if missing:
+        raise ValueError(
+            f"cannot publish delisted recovery before {len(missing)} symbol(s) reach curated storage"
+        )
+    payload = {
+        "schema_version": 1,
+        "claim": _RECOVERY_CLAIM,
+        "status": "complete",
+        "scope": {key: value for key, value in scope.items() if key != "targets"},
+        "recovered_symbols": sorted(recovered),
+        "expected_no_data_symbols": sorted(no_data),
+        "published_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path = config.meta_root / "quality" / "coverage" / _RECOVERY_CLAIM / f"{scope['scope_id']}.json"
+    _write_json_atomic(path, payload)
+    return path
+
+
+def publish_delisted_receipts_for_compacted_run(config: Config, run_id: str) -> list[Path]:
+    """Publish recovery authority only after the completing run was compacted."""
+    root = config.meta_root / "state" / _RECOVERY_CLAIM / f"v{_RECOVERY_EVIDENCE_VERSION}"
+    if not root.exists():
+        return []
+    published: list[Path] = []
+    for path in root.glob("*.json"):
+        try:
+            checkpoint = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if checkpoint.get("status") != "complete":
+            continue
+        if checkpoint.get("completion_run_id") != run_id:
+            continue
+        published.append(_publish_recovery_receipt(config, checkpoint))
+    return published
+
+
+def delisted_recovery_covers(
+    config: Config,
+    start: date,
+    end: date,
+    symbols: list[str],
+) -> bool:
+    """Whether a complete receipt proves dedicated recovery for *symbols*."""
+    required = set(symbols)
+    if not required:
+        return True
+    root = config.meta_root / "quality" / "coverage" / _RECOVERY_CLAIM
+    if not root.exists():
+        return False
+    for path in root.glob("*.json"):
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            scope = receipt["scope"]
+            covered = set(receipt.get("recovered_symbols", []))
+            if (
+                receipt.get("status") == "complete"
+                and scope.get("evidence_version") == _RECOVERY_EVIDENCE_VERSION
+                and date.fromisoformat(scope["start"]) <= start
+                and date.fromisoformat(scope["end"]) >= end
+                and required <= covered
+            ):
+                return True
+        except (KeyError, OSError, ValueError, json.JSONDecodeError):
+            continue
+    return False
 
 
 def _instruments_rows(config: Config, spans: dict[str, tuple[date | None, date]]) -> pl.DataFrame:
@@ -402,7 +657,9 @@ def delisted_coverage_report(
 
     catalog = load_delisted_catalog(config)
     candidates = {symbol: last for symbol, last in catalog.items() if last >= start}
-    symbols = sorted(candidates)
+    formal = known_delisted_instruments(config, end)
+    formal_in_window = {symbol: value for symbol, value in formal.items() if value >= start}
+    symbols = sorted(set(candidates) | set(formal_in_window))
 
     spans: dict[str, tuple[date, date]] = {}
     bars_root = config.curated_root / "daily_bars"
@@ -448,7 +705,7 @@ def delisted_coverage_report(
     invalid_delist_dates: list[dict] = []
     proven_overlap = 0
 
-    for symbol in symbols:
+    for symbol in sorted(candidates):
         catalog_last = candidates[symbol]
         span = spans.get(symbol)
         overlap_is_definite = catalog_last <= end
@@ -489,6 +746,53 @@ def delisted_coverage_report(
                 }
             )
 
+    raw_catalog = {
+        symbol: date.fromisoformat(value)
+        for symbol, value in _read_catalog(config)["delisted"].items()
+    }
+    recent = load_live_missing(config)
+    recent_quarantined = [
+        {"symbol": symbol, "probe_last_traded": terminal.isoformat()}
+        for symbol, terminal in sorted(recent.items())
+        if terminal >= start and symbol not in formal_in_window
+    ]
+    formal_no_overlap: list[dict] = []
+    formal_unresolved: list[dict] = []
+    for symbol, formal_date in sorted(formal_in_window.items()):
+        if symbol in candidates:
+            continue
+        terminal = raw_catalog.get(symbol)
+        if terminal is not None and terminal < start:
+            formal_no_overlap.append(
+                {
+                    "symbol": symbol,
+                    "formal_delist_date": formal_date.isoformat(),
+                    "last_traded_date": terminal.isoformat(),
+                }
+            )
+            continue
+        span = spans.get(symbol)
+        if span is None:
+            formal_unresolved.append(
+                {
+                    "symbol": symbol,
+                    "formal_delist_date": formal_date.isoformat(),
+                    "reason": "no_window_overlap_evidence",
+                }
+            )
+            continue
+        proven_overlap += 1
+        actual = instrument_dates.get(symbol)
+        if actual is None or actual < span[1]:
+            invalid_delist_dates.append(
+                {
+                    "symbol": symbol,
+                    "formal_delist_date": formal_date.isoformat(),
+                    "observed_last_bar": span[1].isoformat(),
+                    "instrument_delist_date": actual.isoformat() if actual else None,
+                }
+            )
+
     pending = pending_codes(config)
     known_coverage_complete = not any(
         (
@@ -497,6 +801,8 @@ def delisted_coverage_report(
             terminal_mismatches,
             missing_instruments,
             invalid_delist_dates,
+            recent_quarantined,
+            formal_unresolved,
         )
     )
     discovery_complete = not pending
@@ -515,6 +821,10 @@ def delisted_coverage_report(
             "catalogue_candidates": len(candidates),
             "proven_overlap": proven_overlap,
             "pending_probe": len(pending),
+            "formal_delistings_in_window": len(formal_in_window),
+            "formal_no_overlap": len(formal_no_overlap),
+            "recent_quarantined": len(recent_quarantined),
+            "formal_unresolved": len(formal_unresolved),
             "missing_bars": len(missing_bars),
             "unknown_overlap": len(unknown_overlap),
             "terminal_mismatch": len(terminal_mismatches),
@@ -523,6 +833,9 @@ def delisted_coverage_report(
         },
         "samples": {
             "pending_probe": limited(pending),
+            "formal_no_overlap": limited(formal_no_overlap),
+            "recent_quarantined": limited(recent_quarantined),
+            "formal_unresolved": limited(formal_unresolved),
             "missing_bars": limited(missing_bars),
             "unknown_overlap": limited(unknown_overlap),
             "terminal_mismatch": limited(terminal_mismatches),
@@ -811,36 +1124,66 @@ def backfill_delisted_bars(
     run_id: str,
     start: date,
     *,
+    end: date | None = None,
     fetch=None,
+    probe_last=None,
 ) -> dict:
-    """Fetch full price history for catalogued delistings and stage it.
+    """Recover dedicated delisted history with explicit three-state evidence.
 
-    Bars land in ``daily_bars`` alongside the live names with ``source='sina'``:
-    the same kind of fact from a different vendor, which is what the provenance
-    columns exist for. ``adj_factors`` picks them up on the next derive because
-    it iterates the symbols present in ``daily_bars``.
-
-    Staged in chunks so an interrupted multi-hour sweep keeps what it fetched,
-    with the per-symbol date spans accumulated across chunks — they are what the
-    ``instruments`` rows are built from at the end.
+    Each target ends as recovered, proven expected-no-data, or unresolved. A
+    complete receipt is published only when every target has one of the first
+    two states. The legacy global ``delisted_ingested`` marker is not completion
+    authority because it was not window-scoped and marked empty fetches done.
     """
-    from ashare_lake.adapters.sina.bars import fetch_daily_bars_sina
+    from ashare_lake.adapters.sina.bars import fetch_daily_bars_sina, symbol_exists
     from ashare_lake.steps.http_common import write_fetched
 
+    end = end or _reference_date(config)
+    if start > end:
+        raise ValueError("delisted recovery start must be on or before end")
     fetch = fetch or (
-        lambda symbol, client: fetch_daily_bars_sina(symbol, start=start, client=client)
+        lambda symbol, client: fetch_daily_bars_sina(symbol, start=start, end=end, client=client)
     )
-    todo = delisted_symbols_in_window(config, start)
-    if not todo:
-        return {"rows_read": 0, "rows_written": 0, "note": "no catalogued delistings to ingest"}
+    probe_last = probe_last or (lambda symbol, client: symbol_exists(symbol, client=client))
+    targets = delisted_recovery_targets(config, start, end)
+    scope = _recovery_scope(start, end, targets)
+    checkpoint = _load_recovery_checkpoint(config, scope)
+    recovered_spans = dict(checkpoint.get("recovered_spans", {}))
+    if recovered_spans:
+        persisted = _bar_spans(config, sorted(recovered_spans))
+        recovered_spans = {
+            symbol: expected
+            for symbol, expected in recovered_spans.items()
+            if symbol in persisted
+            and persisted[symbol][0] <= date.fromisoformat(expected["first_trade_date"])
+            and persisted[symbol][1] >= date.fromisoformat(expected["last_trade_date"])
+        }
+    expected_no_data = set(checkpoint.get("expected_no_data_symbols", []))
+    unresolved = set(checkpoint.get("unresolved_symbols", []))
+    dedicated = {
+        symbol for symbol, evidence in targets.items() if evidence["ownership"] == "dedicated_fetch"
+    }
+    todo = sorted(dedicated - set(recovered_spans))
+    if not targets:
+        checkpoint["status"] = "complete"
+        checkpoint["completion_run_id"] = run_id
+        checkpoint_path = _write_recovery_checkpoint(config, checkpoint)
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "scope_id": scope["scope_id"],
+            "checkpoint": str(checkpoint_path),
+            "coverage_pending_compact": True,
+            "note": "no delisted recovery targets",
+        }
 
     logger.info("delisted bars: %d symbol(s) to fetch from %s", len(todo), start.isoformat())
     rows_written = 0
     failed: list[str] = []
-    spans: dict[str, tuple[date, date]] = {}
+    empty_unresolved: list[str] = []
     events: list[dict] = []
     pending_frames: list[pl.DataFrame] = []
-    pending_symbols: list[str] = []
+    pending_spans: dict[str, tuple[date, date]] = {}
 
     def flush(chunk_index: int) -> None:
         nonlocal rows_written
@@ -855,10 +1198,23 @@ def backfill_delisted_bars(
                 batch_id=f"delisted-{chunk_index:04d}",
             )
             rows_written += int(out.get("rows_written", 0))
-        if pending_symbols:
-            _mark_ingested(config, pending_symbols)
+        for symbol, (first, last) in pending_spans.items():
+            recovered_spans[symbol] = {
+                "first_trade_date": first.isoformat(),
+                "last_trade_date": last.isoformat(),
+            }
+            unresolved.discard(symbol)
+        checkpoint.update(
+            {
+                "status": "incomplete",
+                "recovered_spans": recovered_spans,
+                "expected_no_data_symbols": sorted(expected_no_data),
+                "unresolved_symbols": sorted(unresolved),
+            }
+        )
+        _write_recovery_checkpoint(config, checkpoint)
         pending_frames.clear()
-        pending_symbols.clear()
+        pending_spans.clear()
 
     with httpx.Client(timeout=30.0) as client:
         for index, symbol in enumerate(todo, start=1):
@@ -868,22 +1224,49 @@ def backfill_delisted_bars(
             except Exception as exc:  # noqa: BLE001 — one dead symbol must not stop the sweep
                 logger.warning("delisted bars: fetch failed for %s: %s", symbol, exc)
                 failed.append(symbol)
+                unresolved.add(symbol)
+                checkpoint["unresolved_symbols"] = sorted(unresolved)
+                _write_recovery_checkpoint(config, checkpoint)
                 continue
-            if not bars.is_empty():
-                pending_frames.append(bars)
-                spans[symbol] = (bars["trade_date"].min(), bars["trade_date"].max())
-                # Classified from the *full* fetched series, before the window
-                # filter — the halt and the resumption drop are what identify a
-                # consolidation period, and they sit at the very end.
-                events.append(
-                    {
-                        "symbol": symbol,
-                        "first_trade_date": bars["trade_date"].min(),
-                        "last_trade_date": bars["trade_date"].max(),
-                        **classify_ending(bars),
-                    }
-                )
-            pending_symbols.append(symbol)
+            if bars.is_empty():
+                config.rate_limit("sina")
+                try:
+                    terminal = probe_last(symbol, client)
+                except Exception as exc:  # noqa: BLE001 — unresolved stays retryable
+                    logger.warning("delisted bars: terminal probe failed for %s: %s", symbol, exc)
+                    empty_unresolved.append(symbol)
+                    unresolved.add(symbol)
+                    checkpoint["unresolved_symbols"] = sorted(unresolved)
+                    _write_recovery_checkpoint(config, checkpoint)
+                    continue
+                if terminal is None or terminal >= start:
+                    empty_unresolved.append(symbol)
+                    unresolved.add(symbol)
+                    checkpoint["unresolved_symbols"] = sorted(unresolved)
+                    _write_recovery_checkpoint(config, checkpoint)
+                    continue
+                catalog = _read_catalog(config)
+                catalog["delisted"][symbol] = terminal.isoformat()
+                _write_catalog(config, catalog)
+                expected_no_data.add(symbol)
+                unresolved.discard(symbol)
+                checkpoint["expected_no_data_symbols"] = sorted(expected_no_data)
+                checkpoint["unresolved_symbols"] = sorted(unresolved)
+                _write_recovery_checkpoint(config, checkpoint)
+                continue
+
+            first = bars["trade_date"].min()
+            last = bars["trade_date"].max()
+            pending_frames.append(bars)
+            pending_spans[symbol] = (first, last)
+            events.append(
+                {
+                    "symbol": symbol,
+                    "first_trade_date": first,
+                    "last_trade_date": last,
+                    **classify_ending(bars),
+                }
+            )
             if index % _INGEST_CHUNK == 0:
                 flush(index // _INGEST_CHUNK)
                 logger.info(
@@ -891,27 +1274,64 @@ def backfill_delisted_bars(
                 )
         flush(0)
 
+    spans = {
+        symbol: (
+            date.fromisoformat(value["first_trade_date"]),
+            date.fromisoformat(value["last_trade_date"]),
+        )
+        for symbol, value in recovered_spans.items()
+    }
     instruments = _instruments_rows(config, spans)
     if not instruments.is_empty():
         write_fetched(config, run_id, "instruments", instruments, source="sina")
     write_delisting_events(config, events)
 
+    resolved = set(recovered_spans) | expected_no_data
+    all_targets = set(targets)
+    unresolved |= all_targets - resolved
+    complete = resolved == all_targets and not unresolved
+    checkpoint.update(
+        {
+            "status": "complete" if complete else "incomplete",
+            "recovered_spans": recovered_spans,
+            "expected_no_data_symbols": sorted(expected_no_data),
+            "unresolved_symbols": sorted(unresolved),
+        }
+    )
+    if complete:
+        checkpoint["completion_run_id"] = run_id
+    else:
+        checkpoint.pop("completion_run_id", None)
+    checkpoint_path = _write_recovery_checkpoint(config, checkpoint)
+    if recovered_spans:
+        # Compatibility only; v2 checkpoint/receipt above is the authority.
+        _mark_ingested(config, sorted(recovered_spans))
+
     result: dict = {
         "rows_read": rows_written,
         "rows_written": rows_written,
-        "symbols": len(todo),
-        "recovered": len(spans),
+        "scope_id": scope["scope_id"],
+        "checkpoint": str(checkpoint_path),
+        "symbols": len(targets),
+        "recovered": len(recovered_spans),
+        "expected_no_data": len(expected_no_data),
         "ending_patterns": dict(Counter(e["ending_pattern"] for e in events)),
     }
-    if failed:
+    if complete:
+        result["coverage_pending_compact"] = True
+    else:
+        result["status"] = "warning"
         result["failed_symbols"] = len(failed)
+        result["empty_symbols"] = len(empty_unresolved)
+        result["unresolved_symbols"] = len(unresolved)
         result.setdefault("context_updates", {})["audit_findings"] = [
             {
                 "dataset": "daily_bars",
                 "severity": "warning",
                 "check": "delisted_backfill_incomplete",
                 "message": (
-                    f"{len(failed)}/{len(todo)} delisted symbols failed to fetch; re-run to resume"
+                    f"{len(unresolved)}/{len(targets)} delisted targets remain unresolved "
+                    f"({len(failed)} failed, {len(empty_unresolved)} empty); re-run to resume"
                 ),
             }
         ]

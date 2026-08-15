@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from ashare_lake.config import Config
+from ashare_lake.quality.st_coverage import st_evidence_coverage_report
 from ashare_lake.query.parquet_scan import list_partitions
 from ashare_lake.query.universe import coverage_start_date, st_coverage_start
 from ashare_lake.steps.delisted import delisted_coverage_report
@@ -76,21 +77,19 @@ def historical_universe_validity(
             }
         )
 
-    st_start = st_coverage_start(config)
-    st_valid = requested_start is not None and st_start is not None and st_start <= requested_start
+    observed_positive_st_start = st_coverage_start(config)
+    st_evidence = st_evidence_coverage_report(config, requested_start, requested_end)
+    st_valid = bool(st_evidence["verified"])
     if not st_valid:
         blockers.append(
             {
                 "check": "historical_st_labels",
                 "code": "historical_st_labels_incomplete",
-                "message": (
-                    f"ST labels start {st_start.isoformat() if st_start else 'unknown'}, "
-                    f"after requested start "
-                    f"{requested_start.isoformat() if requested_start else 'unknown'}"
-                ),
+                "message": "historical ST evidence has no complete, current scope receipt "
+                f"for the requested window ({st_evidence['reason']})",
                 "remediation": (
-                    "Backfill trading_status ST labels or move the research start to the "
-                    "reported ST coverage boundary."
+                    "Run a full `asl backfill trading_status` for this window and current "
+                    "all-A symbol scope; resolve every failed symbol."
                 ),
             }
         )
@@ -145,7 +144,12 @@ def historical_universe_validity(
             },
             "historical_st_labels": {
                 "passed": st_valid,
-                "coverage_start": st_start.isoformat() if st_start else None,
+                "coverage_start": st_evidence.get("coverage_start"),
+                "coverage_end": st_evidence.get("coverage_end"),
+                "observed_positive_st_start": (
+                    observed_positive_st_start.isoformat() if observed_positive_st_start else None
+                ),
+                "evidence": st_evidence,
             },
             "delisted_universe": {
                 "passed": survivorship_valid,

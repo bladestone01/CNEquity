@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import date, datetime, time
 
@@ -16,7 +18,10 @@ from ashare_lake.orchestrator.registry import register_step
 from ashare_lake.orchestrator.worker_pool import fetch_daily_bars_parallel
 from ashare_lake.steps.common import (
     BACKFILL_START,
+    DailyBarOwnership,
+    classify_daily_bar_ownership,
     incremental_window,
+    instrument_metadata,
     is_trading_day,
     load_symbols,
 )
@@ -71,6 +76,110 @@ def _backfill_window(config: Config, trade_date: date) -> tuple[date, date]:
     return start, end
 
 
+def _instrument_spans(config: Config) -> dict[str, tuple[date | None, date | None]]:
+    return {
+        row["symbol"]: (row["list_date"], row["delist_date"])
+        for row in instrument_metadata(config).iter_rows(named=True)
+    }
+
+
+def _ownership_context(
+    config: Config,
+    ownership: DailyBarOwnership,
+    start: date,
+    end: date,
+) -> tuple[dict, bool]:
+    from ashare_lake.steps.delisted import delisted_recovery_covers
+
+    delegated_complete = delisted_recovery_covers(config, start, end, ownership.delegated_delisted)
+    finding = {
+        "dataset": "daily_bars",
+        "severity": "info" if delegated_complete else "warning",
+        "check": "daily_bars_source_ownership",
+        "message": (
+            f"generic={len(ownership.generic)}, "
+            f"delegated_delisted={len(ownership.delegated_delisted)}, "
+            f"expected_no_data={len(ownership.expected_no_data)}, "
+            f"delegated_complete={delegated_complete}"
+        ),
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
+    return {
+        "daily_bars_ownership": {
+            "generic": len(ownership.generic),
+            "delegated_delisted": len(ownership.delegated_delisted),
+            "expected_no_data": len(ownership.expected_no_data),
+            "delegated_complete": delegated_complete,
+        },
+        "audit_findings": [finding],
+    }, delegated_complete
+
+
+def _record_delegated_ownership_batch(
+    config: Config,
+    run_id: str,
+    symbols: list[str],
+    start: date,
+    end: date,
+    *,
+    batch_id: str | None = None,
+) -> bool:
+    from ashare_lake.orchestrator.manifest import Manifest
+    from ashare_lake.steps.delisted import delisted_recovery_covers
+
+    if not symbols:
+        return True
+    complete = delisted_recovery_covers(config, start, end, symbols)
+    manifest = Manifest(config.manifest_path)
+    if batch_id is None:
+        identity = json.dumps(
+            {"symbols": sorted(symbols), "start": start.isoformat(), "end": end.isoformat()},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        batch_id = f"ownership-{hashlib.sha256(identity.encode()).hexdigest()[:16]}"
+    if manifest.get_batch(run_id, batch_id) is None:
+        manifest.start_batch(
+            run_id,
+            batch_id,
+            task_id="daily_bars_ownership",
+            dataset="daily_bars",
+            symbols=sorted(symbols),
+            window_start=start.isoformat(),
+            window_end=end.isoformat(),
+            blocks_compaction=False,
+        )
+    manifest.finish_batch(
+        run_id,
+        batch_id,
+        "success" if complete else "warning",
+        error_message=(
+            "delegated delisted recovery receipt verified"
+            if complete
+            else "delegated delisted symbols lack a complete recovery receipt"
+        ),
+    )
+    return complete
+
+
+def _merge_ownership_result(
+    out: dict,
+    config: Config,
+    ownership: DailyBarOwnership,
+    start: date,
+    end: date,
+) -> dict:
+    updates, delegated_complete = _ownership_context(config, ownership, start, end)
+    context = out.setdefault("context_updates", {})
+    context.setdefault("audit_findings", []).extend(updates["audit_findings"])
+    context["daily_bars_ownership"] = updates["daily_bars_ownership"]
+    if ownership.delegated_delisted and not delegated_complete:
+        out["status"] = "warning"
+        out["delegated_symbols"] = len(ownership.delegated_delisted)
+    return out
+
+
 @register_step(
     "daily_bars",
     group="core",
@@ -86,26 +195,60 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         start = min(s for s, _ in windows)
         end = max(e for _, e in windows)
         _reject_unfinished_daily_bar_window(config, end)
-        expected = [sym for _, syms, _, _ in batch_specs for sym in syms]
-        result = fetch_daily_bars_parallel(
-            config,
-            [],
-            start,
-            end,
-            run_id,
-            "daily_bars",
-            batch_specs=batch_specs,
+        spans = _instrument_spans(config)
+        remaining: list[tuple[str, list[str], date, date]] = []
+        ownership = DailyBarOwnership()
+        for batch_id, symbols, spec_start, spec_end in batch_specs:
+            routed = classify_daily_bar_ownership(symbols, spans, spec_start, spec_end)
+            ownership.generic.extend(routed.generic)
+            ownership.delegated_delisted.extend(routed.delegated_delisted)
+            ownership.expected_no_data.extend(routed.expected_no_data)
+            if routed.generic:
+                remaining.append((batch_id, routed.generic, spec_start, spec_end))
+            if routed.delegated_delisted:
+                delegated_id = f"{batch_id}-delegated" if routed.generic else batch_id
+                _record_delegated_ownership_batch(
+                    config,
+                    run_id,
+                    routed.delegated_delisted,
+                    spec_start,
+                    spec_end,
+                    batch_id=delegated_id,
+                )
+            elif not routed.generic:
+                # The original failed batch now has only proven no-data symbols.
+                from ashare_lake.orchestrator.manifest import Manifest
+
+                Manifest(config.manifest_path).finish_batch(
+                    run_id,
+                    batch_id,
+                    "success",
+                    error_message="all symbols are expected-no-data for this window",
+                )
+        result = (
+            fetch_daily_bars_parallel(
+                config,
+                [],
+                start,
+                end,
+                run_id,
+                "daily_bars",
+                batch_specs=remaining,
+            )
+            if remaining
+            else {"rows_read": 0, "rows_written": 0, "failed_symbols": []}
         )
-        return _finish_daily_bars(
+        out = _finish_daily_bars(
             config,
             trade_date,
             run_id,
             start=start,
             end=end,
-            expected_tdx_symbols=list(dict.fromkeys(expected)),
+            expected_tdx_symbols=list(dict.fromkeys(ownership.generic)),
             tdx_result=result,
             sina_result=None,
         )
+        return _merge_ownership_result(out, config, ownership, start, end)
 
     if getattr(config, "_backfill", False):
         start, end = _backfill_window(config, trade_date)
@@ -119,11 +262,20 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
     if rebackfill:
         symbols = list(dict.fromkeys(rebackfill + symbols))
 
+    ownership = classify_daily_bar_ownership(symbols, _instrument_spans(config), start, end)
+    _record_delegated_ownership_batch(
+        config,
+        run_id,
+        ownership.delegated_delisted,
+        start,
+        end,
+    )
+
     # TDX has no Beijing exchange route at all — the protocol rejects the market id —
     # so BJ symbols must come from the fallback vendor or they silently never
     # arrive, which is exactly how the lake ended up with zero BJ coverage.
     # Tip gaps after TDX are a second routing case (ADR-0005): EastMoney clist.
-    tdx_symbols, fallback_symbols = split_by_quote_source(symbols)
+    tdx_symbols, fallback_symbols = split_by_quote_source(ownership.generic)
     result = fetch_daily_bars_parallel(
         config,
         tdx_symbols,
@@ -137,7 +289,7 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         sina_result = fetch_bars_via_sina(
             config, fallback_symbols, start, end, run_id, batch_prefix="sina"
         )
-    return _finish_daily_bars(
+    out = _finish_daily_bars(
         config,
         trade_date,
         run_id,
@@ -147,6 +299,7 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         tdx_result=result,
         sina_result=sina_result,
     )
+    return _merge_ownership_result(out, config, ownership, start, end)
 
 
 def _finish_daily_bars(

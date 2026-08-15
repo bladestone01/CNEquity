@@ -219,7 +219,24 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
 
     ensure_duckdb_views(config)
 
+    skipped_datasets = {item["dataset"] for item in skipped}
+    coverage_receipts: list[str] = []
+    if "trading_status" not in skipped_datasets:
+        from ashare_lake.quality.st_coverage import publish_st_receipts_for_compacted_run
+
+        coverage_receipts.extend(
+            str(path) for path in publish_st_receipts_for_compacted_run(config, run_id)
+        )
+    if not ({"daily_bars", "instruments"} & skipped_datasets):
+        from ashare_lake.steps.delisted import publish_delisted_receipts_for_compacted_run
+
+        coverage_receipts.extend(
+            str(path) for path in publish_delisted_receipts_for_compacted_run(config, run_id)
+        )
+
     result: dict = {"rows_read": total, "rows_written": total}
+    if coverage_receipts:
+        result["coverage_receipts"] = coverage_receipts
     context_updates: dict = {}
     if skipped:
         context_updates["compact_skipped_datasets"] = skipped

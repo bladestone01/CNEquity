@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import polars as pl
@@ -212,6 +213,60 @@ def load_symbols(config: Config) -> list[str]:
         config=config,
     )
     return df["symbol"].to_list()
+
+
+def instrument_metadata(config: Config) -> pl.DataFrame:
+    """Disk-only symbol/listing spans used for deterministic routing."""
+    curated = config.curated_root / "instruments" / "part-merged.parquet"
+    staged = list(config.staging_root.glob("instruments/run_id=*/part-*.parquet"))
+    if curated.exists():
+        frame = pl.read_parquet(curated)
+    elif staged:
+        frame = pl.read_parquet(max(staged, key=lambda path: path.stat().st_mtime))
+    else:
+        return pl.DataFrame(
+            schema={"symbol": pl.Utf8, "list_date": pl.Date, "delist_date": pl.Date}
+        )
+    if "symbol" not in frame.columns:
+        return pl.DataFrame(
+            schema={"symbol": pl.Utf8, "list_date": pl.Date, "delist_date": pl.Date}
+        )
+    columns = [name for name in ("symbol", "list_date", "delist_date") if name in frame.columns]
+    out = frame.select(columns)
+    for name in ("list_date", "delist_date"):
+        if name not in out.columns:
+            out = out.with_columns(pl.lit(None, dtype=pl.Date).alias(name))
+    return out
+
+
+@dataclass
+class DailyBarOwnership:
+    """One window's explicit generic/dedicated/no-data ownership split."""
+
+    generic: list[str] = field(default_factory=list)
+    delegated_delisted: list[str] = field(default_factory=list)
+    expected_no_data: list[str] = field(default_factory=list)
+
+
+def classify_daily_bar_ownership(
+    symbols: list[str],
+    spans: dict[str, tuple[date | None, date | None]],
+    start: date,
+    end: date,
+) -> DailyBarOwnership:
+    """Route symbols without treating a silent exclusion as completion."""
+    out = DailyBarOwnership()
+    for symbol in symbols:
+        list_date, delist_date = spans.get(symbol, (None, None))
+        if list_date is not None and list_date > end:
+            out.expected_no_data.append(symbol)
+        elif delist_date is not None and delist_date < start:
+            out.expected_no_data.append(symbol)
+        elif delist_date is not None and delist_date <= end:
+            out.delegated_delisted.append(symbol)
+        else:
+            out.generic.append(symbol)
+    return out
 
 
 def load_bar_universe(config: Config) -> set[str]:

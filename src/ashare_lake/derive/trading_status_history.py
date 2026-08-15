@@ -15,7 +15,10 @@ rebuild can run year-by-year without OOM.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from collections.abc import Mapping
+from datetime import date, datetime, time
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -29,6 +32,49 @@ logger = logging.getLogger(__name__)
 
 _DERIVED_SOURCE = "derived_bar_gap"
 _STATUS_SPEC = DATASETS["trading_status"]
+_CURRENT_SNAPSHOT_SOURCES = frozenset({"eastmoney", "tdx_protocol"})
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_SESSION_FINAL = time(15, 0)
+
+
+def _as_shanghai_datetime(value: Any) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=ZoneInfo("UTC"))
+    return value.astimezone(_SHANGHAI)
+
+
+def status_evidence_rank(row: Mapping[str, Any]) -> int:
+    """Precedence for a collision with a derived bar-gap suspension.
+
+    Historical Baostock evidence and a finalized same-session EastMoney
+    snapshot are point-in-time facts. A later current-state snapshot stamped
+    onto an older date is not. Unknown sources win conservatively so a newly
+    introduced authority is never overwritten without an explicit policy.
+    """
+    source = str(row.get("source") or "")
+    if source == "baostock":
+        return 0
+    if source in _CURRENT_SNAPSHOT_SOURCES:
+        fetched = _as_shanghai_datetime(row.get("fetched_at"))
+        trade_date = row.get("trade_date")
+        if (
+            fetched is not None
+            and isinstance(trade_date, date)
+            and fetched.date() == trade_date
+            and fetched.time() >= _SESSION_FINAL
+        ):
+            return 0
+        return 2
+    if source == _DERIVED_SOURCE:
+        return 1
+    return 0
 
 
 def _suspended_pairs(
@@ -157,11 +203,14 @@ def derive_suspension_history(
                 if f.name != "part-merged.parquet":
                     stray_parts.append(f)
         merged = pl.concat(frames, how="diagonal_relaxed")
-        # Real daily rows (non-derived) win on PK overlap: sort them first.
+        if "fetched_at" not in merged.columns:
+            merged = merged.with_columns(pl.lit(None, dtype=pl.Datetime("us")).alias("fetched_at"))
         merged = merged.with_columns(
-            (pl.col("source") == _DERIVED_SOURCE).alias("_is_derived")
-        ).sort("_is_derived")
-        merged = merged.unique(subset=["symbol", "trade_date"], keep="first").drop("_is_derived")
+            pl.struct(["source", "trade_date", "fetched_at"])
+            .map_elements(status_evidence_rank, return_dtype=pl.Int64)
+            .alias("_evidence_rank")
+        ).sort("_evidence_rank")
+        merged = merged.unique(subset=["symbol", "trade_date"], keep="first").drop("_evidence_rank")
         # Reuse compact's filename so we overwrite the single canonical part
         # rather than adding a second file (which would double-count on read).
         writer.write_partition("trading_status", pcol, val, merged, "part-merged.parquet")

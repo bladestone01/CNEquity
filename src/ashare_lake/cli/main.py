@@ -742,9 +742,9 @@ def run_catchup(
     "--symbols",
     "symbols_str",
     default=None,
-    help="Comma-separated symbols to restrict an intraday backfill to "
-    "(minute_bars, minute_bars_5m), overriding [minute_bars].scope for this "
-    "run only. Use it for a one-off pull without editing the config.",
+    help="Comma-separated symbols for a scoped intraday or trading_status "
+    "backfill. The trading_status checkpoint and coverage evidence retain the "
+    "exact scope; other datasets use their configured watchlist block.",
 )
 @click.option(
     "--workers",
@@ -781,7 +781,10 @@ def backfill(
     _guard_history_horizon(dataset, start_d)
     if symbols_str:
         symbols = [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
-        _override_scope(cfg, dataset, symbols)
+        if dataset == "trading_status":
+            cfg._backfill_symbols = symbols
+        else:
+            _override_scope(cfg, dataset, symbols)
         click.echo(f"[{dataset}] scope overridden for this run: {len(symbols)} symbol(s)", err=True)
     if start_d:
         cfg._backfill_start = start_d
@@ -2112,7 +2115,24 @@ def delisted_backfill(config_path: str, since: str):
     run_id = engine.manifest.start_run("delisted_backfill", {"since": since})
     result = backfill_delisted_bars(cfg, run_id, date.fromisoformat(since))
     compact_out = engine.run_step("compact", date.today(), run_id)
-    engine.manifest.finish_run(run_id, "success", rows_written=result.get("rows_written", 0))
-    click.echo(
-        json.dumps({"run_id": run_id, **result, "compact": compact_out}, indent=2, default=str)
+    complete = (
+        result.get("status", "success") == "success"
+        and compact_out.get("status", "success") == "success"
     )
+    run_status = "success" if complete else "warning"
+    error_message = None if complete else "delisted recovery has unresolved targets"
+    engine.manifest.finish_run(
+        run_id,
+        run_status,
+        rows_written=result.get("rows_written", 0),
+        error_message=error_message,
+    )
+    click.echo(
+        json.dumps(
+            {"run_id": run_id, **result, "status": run_status, "compact": compact_out},
+            indent=2,
+            default=str,
+        )
+    )
+    if not complete:
+        raise click.ClickException(error_message)

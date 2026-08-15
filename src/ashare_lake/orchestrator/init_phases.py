@@ -28,6 +28,7 @@ INIT_BACKFILL_PHASES = frozenset(
 )
 
 FINALIZE_STEPS = frozenset({"compact", "derive_adj_factors", "derive_industry_index", "audit"})
+RESOLVED_BATCH_STATUSES = frozenset({"success", "superseded"})
 
 DEFAULT_INIT_PHASES = [
     "phase1_reference",
@@ -80,12 +81,28 @@ def step_started(batches: list[Any], step: str) -> bool:
 
 def step_succeeded(batches: list[Any], step: str) -> bool:
     rows = step_batches(batches, step)
-    return bool(rows) and all(r["status"] == "success" for r in rows)
+    return bool(rows) and all(r["status"] in RESOLVED_BATCH_STATUSES for r in rows)
 
 
 def step_incomplete(batches: list[Any], step: str) -> bool:
     rows = step_batches(batches, step)
-    return bool(rows) and any(r["status"] != "success" for r in rows)
+    return bool(rows) and any(r["status"] not in RESOLVED_BATCH_STATUSES for r in rows)
+
+
+def current_phase_statuses(phases: list[str], batches: list[Any]) -> dict[str, str]:
+    """Recompute phase state from the current ledger, not old run output."""
+    out: dict[str, str] = {}
+    for phase in phases:
+        steps = INIT_PHASE_STEPS.get(phase, [])
+        if not steps:
+            continue
+        if all(step_succeeded(batches, step) for step in steps):
+            out[phase] = "success"
+        elif any(step_incomplete(batches, step) for step in steps):
+            out[phase] = "incomplete"
+        else:
+            out[phase] = "pending"
+    return out
 
 
 def missing_steps(phases: list[str], batches: list[Any]) -> list[str]:

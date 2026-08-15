@@ -17,6 +17,8 @@ from ashare_lake.orchestrator.deps import step_execution_levels, validate_steps_
 from ashare_lake.orchestrator.init_phases import (
     DEFAULT_INIT_PHASES,
     INIT_PHASE_STEPS,
+    current_phase_statuses,
+    init_run_complete,
     missing_steps,
     needs_finalize,
     phase_backfill,
@@ -79,6 +81,20 @@ class JobEngine:
             }
 
         metadata = {"trade_date": trade_date.isoformat(), "backfill": backfill}
+        if backfill:
+            metadata["backfill_scope"] = {
+                "start": (
+                    self.config._backfill_start.isoformat()
+                    if getattr(self.config, "_backfill_start", None)
+                    else None
+                ),
+                "end": (
+                    self.config._backfill_end.isoformat()
+                    if getattr(self.config, "_backfill_end", None)
+                    else None
+                ),
+                "symbols": getattr(self.config, "_backfill_symbols", None),
+            }
         lock_name = DAILY_INGESTION_LOCK if job_name.startswith("daily") else None
         with self._optional_job_lock(lock_name):
             if not run_id:
@@ -251,28 +267,62 @@ class JobEngine:
         return results, total_read, total_written, had_error, had_warning
 
     def _run_step(
-        self, name: str, trade_date: date, run_id: str, context: dict[str, Any]
+        self,
+        name: str,
+        trade_date: date,
+        run_id: str,
+        context: dict[str, Any],
+        *,
+        retry_of: list[str] | None = None,
     ) -> dict[str, Any]:
         entry = get_step(name)
         uses_worker_batches = entry.requires_workers
         batch_id = str(uuid.uuid4())
         if not uses_worker_batches:
-            self.manifest.start_batch(run_id, batch_id, task_id=name, dataset=name)
+            # This row tracks step completion/retry, not the validity of each
+            # staged data batch. A warning must remain retryable while compact
+            # is still allowed to drain the successfully staged subset.
+            self.manifest.start_batch(
+                run_id,
+                batch_id,
+                task_id=name,
+                dataset=name,
+                blocks_compaction=False,
+            )
 
         t0 = time.perf_counter()
         try:
             out = entry.fn(self.config, trade_date, run_id, context)
             elapsed = time.perf_counter() - t0
+            step_status = out.pop("status", "success")
+            if step_status not in ("success", "warning", "failed"):
+                raise ValueError(f"step {name} returned invalid status {step_status!r}")
             if not uses_worker_batches:
                 self.manifest.finish_batch(
                     run_id,
                     batch_id,
-                    "success",
+                    step_status,
                     rows_read=out.get("rows_read", 0),
                     rows_written=out.get("rows_written", 0),
+                    error_message=(
+                        None
+                        if step_status == "success"
+                        else f"step completed with status={step_status}"
+                    ),
                 )
-            logger.info("Step %s OK in %.1fs (%s rows)", name, elapsed, out.get("rows_written", 0))
-            step_status = out.pop("status", "success")
+                if step_status == "success" and retry_of:
+                    self.manifest.supersede_batches(
+                        run_id,
+                        retry_of,
+                        superseded_by=batch_id,
+                    )
+            logger.info(
+                "Step %s %s in %.1fs (%s rows)",
+                name,
+                step_status,
+                elapsed,
+                out.get("rows_written", 0),
+            )
             return {
                 "step": name,
                 "status": step_status,
@@ -309,12 +359,17 @@ class JobEngine:
         return missing_steps(phases, batches)
 
     def _run_finalize_steps(
-        self, run_id: str, trade_date: date, context: dict[str, Any]
+        self,
+        run_id: str,
+        trade_date: date,
+        context: dict[str, Any],
+        *,
+        force: bool = False,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         batches = self.manifest.get_batches_for_run(run_id)
         for step_name in ("compact", "derive_adj_factors", "derive_industry_index", "audit"):
-            if step_succeeded(batches, step_name):
+            if not force and step_succeeded(batches, step_name):
                 continue
             result = self._run_step(step_name, trade_date, run_id, context)
             updates = result.get("context_updates")
@@ -341,6 +396,8 @@ class JobEngine:
         counts = self.manifest.incomplete_batch_counts_by_status(run_id)
         if counts.get("failed"):
             return "failed"
+        if counts.get("warning"):
+            return "warning"
         if counts.get("running") or counts.get("stale"):
             return "pending"
         return "failed"
@@ -398,12 +455,24 @@ class JobEngine:
     def _retry_run_locked(
         self, run_id: str, trade_date: date, *, auto_finalize: bool = True
     ) -> dict[str, Any]:
+        run_meta = self.manifest.get_run_metadata(run_id)
+        self.config._backfill = bool(run_meta.get("backfill"))
+        scope = run_meta.get("backfill_scope") or {}
+        for attr, key in (
+            ("_backfill_start", "start"),
+            ("_backfill_end", "end"),
+            ("_backfill_symbols", "symbols"),
+        ):
+            value = scope.get(key)
+            if key in ("start", "end") and value:
+                value = date.fromisoformat(value)
+            setattr(self.config, attr, value)
         timeout = self.manifest.advance_batch_timeouts(
             run_id,
             stale_after_seconds=self.config.batch_stale_seconds,
         )
         stale_marked = timeout["running_to_stale"] + timeout["stale_to_failed"]
-        failed = self.manifest.get_failed_batches(run_id)
+        failed = self.manifest.get_retryable_batches(run_id)
         missing_init = self._missing_init_steps(run_id) if self._is_init_run(run_id) else []
 
         if not failed and not missing_init:
@@ -444,33 +513,50 @@ class JobEngine:
         context = self._merge_retry_context(run_id, trade_date)
 
         worker_batches_by_dataset: dict[str, list] = defaultdict(list)
-        step_batches: list = []
+        step_batches_by_dataset: dict[str, list] = defaultdict(list)
         for batch in failed:
             dataset = batch["dataset"]
             if get_step(dataset).requires_workers:
                 worker_batches_by_dataset[dataset].append(batch)
             else:
-                step_batches.append(batch)
+                step_batches_by_dataset[dataset].append(batch)
 
         results: list[dict[str, Any]] = []
         retried = len(failed)
+        init_phases = self._init_phases_list(run_id) if self._is_init_run(run_id) else []
 
         for dataset, worker_batches in worker_batches_by_dataset.items():
             context["_retry_batch_specs"] = self._worker_batch_specs(worker_batches, trade_date)
+            previous_backfill = self.config._backfill
+            if init_phases:
+                self.config._backfill = step_backfill(dataset, init_phases)
             try:
                 results.append(self._run_step(dataset, trade_date, run_id, context))
             finally:
+                self.config._backfill = previous_backfill
                 context.pop("_retry_batch_specs", None)
 
-        for batch in step_batches:
-            dataset = batch["dataset"]
-            results.append(self._run_step(dataset, trade_date, run_id, context))
+        for dataset, batches in step_batches_by_dataset.items():
+            previous_backfill = self.config._backfill
+            if init_phases:
+                self.config._backfill = step_backfill(dataset, init_phases)
+            try:
+                results.append(
+                    self._run_step(
+                        dataset,
+                        trade_date,
+                        run_id,
+                        context,
+                        retry_of=[batch["batch_id"] for batch in batches],
+                    )
+                )
+            finally:
+                self.config._backfill = previous_backfill
 
         if missing_init:
-            phases = self._init_phases_list(run_id)
             for step in missing_init:
                 prev_backfill = self.config._backfill
-                self.config._backfill = step_backfill(step, phases)
+                self.config._backfill = step_backfill(step, init_phases)
                 try:
                     results.append(self._run_step(step, trade_date, run_id, context))
                 finally:
@@ -478,7 +564,10 @@ class JobEngine:
             retried += len(missing_init)
 
         if auto_finalize and self.manifest.incomplete_batch_count(run_id) == 0:
-            results.extend(self._run_finalize_steps(run_id, trade_date, context))
+            # A retry may have staged new rows after an earlier compact/finalize
+            # attempt. Re-run the finalize chain so curated data and coverage
+            # receipts cannot lag behind the now-successful fetch.
+            results.extend(self._run_finalize_steps(run_id, trade_date, context, force=True))
 
         status = self._retry_batch_status(run_id)
         if auto_finalize and status != "pending":
@@ -507,14 +596,13 @@ class JobEngine:
         rows_read: int = 0,
         rows_written: int = 0,
     ) -> str:
-        had_failure = any(p.get("status") == "failed" for p in phase_results)
+        phases = self._init_phases_list(run_id)
+        batches = self.manifest.get_batches_for_run(run_id)
+        current = current_phase_statuses(phases, batches)
+        complete = init_run_complete(phases, batches)
         incomplete = self.manifest.incomplete_batch_count(run_id) > 0
-        status = "failed" if had_failure or incomplete else "success"
-        error_message = None
-        if had_failure:
-            error_message = "one or more init phases failed"
-        elif incomplete:
-            error_message = "init run has incomplete batches"
+        status = "success" if complete and not incomplete else "failed"
+        error_message = None if status == "success" else "one or more init steps are incomplete"
         self.manifest.finish_run(
             run_id,
             status,
@@ -524,6 +612,7 @@ class JobEngine:
         )
         meta = self.manifest.get_run_metadata(run_id)
         meta["phase_results"] = phase_results
+        meta["current_phase_status"] = current
         self.manifest.update_run_metadata(run_id, meta)
         return status
 

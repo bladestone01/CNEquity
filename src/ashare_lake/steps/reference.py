@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
-import json
 import logging
-import os
-import tempfile
 from datetime import date, timedelta
 
 import polars as pl
@@ -22,6 +18,14 @@ from ashare_lake.config import Config
 from ashare_lake.domain.schemas import with_provenance
 from ashare_lake.domain.symbols import is_all_a_symbol, is_tdx_servable, parse_symbol
 from ashare_lake.orchestrator.registry import register_step
+from ashare_lake.quality.st_coverage import (
+    ST_EVIDENCE_VERSION,
+    build_st_scope,
+    current_st_universe,
+    load_st_checkpoint,
+    reusable_st_checkpoint_symbols,
+    write_st_checkpoint,
+)
 from ashare_lake.steps.common import (
     BACKFILL_START,
     fetch_incremental_daily,
@@ -33,10 +37,6 @@ from ashare_lake.steps.http_common import write_fetched
 
 logger = logging.getLogger(__name__)
 
-# Resume marker for the ST-history backfill: which symbols baostock has already
-# been swept for. Needed because ~85% of names are never ST and so contribute no
-# rows — data-presence alone (as valuation uses) cannot tell "done" from "todo".
-_ST_BACKFILL_STATE = "trading_status_st_backfill"
 # Flush + checkpoint every chunk so a mid-sweep baostock login death does not
 # discard hours of already-fetched ST rows (observed ~2950/5204 lost on one run).
 _ST_BACKFILL_CHUNK = 200
@@ -159,6 +159,14 @@ def _merge_delisted_instruments(config: Config, df: pl.DataFrame) -> pl.DataFram
         delisted.height,
         unlisted_unknown,
     )
+    # Keep formal security-master identity separate from dates inferred by
+    # instruments compaction or by the bar-recovery path.
+    from ashare_lake.steps.delisted import write_delisted_identity_evidence
+
+    write_delisted_identity_evidence(
+        config,
+        basics.filter(pl.col("delist_date").is_not_null()),
+    )
     if delisted.is_empty():
         return df
     return pl.concat(
@@ -254,10 +262,10 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
     )
     if df.is_empty():
         return {"rows_read": 0, "rows_written": 0}
-    if "source" not in df.columns:
-        df = normalize_with_source(df)
-    else:
-        df = with_provenance(df, source="eastmoney", data_version="v1")
+    # This adapter is an EastMoney current-state snapshot even though it is
+    # exposed through the TDX facade. Preserve the actual evidence owner so
+    # downstream PIT precedence never mistakes it for exchange history.
+    df = with_provenance(df.drop("source", strict=False), source="eastmoney", data_version="v1")
     return write_simple(config, run_id, "trading_status", df)
 
 
@@ -269,64 +277,77 @@ def _is_all_a(symbol: str) -> bool:
     return is_all_a_symbol(info.code, info.exchange)
 
 
-def _st_backfill_state_path(config: Config):
-    return config.meta_root / "state" / f"{_ST_BACKFILL_STATE}.json"
-
-
-def _st_backfilled_symbols(config: Config) -> set[str]:
-    path = _st_backfill_state_path(config)
-    if not path.exists():
-        return set()
-    return set(json.loads(path.read_text(encoding="utf-8")).get("completed", []))
-
-
-def _mark_st_backfilled(config: Config, symbols: list[str]) -> None:
-    """Atomically add ``symbols`` to the swept-symbol set (resume marker)."""
-    path = _st_backfill_state_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    completed = sorted(_st_backfilled_symbols(config) | set(symbols))
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"completed": completed}, handle, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+def _resolve_explicit_st_symbols(config: Config, raw: list[str]) -> list[str]:
+    instruments = set(load_symbols(config))
+    resolved: list[str] = []
+    for value in raw:
+        symbol = str(value).strip().upper()
+        if "." in symbol:
+            candidates = [symbol] if symbol in instruments else []
+        else:
+            candidates = [item for item in instruments if item.startswith(symbol + ".")]
+        if len(candidates) != 1 or not _is_all_a(candidates[0]):
+            raise ValueError(
+                f"trading_status ST backfill cannot resolve {value!r} "
+                f"to exactly one all-A instrument"
+            )
+        resolved.append(candidates[0])
+    return sorted(set(resolved))
 
 
 def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -> dict:
-    """Historical ST labels from baostock over the all_a universe (2016 → today).
+    """Persist complete historical ST/normal evidence from Baostock.
 
-    Fills the ``trading_status`` ST gap so ``universe="all_a"`` excludes names that
-    were ST in earlier backtest windows (removes survivorship / look-ahead bias).
-    Resumable via a swept-symbol marker: a re-run only retries names a throttled
-    session dropped. Progress is checkpointed every ``_ST_BACKFILL_CHUNK`` symbols
-    (write staging + mark swept) so a mid-sweep login failure still keeps prior
-    chunks. Symbols still failing are surfaced as an audit finding (fail-loud).
+    Completion is an exact versioned scope, not inferred from row presence. The
+    old sparse-ST checkpoint is deliberately ignored because it marked never-ST
+    names complete without storing their negative evidence.
     """
     from ashare_lake.adapters.baostock.st_history import fetch_st_history
 
-    universe = [s for s in load_symbols(config) if _is_all_a(s)]
-    # Only sweep names that have price bars: a delisted symbol still sitting in the
-    # instruments list would otherwise cost a baostock round-trip with no bar to
-    # join its ST label against. Skip the constraint on a bars-less lake so a
-    # first-time backfill still runs.
-    bar_universe = load_bar_universe(config)
-    if bar_universe:
-        universe = [s for s in universe if s in bar_universe]
-    done = _st_backfilled_symbols(config)
-    todo = [s for s in universe if s not in done]
+    start = getattr(config, "_backfill_start", None) or BACKFILL_START
+    end = getattr(config, "_backfill_end", None) or trade_date
+    explicit = getattr(config, "_backfill_symbols", None)
+    if explicit is not None:
+        universe = _resolve_explicit_st_symbols(config, explicit)
+        universe_name = "explicit"
+    else:
+        universe = current_st_universe(config)
+        if not universe:
+            universe = [symbol for symbol in load_symbols(config) if _is_all_a(symbol)]
+            bars = load_bar_universe(config)
+            if bars:
+                universe = [symbol for symbol in universe if symbol in bars]
+        universe_name = "all_a"
+
+    scope = build_st_scope(universe, start, end, universe=universe_name)
+    checkpoint = load_st_checkpoint(config, scope)
+    completed = reusable_st_checkpoint_symbols(config, checkpoint, run_id)
+    evidence_rows = {
+        symbol: int(count)
+        for symbol, count in (checkpoint.get("evidence_rows_by_symbol") or {}).items()
+        if symbol in completed
+    }
+    unresolved = set(checkpoint.get("unresolved_symbols", []))
+    todo = [symbol for symbol in universe if symbol not in completed]
     if not todo:
-        return {"rows_read": 0, "rows_written": 0, "note": "all symbols already ST-backfilled"}
+        checkpoint["status"] = "complete"
+        checkpoint["unresolved_symbols"] = []
+        checkpoint["completion_run_id"] = run_id
+        write_st_checkpoint(config, checkpoint)
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "scope_id": scope["scope_id"],
+            "evidence_version": ST_EVIDENCE_VERSION,
+            "coverage_pending_compact": True,
+            "note": "all symbols already have ST evidence for this exact scope",
+        }
 
     rows_read = 0
     rows_written = 0
-    all_failed: list[str] = []
     for offset in range(0, len(todo), _ST_BACKFILL_CHUNK):
         batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
-        df, failed = fetch_st_history(batch, BACKFILL_START, trade_date, config=config)
+        df, failed = fetch_st_history(batch, start, end, config=config)
         if not df.is_empty():
             chunk = write_fetched(
                 config,
@@ -340,20 +361,59 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
             rows_written += int(chunk.get("rows_written", 0))
         failed_set = set(failed)
         swept = [s for s in batch if s not in failed_set]
-        if swept:
-            _mark_st_backfilled(config, swept)
-        all_failed.extend(failed)
-
-    result: dict = {"rows_read": rows_read, "rows_written": rows_written}
-    if all_failed:
-        result["failed_symbols"] = len(all_failed)
+        chunk_counts = (
+            {
+                row["symbol"]: int(row["len"])
+                for row in df.group_by("symbol").len().iter_rows(named=True)
+            }
+            if not df.is_empty()
+            else {}
+        )
+        for symbol in swept:
+            evidence_rows[symbol] = chunk_counts.get(symbol, 0)
+        completed.update(swept)
+        unresolved.difference_update(swept)
+        unresolved.update(failed_set)
+        checkpoint.update(
+            {
+                "status": "incomplete" if unresolved else "pending",
+                "completed_symbols": sorted(completed),
+                "evidence_rows_by_symbol": dict(sorted(evidence_rows.items())),
+                "unresolved_symbols": sorted(unresolved),
+            }
+        )
+        write_st_checkpoint(config, checkpoint)
+    complete = completed == set(universe) and not unresolved
+    checkpoint["status"] = "complete" if complete else "incomplete"
+    checkpoint["completed_symbols"] = sorted(completed)
+    checkpoint["evidence_rows_by_symbol"] = dict(sorted(evidence_rows.items()))
+    checkpoint["unresolved_symbols"] = sorted(unresolved)
+    if complete:
+        checkpoint["completion_run_id"] = run_id
+    else:
+        checkpoint.pop("completion_run_id", None)
+    checkpoint_path = write_st_checkpoint(config, checkpoint)
+    result: dict = {
+        "rows_read": rows_read,
+        "rows_written": rows_written,
+        "scope_id": scope["scope_id"],
+        "evidence_version": ST_EVIDENCE_VERSION,
+        "checkpoint": str(checkpoint_path),
+        "completed_symbols": len(completed),
+        "expected_symbols": len(universe),
+    }
+    if complete:
+        result["coverage_pending_compact"] = True
+    else:
+        result["status"] = "warning"
+        result["failed_symbols"] = len(unresolved)
         finding = {
             "dataset": "trading_status",
             "severity": "warning",
             "code": "baostock_st_backfill_incomplete",
             "message": (
-                f"{len(all_failed)}/{len(todo)} symbols failed baostock ST backfill "
-                "(throttled/dropped); re-run `asl backfill trading_status` to resume."
+                f"{len(unresolved)}/{len(universe)} symbols remain unresolved in "
+                "Baostock ST evidence; re-run the same scoped backfill to resume."
             ),
         }
         result.setdefault("context_updates", {})["audit_findings"] = [finding]

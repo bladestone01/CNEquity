@@ -6,6 +6,11 @@ import polars as pl
 
 from ashare_lake.config import Config
 from ashare_lake.quality.historical_validity import historical_universe_validity
+from ashare_lake.quality.st_coverage import (
+    build_st_scope,
+    publish_st_coverage_receipt,
+    write_st_checkpoint,
+)
 
 
 def _partition(cfg: Config, dataset: str, day: date, frame: pl.DataFrame) -> None:
@@ -16,6 +21,9 @@ def _partition(cfg: Config, dataset: str, day: date, frame: pl.DataFrame) -> Non
 
 def _lake(tmp_path) -> Config:
     cfg = Config(data_root=tmp_path / "lake")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH"]}).write_parquet(instruments / "part-merged.parquet")
     for day in (date(2020, 1, 2), date(2024, 12, 31)):
         _partition(
             cfg,
@@ -35,6 +43,23 @@ def _lake(tmp_path) -> Config:
             }
         ),
     )
+    scope = build_st_scope(
+        ["600519.SH"],
+        date(2020, 1, 2),
+        date(2024, 12, 31),
+        universe="all_a",
+    )
+    checkpoint = {
+        "schema_version": 1,
+        "claim": "historical_st_evidence",
+        "scope": scope,
+        "status": "complete",
+        "completed_symbols": ["600519.SH"],
+        "evidence_rows_by_symbol": {"600519.SH": 0},
+        "unresolved_symbols": [],
+    }
+    write_st_checkpoint(cfg, checkpoint)
+    publish_st_coverage_receipt(cfg, checkpoint)
     return cfg
 
 

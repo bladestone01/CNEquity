@@ -42,6 +42,7 @@ class BatchRecord:
     started_at: str | None = None
     finished_at: str | None = None
     error_message: str | None = None
+    blocks_compaction: bool = True
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -107,6 +108,7 @@ class Manifest:
                     finished_at TEXT,
                     error_message TEXT,
                     heartbeat_at TEXT,
+                    blocks_compaction INTEGER DEFAULT 1,
                     PRIMARY KEY (run_id, batch_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_batches_run_status
@@ -118,6 +120,10 @@ class Manifest:
             cols = {row[1] for row in conn.execute("PRAGMA table_info(ingestion_batches)")}
             if "heartbeat_at" not in cols:
                 conn.execute("ALTER TABLE ingestion_batches ADD COLUMN heartbeat_at TEXT")
+            if "blocks_compaction" not in cols:
+                conn.execute(
+                    "ALTER TABLE ingestion_batches ADD COLUMN blocks_compaction INTEGER DEFAULT 1"
+                )
 
     @staticmethod
     def _batch_activity_at(row: sqlite3.Row) -> datetime | None:
@@ -166,6 +172,7 @@ class Manifest:
         symbols: list[str] | None = None,
         window_start: str | None = None,
         window_end: str | None = None,
+        blocks_compaction: bool = True,
     ) -> None:
         now = _utcnow()
         with self._connect() as conn:
@@ -173,8 +180,9 @@ class Manifest:
                 """
                 INSERT OR REPLACE INTO ingestion_batches (
                     run_id, batch_id, task_id, dataset, status, symbols_json,
-                    window_start, window_end, started_at, heartbeat_at, retry_count
-                ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, 0)
+                    window_start, window_end, started_at, heartbeat_at, retry_count,
+                    blocks_compaction
+                ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, 0, ?)
                 """,
                 (
                     run_id,
@@ -186,6 +194,7 @@ class Manifest:
                     window_end,
                     now,
                     now,
+                    int(blocks_compaction),
                 ),
             )
 
@@ -231,22 +240,61 @@ class Manifest:
                 ),
             )
 
-    def get_failed_batches(self, run_id: str) -> list[sqlite3.Row]:
+    def supersede_batches(
+        self,
+        run_id: str,
+        batch_ids: list[str],
+        *,
+        superseded_by: str,
+    ) -> int:
+        """Resolve prior retryable attempts after one verified successful retry.
+
+        Rows remain in the ledger for audit. Only their current-completion
+        status changes, so repeated failures do not need to be deleted or
+        replayed one by one.
+        """
+        ids = sorted(set(batch_ids))
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        message = f"superseded by successful retry batch {superseded_by}"
         with self._connect() as conn:
             cur = conn.execute(
-                "SELECT * FROM ingestion_batches WHERE run_id = ? AND status = 'failed'",
+                f"""
+                UPDATE ingestion_batches
+                SET status = 'superseded', error_message = ?
+                WHERE run_id = ? AND batch_id IN ({placeholders})
+                  AND status IN ('failed', 'warning', 'stale')
+                """,
+                (message, run_id, *ids),
+            )
+            return cur.rowcount
+
+    def get_retryable_batches(self, run_id: str) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT * FROM ingestion_batches
+                WHERE run_id = ? AND status IN ('failed', 'warning')
+                ORDER BY started_at, batch_id
+                """,
                 (run_id,),
             )
             return cur.fetchall()
 
+    def get_failed_batches(self, run_id: str) -> list[sqlite3.Row]:
+        """Backward-compatible alias for every immediately retryable batch."""
+        return self.get_retryable_batches(run_id)
+
     def incomplete_batch_counts_by_dataset(self, run_id: str) -> dict[str, int]:
-        """Count batches that are not status='success' (failed, running, etc.)."""
+        """Count batches not resolved by success or a successful retry."""
         with self._connect() as conn:
             cur = conn.execute(
                 """
                 SELECT dataset, COUNT(*) AS cnt
                 FROM ingestion_batches
-                WHERE run_id = ? AND status != 'success'
+                WHERE run_id = ? AND status NOT IN ('success', 'superseded')
+                  AND blocks_compaction = 1
                 GROUP BY dataset
                 """,
                 (run_id,),
@@ -259,7 +307,7 @@ class Manifest:
                 """
                 SELECT COUNT(*) AS cnt
                 FROM ingestion_batches
-                WHERE run_id = ? AND status != 'success'
+                WHERE run_id = ? AND status NOT IN ('success', 'superseded')
                 """,
                 (run_id,),
             )
@@ -271,7 +319,7 @@ class Manifest:
                 """
                 SELECT status, COUNT(*) AS cnt
                 FROM ingestion_batches
-                WHERE run_id = ? AND status != 'success'
+                WHERE run_id = ? AND status NOT IN ('success', 'superseded')
                 GROUP BY status
                 """,
                 (run_id,),
