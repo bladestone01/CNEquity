@@ -13,8 +13,8 @@ from datetime import date, datetime, timezone
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.quality.cross_checks import (
+from cnequity.config import Config
+from cnequity.quality.cross_checks import (
     ST_CROSSCHECK_MAX_DISAGREEMENT,
     st_label_crosscheck_findings,
 )

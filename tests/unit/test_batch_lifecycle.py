@@ -2,12 +2,12 @@ from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 
-import ashare_lake.steps  # noqa: F401
-from ashare_lake.config import Config
-from ashare_lake.orchestrator.manifest import Manifest
-from ashare_lake.steps.finalize import step_compact
-from ashare_lake.storage import StagingWriter
-from ashare_lake.storage.state import StateStore
+import cnequity.steps  # noqa: F401
+from cnequity.config import Config
+from cnequity.orchestrator.manifest import Manifest
+from cnequity.steps.finalize import step_compact
+from cnequity.storage import StagingWriter
+from cnequity.storage.state import StateStore
 
 
 def _daily_bar_row(symbol: str, trade_date: date) -> dict:

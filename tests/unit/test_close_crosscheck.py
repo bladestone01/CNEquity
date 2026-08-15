@@ -4,8 +4,8 @@ from datetime import date
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.quality.cross_checks import daily_bars_close_crosscheck_findings
+from cnequity.config import Config
+from cnequity.quality.cross_checks import daily_bars_close_crosscheck_findings
 
 _DAY = date(2026, 7, 6)
 

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import polars as pl
 
-from ashare_lake.adapters.eastmoney import capital as cap
-from ashare_lake.config import Config
+from cnequity.adapters.eastmoney import capital as cap
+from cnequity.config import Config
 
 
 def test_channel_and_margin_symbol():

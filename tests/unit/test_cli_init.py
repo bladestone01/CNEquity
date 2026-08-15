@@ -3,15 +3,15 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from ashare_lake.cli.main import cli
-from ashare_lake.config import load_config
-from ashare_lake.config.bootstrap import path_for_toml
-from ashare_lake.orchestrator.engine import JobEngine
-from ashare_lake.storage.layout import init_data_layout
+from cnequity.cli.main import cli
+from cnequity.config import load_config
+from cnequity.config.bootstrap import path_for_toml
+from cnequity.orchestrator.engine import JobEngine
+from cnequity.storage.layout import init_data_layout
 
 
 def _write_config(tmp_path) -> str:
-    cfg_path = tmp_path / "ashare-lake.toml"
+    cfg_path = tmp_path / "cnequity.toml"
     cfg_path.write_text(
         f"""
 [data]
@@ -122,7 +122,7 @@ steps = ["compact"]
 
     monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
     monkeypatch.setattr(
-        "ashare_lake.steps.common.is_trading_day",
+        "cnequity.steps.common.is_trading_day",
         lambda cfg, d: True,
     )
     runner = CliRunner()
@@ -155,11 +155,11 @@ steps = ["compact"]
 
     monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
     monkeypatch.setattr(
-        "ashare_lake.steps.common.is_trading_day",
+        "cnequity.steps.common.is_trading_day",
         lambda cfg, d: True,
     )
     monkeypatch.setattr(
-        "ashare_lake.cli.main._dataset_watermark",
+        "cnequity.cli.main._dataset_watermark",
         lambda cfg, name: date(2026, 7, 17),
     )
     runner = CliRunner()
@@ -195,7 +195,7 @@ steps = ["compact"]
 
     monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
     monkeypatch.setattr(
-        "ashare_lake.steps.common.is_trading_day",
+        "cnequity.steps.common.is_trading_day",
         lambda cfg, d: True,
     )
     runner = CliRunner()

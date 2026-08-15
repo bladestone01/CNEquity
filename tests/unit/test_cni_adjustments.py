@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import polars as pl
 
-from ashare_lake.adapters.cni import index_constituents_history as cni
+from cnequity.adapters.cni import index_constituents_history as cni
 
 
 def test_member_symbol_filters_non_a():

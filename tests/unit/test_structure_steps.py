@@ -7,10 +7,10 @@ from datetime import date
 import polars as pl
 import pytest
 
-import ashare_lake.steps  # noqa: F401
-from ashare_lake.config import Config
-from ashare_lake.steps import structure as st
-from ashare_lake.storage.state import StateStore
+import cnequity.steps  # noqa: F401
+from cnequity.config import Config
+from cnequity.steps import structure as st
+from cnequity.storage.state import StateStore
 
 
 @pytest.fixture

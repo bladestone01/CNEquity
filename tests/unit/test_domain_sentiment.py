@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-from ashare_lake.domain.sentiment import (
+from cnequity.domain.sentiment import (
     aggregate_scores,
     keyword_score,
     score_text,

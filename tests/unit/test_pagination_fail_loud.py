@@ -4,10 +4,10 @@ from datetime import date
 
 import pytest
 
-from ashare_lake.adapters.cninfo import announcements as cninfo_announcements
-from ashare_lake.adapters.cninfo.regulatory import fetch_regulatory_events
-from ashare_lake.adapters.eastmoney import clist
-from ashare_lake.adapters.eastmoney.clist import fetch_clist_pages
+from cnequity.adapters.cninfo import announcements as cninfo_announcements
+from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
+from cnequity.adapters.eastmoney import clist
+from cnequity.adapters.eastmoney.clist import fetch_clist_pages
 
 
 class _Resp:

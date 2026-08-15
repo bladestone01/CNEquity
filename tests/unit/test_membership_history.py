@@ -6,10 +6,10 @@ from datetime import date
 
 import polars as pl
 
-from ashare_lake.adapters.cni.index_constituents_history import expand_cni_constituents_as_of
-from ashare_lake.adapters.sw.industry_history import expand_sw_industry_as_of
-from ashare_lake.domain.datasets import get_dataset
-from ashare_lake.domain.schemas import validate_dataframe
+from cnequity.adapters.cni.index_constituents_history import expand_cni_constituents_as_of
+from cnequity.adapters.sw.industry_history import expand_sw_industry_as_of
+from cnequity.domain.datasets import get_dataset
+from cnequity.domain.schemas import validate_dataframe
 
 
 def test_industry_members_declares_sw_backfill_source():

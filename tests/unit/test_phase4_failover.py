@@ -4,9 +4,9 @@ from pathlib import Path
 
 import polars as pl
 
-from ashare_lake.config import Config, FailoverDatasetSpec
-from ashare_lake.quality.source_diff import diff_dataset
-from ashare_lake.storage.source_snapshots import (
+from cnequity.config import Config, FailoverDatasetSpec
+from cnequity.quality.source_diff import diff_dataset
+from cnequity.storage.source_snapshots import (
     SnapshotStore,
     clean_source_snapshots,
 )

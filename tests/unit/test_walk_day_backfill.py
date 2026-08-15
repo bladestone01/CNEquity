@@ -15,8 +15,8 @@ from datetime import date
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.steps.common import walk_day_backfill
+from cnequity.config import Config
+from cnequity.steps.common import walk_day_backfill
 
 
 def _fake_row(d: date, date_col: str) -> dict:

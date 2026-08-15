@@ -4,9 +4,9 @@ from datetime import date
 
 import polars as pl
 
-from ashare_lake.adapters.tdx_protocol.client import _filter_instrument_frame
-from ashare_lake.domain.symbols import is_subscription_placeholder
-from ashare_lake.steps.delisted import _strip_subscription_placeholders
+from cnequity.adapters.tdx_protocol.client import _filter_instrument_frame
+from cnequity.domain.symbols import is_subscription_placeholder
+from cnequity.steps.delisted import _strip_subscription_placeholders
 
 
 def test_recognises_exact_and_suffixed_placeholder_names():

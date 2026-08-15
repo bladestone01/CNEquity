@@ -2,8 +2,8 @@ from datetime import date, datetime, timezone
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.derive.trading_status_history import (
+from cnequity.config import Config
+from cnequity.derive.trading_status_history import (
     derive_suspension_history,
     status_evidence_rank,
 )
