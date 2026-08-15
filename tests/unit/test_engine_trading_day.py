@@ -2,11 +2,11 @@ from datetime import date
 
 import polars as pl
 
-import ashare_lake.steps  # noqa: F401
-from ashare_lake.config import Config
-from ashare_lake.orchestrator.engine import JobEngine
-from ashare_lake.steps.common import is_trading_day
-from ashare_lake.storage.layout import init_data_layout
+import cnequity.steps  # noqa: F401
+from cnequity.config import Config
+from cnequity.orchestrator.engine import JobEngine
+from cnequity.steps.common import is_trading_day
+from cnequity.storage.layout import init_data_layout
 
 
 def _seed_calendar(cfg: Config, rows: list[dict]) -> None:
@@ -43,7 +43,7 @@ def test_run_job_skips_non_trading_day(tmp_path):
 
 
 def test_run_job_backfill_does_not_skip_weekend(tmp_path, monkeypatch):
-    from ashare_lake.steps import capital as cap
+    from cnequity.steps import capital as cap
 
     cfg = Config(data_root=tmp_path / "data")
     init_data_layout(cfg)

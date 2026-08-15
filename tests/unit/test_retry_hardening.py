@@ -1,11 +1,11 @@
 from datetime import date
 
-import ashare_lake.steps  # noqa: F401
-from ashare_lake.config import Config
-from ashare_lake.orchestrator.engine import JobEngine
-from ashare_lake.orchestrator.manifest import Manifest
-from ashare_lake.orchestrator.run_lock import RunLockError, run_lock
-from ashare_lake.storage.layout import init_data_layout
+import cnequity.steps  # noqa: F401
+from cnequity.config import Config
+from cnequity.orchestrator.engine import JobEngine
+from cnequity.orchestrator.manifest import Manifest
+from cnequity.orchestrator.run_lock import RunLockError, run_lock
+from cnequity.storage.layout import init_data_layout
 
 
 def test_retry_pending_when_batches_still_running(tmp_path):
@@ -185,7 +185,7 @@ def test_run_job_reconciles_orphans_on_entry(tmp_path, monkeypatch):
 
 
 def test_retry_reconciles_peer_orphans_on_entry(tmp_path):
-    """asl retry used to skip reconcile; peer zombies sat until the next daily."""
+    """cne retry used to skip reconcile; peer zombies sat until the next daily."""
     cfg = Config(data_root=tmp_path / "data", tdx_allow_mock=True, batch_stale_seconds=0)
     init_data_layout(cfg)
     manifest = Manifest(cfg.manifest_path)

@@ -2,11 +2,11 @@ from datetime import date
 
 import pytest
 
-import ashare_lake.steps  # noqa: F401 — register steps
-from ashare_lake.config import validate_config
-from ashare_lake.orchestrator.engine import JobEngine
-from ashare_lake.orchestrator.manifest import Manifest
-from ashare_lake.storage.layout import init_data_layout
+import cnequity.steps  # noqa: F401 — register steps
+from cnequity.config import validate_config
+from cnequity.orchestrator.engine import JobEngine
+from cnequity.orchestrator.manifest import Manifest
+from cnequity.storage.layout import init_data_layout
 
 pytestmark = pytest.mark.integration
 
@@ -43,7 +43,7 @@ def test_daily_job_mock(config):
 def test_daily_job_fails_loudly_without_allow_mock(config, monkeypatch):
     """With allow_mock off, an unreachable TDX source must fail the batch —
     never silently fall back to fabricated data."""
-    from ashare_lake.adapters.tdx_protocol import client as tdx
+    from cnequity.adapters.tdx_protocol import client as tdx
 
     def _boom(_config=None):
         raise RuntimeError("simulated TDX outage")

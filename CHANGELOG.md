@@ -6,6 +6,17 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Renamed the project from `ashare-lake` to `CNEquity`.** The old name
+  collided with established projects in the same space (mpquant/Ashare,
+  AKShare) and did not surface in searches for "A股 数据湖". Package:
+  `pip install cnequity` (`ashare-lake` on PyPI will no longer be updated).
+  CLI: `cne` (was `asl`). Import: `from cnequity...` (was `from
+  ashare_lake...`). Config/data defaults: `cnequity.toml`, `data/cnequity/`
+  (was `ashare-lake.toml`, `data/ashare-lake/`) — existing local configs and
+  data directories are not renamed automatically.
+
 ## [0.6.0] — 2026-08-10
 
 ### Fixed
@@ -140,7 +151,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   [Apache-2.0](LICENSE); third-party notices (including vendored tdxpy, still
   MIT) live in [NOTICE](NOTICE). Landed market data remains outside the
   software license — see [legal](docs/legal-and-data-sources.md).
-- **README hero rebranded to ASL · ashare-lake.** Shorter pitch, survivorship
+- **README hero rebranded to ASL · cnequity.** Shorter pitch, survivorship
   chart and demo up front; cropped serve scorecard and architecture diagram in
   their own sections. No upgrade step for existing lakes.
 - **`asl servers test` and `asl push2his` are off the top-level command list.**
@@ -179,7 +190,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   official `mcp` SDK, which resolves to 15 additional packages — cryptography,
   pyjwt and truststore for an OAuth flow a local server never performs,
   opentelemetry for tracing nothing exports, and a second HTTP stack beside the
-  pinned httpx. `pip install ashare-lake` with no extras stays intact.
+  pinned httpx. `pip install cnequity` with no extras stays intact.
 
 - **`asl init --profile quick` / `--since`** — a first backfill that is
   *shallower, never narrower*. `quick` fetches the last three calendar years for
@@ -314,8 +325,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
    or liquidity factors:
 
    ```bash
-   scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --dry-run
-   scripts/migrate_daily_bars_volume_v2.py --config configs/ashare-lake.toml --apply
+   scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --dry-run
+   scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
    ```
 
    Back up curated first; the script is idempotent and does not restamp
@@ -433,7 +444,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **`daily_bars.volume` mixed 股 and 手, off by exactly 100×.** Only `ths` and
   `baostock` already wrote 股; `tdx_protocol` passed 手 through and Sina
   divided by 100. Every adapter now normalizes to 股 at its boundary
-  (`ashare_lake.domain.units`).
+  (`cnequity.domain.units`).
 
 - **No-trade bars stored a denormal turnover instead of zero.** TDX's packed-
   float decoder maps raw zero to `2**-127`; fixed at
@@ -475,14 +486,14 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - `asl config init` always writes an **absolute** `data.root` (resolving the
-  template's `./data/ashare-lake` against the current working directory) so
+  template's `./data/cnequity` against the current working directory) so
   `asl doctor` is green on the default first-run path.
 - Default `[on_demand].datasets` is only `stock_news` and `research_reports`.
   `announcement_body` / `financial_reports` raise `NotImplementedError` instead
   of caching empty placeholder JSON. Failed research_reports fetches are not
   cached either.
 - ImportError hints for baostock / pandas no longer recommend removed extras
-  (`[valuation]` / `[structure]`); they point at reinstalling `ashare-lake`.
+  (`[valuation]` / `[structure]`); they point at reinstalling `cnequity`.
 
 ## [0.3.0] — 2026-07-29
 
@@ -503,7 +514,7 @@ environment has none of this.
 
 ### Changed
 
-- `pip install ashare-lake` is the whole install. Every runtime source — AkShare,
+- `pip install cnequity` is the whole install. Every runtime source — AkShare,
   Baostock, SnowNLP, and the pandas/openpyxl/xlrd trio that parses the Shenwan
   and CNI constituent spreadsheets — is a hard dependency, so no daily or
   backfill step can silently lose a source because an extra was forgotten. Costs
@@ -524,7 +535,7 @@ environment has none of this.
 
 - Native Windows 10/11 (64-bit) support: cross-platform file locks replace
   Unix-only `fcntl.flock` in run locks, watermark writes, rate limiting, and
-  staging cleanup (`ashare_lake.file_lock`).
+  staging cleanup (`cnequity.file_lock`).
 - CI `windows-latest` job running the offline unit suite.
 - `asl config init` defaults `workers = 1` on Windows (same as macOS); raising
   workers later is allowed — Windows uses spawn, not the unsafe macOS fork path.
@@ -568,7 +579,7 @@ environment has none of this.
 - `asl config init --data-root` no longer strips escaped backslashes when the
   path is a Windows `C:\…` form (callable `re.sub` replacement).
 - `asl demo` writes a TOML-safe `data.root` (escaped POSIX path) so follow-up
-  `asl query --config configs/ashare-lake.demo.toml` works on Windows.
+  `asl query --config configs/cnequity.demo.toml` works on Windows.
 - `asl doctor` probes writability with a real create/delete (not `os.access`) and
   suggests an ACL fix on Windows instead of `chmod`.
 - EastMoney sticky IP / CLI sticky reads always use UTF-8.
@@ -589,7 +600,7 @@ environment has none of this.
 ### Removed
 
 - All extras (`tdx`, `macro`, `nlp`, `valuation`, `structure`, `all`).
-  `pip install "ashare-lake[tdx]"` from an older doc still installs correctly:
+  `pip install "cnequity[tdx]"` from an older doc still installs correctly:
   pip warns that the extra is not provided and continues, uv says nothing.
 - Contributor tooling moved from the `dev` extra to a PEP 735 dependency group:
   `pip install -e . --group dev` (pip >= 25.1) or `uv sync`.
@@ -600,8 +611,8 @@ environment has none of this.
 
 - `asl config init` writes the packaged example TOML (no repo checkout needed);
   forces `orchestrator.workers = 1` on macOS
-- Packaged template at `ashare_lake.config.templates` (kept in sync with
-  `configs/ashare-lake.example.toml`)
+- Packaged template at `cnequity.config.templates` (kept in sync with
+  `configs/cnequity.example.toml`)
 
 ### Fixed
 
@@ -610,7 +621,7 @@ environment has none of this.
 
 ### Changed
 
-- Document `pip install "ashare-lake[tdx]"` as the primary install path
+- Document `pip install "cnequity[tdx]"` as the primary install path
 - `pyproject.toml` `readme` points at `README.pypi.md` instead of `README.md`
 - Getting-started docs use `asl config init` instead of `git clone` + `cp`;
   quickstart separates one-minute demo from full-market init
@@ -639,12 +650,12 @@ First public release of the self-hosted A-share Parquet data layer.
 
 - Ignore runtime logs and local tool/editor dirs
 - TLS verify on by default for HTTP clients
-- Project URLs point at `rootSunc/ashare-lake`
+- Project URLs point at `rootSunc/cnequity`
 
-[0.6.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.6.0
-[0.5.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.5.0
-[0.4.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.4.0
-[0.3.1]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.1
-[0.3.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.3.0
-[0.2.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.2.0
-[0.1.0]: https://github.com/rootSunc/ashare-lake/releases/tag/v0.1.0
+[0.6.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.6.0
+[0.5.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.5.0
+[0.4.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.4.0
+[0.3.1]: https://github.com/rootSunc/cnequity/releases/tag/v0.3.1
+[0.3.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.3.0
+[0.2.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.2.0
+[0.1.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.1.0

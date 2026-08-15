@@ -3,14 +3,14 @@ from datetime import date
 import polars as pl
 import pytest
 
-import ashare_lake.steps  # noqa: F401
-from ashare_lake.adapters.eastmoney.fundamentals import fetch_financial_statement_items
-from ashare_lake.adapters.eastmoney.index_constituents import fetch_index_constituents
-from ashare_lake.adapters.eastmoney.industry import fetch_industry_members
-from ashare_lake.config import Config
-from ashare_lake.domain.schemas import validate_dataframe
-from ashare_lake.orchestrator.registry import get_step
-from ashare_lake.query import load
+import cnequity.steps  # noqa: F401
+from cnequity.adapters.eastmoney.fundamentals import fetch_financial_statement_items
+from cnequity.adapters.eastmoney.index_constituents import fetch_index_constituents
+from cnequity.adapters.eastmoney.industry import fetch_industry_members
+from cnequity.config import Config
+from cnequity.domain.schemas import validate_dataframe
+from cnequity.orchestrator.registry import get_step
+from cnequity.query import load
 
 
 class FakeDatacenterClient:
@@ -91,7 +91,7 @@ def test_financial_statement_items_drops_non_a_share():
 
 
 def test_financial_statement_items_backfill_walks_report_periods():
-    from ashare_lake.adapters.eastmoney.fundamentals import _report_period_dates
+    from cnequity.adapters.eastmoney.fundamentals import _report_period_dates
 
     periods = _report_period_dates(date(2026, 7, 7))
     assert "2001-03-31" in periods
@@ -102,7 +102,7 @@ def test_financial_statement_items_backfill_walks_report_periods():
 
 
 def test_financial_statement_items_backfill_walk_honors_start_end():
-    from ashare_lake.adapters.eastmoney.fundamentals import _report_period_dates
+    from cnequity.adapters.eastmoney.fundamentals import _report_period_dates
 
     periods = _report_period_dates(
         date(2026, 7, 7),

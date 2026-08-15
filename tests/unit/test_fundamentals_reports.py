@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from ashare_lake.adapters.eastmoney.fundamentals import (
+from cnequity.adapters.eastmoney.fundamentals import (
     _ANNOUNCE_SOURCE,
     _REPORTS,
     _announce_date_map,

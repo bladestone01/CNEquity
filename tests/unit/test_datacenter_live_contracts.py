@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from ashare_lake.adapters.eastmoney.datacenter import (
+from cnequity.adapters.eastmoney.datacenter import (
     EastMoneyDatacenterError,
     fetch_datacenter,
 )
-from ashare_lake.adapters.eastmoney.datacenter_contracts import (
+from cnequity.adapters.eastmoney.datacenter_contracts import (
     required_datacenter_contracts,
 )
-from ashare_lake.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 
 
 @pytest.mark.network

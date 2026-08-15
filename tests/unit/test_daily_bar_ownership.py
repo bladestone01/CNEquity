@@ -1,6 +1,6 @@
 from datetime import date
 
-from ashare_lake.steps.common import classify_daily_bar_ownership
+from cnequity.steps.common import classify_daily_bar_ownership
 
 
 def test_daily_bar_ownership_is_explicit_for_every_symbol():

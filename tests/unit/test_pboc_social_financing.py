@@ -13,8 +13,8 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from ashare_lake.adapters.pboc import _tables
-from ashare_lake.adapters.pboc import social_financing as sf
+from cnequity.adapters.pboc import _tables
+from cnequity.adapters.pboc import social_financing as sf
 
 # Layout of a real workbook: bilingual title, an explicit unit line, a header
 # block, then one row per month. Months the PBOC has not published yet are

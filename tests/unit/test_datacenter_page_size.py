@@ -13,12 +13,12 @@ from datetime import date
 
 import pytest
 
-from ashare_lake.adapters.eastmoney.datacenter import (
+from cnequity.adapters.eastmoney.datacenter import (
     _MAX_PAGE_NUMBER,
     EastMoneyDatacenterError,
     fetch_datacenter,
 )
-from ashare_lake.adapters.eastmoney.sectors import fetch_sector_members
+from cnequity.adapters.eastmoney.sectors import fetch_sector_members
 
 _BOARDS_PER_SYMBOL = 18
 

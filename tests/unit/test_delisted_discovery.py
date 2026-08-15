@@ -5,9 +5,9 @@ from datetime import date, timedelta
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.domain.symbols import ISSUED_CODE_BANDS, issued_code_space
-from ashare_lake.steps.delisted import (
+from cnequity.config import Config
+from cnequity.domain.symbols import ISSUED_CODE_BANDS, issued_code_space
+from cnequity.steps.delisted import (
     LIVE_RECENCY_DAYS,
     catalog_path,
     classify_catalog,
