@@ -1,9 +1,9 @@
-<h1 align="center">CNE · CNEquity</h1>
-<p align="center"><b>本地可日更的 A 股研究湖，为人和 AI agent 保存可复查的历史</b></p>
+<h1 align="center">CNEquity · 中国市场金融数据基础设施</h1>
+<p align="center"><b>面向中国市场的开源数据底座，从 A 股开始，为人和 AI agent 提供可日更、可复查的历史</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/cnequity/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/cnequity/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://pypi.org/project/cnequity/"><img src="https://img.shields.io/pypi/v/cnequity.svg" alt="PyPI"></a>
+  <a href="https://pypi.org/project/cnequity/"><img src="https://img.shields.io/pypi/v/cnequity?logo=pypi&amp;logoColor=white&amp;color=orange" alt="PyPI version"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="https://rootsunc.github.io/cnequity/"><img src="https://img.shields.io/badge/docs-site-2f80ed.svg" alt="Docs site"></a>
@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  无需 token、免注册、自托管。一次采集，支持持续日更；用 Python、DuckDB、Polars 或 AI agent 查询。<br>
+  开源、免注册、自托管。一次采集，支持持续日更；用 Python、DuckDB、Polars 或 AI agent 访问同一份数据。<br>
   <b>42 个注册数据集 · L0–L8 九类研究数据 · 复权 / 历史股票池 / PIT · 行级溯源 · MCP</b>
 </p>
 
@@ -19,16 +19,18 @@
   <img src="docs/assets/cne-serve-hero-demo.png" alt="CNEquity 示意控制台：合成的全覆盖热力图演示" width="1100" />
 </p>
 
-> 上图是用于 README 的合成演示图，覆盖热力图明确标注为 `ILLUSTRATIVE DEMO`，不代表当前生产数据状态。真实控制台只读，不会修改数据湖。
+> 上图是用于 README 的演示图，不代表当前生产数据状态。真实控制台只读，不会修改数据湖。
+
+CNEquity 把分散在多个来源的行情、基本面、事件、资金、行业与宏观数据，沉淀为开放格式的本地数据层。当前从 A 股出发，但产品边界不止于一次取数或单一市场：同一套采集、质量、溯源和研究契约，可以继续承载更多中国市场数据。
 
 ## 架构
 
 <p align="center">
-  <img src="architecture-diagram-v2.png" alt="CNEquity 架构图" width="1100" />
+  <img src="docs/assets/architecture-diagram-v3.png" alt="CNEquity 架构图" width="1100" />
 </p>
 <p align="center"><sub>公开数据源 → 适配与编排 → 本地 Parquet 湖 → 质量、查询与只读服务</sub></p>
 
-核心边界很简单：适配器负责把多源数据取回来；编排层负责 DAG、批次和重试；数据先进入 staging，再压实为 curated 并计算 derived；质量层持续审计；查询和服务层只读消费。展开见[架构说明](docs/architecture/overview.md)。
+核心边界：适配器负责把多源数据取回来；编排层负责 DAG、批次和重试；数据先进入 staging，再压实为 curated 并计算 derived；质量层持续审计；查询和服务层只读消费。展开见[架构说明](docs/architecture/overview.md)。
 
 ## 先看它是否适合你
 

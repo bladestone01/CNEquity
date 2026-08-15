@@ -1,9 +1,9 @@
-<h1 align="center">CNE · CNEquity</h1>
-<p align="center"><b>A daily-refreshable local A-share research lake for humans and AI agents</b></p>
+<h1 align="center">CNEquity · Open financial data infrastructure</h1>
+<p align="center"><b>Starting with China's A-share market, CNEquity turns fragmented sources into a refreshable, reproducible local data layer for people and AI agents.</b></p>
 
 <p align="center">
   <a href="https://github.com/rootSunc/cnequity/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/cnequity/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://pypi.org/project/cnequity/"><img src="https://img.shields.io/pypi/v/cnequity.svg" alt="PyPI"></a>
+  <a href="https://pypi.org/project/cnequity/"><img src="https://img.shields.io/pypi/v/cnequity?logo=pypi&amp;logoColor=white&amp;color=orange" alt="PyPI version"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="https://rootsunc.github.io/cnequity/"><img src="https://img.shields.io/badge/docs-site-2f80ed.svg" alt="Docs site"></a>
@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  No token or signup. Self-hosted, daily-refreshable, and queryable from Python, DuckDB, Polars, or AI agents.<br>
+  Open, self-hosted, and signup-free. Ingest once, refresh daily, and serve the same contract to Python, DuckDB, Polars, or AI agents.<br>
   <b>42 registered datasets · adjustment / historical universes / PIT · 6 MCP tools · row-level provenance</b>
 </p>
 
@@ -21,10 +21,12 @@
 
 > This is a synthetic README demo, explicitly marked `ILLUSTRATIVE DEMO`; the full-coverage heatmap is not a claim about current production data.
 
+CNEquity is open financial data infrastructure for China markets. It starts with A-shares and turns fragmented market, fundamental, event, flow, industry, and macro sources into an open, local data layer with provenance and a stable research contract.
+
 ## Architecture
 
 <p align="center">
-  <img src="architecture-diagram-v2.png" alt="CNEquity architecture diagram" width="1100" />
+  <img src="docs/assets/architecture-diagram-v3.png" alt="CNEquity architecture diagram" width="1100" />
 </p>
 <p align="center"><sub>Public sources → adapters and orchestration → local Parquet lake → quality, query, and read-only services</sub></p>
 
@@ -156,7 +158,7 @@ Point by point: [comparison](docs/comparison.md).
 
 ## Datasets
 
-**39** registered datasets (synced with `domain/datasets.py`). Columns:
+**42** registered datasets (synced with `domain/datasets.py`). Columns:
 [schema](docs/datasets/schema.md); orchestration:
 [catalog](docs/datasets/catalog.md).
 

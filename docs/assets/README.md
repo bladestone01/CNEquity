@@ -1,9 +1,12 @@
 # README assets
 
 READMEs embed the survivorship chart, `cne-demo.png`, the clearly labelled
-illustrative `cne-serve-hero-demo.png`, and the root-level
-`architecture-diagram-v2.png` architecture diagram. The factual dashboard
+illustrative `cne-serve-hero-demo.png`, and the
+`architecture-diagram-v3.png` architecture diagram. The factual dashboard
 capture remains available as `cne-serve-hero.png` for documentation and QA.
+The previous v2 source and compatibility export remain as
+`architecture-diagram.svg` and `architecture-diagram-v2.png`; the illustrative
+dashboard source is `serve-hero-demo.html`.
 Other PNGs below are for docs / social / re-exports.
 PyPI uses the short `README.pypi.md`, which points at absolute
 `raw.githubusercontent.com` URLs for the one demo screenshot it embeds.
@@ -16,9 +19,12 @@ would only push the actual content down.
 
 | File | Size | Use |
 |------|------|-----|
-| `og-image-brand.png` | 1280×640 | The one to upload. GitHub caps the social preview at 1MB. |
-| `og-image.png` | 1280×640 | Earlier variant without the brand panel. |
-| `social-preview.png` | 1774×887 | Higher-res master of `og-image-brand.png`. Too large to upload as-is; keep it for re-exports. |
+| `social-preview-cn.png` | 1774×887 | Chinese social preview to upload. |
+| `social-preview-en.png` | 1774×887 | English social preview to upload. |
+| `social-preview-bilingual.png` | 1774×887 | Combined Chinese/English preview for review or re-export. |
+| `og-image-brand.png` | 1280×640 | Compact branded fallback card. GitHub caps the social preview at 1MB. |
+| `og-image.png` | 1280×640 | Compact fallback export. |
+| `social-preview.png` | 1774×887 | Legacy generic export retained for compatibility. |
 | `og-image.html` | — | Source the PNGs are rendered from. |
 
 ## Charts
@@ -38,11 +44,11 @@ python scripts/survivorship_gap.py --lang zh --svg docs/assets/survivorship-gap.
 
 ## Architecture
 
-`architecture-overview.png` is a legacy export and is no longer embedded. The
-current diagram is `architecture-diagram-v2.png` in the repository root and is
-embedded in both `README.md` and `README.en.md`; update both references when
-storage layers, orchestration, quality, query, operations, Serve, or MCP
-boundaries change.
+`architecture-overview.png` is a compatibility export and is no longer
+embedded. The current diagram is `architecture-diagram-v3.png` in this
+directory and is embedded in both `README.md` and `README.en.md`; update both
+references when storage layers, orchestration, quality, query, operations,
+Serve, or MCP boundaries change.
 
 ## Terminal screenshots
 

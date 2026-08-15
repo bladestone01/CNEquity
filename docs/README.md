@@ -1,6 +1,6 @@
-# CNE · CNEquity — 本地可日更的 A 股研究湖
+# CNEquity — 面向中国市场的开源金融数据基础设施
 
-本地可日更、可溯源的金融数据研究底座：多源采集、编排、标准化，交付带溯源、列契约稳定的 Parquet 湖。
+从 A 股开始的本地可日更、可溯源金融数据底座：多源采集、编排、标准化，交付带溯源、列契约稳定的 Parquet 数据层。
 
 CLI 是 `cne`，Python 包是 `cnequity`。推荐：`pip install cnequity` → `cne demo` 试玩，或 `cne config init` 写出配置再跑全量。数据湖根目录默认 `./data/cnequity`。
 
@@ -69,4 +69,4 @@ CLI 是 `cne`，Python 包是 `cnequity`。推荐：`pip install cnequity` → `
 
 ## 版本
 
-当前主线 **0.6.0**（见 [CHANGELOG](../CHANGELOG.md)）。从 0.3.x 升级先看其中的 *Upgrading from 0.3.x*，以及 [installation — 升级](getting-started/installation.md#从-03x-升级到-04)。
+当前主线 **0.7.0**（见 [CHANGELOG](../CHANGELOG.md)）。从 0.3.x 升级先看其中的 *Upgrading from 0.3.x*，以及 [installation — 升级](getting-started/installation.md#从-03x-升级到-04)。

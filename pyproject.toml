@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cnequity"
 version = "0.7.0"
-description = "Self-hosted A-share Parquet data lake with multi-source ingest and daily orchestration"
+description = "Open, self-hosted financial data infrastructure for China markets, starting with A-shares"
 # Short PyPI page (absolute links only). GitHub keeps README.md / README.en.md.
 readme = "README.pypi.md"
 requires-python = ">=3.10"

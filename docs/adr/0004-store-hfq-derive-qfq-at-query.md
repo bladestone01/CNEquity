@@ -63,7 +63,7 @@ That requirement is met at **query time**, not in `derived/adj_factors`.
   symbol (`adj_is_exact` / `strict_adj` apply as today).
 - DuckDB `daily_bars_adj` view uses hfq + window anchor (not a stored qfq join).
 - Lakes with only legacy `adjust_type='qfq'` partitions need
-  `asl derive adj_factors` after config change.
+  `cne derive adj_factors` after config change.
 - External consumers reading `derived/adj_factors` parquet directly must apply
   the same ratio if they need qfq.
 

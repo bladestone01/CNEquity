@@ -1,8 +1,10 @@
-# CNE · CNEquity — 免费、自托管的 A 股历史数据层
+# CNEquity — 开源的中国市场金融数据基础设施
 
-**别再每次重拉、自己拼复权了。** 一条命令，把可日更的研究数据落到本地。自动保存历史口径，供 Python、DuckDB、Polars 和 AI agent 使用。
+**从 A 股开始，把分散的市场数据变成可复查的本地底座。** 一条命令落地、持续日更，供 Python、DuckDB、Polars 和 AI agent 使用。
 
-CLI：`cne` · 包名：`cnequity` · **Python ≥ 3.10** · **只做数据层**（回测和信号留给下游）。
+CLI：`cne` · 包名：`cnequity` · **Python ≥ 3.10** · **只做数据基础设施**（回测和信号留给下游）。
+
+[![PyPI version](https://img.shields.io/pypi/v/cnequity?logo=pypi&logoColor=white&color=orange)](https://pypi.org/project/cnequity/)
 
 - **真数上手**：`cne demo` 几分钟出真实日线（不是 mock）；`--research` 可验证复权口径
 - **日更能挂着跑**：水位 / 失败重试 / 质量审计
