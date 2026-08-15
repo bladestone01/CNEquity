@@ -32,10 +32,10 @@ atomically and readers are never blocked, whereas a DuckDB file takes an
 exclusive write lock that would put ``asl serve`` and the nightly run in each
 other's way.
 
-Rebuilds are whole-dataset. Incremental refresh is possible — the partitions a
-run touched are recoverable from ``ingestion_batches.window_start/window_end``
-— but a full pass over a 1.3GB lake reads two low-cardinality string columns and
-a timestamp, and is not worth pre-optimising against.
+Rebuilds are whole-dataset. Row totals come from Parquet footers, while
+provenance columns are scanned in bounded batches and aggregated immediately.
+That keeps the simple full-rebuild contract without making memory consumption
+grow with the size of the lake.
 """
 
 from __future__ import annotations
@@ -45,8 +45,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
+import duckdb
 import polars as pl
+import pyarrow.parquet as pq
 
 from ashare_lake.config import Config
 from ashare_lake.domain.datasets import DATASETS, DatasetSpec
@@ -60,7 +63,13 @@ PROVENANCE_STATS_FILE = "provenance_stats.parquet"
 STATS_SUMMARY_FILE = "stats-latest.json"
 _REBUILD_LOCK = ".rebuild.lock"
 
-# Column polars fills with the source file of each row. Underscored so it cannot
+# Keep each provenance query small enough that rebuilding stats has a stable
+# memory profile. A single file may exceed the target; DuckDB's configured
+# memory limit and temp directory cover that case by spilling to disk.
+PROVENANCE_SCAN_BATCH_ROWS = 5_000_000
+PROVENANCE_SCAN_BATCH_FILES = 128
+
+# Column DuckDB fills with the source file of each row. Underscored so it cannot
 # collide with a dataset column.
 _PATH_COL = "__source_file"
 
@@ -138,7 +147,7 @@ def dataset_root(config: Config, spec: DatasetSpec) -> Path:
 def _partition_of(file_path: str, partition_col: str | None) -> str | None:
     """Partition value owning *file_path*, read back from its directory name.
 
-    Derived from the path polars hands back rather than from a lookup keyed on
+    Derived from the path DuckDB hands back rather than from a lookup keyed on
     the path we passed in, because the two need not be spelled identically once
     the scanner has resolved them.
     """
@@ -167,27 +176,109 @@ def _empty(schema: dict[str, pl.DataType]) -> pl.DataFrame:
     return pl.DataFrame(schema=schema)
 
 
+class _ParquetInfo(NamedTuple):
+    path: Path
+    rows: int
+    columns: frozenset[str]
+
+
+def _inspect_parquet(path: Path) -> _ParquetInfo:
+    """Read the facts stats needs from a Parquet footer, without data pages."""
+    parquet = pq.ParquetFile(path)
+    return _ParquetInfo(
+        path=path,
+        rows=int(parquet.metadata.num_rows),
+        columns=frozenset(parquet.schema_arrow.names),
+    )
+
+
+def _provenance_batches(files: list[_ParquetInfo]) -> list[list[_ParquetInfo]]:
+    """Pack whole files into bounded scans while preserving deterministic order."""
+    batches: list[list[_ParquetInfo]] = []
+    current: list[_ParquetInfo] = []
+    current_rows = 0
+    for file in files:
+        batch_is_full = (
+            current_rows + file.rows > PROVENANCE_SCAN_BATCH_ROWS
+            or len(current) >= PROVENANCE_SCAN_BATCH_FILES
+        )
+        if current and batch_is_full:
+            batches.append(current)
+            current = []
+            current_rows = 0
+        current.append(file)
+        current_rows += file.rows
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _sql_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _scan_provenance_batch(
+    con: duckdb.DuckDBPyConnection,
+    files: list[_ParquetInfo],
+    keys: list[str],
+) -> pl.DataFrame:
+    """Aggregate one bounded batch, tolerating columns absent from that batch."""
+    batch_columns = set().union(*(file.columns for file in files))
+    present_keys = [key for key in keys if key in batch_columns]
+    selected = [f"filename AS {_PATH_COL}", *(_sql_ident(key) for key in present_keys)]
+    selected.append("count(*) AS row_count")
+    if "fetched_at" in batch_columns:
+        selected.extend(
+            [
+                "min(fetched_at) AS fetched_at_min",
+                "max(fetched_at) AS fetched_at_max",
+            ]
+        )
+    grouped = ["filename", *(_sql_ident(key) for key in present_keys)]
+    query = (
+        f"SELECT {', '.join(selected)} "
+        "FROM read_parquet(?, filename=true, union_by_name=true) "
+        f"GROUP BY {', '.join(grouped)}"
+    )
+    frame = pl.from_arrow(con.execute(query, [[str(file.path) for file in files]]).arrow())
+    for key in keys:
+        if key not in frame.columns:
+            frame = frame.with_columns(pl.lit(None, dtype=pl.Utf8).alias(key))
+    if "fetched_at_min" not in frame.columns:
+        frame = frame.with_columns(
+            pl.lit(None, dtype=pl.Datetime("us", "UTC")).alias("fetched_at_min"),
+            pl.lit(None, dtype=pl.Datetime("us", "UTC")).alias("fetched_at_max"),
+        )
+    return frame
+
+
 def _provenance_for_dataset(
-    files: list[Path], spec: DatasetSpec
-) -> tuple[pl.DataFrame, dict[str | None, int]]:
-    """Per-(partition, source, data_version) rows, and rows per partition.
+    config: Config, files: list[_ParquetInfo], spec: DatasetSpec
+) -> pl.DataFrame:
+    """Per-(partition, source, data_version) rows with bounded scan memory.
 
-    One scan for the whole dataset, not one per partition: a day-partitioned
-    decade is ~4,000 directories, and 4,000 query plans over one file each cost
-    far more than one plan over 4,000.
+    Parquet footers determine the available columns up front. Data pages are
+    read in row-bounded batches, reduced to a few provenance rows immediately,
+    and only those small aggregates are combined in Polars.
     """
-    lf = pl.scan_parquet([str(f) for f in files], include_file_paths=_PATH_COL)
-    names = set(lf.collect_schema().names())
+    names = set().union(*(file.columns for file in files))
     keys = [col for col in _PROVENANCE_KEYS if col in names]
+    if not keys:
+        return _empty(PROVENANCE_STATS_SCHEMA)
 
-    aggs = [pl.len().alias("row_count")]
-    if "fetched_at" in names:
-        aggs += [
-            pl.col("fetched_at").min().alias("fetched_at_min"),
-            pl.col("fetched_at").max().alias("fetched_at_max"),
-        ]
+    scratch = stats_root(config) / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute(f"SET memory_limit='{config.duckdb_memory_limit}'")
+        con.execute(f"SET threads={config.duckdb_threads}")
+        escaped_scratch = scratch.resolve().as_posix().replace("'", "''")
+        con.execute(f"SET temp_directory='{escaped_scratch}'")
+        frames = [_scan_provenance_batch(con, batch, keys) for batch in _provenance_batches(files)]
+    finally:
+        con.close()
 
-    per_file = lf.group_by([_PATH_COL, *keys]).agg(aggs).collect()
+    per_file = pl.concat(frames, how="diagonal_relaxed")
     per_file = per_file.with_columns(
         pl.col(_PATH_COL)
         .map_elements(
@@ -197,23 +288,11 @@ def _provenance_for_dataset(
         .alias("partition")
     )
 
-    rows_by_partition = {
-        row["partition"]: int(row["row_count"])
-        for row in per_file.group_by("partition")
-        .agg(pl.col("row_count").sum())
-        .iter_rows(named=True)
-    }
-
-    if not keys:
-        # Nothing to attribute a row to; the partition totals still stand.
-        return _empty(PROVENANCE_STATS_SCHEMA), rows_by_partition
-
     rollup = [pl.col("row_count").sum().alias("row_count")]
-    if "fetched_at" in names:
-        rollup += [
-            pl.col("fetched_at_min").min().alias("fetched_at_min"),
-            pl.col("fetched_at_max").max().alias("fetched_at_max"),
-        ]
+    rollup += [
+        pl.col("fetched_at_min").min().alias("fetched_at_min"),
+        pl.col("fetched_at_max").max().alias("fetched_at_max"),
+    ]
     provenance = (
         per_file.group_by(["partition", *keys])
         .agg(rollup)
@@ -223,7 +302,7 @@ def _provenance_for_dataset(
         if col not in provenance.columns:
             provenance = provenance.with_columns(pl.lit(None, dtype=dtype).alias(col))
     provenance = provenance.select(list(PROVENANCE_STATS_SCHEMA)).cast(PROVENANCE_STATS_SCHEMA)
-    return provenance, rows_by_partition
+    return provenance
 
 
 def _stats_for_dataset(
@@ -235,8 +314,8 @@ def _stats_for_dataset(
     if not groups:
         return None
 
-    all_files = [f for files in groups.values() for f in files]
-    provenance, rows_by_partition = _provenance_for_dataset(all_files, spec)
+    inspected = {path: _inspect_parquet(path) for files in groups.values() for path in files}
+    provenance = _provenance_for_dataset(config, list(inspected.values()), spec)
 
     partition_rows = []
     for value, files in groups.items():
@@ -248,7 +327,7 @@ def _stats_for_dataset(
                 "granularity": granularity_of(part) if part else None,
                 "period_start": part.start if part else None,
                 "period_end": part.end if part else None,
-                "row_count": rows_by_partition.get(value, 0),
+                "row_count": sum(inspected[file].rows for file in files),
                 "file_count": len(files),
                 "bytes": sum(f.stat().st_size for f in files if f.is_file()),
             }

@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from ashare_lake.file_lock import exclusive_lock
+from ashare_lake.storage import stats as stats_module
 from ashare_lake.storage.stats import (
     load_partition_stats,
     load_provenance_stats,
@@ -76,6 +77,64 @@ def test_row_counts_split_by_source_within_one_partition(config):
     assert provenance["source"].to_list() == ["sina", "tdx_protocol"]
     assert provenance["row_count"].to_list() == [1, 2]
     assert provenance["row_count"].sum() == partitions["row_count"].item()
+
+
+def test_provenance_rollup_is_preserved_across_bounded_batches(config, monkeypatch):
+    """Batching is an execution detail; identical provenance still rolls up."""
+    monkeypatch.setattr(stats_module, "PROVENANCE_SCAN_BATCH_ROWS", 2)
+    calls = 0
+    original = stats_module._scan_provenance_batch
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stats_module, "_scan_provenance_batch", counted)
+    root = config.curated_root / "daily_bars"
+    _write(root, "trade_date=2026-07-31", [_bar("600519.SH"), _bar("000001.SZ")])
+    _write(
+        root,
+        "trade_date=2026-07-31",
+        [_bar("000002.SZ"), _bar("000003.SZ", source="sina")],
+        name="part-1",
+    )
+
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    assert calls == 2
+    assert load_partition_stats(config)["row_count"].item() == 4
+    provenance = load_provenance_stats(config).sort("source")
+    assert provenance["source"].to_list() == ["sina", "tdx_protocol"]
+    assert provenance["row_count"].to_list() == [1, 3]
+
+
+def test_footer_counts_dataset_without_provenance_columns(config):
+    """Row counts do not depend on scanning or having attribution columns."""
+    root = config.curated_root / "daily_bars"
+    _write(root, "trade_date=2026-07-31", [{"symbol": "600519.SH"}, {"symbol": "000001.SZ"}])
+
+    result = rebuild_stats(config, datasets=["daily_bars"])
+
+    assert result.rows == 2
+    assert load_partition_stats(config)["row_count"].item() == 2
+    assert load_provenance_stats(config).is_empty()
+
+
+def test_provenance_without_fetched_at_gets_null_time_span(config):
+    root = config.curated_root / "daily_bars"
+    _write(
+        root,
+        "trade_date=2026-07-31",
+        [{"symbol": "600519.SH", "source": "tdx_protocol", "data_version": "v2"}],
+    )
+
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    row = load_provenance_stats(config).row(0, named=True)
+    assert row["row_count"] == 1
+    assert row["fetched_at_min"] is None
+    assert row["fetched_at_max"] is None
 
 
 @pytest.mark.parametrize(
