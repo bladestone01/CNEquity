@@ -12,6 +12,7 @@ from datetime import date
 from typing import Any
 
 from ashare_lake.config import Config, WaveConfig
+from ashare_lake.domain.market_time import shanghai_today
 from ashare_lake.orchestrator.deps import step_execution_levels, validate_steps_registered
 from ashare_lake.orchestrator.init_phases import (
     DEFAULT_INIT_PHASES,
@@ -50,7 +51,7 @@ class JobEngine:
         retry_failed_only: bool = False,
         finalize_run: bool = True,
     ) -> dict[str, Any]:
-        trade_date = trade_date or date.today()
+        trade_date = trade_date or shanghai_today()
         self.config._backfill = backfill
 
         if run_id and retry_failed_only:
@@ -574,7 +575,7 @@ class JobEngine:
         run_id: str | None = None,
         keep_going: bool = False,
     ) -> dict[str, Any]:
-        trade_date = trade_date or date.today()
+        trade_date = trade_date or shanghai_today()
         if not run_id:
             latest = self.manifest.latest_incomplete_init_run()
             if latest is None:
@@ -597,7 +598,7 @@ class JobEngine:
         recorded = meta.get("history_start")
         if recorded and not getattr(self.config, "_backfill_start", None):
             self.config._backfill_start = date.fromisoformat(str(recorded))
-        meta["resumed_at"] = date.today().isoformat()
+        meta["resumed_at"] = shanghai_today().isoformat()
         self.manifest.update_run_metadata(run_id, meta)
 
         logger.info("Resuming init run %s", run_id)
@@ -663,7 +664,7 @@ class JobEngine:
         resume_run_id: str | None = None,
         keep_going: bool = False,
     ) -> dict[str, Any]:
-        trade_date = trade_date or date.today()
+        trade_date = trade_date or shanghai_today()
         if resume or resume_run_id:
             return self.resume_init(
                 trade_date,

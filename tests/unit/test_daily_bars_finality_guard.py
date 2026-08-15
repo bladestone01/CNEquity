@@ -22,6 +22,15 @@ def test_rejects_current_trading_day_before_shanghai_cutoff(config):
         _reject_unfinished_daily_bar_window(config, TRADING_DAY, now=now)
 
 
+def test_rejects_future_end_while_shanghai_session_is_open(config):
+    # A host in UTC+14 may already report the next local calendar date while
+    # Shanghai is still on the current trading day.
+    now = datetime(2026, 8, 10, 1, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(RuntimeError, match="not final until 15:05 Asia/Shanghai"):
+        _reject_unfinished_daily_bar_window(config, date(2026, 8, 11), now=now)
+
+
 def test_allows_current_trading_day_at_shanghai_cutoff(config):
     now = datetime(2026, 8, 10, 7, 5, tzinfo=timezone.utc)
 

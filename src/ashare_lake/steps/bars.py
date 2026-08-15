@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time
 
 from ashare_lake.adapters.tdx_protocol.client import (
     fetch_index_bars,
     normalize_with_source,
 )
 from ashare_lake.config import Config
+from ashare_lake.domain.market_time import shanghai_now
 from ashare_lake.domain.symbols import split_by_quote_source
 from ashare_lake.orchestrator.registry import register_step
 from ashare_lake.orchestrator.worker_pool import fetch_daily_bars_parallel
@@ -22,7 +23,6 @@ from ashare_lake.steps.common import (
 
 logger = logging.getLogger(__name__)
 
-_SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
 # The closing auction ends at 15:00. Leave a small settlement buffer before
 # trusting TDX's current daily bar; the default core schedule starts at 16:00.
 _DAILY_BAR_FINAL_AT = time(15, 5)
@@ -45,18 +45,16 @@ def _reject_unfinished_daily_bar_window(
     Historical windows and non-trading days are unaffected. ``now`` is
     injectable so the timezone boundary is deterministic in tests.
     """
-    anchor = now or datetime.now(timezone.utc)
-    if anchor.tzinfo is None:
-        raise ValueError("daily_bars finality clock must be timezone-aware")
-    shanghai_now = anchor.astimezone(_SHANGHAI_TZ)
-    if end != shanghai_now.date() or shanghai_now.time() >= _DAILY_BAR_FINAL_AT:
+    local_now = shanghai_now(now)
+    today = local_now.date()
+    if end < today or local_now.time() >= _DAILY_BAR_FINAL_AT:
         return
-    if not is_trading_day(config, end):
+    if not is_trading_day(config, today):
         return
     raise RuntimeError(
         f"daily_bars {end}: the current A-share session is not final until "
         f"{_DAILY_BAR_FINAL_AT.strftime('%H:%M')} Asia/Shanghai "
-        f"(now {shanghai_now.strftime('%H:%M:%S')}); refusing to stage an "
+        f"(now {local_now.strftime('%H:%M:%S')}); refusing to stage an "
         "in-progress daily bar. Re-run after the cutoff."
     )
 

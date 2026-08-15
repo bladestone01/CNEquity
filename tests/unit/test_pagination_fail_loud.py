@@ -103,9 +103,7 @@ class _OverrunClient:
             "announcementTitle": "行政处罚决定",
             "adjunctUrl": "/x.pdf",
         }
-        return _Response(
-            {"announcements": [item], "hasMore": True, "totalpages": self.total_pages}
-        )
+        return _Response({"announcements": [item], "hasMore": True, "totalpages": self.total_pages})
 
     def close(self):
         return None

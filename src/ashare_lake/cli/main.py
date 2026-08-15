@@ -14,6 +14,7 @@ from ashare_lake.domain.datasets import (
     fetch_semantics,
     get_dataset,
 )
+from ashare_lake.domain.market_time import shanghai_today
 from ashare_lake.orchestrator.engine import JobEngine
 from ashare_lake.orchestrator.manifest import Manifest
 from ashare_lake.orchestrator.run_lock import RunLockError
@@ -261,7 +262,7 @@ def init(
         click.echo(f"Initialized layout at {cfg.data_root}")
         return
 
-    td = date.fromisoformat(trade_date) if trade_date else date.today()
+    td = date.fromisoformat(trade_date) if trade_date else shanghai_today()
 
     history_start = _init_history_start(profile, since_str, td)
     if history_start is not None:
@@ -412,7 +413,7 @@ def _run_stale_only(cfg, engine, trade_date: date | None, *, backfill: bool) -> 
     no later run could have recovered them. Per-host retries already exist and
     were exhausted; what was missing was a second window.
     """
-    anchor = _last_trading_day(cfg, trade_date or date.today())
+    anchor = _last_trading_day(cfg, trade_date or shanghai_today())
     steps = stale_fetch_steps(cfg, anchor)
     if not steps:
         click.echo(f"nothing stale as of {anchor.isoformat()}")
@@ -589,7 +590,7 @@ def run_catchup(
             raise click.ClickException(f"{td.isoformat()} is not a trading day")
     else:
         # Walk back up to ~3 weeks for long holidays.
-        end = date.today()
+        end = shanghai_today()
         start = date.fromordinal(end.toordinal() - 21)
         days = list_trading_dates(cfg, start, end)
         if not days:
