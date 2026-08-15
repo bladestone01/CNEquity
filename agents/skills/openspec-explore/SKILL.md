@@ -53,6 +53,8 @@ Depending on what the user brings, you might:
 - Sketch tradeoffs
 - Recommend a path (if asked)
 
+> **当需求已确定、开始技术方案讨论时**：必须遵守 `agents/rules/solution-options-comparison.md` —— 至少提出 3 种可行方案，逐条给出优缺点/适用场景，用对比表并排，最后给出推荐与被否方案的一句话原因。少于 3 方案直接选型需用户明确豁免。
+
 **Visualize**
 ```
 ┌─────────────────────────────────────────┐

@@ -40,6 +40,7 @@ logs/
 .claude/
 .codex/
 .gemini/
+.opencode/
 .agents
 .mcp.json
 .cursor/
