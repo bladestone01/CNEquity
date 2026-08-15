@@ -5,8 +5,8 @@
 ## 软件引用
 
 ```text
-cnequity Contributors. (2026). cnequity: A free, self-hosted historical
-data layer for A-shares (Version 0.6.0). Apache-2.0.
+CNEquity Contributors. (2026). CNEquity: A free, self-hosted historical
+data layer for A-shares (Version 0.7.0). Apache-2.0.
 https://github.com/rootSunc/cnequity
 ```
 
