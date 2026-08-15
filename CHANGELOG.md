@@ -6,6 +6,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-15
+
 ### Changed
 
 - **Renamed the project from `ashare-lake` to `CNEquity`.** The old name

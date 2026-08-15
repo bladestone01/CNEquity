@@ -6,8 +6,8 @@ abstract: >-
   A free, self-hosted historical data layer for A-shares with multi-source
   ingestion, provenance, adjustment semantics, point-in-time fundamentals,
   and reproducible Parquet storage.
-version: 0.6.0
-date-released: 2026-08-10
+version: 0.7.0
+date-released: 2026-08-15
 authors:
   - name: "CNEquity Contributors"
 license: Apache-2.0
