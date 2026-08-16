@@ -51,6 +51,7 @@ def test_compact_skips_dataset_with_failed_batches(tmp_path):
     state.set_date("daily_bars", date(2024, 6, 27))
 
     result = step_compact(cfg, trade_date, run_id, {})
+    assert result["status"] == "warning"
     skipped = result.get("context_updates", {}).get("compact_skipped_datasets", [])
     assert skipped == [{"dataset": "daily_bars", "incomplete_batches": 1}]
     assert state.get_date("daily_bars") == date(2024, 6, 27)

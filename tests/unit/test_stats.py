@@ -109,6 +109,19 @@ def test_provenance_rollup_is_preserved_across_bounded_batches(config, monkeypat
     assert provenance["row_count"].to_list() == [1, 3]
 
 
+def test_provenance_nested_partition_fragments_keep_partition_key(config):
+    root = config.curated_root / "daily_bars"
+    _write(root, "trade_date=2026-07-31", [_bar("600519.SH")])
+    nested = root / "trade_date=2026-07-31" / ".old-fragments"
+    _write(nested, None, [_bar("000001.SZ")], name="part-old")
+
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    provenance = load_provenance_stats(config)
+    assert provenance["partition"].to_list() == ["2026-07-31"]
+    assert provenance["row_count"].item() == 2
+
+
 def test_footer_counts_dataset_without_provenance_columns(config):
     """Row counts do not depend on scanning or having attribution columns."""
     root = config.curated_root / "daily_bars"
@@ -178,6 +191,20 @@ def test_merge_style_datasets_get_a_null_partition(config):
     assert row["granularity"] is None
     assert row["period_start"] is None
     assert row["row_count"] == 1
+
+
+def test_merge_style_stats_include_nested_fragments(config):
+    root = config.curated_root / "instruments"
+    _write(root, None, [_bar("600519.SH")])
+    nested = root / ".old-fragments"
+    nested.mkdir()
+    _write(nested, None, [_bar("000001.SZ")], name="part-old")
+
+    result = rebuild_stats(config, datasets=["instruments"])
+
+    assert result.rows == 2
+    row = load_partition_stats(config).row(0, named=True)
+    assert row["file_count"] == 2
 
 
 def test_stray_root_files_are_counted_not_dropped(config):

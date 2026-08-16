@@ -175,7 +175,7 @@ def test_snapshot_daily_bars_backup_writes_snapshot(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(
         "cnequity.quality.failover.fetch_em_daily_bars",
-        lambda symbols, start, end: _bars_df(trade_date=end),
+        lambda symbols, start, end, config=None: _bars_df(trade_date=end),
     )
     fo.snapshot_daily_bars_backup(
         cfg,

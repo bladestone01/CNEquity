@@ -26,14 +26,14 @@ class StagingWriter:
         out_dir = self.staging_root / dataset / f"run_id={run_id}"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"part-{batch_id}.parquet"
-        df.write_parquet(path, compression="zstd")
+        write_parquet_atomic(path, df, compression="zstd")
         return path
 
     def list_run_files(self, dataset: str, run_id: str) -> list[Path]:
         run_dir = self.staging_root / dataset / f"run_id={run_id}"
         if not run_dir.exists():
             return []
-        return sorted(run_dir.glob("*.parquet"))
+        return sorted(run_dir.rglob("*.parquet"))
 
 
 class CuratedWriter:
@@ -55,6 +55,16 @@ class CuratedWriter:
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / part_name
         write_parquet_atomic(path, df, compression="zstd")
+        # A previous run may have left fragment files (for example after a
+        # staging write used ``part-<batch>.parquet``), possibly under a
+        # temporary subdirectory. Keeping them beside the canonical file makes
+        # every later recursive scan read the same rows twice, even though the
+        # merge above already deduplicated them. Remove only old parquet
+        # descendants, and only after the atomic replacement has succeeded so
+        # a failed write leaves the old partition readable.
+        for stale in out_dir.rglob("*.parquet"):
+            if stale != path:
+                stale.unlink()
         return path
 
 
@@ -80,7 +90,7 @@ def compact_dataset(
     curated_root: Path,
     dataset: str,
     run_id: str,
-    partition_col: str = "trade_date",
+    partition_col: str | None = "trade_date",
     granularity: Granularity | None = None,
 ) -> int:
     """Merge staging batches into curated partitions, dedupe by PK.
@@ -108,8 +118,22 @@ def compact_dataset(
         combined = combined.sort("fetched_at").unique(subset=pk, keep="last")
 
     if partition_col not in combined.columns:
-        out_path = curated.curated_root / dataset / "part-merged.parquet"
+        out_dir = curated.curated_root / dataset
+        out_path = out_dir / "part-merged.parquet"
+        existing_files = sorted(out_dir.rglob("*.parquet")) if out_dir.exists() else []
+        if existing_files:
+            existing = pl.concat(
+                [validate_dataframe(pl.read_parquet(path), dataset) for path in existing_files],
+                how="diagonal_relaxed",
+            )
+            combined = pl.concat([existing, combined], how="diagonal_relaxed")
+            if pk:
+                combined = combined.sort("fetched_at").unique(subset=pk, keep="last")
+        out_dir.mkdir(parents=True, exist_ok=True)
         write_parquet_atomic(out_path, combined, compression="zstd")
+        for stale in out_dir.rglob("*.parquet"):
+            if stale != out_path:
+                stale.unlink()
         return combined.height
 
     _PART = "__partition__"
@@ -124,7 +148,7 @@ def compact_dataset(
         existing_dir = curated.partition_path(dataset, partition_col, val_str)
         frames = [group]
         if existing_dir.exists():
-            for existing in existing_dir.glob("*.parquet"):
+            for existing in existing_dir.rglob("*.parquet"):
                 frames.append(validate_dataframe(pl.read_parquet(existing), dataset))
         merged = pl.concat(frames, how="diagonal_relaxed")
         if pk:

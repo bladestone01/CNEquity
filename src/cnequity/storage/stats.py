@@ -56,7 +56,7 @@ from cnequity.domain.datasets import DATASETS, DatasetSpec
 from cnequity.domain.partitions import granularity_of, parse_partition
 from cnequity.file_lock import LockUnavailable, exclusive_lock
 from cnequity.query.parquet_scan import list_partitions, partition_dir
-from cnequity.storage.atomic import write_parquet_atomic
+from cnequity.storage.atomic import write_json_atomic, write_parquet_atomic
 
 PARTITION_STATS_FILE = "partition_stats.parquet"
 PROVENANCE_STATS_FILE = "provenance_stats.parquet"
@@ -154,8 +154,11 @@ def _partition_of(file_path: str, partition_col: str | None) -> str | None:
     if partition_col is None:
         return None
     prefix = f"{partition_col}="
-    parent = Path(file_path).parent.name
-    return parent[len(prefix) :] if parent.startswith(prefix) else None
+    for parent in Path(file_path).parents:
+        name = parent.name
+        if name.startswith(prefix):
+            return name[len(prefix) :]
+    return None
 
 
 def _file_groups(root: Path, spec: DatasetSpec) -> dict[str | None, list[Path]]:
@@ -166,7 +169,9 @@ def _file_groups(root: Path, spec: DatasetSpec) -> dict[str | None, list[Path]]:
             files = sorted(partition_dir(root, spec.partition_col, part.value).rglob("*.parquet"))
             if files:
                 groups[part.value] = files
-    loose = sorted(root.glob("*.parquet"))
+    loose = sorted(
+        root.rglob("*.parquet") if spec.partition_col is None else root.glob("*.parquet")
+    )
     if loose:
         groups[None] = loose
     return groups
@@ -433,8 +438,13 @@ def _write_summary(config: Config, result: StatsResult, rebuilt: set[str]) -> No
         "rebuilt_datasets": sorted(rebuilt),
         **result.as_dict(),
     }
-    with open(summary_path(config), "w", encoding="utf-8") as handle:
-        json.dump(summary, handle, ensure_ascii=False, indent=2, default=str)
+    write_json_atomic(
+        summary_path(config),
+        summary,
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
 
 
 def _latest_run_id(config: Config) -> str | None:

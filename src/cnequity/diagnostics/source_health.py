@@ -40,6 +40,7 @@ from enum import Enum
 from urllib.parse import urlparse
 
 from cnequity.config import Config
+from cnequity.domain.market_time import shanghai_today
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,7 @@ def _recent_weekday(days_back: int = 3) -> date:
     current session until after the close, and a probe that goes red every
     morning teaches people to ignore it.
     """
-    day = date.today() - timedelta(days=days_back)
+    day = shanghai_today() - timedelta(days=days_back)
     while day.weekday() >= 5:
         day -= timedelta(days=1)
     return day

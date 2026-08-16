@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -89,3 +90,42 @@ class StateStore:
                 payload[field] = candidate.isoformat()
                 payload["updated_at"] = datetime.now(timezone.utc).isoformat()
                 self._write_payload(path, payload)
+
+    def clear_date(
+        self,
+        dataset: str,
+        *,
+        field: str = "last_success_trade_date",
+    ) -> None:
+        """Remove a date watermark while preserving other dataset state."""
+        path = self._path(dataset)
+        with self._dataset_lock(dataset):
+            payload = self._read_payload(path)
+            if field not in payload:
+                return
+            payload.pop(field, None)
+            payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._write_payload(path, payload)
+
+    def get_string_set(self, dataset: str, field: str) -> set[str]:
+        """Read a set-like string field from a dataset state payload."""
+        with self._dataset_lock(dataset):
+            value = self._read_payload(self._path(dataset)).get(field)
+        if value is None:
+            return set()
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"state field {dataset}.{field} must be a list of strings")
+        return set(value)
+
+    def set_string_set(self, dataset: str, field: str, values: Iterable[str]) -> None:
+        """Atomically replace a set-like string field in a dataset state payload."""
+        normalized = sorted(set(values))
+        path = self._path(dataset)
+        with self._dataset_lock(dataset):
+            payload = self._read_payload(path)
+            if normalized:
+                payload[field] = normalized
+            else:
+                payload.pop(field, None)
+            payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._write_payload(path, payload)

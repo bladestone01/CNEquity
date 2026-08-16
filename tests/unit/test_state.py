@@ -41,3 +41,15 @@ def test_state_store_update_max_concurrent_processes(tmp_path):
             fut.result()
     store = StateStore(meta_root)
     assert store.get_date("daily_bars") == date(2024, 6, 28)
+
+
+def test_state_store_string_set_roundtrip(tmp_path):
+    store = StateStore(tmp_path / "meta")
+    assert store.get_string_set("adj_factors", "retry_symbols") == set()
+    store.set_string_set("adj_factors", "retry_symbols", {"600519.SH", "000001.SZ"})
+    assert store.get_string_set("adj_factors", "retry_symbols") == {
+        "600519.SH",
+        "000001.SZ",
+    }
+    store.set_string_set("adj_factors", "retry_symbols", [])
+    assert store.get_string_set("adj_factors", "retry_symbols") == set()

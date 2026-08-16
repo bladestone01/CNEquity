@@ -146,6 +146,20 @@ def test_range_query_prunes_whole_periods_but_still_filters_edges(tmp_path):
     assert df["trade_date"].to_list() == [date(2024, 9, 1)]
 
 
+def test_range_query_keeps_root_files_in_a_mixed_layout(tmp_path):
+    root = tmp_path / "curated" / "index_bars"
+    _write_partition(root, "trade_date", "2024", [date(2024, 3, 1)])
+    pl.DataFrame(
+        {"symbol": ["A"], "trade_date": [date(2024, 6, 28)], "x": [1.0]}
+    ).write_parquet(root / "part-legacy.parquet")
+
+    df = collect_parquet_root(
+        root, partition_col="trade_date", start=date(2024, 6, 27), end=date(2024, 6, 30)
+    )
+
+    assert df["trade_date"].to_list() == [date(2024, 6, 28)]
+
+
 def test_window_outside_coverage_returns_empty_not_error(tmp_path):
     root = tmp_path / "curated" / "index_bars"
     _write_partition(root, "trade_date", "2024", [date(2024, 3, 1)])
@@ -162,6 +176,7 @@ def test_stray_directory_is_not_read_as_a_partition(tmp_path):
     _write_partition(root, "trade_date", "backup-copy", [date(2024, 3, 1)])
 
     assert [p.value for p in list_partitions(root, "trade_date")] == ["2024"]
+    assert collect_parquet_root(root, partition_col="trade_date").height == 1
 
 
 # --- compact writes at the configured granularity ---------------------------
