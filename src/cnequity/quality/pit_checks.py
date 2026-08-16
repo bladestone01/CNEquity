@@ -53,8 +53,7 @@ def pit_announce_date_findings(config: Config) -> list[dict]:
         else:
             check = "pit_missing_announce_date"
             message = (
-                f"{bad.height} {spec.name} row(s) have no announce_date and cannot be "
-                "queried PIT"
+                f"{bad.height} {spec.name} row(s) have no announce_date and cannot be queried PIT"
             )
         findings.append(
             {

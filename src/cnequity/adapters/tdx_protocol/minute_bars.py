@@ -262,8 +262,7 @@ def fetch_minute_bars_paginated(
             page_signature = hashlib.sha256(repr(raw).encode()).hexdigest()
             if page_signature in seen_page_signatures:
                 raise TdxMinuteBarsError(
-                    f"TDX {frequency} pagination did not advance for {sym} "
-                    f"at start={offset_pos}"
+                    f"TDX {frequency} pagination did not advance for {sym} at start={offset_pos}"
                 )
             seen_page_signatures.add(page_signature)
 

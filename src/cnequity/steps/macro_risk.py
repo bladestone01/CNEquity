@@ -43,9 +43,9 @@ def _existing_market_breadth_dates(config: Config, days: list[date]) -> set[date
     required = {"trade_date", "metric_id", "value"}
     if not required.issubset(frame.columns):
         return set()
-    valid_metric = pl.col("metric_id").is_in(sorted(_MARKET_BREADTH_METRICS)) & pl.col(
-        "value"
-    ).is_not_null()
+    valid_metric = (
+        pl.col("metric_id").is_in(sorted(_MARKET_BREADTH_METRICS)) & pl.col("value").is_not_null()
+    )
     complete = (
         frame.group_by("trade_date")
         .agg(
@@ -59,14 +59,15 @@ def _existing_market_breadth_dates(config: Config, days: list[date]) -> set[date
     )
     if complete.is_empty():
         return set()
-    wide = frame.filter(valid_metric).group_by("trade_date").agg(
-        [
-            pl.col("value")
-            .filter(pl.col("metric_id") == metric)
-            .first()
-            .alias(metric)
-            for metric in MARKET_BREADTH_METRICS
-        ]
+    wide = (
+        frame.filter(valid_metric)
+        .group_by("trade_date")
+        .agg(
+            [
+                pl.col("value").filter(pl.col("metric_id") == metric).first().alias(metric)
+                for metric in MARKET_BREADTH_METRICS
+            ]
+        )
     )
     valid = wide.filter(
         (pl.col("total_count") > 0)
@@ -78,16 +79,13 @@ def _existing_market_breadth_dates(config: Config, days: list[date]) -> set[date
         & (pl.col("advance_ratio") >= 0)
         & (pl.col("advance_ratio") <= 1)
         & (
-            pl.col("advance_count")
-            + pl.col("decline_count")
-            + pl.col("flat_count")
+            pl.col("advance_count") + pl.col("decline_count") + pl.col("flat_count")
             == pl.col("total_count")
         )
         & (pl.col("limit_up_count") <= pl.col("advance_count"))
         & (pl.col("limit_down_count") <= pl.col("decline_count"))
         & (
-            (pl.col("advance_ratio") - pl.col("advance_count") / pl.col("total_count"))
-            .abs()
+            (pl.col("advance_ratio") - pl.col("advance_count") / pl.col("total_count")).abs()
             <= 1e-6
         )
     )
@@ -119,14 +117,12 @@ def _validate_market_breadth_snapshot(df: pl.DataFrame) -> pl.DataFrame:
     missing = sorted(required - set(df.columns))
     if missing:
         raise RuntimeError(
-            "market_breadth: derived snapshot is missing required column(s): "
-            + ", ".join(missing)
+            "market_breadth: derived snapshot is missing required column(s): " + ", ".join(missing)
         )
     if df["trade_date"].n_unique() != 1:
         raise RuntimeError("market_breadth: derived snapshot must contain exactly one trade_date")
     valid = df.filter(
-        pl.col("metric_id").is_in(sorted(_MARKET_BREADTH_METRICS))
-        & pl.col("value").is_not_null()
+        pl.col("metric_id").is_in(sorted(_MARKET_BREADTH_METRICS)) & pl.col("value").is_not_null()
     )
     if df.height != len(_MARKET_BREADTH_METRICS) or (
         valid.height != len(_MARKET_BREADTH_METRICS)
@@ -146,8 +142,7 @@ def _validate_market_breadth_snapshot(df: pl.DataFrame) -> pl.DataFrame:
         total is None
         or total <= 0
         or any(
-            value < 0
-            for value in [*counts, values["limit_up_count"], values["limit_down_count"]]
+            value < 0 for value in [*counts, values["limit_up_count"], values["limit_down_count"]]
         )
         or not 0 <= values["advance_ratio"] <= 1
         or sum(counts) != total

@@ -61,8 +61,7 @@ def _validate_earnings_schedule_snapshot(df: pl.DataFrame) -> pl.DataFrame:
     )
     if not counts.is_empty():
         details = ", ".join(
-            f"{row['report_period']}={row['_symbol_count']}"
-            for row in counts.iter_rows(named=True)
+            f"{row['report_period']}={row['_symbol_count']}" for row in counts.iter_rows(named=True)
         )
         raise RuntimeError(
             "earnings_disclosure_schedule: incomplete report-period snapshot; each "

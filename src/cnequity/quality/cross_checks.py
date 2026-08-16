@@ -230,7 +230,9 @@ def valuation_day_coverage_ratio(config: Config, trade_date: date) -> float | No
     )
     bars_syms = set(
         _traded_bars(
-            scan_parquet_root(bars_root, partition_col="trade_date", start=trade_date, end=trade_date)
+            scan_parquet_root(
+                bars_root, partition_col="trade_date", start=trade_date, end=trade_date
+            )
         )
         .select("symbol")
         .unique()
@@ -498,11 +500,7 @@ def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
             continue
         joined = (
             bars.join(factors, on=["symbol", "trade_date"], how="inner")
-            .filter(
-                pl.col("close").is_not_null()
-                & (pl.col("close") > 0)
-                & (pl.col("factor") > 0)
-            )
+            .filter(pl.col("close").is_not_null() & (pl.col("close") > 0) & (pl.col("factor") > 0))
             .with_columns((pl.col("close") * pl.col("factor")).alias("_adj"))
             .select("symbol", "trade_date", "close", "_adj")
             .sort(["symbol", "trade_date"])
@@ -514,12 +512,8 @@ def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
             pl.concat([carry, joined], how="vertical_relaxed")
             .sort(["symbol", "trade_date"])
             .with_columns(
-                (
-                    pl.col("close") / pl.col("close").shift(1).over("symbol") - 1
-                ).alias("raw_ret"),
-                (
-                    pl.col("_adj") / pl.col("_adj").shift(1).over("symbol") - 1
-                ).alias("adj_ret"),
+                (pl.col("close") / pl.col("close").shift(1).over("symbol") - 1).alias("raw_ret"),
+                (pl.col("_adj") / pl.col("_adj").shift(1).over("symbol") - 1).alias("adj_ret"),
                 pl.col("trade_date").shift(1).over("symbol").alias("prev_trade_date"),
             )
         )
@@ -608,11 +602,7 @@ def _structural_adjustments(
             symbols=symbols,
         )
         .select("symbol", "change_date", "change_reason")
-        .filter(
-            pl.col("change_reason")
-            .fill_null("")
-            .str.contains(_STRUCTURAL_ADJUSTMENT_RE)
-        )
+        .filter(pl.col("change_reason").fill_null("").str.contains(_STRUCTURAL_ADJUSTMENT_RE))
         .select("symbol", "change_date", "change_reason")
         .unique()
         .collect()
@@ -841,7 +831,7 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
                         for row in explained.select(
                             "symbol", "trade_date", "change_reason"
                         ).iter_rows(named=True)
-                    ][: _SAMPLE],
+                    ][:_SAMPLE],
                 }
             )
             missing = missing.join(
@@ -928,8 +918,7 @@ def _symbol_last_bar(config: Config, trade_date: date) -> pl.DataFrame | None:
     # after its final print. Those rows must not hide a survivorship gap.
     bars = _traded_bars(bars)
     out = (
-        bars
-        .group_by("symbol")
+        bars.group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("first_bar"),
             pl.col("trade_date").max().alias("last_bar"),

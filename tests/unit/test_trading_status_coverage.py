@@ -136,9 +136,9 @@ def test_current_st_universe_keeps_legacy_rows_in_mixed_daily_schema(tmp_path):
     )
     bars = cfg.curated_root / "daily_bars"
     bars.mkdir(parents=True)
-    pl.DataFrame(
-        {"symbol": ["600519.SH"], "trade_date": [date(2024, 6, 27)]}
-    ).write_parquet(bars / "legacy.parquet")
+    pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [date(2024, 6, 27)]}).write_parquet(
+        bars / "legacy.parquet"
+    )
     pl.DataFrame(
         {"symbol": ["000001.SZ"], "trade_date": [date(2024, 6, 28)], "volume": [0]}
     ).write_parquet(bars / "current.parquet")

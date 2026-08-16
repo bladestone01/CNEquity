@@ -24,8 +24,7 @@ def _valid_rows(day: date) -> list[dict]:
         "total_count": 10.0,
     }
     return [
-        {"trade_date": day, "metric_id": metric, "value": value}
-        for metric, value in values.items()
+        {"trade_date": day, "metric_id": metric, "value": value} for metric, value in values.items()
     ]
 
 

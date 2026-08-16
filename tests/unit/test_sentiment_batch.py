@@ -184,9 +184,7 @@ def test_news_sentiment_universe_ignores_zero_volume_amount_placeholder(tmp_path
         }
     ).write_parquet(part / "part-000.parquet")
 
-    assert _news_sentiment_symbols(Config(data_root=root), date(2024, 6, 28), 1) == [
-        "600519.SH"
-    ]
+    assert _news_sentiment_symbols(Config(data_root=root), date(2024, 6, 28), 1) == ["600519.SH"]
 
 
 def test_batch_sentiment_http_fallback_when_no_headlines(news_batch_lake):

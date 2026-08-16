@@ -8,7 +8,10 @@ def test_industry_index_empty_derive_is_retryable_warning(tmp_path, monkeypatch)
     cfg = Config(data_root=tmp_path / "data")
     monkeypatch.setattr(
         "cnequity.derive.industry_index.derive_industry_index",
-        lambda *_args, **_kwargs: {"rows": 0, "note": "no priced returns in [2026-08-07, 2026-08-07]"},
+        lambda *_args, **_kwargs: {
+            "rows": 0,
+            "note": "no priced returns in [2026-08-07, 2026-08-07]",
+        },
     )
 
     result = step_derive_industry_index(cfg, date(2026, 8, 7), "run-empty", {})

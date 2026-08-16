@@ -91,8 +91,15 @@ def _load_trading_calendar_df(
                 for path in files:
                     try:
                         frames.append(pl.read_parquet(path))
-                    except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as file_exc:
-                        logger.warning("skipping unreadable trading_calendar file %s: %s", path, file_exc)
+                    except (
+                        FileNotFoundError,
+                        OSError,
+                        pl.exceptions.PolarsError,
+                        ValueError,
+                    ) as file_exc:
+                        logger.warning(
+                            "skipping unreadable trading_calendar file %s: %s", path, file_exc
+                        )
                 if frames:
                     frame = pl.concat(frames, how="diagonal_relaxed")
                     if "trade_date" in frame.columns:
@@ -493,9 +500,7 @@ def _existing_dates(config: Config, dataset: str, date_col: str) -> set[date]:
         return set()
     from cnequity.query.parquet_scan import scan_parquet_files
 
-    return set(
-        scan_parquet_files(files).select(date_col).unique().collect()[date_col].to_list()
-    )
+    return set(scan_parquet_files(files).select(date_col).unique().collect()[date_col].to_list())
 
 
 def walk_day_backfill(

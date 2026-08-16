@@ -172,10 +172,7 @@ def market_breadth_findings(
         frame.group_by("trade_date")
         .agg(
             pl.col("metric_id")
-            .filter(
-                pl.col("metric_id").is_in(list(_METRIC_SET))
-                & pl.col("value").is_not_null()
-            )
+            .filter(pl.col("metric_id").is_in(list(_METRIC_SET)) & pl.col("value").is_not_null())
             .n_unique()
             .alias("metric_count")
         )
@@ -184,13 +181,8 @@ def market_breadth_findings(
     incomplete = observed.filter(pl.col("metric_count") != len(MARKET_BREADTH_METRICS))
     if not incomplete.is_empty():
         incomplete_dates = [row["trade_date"] for row in incomplete.iter_rows(named=True)]
-        seen = (
-            non_null.group_by("trade_date")
-            .agg(pl.col("metric_id").unique().alias("metrics"))
-        )
-        seen_by_date = {
-            row["trade_date"]: row["metrics"] for row in seen.iter_rows(named=True)
-        }
+        seen = non_null.group_by("trade_date").agg(pl.col("metric_id").unique().alias("metrics"))
+        seen_by_date = {row["trade_date"]: row["metrics"] for row in seen.iter_rows(named=True)}
         missing_by_date = {
             day.isoformat(): sorted(_METRIC_SET - set(seen_by_date.get(day, [])))
             for day in incomplete_dates
@@ -234,10 +226,7 @@ def market_breadth_findings(
     # malformed observation. Duplicate keys are reported separately above.
     wide = non_null.group_by("trade_date").agg(
         [
-            pl.col("value")
-            .filter(pl.col("metric_id") == metric)
-            .first()
-            .alias(metric)
+            pl.col("value").filter(pl.col("metric_id") == metric).first().alias(metric)
             for metric in MARKET_BREADTH_METRICS
         ]
     )
@@ -256,16 +245,13 @@ def market_breadth_findings(
             | (pl.col("advance_ratio") < 0)
             | (pl.col("advance_ratio") > 1)
             | (
-                pl.col("advance_count")
-                + pl.col("decline_count")
-                + pl.col("flat_count")
+                pl.col("advance_count") + pl.col("decline_count") + pl.col("flat_count")
                 != pl.col("total_count")
             )
             | (pl.col("limit_up_count") > pl.col("advance_count"))
             | (pl.col("limit_down_count") > pl.col("decline_count"))
             | (
-                (pl.col("advance_ratio") - pl.col("advance_count") / pl.col("total_count"))
-                .abs()
+                (pl.col("advance_ratio") - pl.col("advance_count") / pl.col("total_count")).abs()
                 > 1e-6
             )
         )

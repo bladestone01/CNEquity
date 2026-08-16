@@ -103,14 +103,11 @@ def _suspended_pairs(
     # traded-only scan per file so legacy files without volume retain row-based
     # semantics when they coexist with current files.
     bars_all_lf = scan_parquet_root(bars_root, partition_col="trade_date")
-    traded_bars_lf = scan_parquet_root(
-        bars_root, partition_col="trade_date", traded_only=True
-    )
+    traded_bars_lf = scan_parquet_root(bars_root, partition_col="trade_date", traded_only=True)
     traded_symbols = traded_bars_lf.select("symbol").unique()
     bars_lf = bars_all_lf.join(traded_symbols, on="symbol", how="semi")
     sym_range = (
-        bars_lf
-        .group_by("symbol")
+        bars_lf.group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("bmin"),
             pl.col("trade_date").max().alias("bmax"),

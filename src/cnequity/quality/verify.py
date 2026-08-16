@@ -186,17 +186,20 @@ def _complete_derived_days(config: Config, spec: DatasetSpec) -> list[date]:
         required = {"trade_date", "metric_id", "value"}
         if not required.issubset(names):
             return []
-        valid = pl.col("metric_id").is_in(
-            [
-                "advance_count",
-                "decline_count",
-                "flat_count",
-                "limit_up_count",
-                "limit_down_count",
-                "advance_ratio",
-                "total_count",
-            ]
-        ) & pl.col("value").is_not_null()
+        valid = (
+            pl.col("metric_id").is_in(
+                [
+                    "advance_count",
+                    "decline_count",
+                    "flat_count",
+                    "limit_up_count",
+                    "limit_down_count",
+                    "advance_ratio",
+                    "total_count",
+                ]
+            )
+            & pl.col("value").is_not_null()
+        )
         return sorted(
             lf.group_by("trade_date")
             .agg(

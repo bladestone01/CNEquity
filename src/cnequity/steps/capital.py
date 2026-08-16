@@ -183,12 +183,8 @@ def step_northbound_flows(config: Config, trade_date: date, run_id: str, context
         )
         return {"rows_read": 0, "rows_written": 0}
     expected_dates = list_trading_dates(config, start, end)
-    expected = {
-        (day, "SH") for day in expected_dates if day >= NORTHBOUND_HISTORY_START
-    }
-    expected.update(
-        (day, "SZ") for day in expected_dates if day >= _NORTHBOUND_SZ_START
-    )
+    expected = {(day, "SH") for day in expected_dates if day >= NORTHBOUND_HISTORY_START}
+    expected.update((day, "SZ") for day in expected_dates if day >= _NORTHBOUND_SZ_START)
     required_columns = {"trade_date", "channel"}
     missing_columns = sorted(required_columns - set(df.columns))
     if missing_columns:
@@ -275,14 +271,11 @@ def _validate_northbound_holdings_snapshot(df: pl.DataFrame) -> pl.DataFrame:
     missing = sorted(required - set(df.columns))
     if missing:
         raise RuntimeError(
-            "northbound_holdings: response is missing required column(s): "
-            + ", ".join(missing)
+            "northbound_holdings: response is missing required column(s): " + ", ".join(missing)
         )
     unique = df.unique(subset=["symbol", "trade_date", "channel"])
     counts = unique.group_by("trade_date").agg(pl.len().alias("_holding_rows"))
-    channel_counts = unique.group_by("trade_date", "channel").agg(
-        pl.len().alias("_channel_rows")
-    )
+    channel_counts = unique.group_by("trade_date", "channel").agg(pl.len().alias("_channel_rows"))
     missing_channels: list[str] = []
     for row in counts.iter_rows(named=True):
         observed = set(
@@ -296,9 +289,7 @@ def _validate_northbound_holdings_snapshot(df: pl.DataFrame) -> pl.DataFrame:
             expected.add("SZ")
         missing = sorted(expected - observed)
         if missing:
-            missing_channels.append(
-                f"{row['trade_date']} missing {','.join(missing)}"
-            )
+            missing_channels.append(f"{row['trade_date']} missing {','.join(missing)}")
 
     incomplete_channels = channel_counts.filter(
         pl.col("_channel_rows") < _MIN_NORTHBOUND_HOLDING_ROWS_PER_CHANNEL

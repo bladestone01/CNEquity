@@ -156,9 +156,7 @@ def test_fetch_rejects_a_repeated_page_without_a_configured_page_cap():
     page = _session(date(2026, 7, 31)) * 4
     client = FakeClient([page[:800], page[:800]])
     with pytest.raises(TdxMinuteBarsError, match="pagination did not advance"):
-        fetch_minute_bars_paginated(
-            client, "600519.SH", date(2020, 1, 1), date(2026, 7, 31)
-        )
+        fetch_minute_bars_paginated(client, "600519.SH", date(2020, 1, 1), date(2026, 7, 31))
     assert len(client.calls) == 2
 
 

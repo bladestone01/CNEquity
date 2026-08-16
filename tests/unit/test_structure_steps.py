@@ -79,9 +79,7 @@ def test_existing_cni_as_of_date_requires_every_backfill_index(cfg):
             }
             for i in range(50)
         )
-    pl.DataFrame(
-        rows
-    ).write_parquet(part / "part-001.parquet")
+    pl.DataFrame(rows).write_parquet(part / "part-001.parquet")
     assert st._existing_as_of_dates(
         cfg,
         "index_constituents",
@@ -343,9 +341,7 @@ def test_industry_members_backfill_rejects_thin_month(cfg, monkeypatch):
         st.step_industry_members(cfg, date(2024, 1, 31), "run-thin", {})
 
 
-def test_industry_members_backfill_drops_thin_month_and_keeps_healthy_month(
-    cfg, monkeypatch
-):
+def test_industry_members_backfill_drops_thin_month_and_keeps_healthy_month(cfg, monkeypatch):
     cfg._backfill = True
     cfg._backfill_start = date(2024, 1, 1)
     cfg._backfill_end = date(2024, 2, 29)
@@ -371,7 +367,9 @@ def test_industry_members_backfill_drops_thin_month_and_keeps_healthy_month(
         }
     )
     thin = healthy.head(5).with_columns(pl.lit(thin_date).alias("as_of_date"))
-    monkeypatch.setattr(st, "expand_sw_industry_as_of", lambda intervals, todo: pl.concat([thin, healthy]))
+    monkeypatch.setattr(
+        st, "expand_sw_industry_as_of", lambda intervals, todo: pl.concat([thin, healthy])
+    )
 
     result = st.step_industry_members(cfg, date(2024, 2, 29), "run-mixed", {})
     assert result["rows_written"] == 1000

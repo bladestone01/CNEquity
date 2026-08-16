@@ -82,7 +82,11 @@ def _validate_source_date(item: dict, trade_date: date, *, column: str) -> None:
     source-contract failure.
     """
     raw = next(
-        (item[key] for key in ("announcementTime", "announcementDate", "announceDate") if key in item),
+        (
+            item[key]
+            for key in ("announcementTime", "announcementDate", "announceDate")
+            if key in item
+        ),
         None,
     )
     if raw is None or str(raw).strip() == "":
@@ -238,11 +242,7 @@ def fetch_announcement_index(
                 ) from exc
 
             if not batch:
-                if (
-                    isinstance(total_pages, int)
-                    and total_pages > 0
-                    and page <= total_pages
-                ) or (
+                if (isinstance(total_pages, int) and total_pages > 0 and page <= total_pages) or (
                     total_pages is None and has_more
                 ):
                     raise RuntimeError(

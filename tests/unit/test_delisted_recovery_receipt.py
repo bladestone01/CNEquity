@@ -24,7 +24,7 @@ def test_delisted_recovery_gate_requires_receipt_integrity_and_bars(tmp_path):
     receipt_path.write_text(
         json.dumps(
             {
-                    "schema_version": 2,
+                "schema_version": 2,
                 "claim": delisted._RECOVERY_CLAIM,
                 "status": "complete",
                 "scope": {key: value for key, value in scope.items() if key != "targets"},

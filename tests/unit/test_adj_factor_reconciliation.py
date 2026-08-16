@@ -287,15 +287,14 @@ def test_share_count_restructuring_explains_missing_corp_action(tmp_path):
         [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 30.0), ("A", _D[3], 30.0)],
     )
     _write_factors(
-        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 1 / 3), ("A", _D[3], 1 / 3)]
+        cfg.data_root,
+        [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 1 / 3), ("A", _D[3], 1 / 3)],
     )
     _write_corp_actions(cfg.data_root, _DECOY)
     _write_share_structure(cfg.data_root, [("A", _D[2], "缩股")])
 
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
-    assert {finding["check"] for finding in findings} == {
-        "adjustment_explained_by_share_structure"
-    }
+    assert {finding["check"] for finding in findings} == {"adjustment_explained_by_share_structure"}
     assert findings[0]["severity"] == "info"
 
 

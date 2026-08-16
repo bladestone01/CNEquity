@@ -271,12 +271,7 @@ def test_northbound_flows_tolerates_small_gap_from_untracked_hk_holidays(cfg, mo
     # 40 expected (day, channel) rows (20 days x SH+SZ); observed omits just
     # one HK-holiday-style day entirely, an ~5% gap, well under tolerance.
     hk_holiday = requested[7]
-    rows = [
-        (day, channel)
-        for day in requested
-        for channel in ("SH", "SZ")
-        if day != hk_holiday
-    ]
+    rows = [(day, channel) for day in requested for channel in ("SH", "SZ") if day != hk_holiday]
     monkeypatch.setattr(
         cap,
         "fetch_northbound_flows_range",

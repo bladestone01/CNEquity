@@ -1648,9 +1648,7 @@ def catalog(config_path: str):
                 # lazy count(*) resolves from parquet metadata without
                 # decoding data pages — cheap even on a 10-year lake.
                 rows = (
-                    int(scan_parquet_files(files).select(pl.len()).collect().item())
-                    if files
-                    else 0
+                    int(scan_parquet_files(files).select(pl.len()).collect().item()) if files else 0
                 )
                 entries.append({"dataset": ds_dir.name, "files": len(files), "rows": rows})
     click.echo(json.dumps(entries, indent=2))

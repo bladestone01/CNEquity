@@ -273,9 +273,7 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
                 details.append(f"missing {len(missing)} requested symbol(s)")
             if unexpected:
                 details.append(f"returned {len(unexpected)} unexpected symbol(s)")
-            raise RuntimeError(
-                "trading_status: incomplete daily snapshot; " + "; ".join(details)
-            )
+            raise RuntimeError("trading_status: incomplete daily snapshot; " + "; ".join(details))
         return frame
 
     df, _findings = fetch_incremental_daily(
@@ -305,9 +303,7 @@ def _is_all_a(symbol: str) -> bool:
         info = parse_symbol(symbol)
     except ValueError:
         return False
-    return is_all_a_symbol(info.code, info.exchange) and not is_cdr_symbol(
-        info.code, info.exchange
-    )
+    return is_all_a_symbol(info.code, info.exchange) and not is_cdr_symbol(info.code, info.exchange)
 
 
 def _resolve_explicit_st_symbols(config: Config, raw: list[str]) -> list[str]:

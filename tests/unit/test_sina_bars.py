@@ -205,10 +205,7 @@ def test_symbol_probe_uses_last_positive_volume_bar(monkeypatch):
 
 
 def test_symbol_probe_expands_after_zero_volume_tail(monkeypatch):
-    tail = [
-        {"day": f"2026-06-{day:02d}", "volume": "0"}
-        for day in range(9, 19)
-    ]
+    tail = [{"day": f"2026-06-{day:02d}", "volume": "0"} for day in range(9, 19)]
     full = [{"day": "2020-07-31", "volume": "100"}, *tail]
     seen: list[int] = []
 

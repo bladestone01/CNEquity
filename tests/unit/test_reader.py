@@ -553,9 +553,9 @@ def test_list_datasets_does_not_count_empty_daily_bar_partition_as_coverage(tmp_
     cfg = Config(data_root=tmp_path)
     root = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
     root.mkdir(parents=True)
-    pl.DataFrame(schema={"symbol": pl.String, "trade_date": pl.Date, "volume": pl.Int64}).write_parquet(
-        root / "empty.parquet"
-    )
+    pl.DataFrame(
+        schema={"symbol": pl.String, "trade_date": pl.Date, "volume": pl.Int64}
+    ).write_parquet(root / "empty.parquet")
 
     row = list_datasets(config=cfg).filter(pl.col("dataset") == "daily_bars").to_dicts()[0]
 

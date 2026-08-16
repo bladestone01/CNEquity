@@ -135,9 +135,7 @@ def test_daily_bars_placeholder_only_partition_is_not_covered(tmp_path):
             {"symbol": ["600519.SH"], "trade_date": [day], "volume": [volume]}
         ).write_parquet(part / "part-0.parquet")
 
-    gaps = verify_dataset(
-        cfg, DATASETS["daily_bars"], anchor=sessions[-1], watermark=sessions[-1]
-    )
+    gaps = verify_dataset(cfg, DATASETS["daily_bars"], anchor=sessions[-1], watermark=sessions[-1])
 
     interior = [gap for gap in gaps if gap.kind == "interior"]
     assert len(interior) == 1
@@ -152,10 +150,7 @@ def test_dense_watermark_can_start_at_operational_baseline(tmp_path):
     _write_days(cfg, "daily_bars", [sessions[0], sessions[2]])
 
     assert last_contiguous_dense_date(cfg, DATASETS["daily_bars"]) == sessions[0]
-    assert (
-        last_contiguous_dense_date(cfg, DATASETS["daily_bars"], start=sessions[2])
-        == sessions[2]
-    )
+    assert last_contiguous_dense_date(cfg, DATASETS["daily_bars"], start=sessions[2]) == sessions[2]
 
 
 def test_empty_day_partition_is_not_covered_for_dense_non_bar_dataset(tmp_path):

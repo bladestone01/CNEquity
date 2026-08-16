@@ -91,8 +91,7 @@ def fetch_regulatory_events(
                     page_signature = _pagination_page_signature(batch)
                     if page_signature in seen_page_signatures:
                         raise RuntimeError(
-                            f"CNINFO regulatory pagination repeated page for "
-                            f"{column} page {page}"
+                            f"CNINFO regulatory pagination repeated page for {column} page {page}"
                         )
                     seen_page_signatures.add(page_signature)
             except Exception as exc:
@@ -106,11 +105,7 @@ def fetch_regulatory_events(
                 ) from exc
 
             if not batch:
-                if (
-                    isinstance(total_pages, int)
-                    and total_pages > 0
-                    and page <= total_pages
-                ) or (
+                if (isinstance(total_pages, int) and total_pages > 0 and page <= total_pages) or (
                     total_pages is None and has_more
                 ):
                     raise RuntimeError(

@@ -1153,8 +1153,7 @@ def repair_delisted_instruments(
             bars_root, partition_col="trade_date", hive=False, traded_only=True
         )
         last_bars = (
-            bars
-            .group_by("symbol")
+            bars.group_by("symbol")
             .agg(pl.col("trade_date").max().alias("last_bar"))
             .filter(pl.col("last_bar") < cutoff)
             .collect()

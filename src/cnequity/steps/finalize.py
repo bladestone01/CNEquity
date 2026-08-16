@@ -362,11 +362,7 @@ def step_derive_industry_index(
     rows = int(summary.get("rows") or 0)
     out: dict = {"rows_read": rows, "rows_written": rows}
     note = str(summary.get("note") or "")
-    if (
-        rows == 0
-        and "already current" not in note
-        and "no 申万 membership rows" not in note
-    ):
+    if rows == 0 and "already current" not in note and "no 申万 membership rows" not in note:
         out["status"] = "warning"
         out["context_updates"] = {
             "audit_findings": [

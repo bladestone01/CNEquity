@@ -503,9 +503,7 @@ def test_derive_industry_index_cleans_duplicate_existing_rows(tmp_path, monkeypa
     assert [path.name for path in part.rglob("*.parquet")] == ["part-000.parquet"]
 
 
-def test_derive_industry_index_aligns_new_schema_with_existing_partition(
-    tmp_path, monkeypatch
-):
+def test_derive_industry_index_aligns_new_schema_with_existing_partition(tmp_path, monkeypatch):
     """A rerun must repair old UInt32 partitions after new-frame type changes."""
     cfg = Config(data_root=tmp_path / "data")
     part = cfg.derived_root / "industry_index" / "trade_date=2026"

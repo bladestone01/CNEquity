@@ -103,8 +103,7 @@ def _validate_daily_membership_snapshot(
     missing = sorted(required_columns - set(frame.columns))
     if missing:
         raise RuntimeError(
-            f"{dataset}: membership snapshot is missing required column(s): "
-            + ", ".join(missing)
+            f"{dataset}: membership snapshot is missing required column(s): " + ", ".join(missing)
         )
     member_count = frame.unique(subset=count_columns).height
     thin_dimensions = {
@@ -129,6 +128,7 @@ def _validate_daily_membership_snapshot(
 def step_sector_members(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("sector_members: eastmoney source disabled in config")
+
     def _fetch(d: date) -> pl.DataFrame:
         return _validate_daily_membership_snapshot(
             fetch_sector_members(d, config=config),
@@ -231,11 +231,7 @@ def _backfill_index_constituents(config: Config, trade_date: date, run_id: str) 
     # healthy index can still make progress while the manifest records the
     # affected scope for retry.
     unique = df.unique(subset=["index_symbol", "symbol", "as_of_date"])
-    counts = (
-        unique.group_by("as_of_date", "index_symbol")
-        .len()
-        .rename({"len": "_member_count"})
-    )
+    counts = unique.group_by("as_of_date", "index_symbol").len().rename({"len": "_member_count"})
     thin = counts.filter(pl.col("_member_count") < _MIN_CNI_MEMBERS_PER_INDEX)
     if not thin.is_empty():
         df = df.join(
@@ -293,6 +289,7 @@ def step_industry_members(config: Config, trade_date: date, run_id: str, context
         return _backfill_industry_members(config, trade_date, run_id)
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("industry_members: eastmoney source disabled in config")
+
     def _fetch(d: date) -> pl.DataFrame:
         return _validate_daily_membership_snapshot(
             fetch_industry_members(d, config=config),
@@ -346,12 +343,7 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
     # month as incomplete rather than letting a non-empty response look like a
     # successful full history sweep.
     unique = df.unique(subset=["symbol", "classification_system", "as_of_date"], keep="last")
-    counts = (
-        unique
-        .group_by("as_of_date")
-        .len()
-        .sort("as_of_date")
-    )
+    counts = unique.group_by("as_of_date").len().sort("as_of_date")
     thin = counts.filter(pl.col("len") < 1000)
     observed_dates = set(counts["as_of_date"].to_list())
     missing_dates = sorted(set(todo) - observed_dates)
@@ -382,11 +374,7 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
                         else ""
                     )
                     + (
-                        (
-                            "; "
-                            if missing_dates
-                            else ""
-                        )
+                        ("; " if missing_dates else "")
                         + f"{thin.height} month(s) have <{_MIN_DAILY_INDUSTRY_MEMBER_SYMBOLS} "
                         f"Shenwan members (sample {thin['as_of_date'].head(3).to_list()})"
                         if thin.height

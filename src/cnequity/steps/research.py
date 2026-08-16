@@ -35,8 +35,7 @@ def _validate_institutional_holdings_snapshot(df):
     missing = sorted(required - set(df.columns))
     if missing:
         raise RuntimeError(
-            "institutional_holdings: response is missing required column(s): "
-            + ", ".join(missing)
+            "institutional_holdings: response is missing required column(s): " + ", ".join(missing)
         )
     counts = (
         df.unique(subset=["symbol", "holder_type", "report_period"])
@@ -46,8 +45,7 @@ def _validate_institutional_holdings_snapshot(df):
     )
     if not counts.is_empty():
         details = ", ".join(
-            f"{row['report_period']}={row['_holding_rows']}"
-            for row in counts.iter_rows(named=True)
+            f"{row['report_period']}={row['_holding_rows']}" for row in counts.iter_rows(named=True)
         )
         raise RuntimeError(
             "institutional_holdings: incomplete quarterly snapshot; each observed "

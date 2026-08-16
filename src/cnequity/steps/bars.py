@@ -1178,9 +1178,7 @@ def _delisted_universe(config: Config, start: date, end: date) -> list[str]:
     from cnequity.query.parquet_scan import scan_parquet_root
 
     bars_root = config.curated_root / "daily_bars"
-    bars = scan_parquet_root(
-        bars_root, partition_col="trade_date", hive=False, traded_only=True
-    )
+    bars = scan_parquet_root(bars_root, partition_col="trade_date", hive=False, traded_only=True)
     have = set(bars.select("symbol").unique().collect()["symbol"].to_list())
 
     bs = import_baostock()

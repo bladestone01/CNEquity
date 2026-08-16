@@ -188,9 +188,7 @@ def load_st_checkpoint(config: Config, scope: dict[str, Any]) -> dict[str, Any]:
             ):
                 continue
             completed = set(candidate.get("completed_symbols", [])) & current_symbols
-            candidates.append(
-                (len(completed), candidate_path.stat().st_mtime, candidate)
-            )
+            candidates.append((len(completed), candidate_path.stat().st_mtime, candidate))
         if candidates:
             _, _, previous = max(candidates, key=lambda item: (item[0], item[1]))
             completed = sorted(set(previous.get("completed_symbols", [])) & current_symbols)
@@ -199,9 +197,7 @@ def load_st_checkpoint(config: Config, scope: dict[str, Any]) -> dict[str, Any]:
                 for symbol, count in (previous.get("evidence_rows_by_symbol") or {}).items()
                 if symbol in completed
             }
-            unresolved = sorted(
-                set(previous.get("unresolved_symbols", [])) & current_symbols
-            )
+            unresolved = sorted(set(previous.get("unresolved_symbols", [])) & current_symbols)
             logger.info(
                 "ST checkpoint scope grew from %d to %d symbols; inheriting %d completed symbols",
                 len(previous.get("scope", {}).get("expected_symbols", [])),

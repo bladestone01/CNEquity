@@ -33,8 +33,7 @@ def _validate_sector_fund_flow_snapshot(df):
     missing = sorted(required - set(df.columns))
     if missing:
         raise RuntimeError(
-            "sector_fund_flow: response is missing required column(s): "
-            + ", ".join(missing)
+            "sector_fund_flow: response is missing required column(s): " + ", ".join(missing)
         )
     observed = set(df.get_column("board_type").drop_nulls().to_list())
     missing_types = sorted(_SECTOR_FLOW_BOARD_TYPES - observed)
@@ -54,9 +53,7 @@ def _validate_sector_fund_flow_snapshot(df):
             f"{board_type}={count} (minimum {_MIN_SECTOR_FLOW_ROWS_BY_TYPE[board_type]})"
             for board_type, count in sorted(thin_types.items())
         )
-        raise RuntimeError(
-            "sector_fund_flow: incomplete daily snapshot; " + "; ".join(details)
-        )
+        raise RuntimeError("sector_fund_flow: incomplete daily snapshot; " + "; ".join(details))
     return df
 
 

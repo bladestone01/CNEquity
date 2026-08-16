@@ -159,7 +159,9 @@ def test_index_constituents_fetch():
         ("cnequity.adapters.eastmoney.industry", fetch_industry_members),
     ],
 )
-def test_membership_adapters_close_owned_client_when_parsing_fails(monkeypatch, module_name, fetcher):
+def test_membership_adapters_close_owned_client_when_parsing_fails(
+    monkeypatch, module_name, fetcher
+):
     created = []
 
     class _Client:

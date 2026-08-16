@@ -297,8 +297,7 @@ def _uncovered_symbols(config: Config) -> set[str]:
         return set()
     bars = scan_parquet_root(bars_root, traded_only=True)
     bar_span = (
-        bars
-        .group_by("symbol")
+        bars.group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("bar_first"),
             pl.col("trade_date").max().alias("bar_last"),

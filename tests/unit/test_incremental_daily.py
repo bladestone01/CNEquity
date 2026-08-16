@@ -113,14 +113,12 @@ def test_list_trading_dates_salvages_valid_file_when_curated_calendar_is_corrupt
     cfg = Config(data_root=tmp_path / "data")
     root = cfg.curated_root / "trading_calendar"
     root.mkdir(parents=True)
-    pl.DataFrame(
-        [{"trade_date": date(2024, 6, 27), "is_trading": True}]
-    ).write_parquet(root / "valid.parquet")
+    pl.DataFrame([{"trade_date": date(2024, 6, 27), "is_trading": True}]).write_parquet(
+        root / "valid.parquet"
+    )
     (root / "broken.parquet").write_bytes(b"not a parquet file")
 
-    assert list_trading_dates(cfg, date(2024, 6, 27), date(2024, 6, 27)) == [
-        date(2024, 6, 27)
-    ]
+    assert list_trading_dates(cfg, date(2024, 6, 27), date(2024, 6, 27)) == [date(2024, 6, 27)]
 
 
 def test_is_trading_day_prefers_latest_curated_calendar_fragment(tmp_path):
@@ -200,9 +198,7 @@ def test_run_incremental_fetched_marks_dense_empty_day_retryable(tmp_path):
     )
 
     assert result["status"] == "warning"
-    assert result["context_updates"]["audit_findings"][0]["check"] == (
-        "session_dense_empty_days"
-    )
+    assert result["context_updates"]["audit_findings"][0]["check"] == ("session_dense_empty_days")
 
 
 def test_market_breadth_backfill_does_not_skip_partial_existing_day(tmp_path, monkeypatch):
@@ -420,9 +416,7 @@ def test_trading_status_snapshot_does_not_replay_live_labels_into_gap_days(tmp_p
             }
         )
 
-    df, findings = fetch_incremental_daily(
-        cfg, "trading_status", date(2024, 6, 28), _fetch
-    )
+    df, findings = fetch_incremental_daily(cfg, "trading_status", date(2024, 6, 28), _fetch)
 
     assert fetched == [date(2024, 6, 28)]
     assert df["trade_date"].to_list() == [date(2024, 6, 28)]
@@ -448,9 +442,7 @@ def test_rolling_snapshot_without_watermark_ignores_legacy_future_state(tmp_path
             }
         )
 
-    df, findings = fetch_incremental_daily(
-        cfg, "share_unlock_schedule", date(2024, 6, 28), _fetch
-    )
+    df, findings = fetch_incremental_daily(cfg, "share_unlock_schedule", date(2024, 6, 28), _fetch)
 
     assert fetched == [date(2024, 6, 28)]
     assert df["unlock_date"].to_list() == [date(2024, 7, 1)]

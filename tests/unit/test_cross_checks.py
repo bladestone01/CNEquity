@@ -31,8 +31,7 @@ def _write_daily(root, dataset, rows, *, volume_by_symbol=None):
         data = {"symbol": syms, "trade_date": [d] * len(syms)}
         if dataset == "daily_bars":
             data["volume"] = [
-                100 if volume_by_symbol is None else volume_by_symbol.get(sym, 100)
-                for sym in syms
+                100 if volume_by_symbol is None else volume_by_symbol.get(sym, 100) for sym in syms
             ]
         pl.DataFrame(data).write_parquet(part / "part.parquet")
 

@@ -289,11 +289,7 @@ def apply_universe_filter(
 
     if strict and not df.is_empty():
         requested = df.select(["symbol", date_col]).unique()
-        covered = (
-            status.select(["symbol", pl.col("trade_date").alias(date_col)])
-            .unique()
-            .collect()
-        )
+        covered = status.select(["symbol", pl.col("trade_date").alias(date_col)]).unique().collect()
         missing = requested.join(covered, on=["symbol", date_col], how="anti")
         if not missing.is_empty():
             missing_dates = sorted(missing[date_col].unique().to_list())

@@ -22,4 +22,7 @@ def test_current_session_is_provisional_before_settlement_buffer():
 
     assert is_session_final(day, datetime(2026, 8, 17, 6, 59, tzinfo=timezone.utc)) is False
     assert is_session_final(day, datetime(2026, 8, 17, 7, 5, tzinfo=timezone.utc)) is True
-    assert is_session_final(day - date.resolution, datetime(2026, 8, 17, 6, 59, tzinfo=timezone.utc)) is True
+    assert (
+        is_session_final(day - date.resolution, datetime(2026, 8, 17, 6, 59, tzinfo=timezone.utc))
+        is True
+    )

@@ -128,11 +128,7 @@ def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None,
     if date_col is None:
         return None, None
     try:
-        day_hive = bool(
-            parts
-            and all(part.start == part.end for part in parts)
-            and not root_files
-        )
+        day_hive = bool(parts and all(part.start == part.end for part in parts) and not root_files)
         lf = scan_parquet_root(
             root,
             partition_col=spec.partition_col,
@@ -207,8 +203,7 @@ def _read_dataset(
             dropped = df.filter(~usable).height
             if dropped:
                 logger.warning(
-                    "daily_bars: dropped %d non-positive-price placeholder row(s) "
-                    "from universe=%s",
+                    "daily_bars: dropped %d non-positive-price placeholder row(s) from universe=%s",
                     dropped,
                     universe,
                 )

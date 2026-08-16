@@ -142,13 +142,10 @@ def _validate_parquet_file(path: Path, dataset: str) -> None:
 
     string_required = [col for col in required if schema[col] == pl.Utf8]
     expressions.extend(
-        pl.col(col).str.strip_chars().eq("").sum().alias(f"_blank_{col}")
-        for col in string_required
+        pl.col(col).str.strip_chars().eq("").sum().alias(f"_blank_{col}") for col in string_required
     )
 
-    float_columns = [
-        col for col in columns if schema[col] in (pl.Float32, pl.Float64)
-    ]
+    float_columns = [col for col in columns if schema[col] in (pl.Float32, pl.Float64)]
     expressions.extend(
         (pl.col(col).is_not_null() & ~pl.col(col).is_finite()).sum().alias(f"_finite_{col}")
         for col in float_columns
@@ -195,9 +192,7 @@ def _validate_parquet_file(path: Path, dataset: str) -> None:
         ) from exc
 
     missing_values = {
-        col: int(summary[f"_null_{col}"] or 0)
-        for col in required
-        if summary[f"_null_{col}"]
+        col: int(summary[f"_null_{col}"] or 0) for col in required if summary[f"_null_{col}"]
     }
     if missing_values:
         detail = ", ".join(f"{col}={count}" for col, count in missing_values.items())
@@ -240,9 +235,7 @@ def _schema_contract_findings(files: list[Path], dataset: str, root: Path) -> di
     return finding
 
 
-def _unreadable_parquet_finding(
-    files: list[Path], dataset: str, root: Path
-) -> dict | None:
+def _unreadable_parquet_finding(files: list[Path], dataset: str, root: Path) -> dict | None:
     """Check Parquet footers without validating every row in a normal audit."""
     unreadable: list[dict[str, str]] = []
     for path in files:
@@ -264,8 +257,7 @@ def _unreadable_parquet_finding(
         "severity": "error",
         "check": "schema_contract",
         "message": (
-            f"{len(unreadable)} parquet file(s) are unreadable in curated "
-            f"{dataset}{suffix}"
+            f"{len(unreadable)} parquet file(s) are unreadable in curated {dataset}{suffix}"
         ),
         "files_checked": len(files),
         "invalid_files": len(unreadable),
@@ -360,7 +352,9 @@ def _partitioned_pk_duplicate_count(
                     f"SELECT COUNT(*) - COUNT(DISTINCT ({identifiers})) "
                     "FROM read_parquet(?, hive_partitioning=false)"
                 )
-                duplicate_count += int(con.execute(query, [[str(path) for path in group]]).fetchone()[0])
+                duplicate_count += int(
+                    con.execute(query, [[str(path) for path in group]]).fetchone()[0]
+                )
         finally:
             con.close()
     return duplicate_count
@@ -375,18 +369,14 @@ def _full_scalar_stats(files: list[Path], dataset: str) -> tuple[int, int, dict[
 
     schema = DATASET_SCHEMAS.get(dataset, {})
     required = required_columns_for_dataset(dataset, schema)
-    identifiers = {
-        column: f'"{column.replace(chr(34), chr(34) * 2)}"' for column in required
-    }
+    identifiers = {column: f'"{column.replace(chr(34), chr(34) * 2)}"' for column in required}
     expressions = ["COUNT(*) AS _rows"]
     if "source" in identifiers:
-        expressions.append(
-            f"SUM(CASE WHEN {identifiers['source']} = ? THEN 1 ELSE 0 END) AS _mock"
-        )
+        expressions.append(f"SUM(CASE WHEN {identifiers['source']} = ? THEN 1 ELSE 0 END) AS _mock")
     else:
         expressions.append("0 AS _mock")
     expressions.extend(
-        f"SUM(CASE WHEN {identifiers[column]} IS NULL THEN 1 ELSE 0 END) AS \"_null_{column}\""
+        f'SUM(CASE WHEN {identifiers[column]} IS NULL THEN 1 ELSE 0 END) AS "_null_{column}"'
         for column in required
     )
     query = (
@@ -408,9 +398,7 @@ def _full_scalar_stats(files: list[Path], dataset: str) -> tuple[int, int, dict[
     row_count = int(row[0] or 0)
     mock_rows = int(row[1] or 0)
     nulls = {
-        column: int(row[index + 2] or 0)
-        for index, column in enumerate(required)
-        if row[index + 2]
+        column: int(row[index + 2] or 0) for index, column in enumerate(required) if row[index + 2]
     }
     return row_count, mock_rows, nulls
 
@@ -803,9 +791,7 @@ def audit_curated_dataset(
             # it by aborting the whole audit.
             current_stats = previous_stats = None
         if current_stats is not None and previous_stats is not None:
-            granularity = (
-                DATASETS[dataset].partition_granularity if dataset in DATASETS else "day"
-            )
+            granularity = DATASETS[dataset].partition_granularity if dataset in DATASETS else "day"
             mutation = check_partition_row_mutation(
                 dataset,
                 partition_col,
@@ -813,9 +799,7 @@ def audit_curated_dataset(
                 previous_value=previous_value,
                 current_stats=current_stats,
                 previous_stats=previous_stats,
-                elapsed_fraction=period_elapsed_fraction(
-                    partition_value, granularity, trade_date
-                ),
+                elapsed_fraction=period_elapsed_fraction(partition_value, granularity, trade_date),
             )
             if mutation is not None:
                 findings.append(mutation)

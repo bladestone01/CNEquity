@@ -177,9 +177,9 @@ def test_load_bar_universe_ignores_zero_volume_placeholders(cfg):
 def test_load_bar_universe_keeps_legacy_rows_in_a_mixed_schema_lake(cfg):
     root = cfg.curated_root / "daily_bars"
     root.mkdir(parents=True)
-    pl.DataFrame(
-        {"symbol": ["600519.SH"], "trade_date": [date(2024, 6, 27)]}
-    ).write_parquet(root / "legacy.parquet")
+    pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [date(2024, 6, 27)]}).write_parquet(
+        root / "legacy.parquet"
+    )
     pl.DataFrame(
         {
             "symbol": ["000001.SZ"],

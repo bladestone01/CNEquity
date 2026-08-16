@@ -31,9 +31,7 @@ def _fake_row(d: date) -> dict:
 
 
 def _fake_rows(d: date, count: int = 50) -> pl.DataFrame:
-    return pl.DataFrame(
-        [{**_fake_row(d), "symbol": f"{600000 + i:06d}.SH"} for i in range(count)]
-    )
+    return pl.DataFrame([{**_fake_row(d), "symbol": f"{600000 + i:06d}.SH"} for i in range(count)])
 
 
 def _setup(monkeypatch, cfg: Config, *, empty_days: set[date] = frozenset()):
