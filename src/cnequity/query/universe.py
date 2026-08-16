@@ -13,13 +13,19 @@ from cnequity.domain.symbols import (
     EXCLUDED_PREFIXES,
     PREFIX_WHITELIST,
 )
+from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import (
     collect_parquet_root,
     coverage_start_from_partitions,
+    list_partitions,
     scan_parquet_root,
 )
 
 EXCLUDED_STATUSES = frozenset({"st", "*st", "suspended"})
+
+
+class UniverseCoverageError(ValueError):
+    """Raised when a strict universe query lacks required coverage."""
 
 
 def _all_a_symbol_expr(symbol_col: str = "symbol") -> pl.Expr:
@@ -50,7 +56,10 @@ def _load_instruments(config: Config) -> pl.DataFrame:
     if not root.exists():
         return pl.DataFrame()
     try:
-        return collect_parquet_root(root, hive=False)
+        return dedupe_by_primary_key(
+            collect_parquet_root(root, hive=False),
+            "instruments",
+        )
     except FileNotFoundError:
         return pl.DataFrame()
 
@@ -64,11 +73,14 @@ def _load_trading_status(
     if not root.exists():
         return pl.DataFrame()
     try:
-        return collect_parquet_root(
-            root,
-            partition_col="trade_date",
-            start=trade_date,
-            end=trade_date,
+        return dedupe_by_primary_key(
+            collect_parquet_root(
+                root,
+                partition_col="trade_date",
+                start=trade_date,
+                end=trade_date,
+            ),
+            "trading_status",
         )
     except FileNotFoundError:
         return pl.DataFrame()
@@ -82,15 +94,49 @@ def coverage_start_date(
 ) -> date | None:
     """Earliest *date_col* present in curated *dataset*, if any."""
     root = config.curated_root / dataset
-    min_dt = coverage_start_from_partitions(root, date_col)
-    if min_dt is not None:
-        return min_dt
     if not root.exists():
         return None
+
+    # A day partition's directory value is the exact date it can contain. A
+    # month/year/quarter directory is only a container, though: using its
+    # theoretical start would claim coverage before the first real row. Mixed
+    # layouts and loose root-level files need the same exact scan.
+    parts = list_partitions(root, date_col)
+    if parts and all(part.start == part.end for part in parts) and not list(root.glob("*.parquet")):
+        return coverage_start_from_partitions(root, date_col)
     try:
         return (
             scan_parquet_root(root, partition_col=date_col)
             .select(pl.col(date_col).min())
+            .collect()
+            .item()
+        )
+    except FileNotFoundError:
+        return None
+
+
+def coverage_end_date(
+    config: Config,
+    dataset: str,
+    *,
+    date_col: str = "trade_date",
+) -> date | None:
+    """Latest *date_col* present in curated *dataset*, if any.
+
+    Partition directory bounds are exact only for day partitions. Coarser or
+    mixed layouts must use the date stored in the row; otherwise a partial
+    current month/year can make an incomplete research window look complete.
+    """
+    root = config.curated_root / dataset
+    if not root.exists():
+        return None
+    parts = list_partitions(root, date_col)
+    if parts and all(part.start == part.end for part in parts) and not list(root.glob("*.parquet")):
+        return parts[-1].end
+    try:
+        return (
+            scan_parquet_root(root, partition_col=date_col)
+            .select(pl.col(date_col).max())
             .collect()
             .item()
         )
@@ -129,6 +175,7 @@ def tradable_symbols_on_date(
     trade_date: date,
     *,
     universe: str = "all_a",
+    strict: bool = False,
 ) -> pl.DataFrame | None:
     """Return ``symbol`` rows tradable on *trade_date* for the given universe rule.
 
@@ -141,6 +188,8 @@ def tradable_symbols_on_date(
 
     instruments = _load_instruments(config)
     if instruments.is_empty():
+        if strict:
+            raise UniverseCoverageError("all_a universe requires curated instruments")
         return None
 
     out = (
@@ -154,6 +203,10 @@ def tradable_symbols_on_date(
 
     status = _load_trading_status(config, trade_date=trade_date)
     if status.is_empty():
+        if strict:
+            raise UniverseCoverageError(
+                f"all_a universe has no trading_status coverage for {trade_date.isoformat()}"
+            )
         return out
 
     bad = status.filter((~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES)))[
@@ -170,6 +223,7 @@ def apply_universe_filter(
     *,
     universe: str,
     date_col: str = "trade_date",
+    strict: bool = False,
 ) -> pl.DataFrame:
     """Filter bar-like frames to tradable universe rows per *date_col*.
 
@@ -179,9 +233,15 @@ def apply_universe_filter(
     """
     if df.is_empty() or universe != "all_a":
         return df
+    if date_col not in df.columns:
+        raise ValueError(
+            f"apply_universe_filter requires date column {date_col!r} for universe filtering"
+        )
 
     instruments = _load_instruments(config)
     if instruments.is_empty():
+        if strict:
+            raise UniverseCoverageError("all_a universe requires curated instruments")
         return df
 
     valid_symbols = instruments.filter(_all_a_symbol_expr())["symbol"]
@@ -190,19 +250,33 @@ def apply_universe_filter(
     df = df.filter(
         pl.col("list_date").is_null() | (pl.col("list_date") <= pl.col(date_col))
     ).filter(pl.col("delist_date").is_null() | (pl.col("delist_date") >= pl.col(date_col)))
-    if not valid_symbols.is_empty():
-        df = df.filter(pl.col("symbol").is_in(valid_symbols.to_list()))
-
-    if date_col not in df.columns:
-        return df.drop(["list_date", "delist_date"], strict=False)
+    # An existing instruments catalog with zero valid all-A symbols is a real
+    # empty universe (for example an ETF/CDR-only fixture), not a reason to
+    # bypass the filter and leak every input row through.
+    df = df.filter(pl.col("symbol").is_in(valid_symbols.to_list()))
 
     try:
-        status = scan_parquet_root(
-            config.curated_root / "trading_status",
-            partition_col="trade_date",
+        status = dedupe_lazy_by_primary_key(
+            scan_parquet_root(
+                config.curated_root / "trading_status",
+                partition_col="trade_date",
+            ),
+            "trading_status",
         )
     except FileNotFoundError:
+        if strict:
+            raise UniverseCoverageError("all_a universe requires curated trading_status") from None
         return df.drop(["list_date", "delist_date"], strict=False)
+
+    if strict and not df.is_empty():
+        requested_dates = set(df[date_col].unique().to_list())
+        covered_dates = set(status.select("trade_date").unique().collect()["trade_date"].to_list())
+        missing_dates = sorted(requested_dates - covered_dates)
+        if missing_dates:
+            raise UniverseCoverageError(
+                f"all_a universe trading_status missing {len(missing_dates)} date(s), "
+                f"first={missing_dates[0].isoformat()}"
+            )
 
     bad = (
         status.filter((~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES)))

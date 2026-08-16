@@ -5,6 +5,7 @@ import pytest
 
 from cnequity.config import Config
 from cnequity.query.reader import ReaderError, load, resolve_config
+from cnequity.query.universe import apply_universe_filter
 
 
 def _prov(source: str = "test") -> dict:
@@ -109,6 +110,31 @@ def test_load_daily_bars_with_adjustment(lake):
     assert moutai["adj_is_exact"][0] is True
 
 
+def test_load_dedupes_duplicate_primary_keys_and_keeps_latest(lake):
+    bars_dir = lake.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 27)],
+            "open": [12.0],
+            "high": [12.0],
+            "low": [12.0],
+            "close": [12.0],
+            "volume": [1200],
+            "amount": [14400.0],
+            "source": ["eastmoney"],
+            "data_version": ["v2"],
+            "fetched_at": [datetime(2024, 6, 28, 1, tzinfo=timezone.utc)],
+        }
+    ).write_parquet(bars_dir / "part-duplicate.parquet")
+
+    df = load("daily_bars", start="2024-06-27", end="2024-06-27", config=lake)
+    assert df.height == 3
+    moutai = df.filter(pl.col("symbol") == "600519.SH")
+    assert moutai["close"].to_list() == [12.0]
+    assert moutai["source"].to_list() == ["eastmoney"]
+
+
 def test_load_strict_adj_raises_when_factor_missing(lake):
     with pytest.raises(ReaderError, match="missing adj_factors"):
         load(
@@ -184,6 +210,38 @@ def test_load_universe_excludes_cdr_despite_missing_factors(lake):
         config=lake,
     )
     assert direct["adj_is_exact"].to_list() == [False]
+
+
+def test_all_a_filter_does_not_bypass_empty_valid_catalog(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["510300.SH"],
+            "name": ["CSI 300 ETF"],
+            "exchange": ["SH"],
+            "asset_type": ["etf"],
+            "list_date": [date(2012, 5, 28)],
+            "delist_date": [None],
+        }
+    ).write_parquet(instruments / "part-merged.parquet")
+    frame = pl.DataFrame(
+        {"symbol": ["510300.SH"], "trade_date": [date(2024, 6, 28)], "close": [4.0]}
+    )
+
+    out = apply_universe_filter(frame, cfg, universe="all_a")
+
+    assert out.is_empty()
+
+
+def test_all_a_filter_rejects_missing_date_column(tmp_path):
+    with pytest.raises(ValueError, match="requires date column 'trade_date'"):
+        apply_universe_filter(
+            pl.DataFrame({"symbol": ["600519.SH"], "close": [1700.0]}),
+            Config(data_root=tmp_path / "data"),
+            universe="all_a",
+        )
 
 
 def test_load_daily_bars_qfq_derived_from_hfq(lake):
@@ -268,6 +326,11 @@ def test_load_index_bars_rejects_universe_filter(lake):
         load("index_bars", universe="all_a", config=lake)
 
 
+def test_load_index_bars_rejects_stock_adjustment(lake):
+    with pytest.raises(ReaderError, match="index_bars levels are not adjustable"):
+        load("index_bars", adjust="hfq", config=lake)
+
+
 def test_scan_returns_lazyframe_with_pushdown(tmp_path):
     import polars as pl
 
@@ -332,6 +395,29 @@ def test_list_datasets_catalog(tmp_path):
     assert row["has_data"] is True
     assert row["coverage_start"] == date(2016, 1, 1)
     assert row["coverage_end"] == date(2016, 3, 31)
+
+
+def test_list_datasets_uses_real_dates_inside_coarse_partitions(tmp_path):
+    """A year partition must not claim its calendar end as the data tip."""
+    import polars as pl
+
+    from cnequity.config import Config
+    from cnequity.query.reader import list_datasets
+
+    cfg = Config(data_root=tmp_path)
+    out_dir = tmp_path / "curated" / "index_bars" / "trade_date=2026"
+    out_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"],
+            "trade_date": [date(2026, 7, 20)],
+        }
+    ).write_parquet(out_dir / "part-0.parquet")
+
+    row = list_datasets(config=cfg).filter(pl.col("dataset") == "index_bars").to_dicts()[0]
+
+    assert row["coverage_start"] == date(2026, 7, 20)
+    assert row["coverage_end"] == date(2026, 7, 20)
 
 
 def test_dataset_schema_contract():

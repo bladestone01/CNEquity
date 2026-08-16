@@ -103,10 +103,9 @@ def coverage_start_from_partitions(root: Path, partition_col: str) -> date | Non
 def uses_hive_partitions(root: Path, partition_col: str | None) -> bool:
     if partition_col is None:
         return False
-    prefix = f"{partition_col}="
     if not root.exists():
         return False
-    return any(entry.is_dir() and entry.name.startswith(prefix) for entry in root.iterdir())
+    return bool(list_partitions(root, partition_col))
 
 
 def partition_files_in_range(
@@ -116,8 +115,16 @@ def partition_files_in_range(
     start: date | None = None,
     end: date | None = None,
 ) -> list[Path]:
-    """Parquet files in partitions whose period overlaps ``[start, end]``."""
-    files: list[Path] = []
+    """Parquet files relevant to ``[start, end]`` in mixed layouts.
+
+    Root-level files have no directory period to prune, so keep them whenever
+    partition directories coexist. The column filter applied by
+    :func:`scan_parquet_root` removes out-of-range rows afterward. Dropping
+    these loose files would make a partially migrated lake return incomplete
+    history only for ranged queries, while an unbounded query still appeared
+    correct.
+    """
+    files = sorted(root.glob("*.parquet"))
     for part in list_partitions(root, partition_col):
         if not part.overlaps(start, end):
             continue
@@ -148,12 +155,22 @@ def scan_parquet_root(
         if not files:
             # Window is outside the lake's coverage — return an empty frame with
             # the real schema rather than raising, so callers can filter freely.
-            return pl.scan_parquet(parquet_glob(root), hive_partitioning=use_hive).filter(
-                pl.lit(False)
-            )
+            all_files = partition_files_in_range(root, partition_col)
+            if all_files:
+                return pl.scan_parquet(
+                    [str(f) for f in all_files], hive_partitioning=use_hive
+                ).filter(pl.lit(False))
+            return pl.scan_parquet(parquet_glob(root), hive_partitioning=False).filter(pl.lit(False))
         lf = pl.scan_parquet([str(f) for f in files], hive_partitioning=use_hive)
     if lf is None:
-        lf = pl.scan_parquet(parquet_glob(root), hive_partitioning=use_hive)
+        if partitioned and partition_col:
+            files = partition_files_in_range(root, partition_col)
+            if files:
+                lf = pl.scan_parquet([str(f) for f in files], hive_partitioning=use_hive)
+            else:
+                lf = pl.scan_parquet(parquet_glob(root), hive_partitioning=False)
+        else:
+            lf = pl.scan_parquet(parquet_glob(root), hive_partitioning=use_hive)
 
     # Still filter on the column: a coarse partition covers days outside the
     # window, and pruning alone would over-return at the period edges.
@@ -172,10 +189,17 @@ def scan_parquet_files(
     files: list[Path],
     *,
     hive: bool = False,
+    missing_columns: str = "raise",
+    extra_columns: str = "raise",
 ) -> pl.LazyFrame:
     if not files:
         return pl.LazyFrame()
-    return pl.scan_parquet([str(path) for path in files], hive_partitioning=hive)
+    return pl.scan_parquet(
+        [str(path) for path in files],
+        hive_partitioning=hive,
+        missing_columns=missing_columns,
+        extra_columns=extra_columns,
+    )
 
 
 def collect_parquet_root(

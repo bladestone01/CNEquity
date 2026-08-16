@@ -142,6 +142,30 @@ def test_qfq_anchors_on_the_latest_bar_date(cfg):
     assert df["adj_close"].to_list() == [5.0, 12.0]
 
 
+def test_qfq_keeps_prior_rows_adjusted_when_latest_factor_is_missing(cfg):
+    """A missing tip factor must not erase a valid qfq history anchor."""
+    _write_minute_bars(
+        cfg,
+        [
+            _bar("600519.SH", datetime(2026, 7, 29, 9, 31), close=10.0),
+            _bar("600519.SH", datetime(2026, 7, 30, 9, 31), close=11.0),
+            _bar("600519.SH", datetime(2026, 7, 31, 9, 31), close=12.0),
+        ],
+    )
+    _write_adj_factors(
+        cfg,
+        [
+            {"symbol": "600519.SH", "trade_date": date(2026, 7, 29), "adjust_type": "hfq", "factor": 1.0},
+            {"symbol": "600519.SH", "trade_date": PREV, "adjust_type": "hfq", "factor": 2.0},
+        ],
+    )
+
+    df = load("minute_bars", adjust="qfq", config=cfg).sort("bar_time")
+
+    assert df["adj_close"].to_list() == [5.0, 11.0, 12.0]
+    assert df["adj_is_exact"].to_list() == [True, True, False]
+
+
 def test_missing_factors_are_marked_inexact_not_silently_scaled(cfg):
     _write_minute_bars(cfg, [_bar("600519.SH", datetime(2026, 7, 31, 9, 31), close=12.0)])
     _write_adj_factors(

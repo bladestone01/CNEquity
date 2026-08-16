@@ -8,6 +8,7 @@ from pathlib import Path
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 from cnequity.adapters.eastmoney.stock_news import fetch_stock_news
 from cnequity.config import Config
+from cnequity.storage.atomic import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +35,15 @@ class OnDemandService:
 
         path = self._cache_path(dataset, symbol)
         if path.exists() and not kwargs.get("refresh"):
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, json.JSONDecodeError, TypeError) as exc:
+                logger.warning("ignoring corrupt on-demand cache %s: %s", path, exc)
 
         payload = self._fetch_remote(dataset, symbol, **kwargs)
         if self._should_cache(payload):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+            write_json_atomic(path, payload, ensure_ascii=False, indent=2)
         return payload
 
     @staticmethod
@@ -77,12 +79,12 @@ class OnDemandService:
             on_date = date.fromisoformat(on_date)
         limit = int(kwargs.get("limit", 30))
         use_snownlp = bool(kwargs.get("use_snownlp", self.config.sentiment_use_snownlp))
-        self.config.rate_limit("eastmoney")
         payload = fetch_stock_news(
             symbol,
             on_date=on_date,
             limit=limit,
             use_snownlp=use_snownlp,
+            config=self.config,
         )
         payload["data_version"] = "v1"
         payload["fetched_at"] = datetime.now(timezone.utc).isoformat()
@@ -92,10 +94,7 @@ class OnDemandService:
         code = symbol.split(".")[0]
         url = f"https://reportapi.eastmoney.com/report/list?code={code}&pageSize=10"
         try:
-            self.config.rate_limit("eastmoney")
-            with EastMoneyClient(
-                min_interval=self.config.source_intervals.get("eastmoney", 1.0)
-            ) as client:
+            with EastMoneyClient(config=self.config) as client:
                 resp = client.get(url)
                 data = resp.json()
                 return {"symbol": symbol, "items": data, "source": "eastmoney"}

@@ -19,6 +19,7 @@ from cnequity.domain.datasets import (
     pit_dataset_names,
 )
 from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS, validate_dataframe
+from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.query.parquet_scan import (
     collect_parquet_root,
     dataset_has_parquet,
@@ -45,13 +46,13 @@ PIT_DATASETS = pit_dataset_names()
 PRICE_COLS = ("open", "high", "low", "close", "price")
 # Datasets carrying per-share prices that adj_factors can adjust. Intraday
 # datasets come from the registry so a new frequency is adjustable the day it
-# is registered. index_bars is in because its `frequency` column made it a bar
-# dataset historically; its levels are not per-share, but that predates this.
+# is registered. Index levels are not per-share prices and must never be
+# multiplied by stock adjustment factors.
 # trade_ticks is listed by name rather than inherited from
 # intraday_dataset_names(): it deliberately carries no `intraday_frequency`
 # (see its DatasetSpec), but its prices still cross ex-dividend dates and a
 # comparison spanning one would otherwise see a gap that is not a price move.
-ADJUSTABLE_DATASETS = {"daily_bars", "index_bars", "trade_ticks"} | set(intraday_dataset_names())
+ADJUSTABLE_DATASETS = {"daily_bars", "trade_ticks"} | set(intraday_dataset_names())
 
 
 class ReaderError(ValueError):
@@ -91,6 +92,61 @@ def _dataset_root(config: Config, dataset: str) -> Path:
     raise ReaderError(f"unknown dataset {dataset!r}")
 
 
+def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None, date | None]:
+    """Return truthful catalog bounds without scanning non-date columns.
+
+    Day partitions encode their exact coverage in the directory name. Coarser
+    or mixed date partitions do not: ``trade_date=2026`` may contain only the
+    first week of the year. For those layouts, read only the registered date
+    column so the catalog cannot turn a partial current period into a fresh
+    dataset. Report-period partitions intentionally retain their period bounds
+    because ``coverage_start``/``coverage_end`` describe the report periods for
+    those datasets, not their announcement dates.
+    """
+    spec = DATASETS[dataset]
+    root = _dataset_root(config, dataset)
+    if not dataset_has_parquet(root) or spec.partition_col is None:
+        return None, None
+
+    from cnequity.query.parquet_scan import list_partitions
+
+    parts = list_partitions(root, spec.partition_col)
+    root_files = list(root.glob("*.parquet"))
+    if parts and spec.partition_granularity == "quarter" and not root_files:
+        return parts[0].start, parts[-1].end
+    if (
+        parts
+        and spec.query_date_col != spec.partition_col
+        and not root_files
+    ):
+        return parts[0].start, parts[-1].end
+    if (
+        parts
+        and all(part.start == part.end for part in parts)
+        and not root_files
+    ):
+        return parts[0].start, parts[-1].end
+
+    date_col = spec.query_date_col
+    if date_col is None:
+        return None, None
+    try:
+        lf = scan_parquet_root(root, partition_col=spec.partition_col, hive=False)
+        if date_col not in lf.collect_schema().names():
+            return None, None
+        bounds = (
+            lf.select(
+                pl.col(date_col).min().alias("_catalog_min"),
+                pl.col(date_col).max().alias("_catalog_max"),
+            )
+            .collect()
+            .row(0)
+        )
+    except FileNotFoundError:
+        return None, None
+    return bounds[0], bounds[1]
+
+
 def _read_dataset(
     config: Config,
     dataset: str,
@@ -119,7 +175,8 @@ def _read_dataset(
             f"no parquet data for dataset {dataset!r} under {root} (data_root={config.data_root})"
         ) from exc
     if dataset in DATASET_SCHEMAS:
-        return validate_dataframe(df, dataset)
+        df = validate_dataframe(df, dataset)
+        return dedupe_by_primary_key(df, dataset)
     return df
 
 
@@ -150,7 +207,12 @@ def _hfq_anchor_factors(
     bars: pl.DataFrame,
     end: date | None,
 ) -> pl.DataFrame:
-    """Per-symbol hfq factor at the qfq anchor date (latest date in scope)."""
+    """Per-symbol latest factor not later than the qfq anchor bar.
+
+    A factor gap on the last bar must make only that bar inexact. Requiring an
+    exact factor on the latest bar made the anchor null for the whole symbol,
+    which silently returned earlier rows at raw prices too.
+    """
     if end is not None:
         anchor_bars = bars.filter(pl.col("trade_date") <= end)
         anchor_factors = factors.filter(pl.col("trade_date") <= end)
@@ -163,7 +225,10 @@ def _hfq_anchor_factors(
     )
     return (
         anchor_factors.join(bar_anchors, on="symbol")
-        .filter(pl.col("trade_date") == pl.col("anchor_date"))
+        .filter(pl.col("trade_date") <= pl.col("anchor_date"))
+        .sort(["symbol", "trade_date"])
+        .group_by("symbol", maintain_order=True)
+        .last()
         .select(["symbol", pl.col("factor").alias("hfq_anchor")])
     )
 
@@ -262,6 +327,7 @@ def load(
     items: list[str] | None = None,
     symbols: list[str] | None = None,
     strict_adj: bool = False,
+    strict_universe: bool = False,
     all_vintages: bool = False,
     config: Config | None = None,
     data_root: str | Path | None = None,
@@ -305,6 +371,9 @@ def load(
         multiple vintages of one fact would double-count it.
     symbols:
         Restrict to these symbols when the dataset has a ``symbol`` column.
+    strict_universe:
+        If true, ``universe="all_a"`` raises when instruments or trading-status
+        coverage is missing for requested dates.
     config, data_root:
         Lake location; auto-detects ``configs/cnequity.toml`` when omitted.
         Raises ``ReaderError`` if config or dataset parquet files are missing.
@@ -316,6 +385,10 @@ def load(
     if universe and dataset == "index_bars":
         raise ReaderError(
             "universe filter applies to daily_bars only; index symbols are not in all_a"
+        )
+    if adjust and dataset == "index_bars":
+        raise ReaderError(
+            "adjustment applies to per-share prices only; index_bars levels are not adjustable"
         )
 
     start_d = _parse_date(start)
@@ -337,7 +410,13 @@ def load(
 
     if universe and dataset == "daily_bars":
         date_col = DATE_COLUMNS[dataset]
-        df = apply_universe_filter(df, cfg, universe=universe, date_col=date_col)
+        df = apply_universe_filter(
+            df,
+            cfg,
+            universe=universe,
+            date_col=date_col,
+            strict=strict_universe,
+        )
 
     # Intraday datasets join on (symbol, trade_date) like the daily bars do: a
     # corporate action applies to a whole session, so every bar in a day shares
@@ -422,7 +501,6 @@ def list_datasets(
     ever reach (None = no source-imposed limit).
     """
     from cnequity.domain.datasets import history_mode_for
-    from cnequity.query.parquet_scan import list_partitions
     from cnequity.storage.state import StateStore
 
     cfg = resolve_config(config=config, data_root=data_root)
@@ -433,12 +511,7 @@ def list_datasets(
         has_data = dataset_has_parquet(root)
         first_part = last_part = None
         if has_data and spec.partition_col:
-            # Period bounds, not directory labels: for a month/year partition the
-            # last directory's *start* would understate coverage by up to a year,
-            # and lake_health treats coverage_end as a freshness fallback.
-            parts = list_partitions(root, spec.partition_col)
-            if parts:
-                first_part, last_part = parts[0].start, parts[-1].end
+            first_part, last_part = _catalog_coverage_bounds(cfg, name)
         rows.append(
             {
                 "dataset": name,

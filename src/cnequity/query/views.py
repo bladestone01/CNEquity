@@ -10,7 +10,7 @@ import polars as pl
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS, DatasetSpec
 from cnequity.domain.partitions import uses_hive
-from cnequity.domain.schemas import DATASET_SCHEMAS
+from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
 
 
 def _duckdb_type(dtype: pl.DataType) -> str:
@@ -46,7 +46,7 @@ def _view_glob(data_root: str, spec: DatasetSpec) -> tuple[str, bool]:
     # either escape the SQL string or fail to match files on Windows.
     layer_dir = "derived" if spec.layer == "derived" else "curated"
     if spec.partition_col is None:
-        return f"{data_root}/{layer_dir}/{spec.name}/*.parquet", False
+        return f"{data_root}/{layer_dir}/{spec.name}/**/*.parquet", False
     # Hive parsing only for day granularity: a `trade_date=2024` directory
     # cannot be read as the DATE column it sits beside. The real column is in
     # the file either way, so the view is identical apart from pruning.
@@ -64,6 +64,44 @@ def _glob_has_files(pattern: str) -> bool:
     return any(p.rglob("*.parquet"))
 
 
+def _view_select_sql(
+    name: str,
+    glob_path: str,
+    hive: bool,
+    *,
+    columns: set[str] | None = None,
+) -> str:
+    """Build a canonical dataset view over all parquet fragments.
+
+    DuckDB is a separate read path from :func:`cnequity.query.reader.load`.
+    Apply the same latest-by-``fetched_at`` PK rule here, otherwise an old
+    fragment or overlapping retry can multiply rows in SQL joins while the
+    Python API returns one canonical observation.
+    """
+    primary_key = PRIMARY_KEYS.get(name, [])
+    source = (
+        f"read_parquet('{glob_path}', hive_partitioning={str(hive).lower()}, "
+        "union_by_name=true)"
+    )
+    # A few pre-schema-migration fragments in the wild (and lightweight
+    # bootstrap fixtures) do not carry provenance. There is no honest
+    # freshness tie-breaker in that case; keep the raw view readable and let
+    # the schema/quality checks report the malformed fragment.
+    if not primary_key or (
+        columns is not None
+        and not set([*primary_key, "fetched_at"]).issubset(columns)
+    ):
+        return f"SELECT * FROM {source}"
+    partition_by = ", ".join(primary_key)
+    return (
+        "SELECT * FROM "
+        f"{source} "
+        "QUALIFY ROW_NUMBER() OVER ("
+        f"PARTITION BY {partition_by} ORDER BY fetched_at DESC NULLS LAST"
+        ") = 1"
+    )
+
+
 def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
     db_path = config.duckdb_path or (config.data_root / "duckdb" / "cnequity.duckdb")
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,10 +116,18 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
     for name, spec in sorted(DATASETS.items()):
         glob_path, hive = _view_glob(root, spec)
         if _glob_has_files(glob_path) or require_data:
+            source = (
+                f"read_parquet('{glob_path}', "
+                f"hive_partitioning={str(hive).lower()}, union_by_name=true)"
+            )
+            columns = {
+                row[0]
+                for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
+            }
             con.execute(
                 f"""
                 CREATE OR REPLACE VIEW {name} AS
-                SELECT * FROM read_parquet('{glob_path}', hive_partitioning={str(hive).lower()})
+                {_view_select_sql(name, glob_path, hive, columns=columns)}
                 """
             )
         else:

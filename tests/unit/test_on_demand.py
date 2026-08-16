@@ -34,6 +34,24 @@ def test_fetch_cache_roundtrip(tmp_path, monkeypatch):
         svc.fetch("unknown_ds", "600519.SH")
 
 
+def test_corrupt_cache_is_refetched(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data", on_demand_datasets=["stock_news"])
+    svc = OnDemandService(cfg)
+    path = cfg.meta_root / "on_demand" / "stock_news" / "600519_SH.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{truncated", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "cnequity.query.on_demand.fetch_stock_news",
+        lambda symbol, **k: {"symbol": symbol, "items": [{"title": "fresh"}]},
+    )
+    monkeypatch.setattr(Config, "rate_limit", lambda self, name: None)
+
+    out = svc.fetch("stock_news", "600519.SH")
+
+    assert out["items"][0]["title"] == "fresh"
+
+
 def test_unimplemented_datasets_raise_and_do_not_cache(tmp_path):
     cfg = Config(
         data_root=tmp_path / "data",
