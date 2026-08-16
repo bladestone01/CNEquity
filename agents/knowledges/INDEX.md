@@ -35,3 +35,4 @@
 | 主题 | 文件 | 状态 | 捕获日期 | 一句话结论/指路 |
 |---|---|---|---|---|
 | daily_bars | `agents/knowledges/daily-bars.md` | promoted | 20260815 | `daily_bars` 存未复权日 K（股票+ETF/LOF），仅 v2 行保证 volume 为股；复权走 `daily_bars_adj`；原始稿 `docs/notes/archive/20260815-daily-bars.md` |
+| data-pipeline-flow | `agents/knowledges/data-pipeline-flow.md` | promoted | 20260816 | 数据湖六层流转：raw→staging→curated→derived→duckdb，meta管水位/质量，backups存手术残留 |
