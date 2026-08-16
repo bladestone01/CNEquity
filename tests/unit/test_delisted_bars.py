@@ -110,9 +110,206 @@ def test_fetch_skips_suspended_sessions_rather_than_writing_zeros():
                 ]
             )
 
-    rows = _fetch_one(_B(), "002450.SZ", date(2019, 1, 1), date(2019, 12, 31))
+    rows = _fetch_one(_B(), "002450.SZ", date(2019, 1, 2), date(2019, 1, 2))
     assert [r["trade_date"] for r in rows] == [date(2019, 1, 2)]
     assert rows[0]["close"] == 7.24
+
+
+def test_fetch_rejects_rows_for_another_code():
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Rs(
+                [
+                    [
+                        "2019-01-02",
+                        "sz.002451",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "100",
+                        "700",
+                        "1",
+                    ]
+                ]
+            )
+
+    assert _fetch_one(_B(), "002450.SZ", date(2019, 1, 2), date(2019, 1, 2)) is None
+
+
+def test_fetch_rejects_mixed_source_identities():
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Rs(
+                [
+                    [
+                        "2019-01-02",
+                        "sz.002450",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "100",
+                        "700",
+                        "1",
+                    ],
+                    [
+                        "2019-01-03",
+                        "sz.002451",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "100",
+                        "700",
+                        "1",
+                    ],
+                ]
+            )
+
+    assert _fetch_one(_B(), "002450.SZ", date(2019, 1, 2), date(2019, 1, 3)) is None
+
+
+def test_fetch_rejects_production_rows_without_code_identity():
+    class _Result(_Rs):
+        fields = ["date", "open", "high", "low", "close", "volume", "amount", "tradestatus"]
+
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Result(
+                [
+                    [
+                        "2019-01-02",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "100",
+                        "700",
+                        "1",
+                    ]
+                ]
+            )
+
+    assert _fetch_one(_B(), "002450.SZ", date(2019, 1, 2), date(2019, 1, 2)) is None
+
+
+def test_fetch_skips_carried_forward_prices_on_suspended_sessions():
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Rs(
+                [
+                    [
+                        "2019-01-02",
+                        "sz.002450",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "100",
+                        "700",
+                        "0",
+                    ]
+                ]
+            )
+
+    assert _fetch_one(_B(), "002450.SZ", date(2019, 1, 2), date(2019, 1, 2)) == []
+
+
+def test_fetch_skips_nonfinite_price_rows():
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Rs(
+                [
+                    [
+                        "2019-01-02",
+                        "nan",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "92853327",
+                        "686428182.91",
+                        "1",
+                    ]
+                ]
+            )
+
+    assert _fetch_one(_B(), "002450.SZ", date(2019, 1, 1), date(2019, 12, 31)) == []
+
+
+def test_fetch_skips_bad_date_row_and_keeps_valid_rows():
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Rs(
+                [
+                    [None, "7.60", "7.72", "7.19", "7.24", "100", "700", "1"],
+                    [
+                        "2019-01-03",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "100",
+                        "700",
+                        "1",
+                    ],
+                ]
+            )
+
+    rows = _fetch_one(_B(), "002450.SZ", date(2019, 1, 1), date(2019, 12, 31))
+    assert [r["trade_date"] for r in rows] == [date(2019, 1, 3)]
+
+
+def test_roster_skips_empty_rows():
+    class _B:
+        def query_all_stock(self, day):
+            return _Rs([[], ["sh.600519"]])
+
+    assert roster_on(date(2018, 6, 29), bs=_B(), login=False) == {"600519.SH"}
+
+
+def test_roster_query_error_is_not_treated_as_an_empty_roster():
+    class _B:
+        def query_all_stock(self, day):
+            return _Rs([], error_code="10001")
+
+    try:
+        roster_on(date(2018, 6, 29), bs=_B(), login=False)
+    except RuntimeError as exc:
+        assert "historical roster query failed" in str(exc)
+    else:
+        raise AssertionError("roster query errors must not become empty rosters")
+
+
+def test_fetch_skips_nonfinite_volume_rows():
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Rs(
+                [
+                    [
+                        "2019-01-02",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "inf",
+                        "686428182.91",
+                        "1",
+                    ],
+                    [
+                        "2019-01-03",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "1e300",
+                        "686428182.91",
+                        "1",
+                    ],
+                ]
+            )
+
+    assert _fetch_one(_B(), "002450.SZ", date(2019, 1, 1), date(2019, 12, 31)) == []
 
 
 def test_query_error_is_retryable_not_an_empty_result():

@@ -69,7 +69,7 @@ def _symbol_from_baostock(code: str) -> str | None:
         return None
     prefix, num = code.split(".", 1)
     exchange = {"sh": "SH", "sz": "SZ", "bj": "BJ"}.get(prefix.lower())
-    if exchange is None or not num.isdigit():
+    if exchange is None or len(num) != 6 or not num.isdigit():
         return None
     return format_symbol(num, exchange)
 

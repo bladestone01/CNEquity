@@ -57,20 +57,38 @@ def _fetch_one_st(bs, symbol: str, start: date, end: date) -> list[dict] | None:
     if getattr(rs, "error_code", "0") != "0":
         return None
     out: list[dict] = []
+    identity_mismatches = 0
+    expected_code = to_baostock_symbol(symbol)
     while rs.next():
-        trade_raw, _code, tradestatus, is_st = rs.get_row_data()
+        row = rs.get_row_data()
+        if len(row) != 4:
+            continue
+        trade_raw, _code, tradestatus, is_st = row
+        if str(_code).strip().lower() != expected_code:
+            identity_mismatches += 1
+            continue
+        if tradestatus not in ("0", "1"):
+            return None
         if tradestatus != "1":
             continue
         if is_st not in ("0", "1"):
             return None
+        try:
+            trade_date = date.fromisoformat(trade_raw)
+        except (TypeError, ValueError):
+            continue
+        if trade_date < start or trade_date > end:
+            continue
         out.append(
             {
                 "symbol": symbol,
-                "trade_date": date.fromisoformat(trade_raw),
+                "trade_date": trade_date,
                 "is_trading": True,
                 "status": "st" if is_st == "1" else "normal",
             }
         )
+    if identity_mismatches:
+        return None
     return out
 
 
@@ -105,4 +123,8 @@ def fetch_st_history(
         config=config,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
+    if not df.is_empty():
+        df = df.unique(subset=["symbol", "trade_date"], keep="last").sort(
+            ["trade_date", "symbol"]
+        )
     return df, failed

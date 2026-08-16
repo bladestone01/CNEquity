@@ -25,13 +25,17 @@ is real, not an inconsistency to iron out. See :mod:`cnequity.domain.units`.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 
 from cnequity.adapters.baostock._session import fetch_per_symbol, import_baostock
+from cnequity.adapters.numeric import finite_int64
 
 logger = logging.getLogger(__name__)
 
-_FIELDS = "date,open,high,low,close,volume,amount,tradestatus"
+# Include the response identity. Baostock normally honors the requested code,
+# but a misrouted result must never be relabeled as a delisted symbol.
+_FIELDS = "date,code,open,high,low,close,volume,amount,tradestatus"
 
 
 def _is_stock(bs_code: str) -> bool:
@@ -40,6 +44,8 @@ def _is_stock(bs_code: str) -> bool:
     Shanghai 000xxx is an index (000001 is the composite), Shenzhen 000xxx is a
     stock, so the prefix has to be read per exchange.
     """
+    if not isinstance(bs_code, str):
+        return False
     try:
         ex, code = bs_code.split(".")
     except ValueError:
@@ -74,9 +80,18 @@ def roster_on(day: date, *, bs=None, login: bool = True) -> set[str]:
         _login(bs)
     try:
         rs = bs.query_all_stock(day=day.isoformat())
+        if getattr(rs, "error_code", "0") != "0":
+            message = getattr(rs, "error_msg", "") or "unknown error"
+            raise RuntimeError(
+                f"baostock historical roster query failed for {day}: "
+                f"{rs.error_code} ({message})"
+            )
         out: set[str] = set()
         while rs.next():
-            code = rs.get_row_data()[0]
+            row = rs.get_row_data()
+            if not row:
+                continue
+            code = row[0]
             if _is_stock(code):
                 out.add(to_lake_symbol(code))
         if not out:
@@ -101,27 +116,75 @@ def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
     if rs.error_code != "0":
         return None  # retryable — the session driver relogins and retries
     rows: list[dict] = []
+    identity_mismatches = 0
+    reported_fields = list(getattr(rs, "fields", []) or [])
+    expected_code = to_baostock_symbol(symbol)
     while rs.next():
         r = rs.get_row_data()
+        if len(r) == 9:
+            trade_raw, reported_code, open_raw, high_raw, low_raw, close_raw, volume_raw, amount_raw, status = r
+            if str(reported_code).strip().lower() != expected_code:
+                identity_mismatches += 1
+                logger.warning(
+                    "baostock delisted bars: skipping row for %s returned as %s",
+                    symbol,
+                    reported_code,
+                )
+                continue
+        elif len(r) == 8 and not reported_fields:
+            # Keep compatibility with old offline fakes that predate `code` in
+            # the requested field list; a real result-set with missing `code`
+            # must not be attributed to the requested symbol.
+            trade_raw, open_raw, high_raw, low_raw, close_raw, volume_raw, amount_raw, status = r
+        else:
+            if len(r) == 8 and reported_fields:
+                identity_mismatches += 1
+                logger.warning(
+                    "baostock delisted bars: response for %s omitted the code field; retrying",
+                    symbol,
+                )
+            continue
+        if status not in ("0", "1"):
+            return None
+        if status != "1":
+            continue
         # A suspended session comes back with empty price fields; skip rather
-        # than write zeros, which would read as a real -100% move.
-        if not r[1] or not r[4]:
+        # than write zeros, which would read as a real -100% move. The status
+        # guard above also rejects carried-forward prices on a suspended day.
+        if not open_raw or not close_raw:
             continue
         try:
+            trade_date = date.fromisoformat(trade_raw)
+            if trade_date < start or trade_date > end:
+                continue
+            open_ = float(open_raw)
+            high = float(high_raw)
+            low = float(low_raw)
+            close = float(close_raw)
+            volume = finite_int64(float(volume_raw or 0), minimum=0)
+            amount = float(amount_raw or 0.0)
+            if not all(math.isfinite(value) for value in (open_, high, low, close, amount)):
+                continue
             rows.append(
                 {
                     "symbol": symbol,
-                    "trade_date": date.fromisoformat(r[0]),
-                    "open": float(r[1]),
-                    "high": float(r[2]),
-                    "low": float(r[3]),
-                    "close": float(r[4]),
-                    "volume": int(float(r[5] or 0)),
-                    "amount": float(r[6] or 0.0),
+                    "trade_date": trade_date,
+                    "open": open_,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": volume,
+                    "amount": amount,
                 }
             )
-        except (ValueError, IndexError):
+        except (TypeError, ValueError, IndexError, OverflowError):
             continue
+    if identity_mismatches:
+        logger.warning(
+            "baostock delisted bars: response for %s contained another code; retrying",
+            symbol,
+        )
+        return None
     return rows
 
 

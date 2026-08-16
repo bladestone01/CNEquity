@@ -91,6 +91,46 @@ def test_never_st_symbol_emits_negative_evidence():
     assert df["status"].to_list() == ["normal"]
 
 
+def test_st_history_dedupes_source_rows():
+    duplicate = ["2020-01-02", "sz.000001", "1", "0"]
+    bs = _FakeBaostock({"sz.000001": [duplicate, duplicate]})
+    df, failed = fetch_st_history(
+        ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
+    assert failed == []
+    assert df.height == 1
+
+
+def test_st_history_rejects_rows_for_another_code():
+    bs = _FakeBaostock(
+        {
+            "sz.000001": [["2020-01-02", "sz.000002", "1", "1"]],
+        }
+    )
+    df, failed = fetch_st_history(
+        ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
+    assert df.is_empty()
+    assert failed == ["000001.SZ"]
+    assert bs.logins > 1
+
+
+def test_st_history_rejects_mixed_source_identities():
+    bs = _FakeBaostock(
+        {
+            "sz.000001": [
+                ["2020-01-02", "sz.000001", "1", "0"],
+                ["2020-01-03", "sz.000002", "1", "1"],
+            ]
+        }
+    )
+    df, failed = fetch_st_history(
+        ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
+    assert df.is_empty()
+    assert failed == ["000001.SZ"]
+
+
 def test_unknown_is_st_value_fails_symbol_closed():
     bs = _FakeBaostock({"sz.000001": _rows("sz.000001", [("2020-01-02", "1", "")])})
     df, failed = fetch_st_history(
@@ -98,6 +138,53 @@ def test_unknown_is_st_value_fails_symbol_closed():
     )
     assert df.is_empty()
     assert failed == ["000001.SZ"]
+
+
+def test_unknown_trade_status_fails_symbol_closed():
+    bs = _FakeBaostock({"sz.000001": _rows("sz.000001", [("2020-01-02", "x", "0")])})
+
+    df, failed = fetch_st_history(
+        ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
+
+    assert df.is_empty()
+    assert failed == ["000001.SZ"]
+
+
+def test_invalid_trade_date_skips_only_the_bad_row():
+    bs = _FakeBaostock(
+        {
+            "sz.000001": _rows(
+                "sz.000001",
+                [
+                    ("not-a-date", "1", "0"),
+                    ("2021-01-04", "1", "1"),
+                    ("2020-01-03", "1", "1"),
+                ],
+            )
+        }
+    )
+    df, failed = fetch_st_history(
+        ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
+    assert failed == []
+    assert df["trade_date"].to_list() == [date(2020, 1, 3)]
+
+
+def test_short_row_skips_only_the_bad_row():
+    bs = _FakeBaostock(
+        {
+            "sz.000001": [
+                ["short"],
+                ["2020-01-03", "sz.000001", "1", "1"],
+            ]
+        }
+    )
+    df, failed = fetch_st_history(
+        ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
+    assert failed == []
+    assert df["trade_date"].to_list() == [date(2020, 1, 3)]
 
 
 def test_reports_failed_symbols_fail_loud():

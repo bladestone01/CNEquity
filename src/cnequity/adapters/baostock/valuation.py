@@ -27,6 +27,7 @@ park a decade of null market-cap rows.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import date
 
@@ -63,9 +64,10 @@ def _to_float(raw: str | None) -> float | None:
     if raw is None or raw == "":
         return None
     try:
-        return float(raw)
+        parsed = float(raw)
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _float_mv_from_turn(amount: float | None, turn: float | None) -> float | None:
@@ -100,9 +102,15 @@ def _year_end_total_shares(bs, symbol: str, start: date, end: date) -> list[tupl
             if not data and len(row) >= 11:
                 # Offline fakes may omit .fields; positional fallback per baostock order.
                 data = {
+                    "code": row[0],
                     "statDate": row[2],
                     "totalShare": row[9],
                 }
+            reported_code = data.get("code")
+            if reported_code is not None and str(reported_code).strip().lower() != code:
+                raise RuntimeError(
+                    f"baostock profit data for {symbol} returned another code: {reported_code}"
+                )
             shares = _to_float(data.get("totalShare"))
             stat_raw = data.get("statDate") or f"{year}-12-31"
             if shares is None or shares <= 0:
@@ -169,13 +177,36 @@ def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
     share_points = _year_end_total_shares(bs, symbol, start, end) if raw_rows else []
 
     out: list[dict] = []
-    for row in raw_rows:
+    identity_mismatches = 0
+    for index, row in enumerate(raw_rows):
+        if len(row) != 8:
+            logger.warning(
+                "baostock valuation: skipping row %s for %s with %s fields",
+                index,
+                symbol,
+                len(row),
+            )
+            continue
         trade_raw, _code, close_s, amount_s, turn_s, pe, pb, ps = row
+        if str(_code).strip().lower() != code:
+            identity_mismatches += 1
+            logger.warning(
+                "baostock valuation: skipping row %s for %s returned as %s",
+                index,
+                symbol,
+                _code,
+            )
+            continue
         close = _to_float(close_s)
         amount = _to_float(amount_s)
         turn = _to_float(turn_s)
         float_mv = _float_mv_from_turn(amount, turn)
-        trade = date.fromisoformat(trade_raw)
+        try:
+            trade = date.fromisoformat(trade_raw)
+        except (TypeError, ValueError):
+            continue
+        if trade < start or trade > end:
+            continue
         total_share = _asof_total_share(trade, share_points)
         total_mv = (
             close * total_share
@@ -193,6 +224,12 @@ def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
                 "float_mv": float_mv,
             }
         )
+    if identity_mismatches:
+        logger.warning(
+            "baostock valuation: response for %s contained another code; retrying",
+            symbol,
+        )
+        return None
     return out
 
 
@@ -228,4 +265,8 @@ def fetch_valuation_history(
         config=config,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
+    if not df.is_empty():
+        df = df.unique(subset=["symbol", "trade_date"], keep="last").sort(
+            ["trade_date", "symbol"]
+        )
     return df, failed

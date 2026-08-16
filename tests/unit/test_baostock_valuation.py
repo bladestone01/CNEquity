@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from cnequity.adapters.baostock.valuation import (
+    _to_float,
     fetch_valuation_history,
     to_baostock_symbol,
 )
@@ -19,6 +20,11 @@ def test_to_baostock_symbol():
     assert to_baostock_symbol("600519.SH") == "sh.600519"
     assert to_baostock_symbol("000001.SZ") == "sz.000001"
     assert to_baostock_symbol("920819.BJ") == "bj.920819"
+
+
+def test_valuation_numeric_parser_rejects_nonfinite_values():
+    assert _to_float("nan") is None
+    assert _to_float("inf") is None
 
 
 class _FakeResultSet:
@@ -91,7 +97,10 @@ def test_fetch_valuation_history_maps_market_cap():
     bs = _FakeBaostock(
         {
             "sh.600519": [
+                ["malformed"],
+                ["2015-12-31", "sh.600519", "199.0", "900000.0", "1.0", "12.4", "3.0", "7.9"],
                 ["2016-01-04", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"],
+                ["not-a-date", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"],
                 [
                     "2016-01-05",
                     "sh.600519",
@@ -185,6 +194,81 @@ def test_fetch_valuation_history_skips_uncovered_symbol():
     assert failed == []
 
 
+def test_fetch_valuation_history_dedupes_source_rows():
+    row = ["2016-01-04", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"]
+    bs = _FakeBaostock({"sh.600519": [row, row]})
+    df, failed = fetch_valuation_history(
+        ["600519.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs, sleep=lambda _: None
+    )
+    assert failed == []
+    assert df.height == 1
+
+
+def test_fetch_valuation_history_rejects_rows_for_another_code():
+    bs = _FakeBaostock(
+        {
+            "sh.600519": [
+                ["2016-01-04", "sh.000001", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"]
+            ]
+        }
+    )
+    df, failed = fetch_valuation_history(
+        ["600519.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs, sleep=lambda _: None
+    )
+    assert df.is_empty()
+    assert failed == ["600519.SH"]
+    assert bs.logins > 1
+
+
+def test_fetch_valuation_history_rejects_mixed_source_identities():
+    bs = _FakeBaostock(
+        {
+            "sh.600519": [
+                ["2016-01-04", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"],
+                ["2016-01-05", "sh.000001", "201.0", "1000000.0", "1.0", "12.6", "3.1", "8.1"],
+            ]
+        }
+    )
+    df, failed = fetch_valuation_history(
+        ["600519.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs, sleep=lambda _: None
+    )
+    assert df.is_empty()
+    assert failed == ["600519.SH"]
+
+
+def test_fetch_valuation_history_rejects_profit_rows_for_another_code():
+    bs = _FakeBaostock(
+        {
+            "sh.600519": [
+                ["2016-01-04", "sh.600519", "200.0", "1000000.0", "1.0", "12.5", "3.1", "8.0"]
+            ]
+        },
+        profit_q4={
+            ("sh.600519", 2015): [
+                [
+                    "sh.000001",
+                    "2016-03-01",
+                    "2015-12-31",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "1000000000",
+                    "800000000",
+                ]
+            ]
+        },
+    )
+    df, failed = fetch_valuation_history(
+        ["600519.SH"], date(2016, 1, 1), date(2016, 1, 5), bs=bs, sleep=lambda _: None
+    )
+    assert df.is_empty()
+    assert failed == ["600519.SH"]
+    assert bs.logins > 1
+
+
 def test_fetch_valuation_history_reports_failed_symbols_fail_loud():
     bs = _FakeBaostock(
         {
@@ -229,16 +313,16 @@ def test_symbols_needing_backfill_includes_null_mv(tmp_path):
     part.mkdir(parents=True)
     pl.DataFrame(
         {
-            "symbol": ["600519.SH", "000001.SZ"],
-            "trade_date": [date(2016, 1, 4), date(2016, 1, 4)],
-            "pe_ttm": [12.0, 7.0],
-            "pb": [3.0, 1.0],
-            "ps_ttm": [8.0, 1.5],
-            "total_mv": [None, 1.0e10],
-            "float_mv": [None, 1.0e10],
-            "source": ["baostock", "baostock"],
-            "data_version": ["v1", "v1"],
-            "fetched_at": ["2016-01-04T00:00:00+00:00"] * 2,
+            "symbol": ["600519.SH", "000001.SZ", "000002.SZ"],
+            "trade_date": [date(2016, 1, 4)] * 3,
+            "pe_ttm": [12.0, 7.0, 8.0],
+            "pb": [3.0, 1.0, 1.2],
+            "ps_ttm": [8.0, 1.5, 1.8],
+            "total_mv": [None, 1.0e10, None],
+            "float_mv": [None, 1.0e10, 1.0e10],
+            "source": ["baostock"] * 3,
+            "data_version": ["v1"] * 3,
+            "fetched_at": ["2016-01-04T00:00:00+00:00"] * 3,
         }
     ).write_parquet(part / "part-0.parquet")
 
@@ -246,7 +330,7 @@ def test_symbols_needing_backfill_includes_null_mv(tmp_path):
     todo = _symbols_needing_backfill(cfg, ["600519.SH", "000001.SZ", "000002.SZ"])
     assert "600519.SH" in todo  # null float_mv → refill
     assert "000001.SZ" not in todo  # already has float_mv (100% fill)
-    assert "000002.SZ" in todo  # never backfilled
+    assert "000002.SZ" in todo  # total_mv null → refill despite float_mv being filled
 
 
 def test_symbols_needing_backfill_sparse_fill(tmp_path):
@@ -276,3 +360,88 @@ def test_symbols_needing_backfill_sparse_fill(tmp_path):
     cfg = Config(data_root=root)
     todo = _symbols_needing_backfill(cfg, ["600519.SH"])
     assert "600519.SH" in todo
+
+
+def test_symbols_needing_backfill_does_not_skip_partial_window(tmp_path):
+    """Dense rows from an older run must not satisfy a newer history end."""
+    from cnequity.config import Config
+    from cnequity.steps.fundamentals import _symbols_needing_backfill
+
+    root = tmp_path / "data"
+    part = root / "curated" / "valuation_metrics" / "trade_date=2024-06-03"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"] * 5,
+            "trade_date": [date(2024, 5, d) for d in (27, 28, 29, 30, 31)],
+            "total_mv": [1.0e10] * 5,
+            "float_mv": [1.0e10] * 5,
+            "source": ["baostock"] * 5,
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+    cfg = Config(data_root=root)
+    assert _symbols_needing_backfill(
+        cfg, ["600519.SH"], end=date(2024, 6, 3)
+    ) == ["600519.SH"]
+
+
+def test_symbols_needing_backfill_accepts_history_through_window_end(tmp_path):
+    from cnequity.config import Config
+    from cnequity.steps.fundamentals import _symbols_needing_backfill
+
+    root = tmp_path / "data"
+    part = root / "curated" / "valuation_metrics" / "trade_date=2024-06-03"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"] * 5,
+            "trade_date": [date(2024, 4, d) for d in (25, 26, 27, 28, 29)],
+            "total_mv": [1.0e10] * 5,
+            "float_mv": [1.0e10] * 5,
+            "source": ["baostock"] * 5,
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+    cfg = Config(data_root=root)
+    assert _symbols_needing_backfill(
+        cfg, ["600519.SH"], end=date(2024, 4, 29)
+    ) == []
+
+
+def test_symbols_needing_backfill_uses_delist_date_as_window_end(tmp_path):
+    from cnequity.config import Config
+    from cnequity.steps.fundamentals import _symbols_needing_backfill
+
+    root = tmp_path / "data"
+    instruments = root / "curated" / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "list_date": [date(2001, 8, 27)],
+            "delist_date": [date(2018, 1, 1)],
+        }
+    ).write_parquet(instruments / "part-0.parquet")
+    part = root / "curated" / "valuation_metrics" / "trade_date=2018-01-01"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"] * 5,
+            "trade_date": [
+                date(2017, 12, 26),
+                date(2017, 12, 27),
+                date(2017, 12, 28),
+                date(2017, 12, 29),
+                date(2018, 1, 1),
+            ],
+            "total_mv": [1.0e10] * 5,
+            "float_mv": [1.0e10] * 5,
+            "source": ["baostock"] * 5,
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+    cfg = Config(data_root=root)
+    assert _symbols_needing_backfill(
+        cfg, ["600519.SH"], end=date(2024, 6, 3)
+    ) == []
