@@ -59,14 +59,14 @@ def _schema_contract_scan(
         except SchemaValidationError as exc:
             invalid.append(
                 {
-                    "file": str(path.relative_to(root)),
+                    "file": path.relative_to(root).as_posix(),
                     "message": str(exc),
                 }
             )
         except (OSError, pl.exceptions.PolarsError, ValueError) as exc:
             invalid.append(
                 {
-                    "file": str(path.relative_to(root)),
+                    "file": path.relative_to(root).as_posix(),
                     "message": f"unreadable parquet or schema: {exc}",
                 }
             )
