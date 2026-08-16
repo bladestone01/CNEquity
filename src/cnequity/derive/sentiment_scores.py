@@ -26,14 +26,23 @@ _A_SHARE_RE = re.compile(r"^\d{6}\.(SH|SZ)$", re.IGNORECASE)
 def _read_announcements(root: Path, trade_date: date) -> pl.DataFrame:
     if not root.exists():
         return pl.DataFrame()
-    files = list(root.glob(f"announce_date={trade_date.isoformat()}/**/*.parquet"))
-    if not files:
-        files = list(root.glob("**/*.parquet"))
-    if not files:
+    from cnequity.query.parquet_scan import collect_parquet_root
+
+    try:
+        df = collect_parquet_root(
+            root,
+            partition_col="announce_date",
+            start=trade_date,
+            end=trade_date,
+        )
+    except FileNotFoundError:
         return pl.DataFrame()
-    df = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
     if "announce_date" not in df.columns:
         return pl.DataFrame()
+    if "announcement_id" in df.columns:
+        if "fetched_at" in df.columns:
+            df = df.sort("fetched_at")
+        df = df.unique(subset=["announcement_id"], keep="last")
     return df.filter(pl.col("announce_date") == trade_date)
 
 
@@ -64,12 +73,23 @@ def _announcement_sentiment(config: Config, trade_date: date) -> pl.DataFrame:
 def _read_news_headlines(root: Path, trade_date: date) -> pl.DataFrame:
     if not root.exists():
         return pl.DataFrame()
-    files = list(root.glob(f"publish_date={trade_date.isoformat()}/**/*.parquet"))
-    if not files:
+    from cnequity.query.parquet_scan import collect_parquet_root
+
+    try:
+        df = collect_parquet_root(
+            root,
+            partition_col="publish_date",
+            start=trade_date,
+            end=trade_date,
+        )
+    except FileNotFoundError:
         return pl.DataFrame()
-    df = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
     if "publish_date" not in df.columns or "title" not in df.columns:
         return pl.DataFrame()
+    if "news_id" in df.columns:
+        if "fetched_at" in df.columns:
+            df = df.sort("fetched_at")
+        df = df.unique(subset=["news_id"], keep="last")
     return df.filter(pl.col("publish_date") == trade_date)
 
 
@@ -123,16 +143,28 @@ def _hot_rank_symbols(config: Config, trade_date: date, limit: int) -> list[str]
     root = config.curated_root / "hot_rank"
     if not root.exists() or limit <= 0:
         return []
-    files = list(root.glob(f"trade_date={trade_date.isoformat()}/**/*.parquet"))
-    if not files:
-        # Prefer latest available hot_rank when same-day partition is missing.
-        files = sorted(root.glob("**/*.parquet"))
-        if not files:
-            return []
-        files = [files[-1]]
-    df = pl.read_parquet(files[0])
+    from cnequity.query.canonical import dedupe_by_primary_key
+    from cnequity.query.parquet_scan import collect_parquet_root
+
+    try:
+        df = collect_parquet_root(
+            root,
+            partition_col="trade_date",
+            start=trade_date,
+            end=trade_date,
+        )
+        if df.is_empty():
+            # Prefer the latest available day when the requested snapshot is
+            # absent. This also works when hot_rank is month/year partitioned.
+            df = collect_parquet_root(root, partition_col="trade_date", end=trade_date)
+            if "trade_date" in df.columns and not df.is_empty():
+                latest = df["trade_date"].max()
+                df = df.filter(pl.col("trade_date") == latest)
+    except FileNotFoundError:
+        return []
     if "symbol" not in df.columns:
         return []
+    df = dedupe_by_primary_key(df, "hot_rank")
     if "rank" in df.columns:
         df = df.sort("rank")
     return df["symbol"].unique(maintain_order=True).to_list()[:limit]
@@ -163,16 +195,27 @@ def _news_sentiment_symbols(config: Config, trade_date: date, limit: int) -> lis
 
     bars_root = config.curated_root / "daily_bars"
     if bars_root.exists():
-        files = list(bars_root.glob(f"trade_date={trade_date.isoformat()}/**/*.parquet"))
-        if files:
-            bars = pl.read_parquet(files[0])
-            if "symbol" in bars.columns and "amount" in bars.columns:
-                top = (
-                    bars.sort("amount", descending=True)
-                    .head(max(0, limit - len(symbols)))["symbol"]
-                    .to_list()
-                )
-                _extend(top)
+        from cnequity.query.canonical import dedupe_by_primary_key
+        from cnequity.query.parquet_scan import collect_parquet_root
+
+        try:
+            bars = collect_parquet_root(
+                bars_root,
+                partition_col="trade_date",
+                start=trade_date,
+                end=trade_date,
+            )
+        except FileNotFoundError:
+            bars = pl.DataFrame()
+        if "symbol" in bars.columns and "amount" in bars.columns:
+            bars = dedupe_by_primary_key(bars, "daily_bars")
+            top = (
+                bars.sort("amount", descending=True)
+                .unique(subset=["symbol"], keep="first", maintain_order=True)
+                .head(max(0, limit - len(symbols)))["symbol"]
+                .to_list()
+            )
+            _extend(top)
     return symbols[:limit]
 
 
@@ -197,7 +240,7 @@ def _stock_news_sentiment(config: Config, trade_date: date) -> pl.DataFrame:
     try:
         from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 
-        client = EastMoneyClient(min_interval=config.source_intervals.get("eastmoney", 1.0))
+        client = EastMoneyClient(config=config)
         for sym in symbols:
             if consecutive_failures >= _HTTP_FAIL_BREAKER:
                 logger.warning(
@@ -208,17 +251,21 @@ def _stock_news_sentiment(config: Config, trade_date: date) -> pl.DataFrame:
                 )
                 break
             try:
-                config.rate_limit("eastmoney")
                 payload = fetch_stock_news(
                     sym,
                     on_date=trade_date,
                     limit=20,
                     use_snownlp=use_snownlp,
                     client=client,
+                    config=config,
                 )
             except Exception as exc:  # noqa: BLE001 — fail-soft per symbol
                 consecutive_failures += 1
                 logger.warning("stock_news fetch failed for %s: %s", sym, exc)
+                continue
+            if payload.get("error"):
+                consecutive_failures += 1
+                logger.warning("stock_news fetch returned an error for %s: %s", sym, payload["error"])
                 continue
             consecutive_failures = 0
             if payload.get("headline_count", 0) == 0:
@@ -246,16 +293,15 @@ def _maybe_cache_news(config: Config, payload: dict) -> None:
     """Warm on-demand cache when batch fetch pulls news."""
     if not config.on_demand_enabled:
         return
-    import json
-
     symbol = payload["symbol"]
     cache_dir = config.meta_root / "on_demand" / "stock_news"
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{symbol.replace('.', '_')}.json"
     if path.exists():
         return
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    from cnequity.storage.atomic import write_json_atomic
+
+    write_json_atomic(path, payload, ensure_ascii=False, indent=2)
 
 
 def compute_sentiment_scores(config: Config, trade_date: date) -> pl.DataFrame:

@@ -4,7 +4,7 @@ error ``adj_close_discontinuity`` / warning ``missing_corporate_action``.
 Fixtures write raw close + hfq factor; the check reconstructs adj returns.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 
@@ -27,6 +27,8 @@ def _write_bars(root, rows):
                 "symbol": [s for s, _ in entries],
                 "trade_date": [d] * len(entries),
                 "close": [c for _, c in entries],
+                "fetched_at": [datetime(d.year, d.month, d.day, tzinfo=timezone.utc)]
+                * len(entries),
             }
         ).write_parquet(part / "part.parquet")
 
@@ -46,6 +48,8 @@ def _write_factors(root, rows):
                 "trade_date": [d] * len(entries),
                 "adjust_type": ["hfq"] * len(entries),
                 "factor": [f for _, f in entries],
+                "fetched_at": [datetime(d.year, d.month, d.day, tzinfo=timezone.utc)]
+                * len(entries),
             }
         ).write_parquet(part / "part.parquet")
 
@@ -144,6 +148,34 @@ def test_factor_break_is_error(tmp_path):
     assert f["symbol"] == "A"
     assert f["trade_date"] == "2024-06-05"
     assert f["adj_ret"] == 1.0
+
+
+def test_duplicate_factor_fragment_does_not_create_false_break(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 5.0), ("A", _D[2], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root,
+        [("A", _D[0], 1.0), ("A", _D[1], 2.0), ("A", _D[2], 2.0)],
+    )
+    duplicate = pl.DataFrame(
+        {
+            "symbol": ["A"],
+            "trade_date": [_D[1]],
+            "adjust_type": ["hfq"],
+            "factor": [1.0],
+            "fetched_at": [datetime(2020, 1, 1, tzinfo=timezone.utc)],
+        }
+    )
+    duplicate.write_parquet(
+        cfg.derived_root / "adj_factors" / f"trade_date={_D[1]}" / "part-stale.parquet"
+    )
+    _write_corp_actions(cfg.data_root, _DECOY)
+
+    findings = adj_factor_reconciliation_findings(cfg, _D[2])
+    assert {finding["check"] for finding in findings} == {"missing_corporate_action"}
 
 
 def test_break_is_error_even_with_a_corp_action(tmp_path):

@@ -9,11 +9,12 @@ from cnequity.adapters.sina.adj_factors import (
     fetch_adj_factor_series,
     to_sina_symbol,
 )
-from cnequity.config import load_config
+from cnequity.config import Config, load_config
 from cnequity.config.bootstrap import path_for_toml
 from cnequity.derive.adj_factors import (
     _align_factors_to_bars,
     _cache_path,
+    _write_adj_partitions,
     compute_adj_factors,
 )
 
@@ -24,10 +25,25 @@ def test_to_sina_symbol():
 
 
 def test_parse_sina_qfq_payload():
-    payload = {"data": [{"date": "2024-06-28", "qfq_factor": "2.0"}]}
+    payload = {
+        "data": [None, {"date": "2024-06-28", "qfq_factor": "2.0"}],
+    }
     text = f"var foo = {json.dumps(payload)};"
     rows = _parse_sina_factor_payload(text)
+    assert len(rows) == 1
     assert rows[0]["date"] == "2024-06-28"
+
+
+def test_parse_sina_factor_payload_rejects_non_list_data():
+    text = 'var foo = {"data": {"date": "2024-06-28"}};'
+    with pytest.raises(ValueError, match="data is not a list"):
+        _parse_sina_factor_payload(text)
+
+
+def test_parse_sina_factor_payload_rejects_all_malformed_rows():
+    text = 'var foo = {"data": [null, "bad"]};'
+    with pytest.raises(ValueError, match="no valid rows"):
+        _parse_sina_factor_payload(text)
 
 
 def test_fetch_adj_factor_series_qfq():
@@ -55,6 +71,77 @@ def test_fetch_adj_factor_series_qfq():
 
     df = fetch_adj_factor_series("600519.SH", "qfq", client=FakeClient())
     assert df["factor"].to_list() == [0.5, 0.5]
+
+
+def test_fetch_adj_factor_series_skips_invalid_dates_and_dedupes():
+    payload = {
+        "data": [
+            {"date": "2024-06-27", "qfq_factor": "2.0"},
+            {"date": "not-a-date", "qfq_factor": "3.0"},
+            {"date": "2024-06-27", "qfq_factor": "4.0"},
+        ]
+    }
+    body = f"var foo = {json.dumps(payload)};"
+
+    class FakeResponse:
+        text = body
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def get(self, url):
+            return FakeResponse()
+
+        def close(self):
+            return None
+
+    df = fetch_adj_factor_series("600519.SH", "qfq", client=FakeClient())
+    assert df.height == 1
+    assert df["factor"].to_list() == [0.25]
+
+
+def test_fetch_adj_factor_series_rejects_all_invalid_dates():
+    payload = {"data": [{"date": "not-a-date", "qfq_factor": "2.0"}]}
+    body = f"var foo = {json.dumps(payload)};"
+
+    class FakeResponse:
+        text = body
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def get(self, url):
+            return FakeResponse()
+
+        def close(self):
+            return None
+
+    with pytest.raises(ValueError, match="no valid trade dates"):
+        fetch_adj_factor_series("600519.SH", "qfq", client=FakeClient())
+
+
+@pytest.mark.parametrize("raw_factor", ["0", "-1", "nan"])
+def test_fetch_adj_factor_series_rejects_invalid_factor(raw_factor):
+    payload = {"data": [{"date": "2024-06-28", "qfq_factor": raw_factor}]}
+    body = f"var foo = {json.dumps(payload)};"
+
+    class FakeResponse:
+        text = body
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def get(self, url):
+            return FakeResponse()
+
+        def close(self):
+            return None
+
+    with pytest.raises(ValueError, match="non-positive or non-finite"):
+        fetch_adj_factor_series("600519.SH", "qfq", client=FakeClient())
 
 
 def test_align_factors_to_bars_forward_fill():
@@ -197,6 +284,52 @@ def test_compute_adj_factors_writes_derived(adj_config):
     assert df["factor"][0] == 0.5
     assert df["adjust_type"][0] == "hfq"
     assert df["source"][0] == "sina"
+
+
+def test_write_adj_partitions_merges_all_shards_and_cleans_stale_siblings(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.derived_root / "adj_factors" / "trade_date=2024-06-28"
+    part.mkdir(parents=True)
+    fragments = part / "fragments"
+    fragments.mkdir()
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "adjust_type": ["hfq"],
+            "factor": [0.4],
+        }
+    ).write_parquet(part / "part-000.parquet")
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"],
+            "trade_date": [date(2024, 6, 28)],
+            "adjust_type": ["hfq"],
+            "factor": [0.9],
+        }
+    ).write_parquet(fragments / "part-001.parquet")
+
+    _write_adj_partitions(
+        cfg,
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2024, 6, 28)],
+                "adjust_type": ["hfq"],
+                "factor": [0.8],
+            }
+        ),
+        replace=False,
+    )
+
+    files = sorted(part.rglob("*.parquet"))
+    assert [path.name for path in files] == ["part-0.parquet"]
+    written = pl.read_parquet(files[0])
+    assert written.height == 2
+    assert dict(zip(written["symbol"], written["factor"], strict=True)) == {
+        "600519.SH": 0.8,
+        "000001.SZ": 0.9,
+    }
 
 
 def _write_bar(cfg, symbol: str, trade_date: date) -> None:
@@ -449,6 +582,45 @@ def test_compute_adj_factors_fails_over_threshold(adj_config, monkeypatch):
 
     with pytest.raises(AdjFactorsDeriveError, match="adj_factors"):
         step_derive_adj_factors(adj_config, date(2024, 6, 28), "run-adj", {})
+
+
+def test_failed_symbol_is_retried_after_global_watermark_advances(adj_config, monkeypatch):
+    """A per-symbol failure must not disappear behind another symbol's partition."""
+    from cnequity.storage.state import StateStore
+
+    _write_bar(adj_config, "000001.SZ", date(2024, 6, 28))
+
+    def flaky_fetch(symbol, adjust_type, client=None):
+        if symbol == "600519.SH":
+            raise RuntimeError("sina temporarily unavailable")
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.8]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        flaky_fetch,
+    )
+    first = compute_adj_factors(adj_config)
+    assert first.failed == ["600519.SH:hfq"]
+    assert StateStore(adj_config.meta_root).get_string_set("adj_factors", "retry_symbols") == {
+        "600519.SH"
+    }
+
+    def recovered_fetch(symbol, adjust_type, client=None):
+        assert symbol == "600519.SH"
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.7]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        recovered_fetch,
+    )
+    second = compute_adj_factors(adj_config)
+    assert second.failed == []
+    assert second.rows == 1
+    assert StateStore(adj_config.meta_root).get_string_set("adj_factors", "retry_symbols") == set()
+    written = pl.read_parquet(
+        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
+    )
+    assert written.filter(pl.col("symbol") == "600519.SH")["factor"].to_list() == [0.7]
 
 
 # --- self-healing history ----------------------------------------------------

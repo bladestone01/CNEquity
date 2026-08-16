@@ -15,6 +15,8 @@ from cnequity.domain.schemas import with_provenance
 from cnequity.domain.symbols import is_cdr_symbol, parse_symbol
 from cnequity.file_lock import lake_mutation_lock
 from cnequity.storage.atomic import write_parquet_atomic
+from cnequity.storage.parquet import CuratedWriter
+from cnequity.storage.state import StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ UNCOVERED_REFRESH_LIMIT = 500
 
 _EMPTY_BAR_DATES = pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 _ADJ_PK = ["symbol", "trade_date", "adjust_type"]
+_RETRY_STATE_FIELD = "retry_symbols"
 
 
 class AdjFactorsFetchError(RuntimeError):
@@ -91,6 +94,32 @@ def _adj_factors_watermark(config: Config) -> date | None:
 
     dates = list_hive_partition_dates(config.derived_root / "adj_factors", "trade_date")
     return dates[-1] if dates else None
+
+
+def _retry_symbols(config: Config) -> set[str]:
+    """Symbols whose uncached fetch failed on a prior derive run."""
+    return StateStore(config.meta_root).get_string_set("adj_factors", _RETRY_STATE_FIELD)
+
+
+def _update_retry_symbols(
+    config: Config,
+    *,
+    previous: set[str],
+    succeeded: set[str],
+    failed: set[str],
+) -> None:
+    """Keep failed symbols retryable until a run writes aligned factor rows.
+
+    The derived date watermark is global, while fetches run per symbol. A
+    transient failure can therefore be hidden behind a newer partition unless
+    the symbol-level retry intent is persisted separately.
+    """
+    remaining = (previous - succeeded) | failed
+    StateStore(config.meta_root).set_string_set(
+        "adj_factors",
+        _RETRY_STATE_FIELD,
+        remaining,
+    )
 
 
 def _load_daily_bar_dates(
@@ -193,7 +222,7 @@ def _save_cache(config: Config, symbol: str, adjust_type: str, factors: pl.DataF
     if factors.is_empty():
         return
     path = _cache_path(config, symbol, adjust_type)
-    factors.write_parquet(path, compression="zstd")
+    write_parquet_atomic(path, factors, compression="zstd")
 
 
 def _read_parquet_files(files: list[Path]) -> pl.DataFrame:
@@ -450,21 +479,31 @@ def _write_adj_partitions(
     replace: bool,
 ) -> int:
     """Persist aligned factors. Append-only merges into existing partitions unless *replace*."""
+    # query.__init__ imports this module for STORED_ADJUST_TYPE, so keep this
+    # helper import lazy to avoid a derive↔query import cycle at module load.
+    from cnequity.query.canonical import dedupe_by_primary_key
+
+    writer = CuratedWriter(config.derived_root)
     total = 0
     for key, group in out.partition_by("trade_date", as_dict=True).items():
         td = key[0] if isinstance(key, tuple) else key
         td_str = td.isoformat() if isinstance(td, date) else str(td)
         out_dir = config.derived_root / "adj_factors" / f"trade_date={td_str}"
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / "part-0.parquet"
-        if replace or not path.exists():
-            write_parquet_atomic(path, group, compression="zstd")
+        if replace:
+            merged = group
         else:
-            existing = pl.read_parquet(path)
-            merged = pl.concat([existing, group], how="diagonal_relaxed").unique(
-                subset=_ADJ_PK, keep="last"
-            )
-            write_parquet_atomic(path, merged, compression="zstd")
+            existing_files = sorted(out_dir.rglob("*.parquet"))
+            if existing_files:
+                existing = pl.concat(
+                    [pl.read_parquet(path) for path in existing_files],
+                    how="diagonal_relaxed",
+                )
+                merged = pl.concat([existing, group], how="diagonal_relaxed")
+            else:
+                merged = group
+        merged = dedupe_by_primary_key(merged, "adj_factors")
+        writer.write_partition("adj_factors", "trade_date", td_str, merged, "part-0.parquet")
         total += group.height
     return total
 
@@ -523,7 +562,13 @@ def _compute_adj_factors_locked(
     except OSError:
         latest_bar_date = None
 
-    refresh_set = set(refresh_symbols or [])
+    retry_symbols = _retry_symbols(config)
+    refresh_set = set(refresh_symbols or []) | retry_symbols
+    if retry_symbols:
+        logger.info(
+            "adj_factors: retrying %d symbol(s) with a prior uncached fetch failure",
+            len(retry_symbols),
+        )
     if isinstance(latest_bar_date, date):
         refresh_set |= _event_refresh_symbols(config, latest_bar_date)
     if not full and watermark is not None:
@@ -592,6 +637,7 @@ def _compute_adj_factors_locked(
     frames: list[pl.DataFrame] = []
     failed: list[str] = []
     findings: list[dict] = []
+    succeeded: set[str] = set()
 
     if workers <= 1 or len(tasks) == 1:
         with httpx.Client(timeout=20.0) as client:
@@ -605,6 +651,7 @@ def _compute_adj_factors_locked(
                     findings.append(finding)
                 if aligned is not None:
                     frames.append(aligned)
+                    succeeded.add(sym)
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [
@@ -626,8 +673,15 @@ def _compute_adj_factors_locked(
                     findings.append(finding)
                 if aligned is not None:
                     frames.append(aligned)
+                    succeeded.add(sym)
 
     if not frames:
+        _update_retry_symbols(
+            config,
+            previous=retry_symbols,
+            succeeded=succeeded,
+            failed={item.rsplit(":", 1)[0] for item in failed},
+        )
         return AdjFactorsResult(0, len(tasks), failed, findings)
 
     out = pl.concat(frames, how="diagonal_relaxed").unique(subset=_ADJ_PK, keep="last")
@@ -635,4 +689,10 @@ def _compute_adj_factors_locked(
     out = with_provenance(out, source=config.adj_factors_source, data_version="v1")
 
     total = _write_adj_partitions(config, out, replace=replace)
+    _update_retry_symbols(
+        config,
+        previous=retry_symbols,
+        succeeded=succeeded,
+        failed={item.rsplit(":", 1)[0] for item in failed},
+    )
     return AdjFactorsResult(total, len(tasks), failed, findings)

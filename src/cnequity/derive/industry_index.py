@@ -35,6 +35,9 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from cnequity.domain.market_time import shanghai_today
+from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
+
 if TYPE_CHECKING:
     from cnequity.config import Config
 
@@ -61,7 +64,7 @@ def _prior_trading_day(config: Config, day: date) -> date | None:
 def _membership(config: Config) -> pl.DataFrame:
     """申万 snapshots only — `industry_members` also carries EastMoney board rows
     under 3/4-digit codes, which are a different taxonomy entirely."""
-    from cnequity.query.parquet_scan import dataset_has_parquet, parquet_glob
+    from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
     root = config.curated_root / "industry_members"
     if not dataset_has_parquet(root):
@@ -73,7 +76,10 @@ def _membership(config: Config) -> pl.DataFrame:
             }
         )
     df = (
-        pl.scan_parquet(parquet_glob(root))
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(root, partition_col="as_of_date", hive=False),
+            "industry_members",
+        )
         .filter(pl.col("source") == "sw")
         .select("symbol", "industry_code", "as_of_date")
         .collect()
@@ -88,13 +94,17 @@ def _priced_universe(config: Config) -> set[str]:
     It cannot speak for individual sessions, which is why the row-level gap is
     handled after the load rather than here.
     """
-    from cnequity.query.parquet_scan import dataset_has_parquet, parquet_glob
+    from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
     root = config.derived_root / "adj_factors"
     if not dataset_has_parquet(root):
         return set()
     return set(
-        pl.scan_parquet(parquet_glob(root)).select("symbol").unique().collect()["symbol"].to_list()
+        scan_parquet_root(root, partition_col="trade_date", hive=False)
+        .select("symbol")
+        .unique()
+        .collect()["symbol"]
+        .to_list()
     )
 
 
@@ -145,22 +155,56 @@ def _hfq_returns(config: Config, start: date, end: date, symbols: list[str]) -> 
             bars = bars.filter(pl.col("adj_is_exact"))
         if bars.is_empty():
             return bars
-    return (
+    out = (
         bars.select("symbol", "trade_date", "close", "amount")
         .sort("symbol", "trade_date")
-        .with_columns(pl.col("close").pct_change().over("symbol").alias("ret"))
-        .drop_nulls("ret")
-        # Turnover is either real or absent — a suspended name reports 0, and a
-        # broken feed can report values like 5.9e-39 that are positive but not
-        # money (2026-07-22 arrived that way for the whole universe). Anything
-        # below a yuan is not a traded amount, and letting it through would make
-        # the amount-weighted index a weighted average of noise.
         .with_columns(
-            pl.when(pl.col("amount") >= _MIN_TRADED_AMOUNT)
-            .then(pl.col("amount"))
-            .otherwise(None)
-            .alias("amount")
+            pl.col("trade_date").shift(1).over("symbol").alias("_prev_trade_date"),
+            pl.col("close").pct_change().over("symbol").alias("ret"),
         )
+    )
+
+    # pct_change() otherwise bridges a missing session: a symbol with bars on
+    # Monday and Wednesday gets a two-session return labelled as Wednesday's
+    # one-day return. That is especially damaging to an industry index because
+    # the bridged move can look like a genuine cross-sectional signal. The
+    # calendar is the authority here (not a one-day timedelta, since weekends
+    # and Chinese holidays are valid gaps); drop the first row after a gap so
+    # the missing session remains visible to the dense-coverage watermark.
+    if hasattr(config, "curated_root") and not out.is_empty():
+        from cnequity.steps.common import list_trading_dates
+
+        days = sorted(out["trade_date"].unique().to_list())
+        sessions = list_trading_dates(config, days[0], days[-1])
+        if len(sessions) > 1:
+            expected = pl.DataFrame(
+                {
+                    "trade_date": sessions[1:],
+                    "_expected_prev_trade_date": sessions[:-1],
+                }
+            )
+            out = (
+                out.join(expected, on="trade_date", how="left")
+                .filter(pl.col("_prev_trade_date") == pl.col("_expected_prev_trade_date"))
+                .drop("_prev_trade_date", "_expected_prev_trade_date")
+            )
+        else:
+            out = out.head(0).drop("_prev_trade_date")
+    else:
+        out = out.drop("_prev_trade_date")
+
+    out = out.drop_nulls("ret")
+
+    # Turnover is either real or absent — a suspended name reports 0, and a
+    # broken feed can report values like 5.9e-39 that are positive but not
+    # money (2026-07-22 arrived that way for the whole universe). Anything
+    # below a yuan is not a traded amount, and letting it through would make
+    # the amount-weighted index a weighted average of noise.
+    return out.with_columns(
+        pl.when(pl.col("amount") >= _MIN_TRADED_AMOUNT)
+        .then(pl.col("amount"))
+        .otherwise(None)
+        .alias("amount")
     )
 
 
@@ -298,8 +342,10 @@ def _derive_industry_index_locked(
     full: bool = False,
 ) -> dict:
     """Implementation of :func:`derive_industry_index` under the mutation lock."""
+    from cnequity.domain.datasets import DATASETS
     from cnequity.domain.schemas import with_provenance
-    from cnequity.storage.atomic import write_parquet_atomic
+    from cnequity.quality.verify import last_contiguous_dense_date
+    from cnequity.storage.parquet import CuratedWriter
     from cnequity.storage.state import StateStore
 
     state = StateStore(config.meta_root)
@@ -308,7 +354,7 @@ def _derive_industry_index_locked(
         start = (
             date(2020, 1, 1) if watermark is None else date.fromordinal(watermark.toordinal() + 1)
         )
-    end = end or date.today()
+    end = end or shanghai_today()
     if start > end:
         return {"rows": 0, "note": f"industry_index already current through {end}"}
 
@@ -316,8 +362,10 @@ def _derive_industry_index_locked(
     if frame.is_empty():
         return {"rows": 0, "note": f"no rows in [{start}, {end}]"}
     frame = with_provenance(frame, source="derived", data_version="v1")
+    frame = dedupe_by_primary_key(frame, "industry_index")
 
     root = config.derived_root / "industry_index"
+    writer = CuratedWriter(config.derived_root)
     written = 0
     for (year,), group in (
         frame.with_columns(pl.col("trade_date").dt.year().alias("_y"))
@@ -327,17 +375,30 @@ def _derive_industry_index_locked(
         group = group.drop("_y")
         out_dir = root / f"trade_date={year}"
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / "part-000.parquet"
-        if path.exists():
+        existing_files = sorted(out_dir.rglob("*.parquet"))
+        if existing_files:
             # Same-year rerun: keep whatever the recompute did not cover.
-            existing = pl.read_parquet(path)
-            keep = existing.filter(~pl.col("trade_date").is_in(group["trade_date"].unique()))
+            existing = dedupe_by_primary_key(
+                pl.concat(
+                    [pl.read_parquet(path) for path in existing_files],
+                    how="diagonal_relaxed",
+                ),
+                "industry_index",
+            )
+            covered_dates = group.get_column("trade_date").unique().to_list()
+            keep = existing.filter(~pl.col("trade_date").is_in(covered_dates))
             group = pl.concat([keep, group.select(existing.columns)]).sort(
                 "trade_date", "level", "weighting", "industry_code"
             )
-        write_parquet_atomic(path, group, compression="zstd")
+        writer.write_partition("industry_index", "trade_date", str(year), group, "part-000.parquet")
         written += group.height
-    state.update_max_date("industry_index", frame["trade_date"].max())
+    # This derive writes directly to the derived tree instead of going through
+    # the generic compact step. Do not advance past an interior session gap:
+    # the next incremental run starts at watermark + 1, so a raw max would make
+    # a missing day permanently invisible.
+    safe_watermark = last_contiguous_dense_date(config, DATASETS["industry_index"])
+    if safe_watermark is not None:
+        state.set_date("industry_index", safe_watermark)
     return {
         "rows": frame.height,
         "rows_on_disk": written,

@@ -143,6 +143,50 @@ def test_latest_em_boards_from_lake_reads_latest_partition(tmp_path):
     assert out == [{"sector_code": "BK0437", "sector_name": "煤炭", "board_type": "industry"}]
 
 
+def test_latest_em_boards_from_lake_reads_all_shards(tmp_path):
+    from cnequity.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.curated_root / "sector_bars" / "trade_date=2026-07-14"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "sector_code": ["BK0437"],
+            "sector_name": ["煤炭"],
+            "board_type": ["industry"],
+        }
+    ).write_parquet(part / "part-000.parquet")
+    pl.DataFrame(
+        {
+            "sector_code": ["BK0917"],
+            "sector_name": ["电力"],
+            "board_type": ["industry"],
+        }
+    ).write_parquet(part / "part-001.parquet")
+
+    out = sr._latest_em_boards_from_lake(cfg)
+    assert {row["sector_code"] for row in out} == {"BK0437", "BK0917"}
+
+
+def test_latest_em_boards_from_lake_reads_nested_shards(tmp_path):
+    from cnequity.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    nested = cfg.curated_root / "sector_bars" / "trade_date=2026-07-14" / "fragments"
+    nested.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "sector_code": ["BK0437"],
+            "sector_name": ["煤炭"],
+            "board_type": ["industry"],
+        }
+    ).write_parquet(nested / "part-000.parquet")
+
+    assert sr._latest_em_boards_from_lake(cfg) == [
+        {"sector_code": "BK0437", "sector_name": "煤炭", "board_type": "industry"}
+    ]
+
+
 def test_derive_sector_routing_falls_back_to_lake_snapshot_when_live_fails(tmp_path, monkeypatch):
     from cnequity.derive import sector_routing as sr
 
@@ -160,7 +204,7 @@ def test_derive_sector_routing_falls_back_to_lake_snapshot_when_live_fails(tmp_p
     monkeypatch.setattr(
         sr,
         "_fetch_em_boards_live",
-        lambda: (_ for _ in ()).throw(RuntimeError("clist down")),
+        lambda config=None: (_ for _ in ()).throw(RuntimeError("clist down")),
     )
     monkeypatch.setattr(
         sr, "_fetch_tdx_indices_live", lambda: [{"tdx_code": "881423", "name": "煤炭"}]
@@ -178,7 +222,7 @@ def test_derive_sector_routing_raises_when_both_live_and_lake_fail(tmp_path, mon
     monkeypatch.setattr(
         sr,
         "_fetch_em_boards_live",
-        lambda: (_ for _ in ()).throw(RuntimeError("clist down")),
+        lambda config=None: (_ for _ in ()).throw(RuntimeError("clist down")),
     )
     with pytest.raises(RuntimeError, match="no lake snapshot"):
         derive_sector_routing(cfg)
@@ -191,7 +235,9 @@ def test_derive_sector_routing_raises_when_tdx_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sr,
         "_fetch_em_boards_live",
-        lambda: [{"sector_code": "BK0437", "sector_name": "煤炭", "board_type": "industry"}],
+        lambda config=None: [
+            {"sector_code": "BK0437", "sector_name": "煤炭", "board_type": "industry"}
+        ],
     )
     monkeypatch.setattr(
         sr,

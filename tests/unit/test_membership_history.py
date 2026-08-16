@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 
@@ -47,7 +47,7 @@ def test_expand_sw_industry_as_of_picks_latest_spell():
         out.with_columns(
             pl.lit("sw").alias("source"),
             pl.lit("v1").alias("data_version"),
-            pl.lit(None, dtype=pl.Datetime(time_zone="UTC")).alias("fetched_at"),
+            pl.lit(datetime(2024, 1, 1, tzinfo=timezone.utc)).alias("fetched_at"),
         ),
         "industry_members",
     )
@@ -73,7 +73,7 @@ def test_expand_cni_constituents_as_of_uses_open_interval():
         out.with_columns(
             pl.lit("cni").alias("source"),
             pl.lit("v1").alias("data_version"),
-            pl.lit(None, dtype=pl.Datetime(time_zone="UTC")).alias("fetched_at"),
+            pl.lit(datetime(2024, 1, 1, tzinfo=timezone.utc)).alias("fetched_at"),
         ),
         "index_constituents",
     )

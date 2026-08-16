@@ -25,6 +25,7 @@ import polars as pl
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
 from cnequity.domain.schemas import validate_dataframe, with_provenance
+from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.storage.parquet import CuratedWriter
 
@@ -86,9 +87,11 @@ def _suspended_pairs(
     """(symbol, trade_date) that were trading days in a symbol's active range but have no bar."""
     bars_root = config.curated_root / "daily_bars"
     cal_root = config.curated_root / "trading_calendar"
-    inst_path = config.curated_root / "instruments" / "part-merged.parquet"
+    inst_root = config.curated_root / "instruments"
     if not (
-        dataset_has_parquet(bars_root) and dataset_has_parquet(cal_root) and inst_path.exists()
+        dataset_has_parquet(bars_root)
+        and dataset_has_parquet(cal_root)
+        and dataset_has_parquet(inst_root)
     ):
         return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 
@@ -128,7 +131,12 @@ def _suspended_pairs(
     if cal.is_empty():
         return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 
-    inst = pl.read_parquet(inst_path).select(["symbol", "list_date", "delist_date"])
+    inst = dedupe_by_primary_key(
+        scan_parquet_root(inst_root, hive=False)
+        .select(["symbol", "list_date", "delist_date"])
+        .collect(),
+        "instruments",
+    )
 
     active = inst.join(sym_range, on="symbol", how="inner").with_columns(
         pl.max_horizontal(pl.col("list_date").fill_null(pl.col("bmin")), pl.col("bmin")).alias(
@@ -198,7 +206,7 @@ def derive_suspension_history(
         frames = [group]
         stray_parts: list = []
         if existing_dir.exists():
-            for f in existing_dir.glob("*.parquet"):
+            for f in existing_dir.rglob("*.parquet"):
                 frames.append(validate_dataframe(pl.read_parquet(f), "trading_status"))
                 if f.name != "part-merged.parquet":
                     stray_parts.append(f)

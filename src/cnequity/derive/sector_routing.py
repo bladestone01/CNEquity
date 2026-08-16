@@ -6,7 +6,6 @@ Optional offline artifact (``cne derive sector_routing``). Does **not** drive
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -14,6 +13,8 @@ from pathlib import Path
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.market_time import shanghai_today
+from cnequity.storage.atomic import write_json_atomic, write_parquet_atomic
 
 ROUTING_DATASET = "sector_ohlc_routing"
 OHLC_TDX = "tdx_protocol"
@@ -62,7 +63,7 @@ def build_sector_routing(
     ``em_boards``: ``sector_code``, ``sector_name``, ``board_type``
     ``tdx_indices``: ``tdx_code``, ``name``
     """
-    as_of = as_of or date.today()
+    as_of = as_of or shanghai_today()
     tdx_rows = [
         {
             "tdx_code": str(r["tdx_code"]).strip(),
@@ -176,10 +177,13 @@ def _latest_em_boards_from_lake(config: Config) -> list[dict]:
     if not parts:
         return []
     latest = parts[-1]
-    files = list(latest.glob("*.parquet"))
+    files = list(latest.rglob("*.parquet"))
     if not files:
         return []
-    df = pl.read_parquet(files[0])
+    df = (
+        pl.concat([pl.read_parquet(path) for path in files], how="diagonal_relaxed")
+        .unique(subset=["sector_code"], keep="last", maintain_order=True)
+    )
     return [
         {
             "sector_code": r["sector_code"],
@@ -190,7 +194,7 @@ def _latest_em_boards_from_lake(config: Config) -> list[dict]:
     ]
 
 
-def _fetch_em_boards_live() -> list[dict]:
+def _fetch_em_boards_live(config: Config | None = None) -> list[dict]:
     from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
     from cnequity.adapters.eastmoney.rotation import (
         _CONCEPT_FS,
@@ -199,7 +203,8 @@ def _fetch_em_boards_live() -> list[dict]:
         _fetch_board_rows,
     )
 
-    with EastMoneyClient(min_interval=0.2) as client:
+    client_kwargs = {"config": config} if config is not None else {"min_interval": 0.2}
+    with EastMoneyClient(**client_kwargs) as client:
         boards = _dedupe_boards(
             _fetch_board_rows(client, _CONCEPT_FS, "concept")
             + _fetch_board_rows(client, _INDUSTRY_FS, "industry")
@@ -239,13 +244,13 @@ def _fetch_tdx_indices_live() -> list[dict]:
 
 def derive_sector_routing(config: Config, *, as_of: date | None = None) -> dict:
     """Build and persist ``meta/sector_ohlc_routing.parquet``."""
-    as_of = as_of or date.today()
+    as_of = as_of or shanghai_today()
     em_boards: list[dict] = []
     tdx_indices: list[dict] = []
     notes: list[str] = []
 
     try:
-        em_boards = _fetch_em_boards_live()
+        em_boards = _fetch_em_boards_live(config)
     except Exception as exc:
         notes.append(f"em_live_failed:{exc}")
         em_boards = _latest_em_boards_from_lake(config)
@@ -265,8 +270,8 @@ def derive_sector_routing(config: Config, *, as_of: date | None = None) -> dict:
 
     config.meta_root.mkdir(parents=True, exist_ok=True)
     out = _routing_path(config)
-    df.write_parquet(out)
+    write_parquet_atomic(out, df)
     summary["notes"] = notes
     summary["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    _summary_path(config).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    write_json_atomic(_summary_path(config), summary, indent=2)
     return summary

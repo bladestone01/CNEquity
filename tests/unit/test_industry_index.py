@@ -7,7 +7,7 @@ weighted average over turnover that is not money.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -17,6 +17,7 @@ from cnequity.derive.industry_index import (
     LEVELS,
     _hfq_returns,
     _members_as_of,
+    _membership,
     compute_industry_index,
     derive_industry_index,
 )
@@ -45,6 +46,34 @@ def test_membership_is_point_in_time():
     jun = panel.filter(pl.col("trade_date") == date(2026, 6, 15))
     assert may["industry_code"].to_list() == ["240301"]
     assert jun["industry_code"].to_list() == ["270101"]
+
+
+def test_membership_uses_latest_row_for_duplicate_primary_key(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.curated_root / "industry_members" / "as_of_date=2026-05"
+    part.mkdir(parents=True)
+    base = {
+        "symbol": ["600000.SH"],
+        "classification_system": ["sw"],
+        "industry_code": ["240301"],
+        "industry_name": ["铝"],
+        "as_of_date": [date(2026, 5, 1)],
+        "source": ["sw"],
+        "data_version": ["v1"],
+        "fetched_at": [datetime(2026, 5, 1, tzinfo=timezone.utc)],
+    }
+    pl.DataFrame(base).write_parquet(part / "part-old.parquet")
+    newer = {
+        **base,
+        "industry_code": ["270101"],
+        "fetched_at": [datetime(2026, 5, 2, tzinfo=timezone.utc)],
+    }
+    pl.DataFrame(newer).write_parquet(part / "part-new.parquet")
+
+    members = _membership(cfg)
+    assert members.select("symbol", "industry_code").to_dicts() == [
+        {"symbol": "600000.SH", "industry_code": "270101"}
+    ]
 
 
 def test_days_before_the_first_snapshot_are_dropped():
@@ -91,6 +120,43 @@ def test_unrealistic_turnover_is_treated_as_missing(monkeypatch, tmp_path):
     row = out.row(0, named=True)
     assert row["ret"] == 0.1
     assert row["amount"] is None, "sub-yuan turnover must not survive as a weight"
+
+
+def test_hfq_returns_do_not_bridge_a_missing_trading_session(monkeypatch, tmp_path):
+    """A two-session price move must not masquerade as one day's return."""
+    cfg = Config(data_root=tmp_path / "data")
+    calendar = cfg.curated_root / "trading_calendar" / "trade_date=2026"
+    calendar.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)],
+            "is_trading": [True, True, True],
+            "source": ["seed"] * 3,
+            "data_version": ["v1"] * 3,
+            "fetched_at": ["2026-08-05T00:00:00+00:00"] * 3,
+        }
+    ).write_parquet(calendar / "part-000.parquet")
+    bars = pl.DataFrame(
+        [
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 8, 3),
+                "close": 10.0,
+                "amount": 1.0e8,
+            },
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 8, 5),
+                "close": 12.0,
+                "amount": 1.0e8,
+            },
+        ]
+    )
+    monkeypatch.setattr("cnequity.query.reader.load", lambda *a, **k: bars)
+
+    out = _hfq_returns(cfg, date(2026, 8, 3), date(2026, 8, 5), ["600000.SH"])
+
+    assert out.is_empty()
 
 
 def _seed_sw_membership(cfg: Config, rows: list[dict]) -> None:
@@ -227,6 +293,107 @@ def test_derive_industry_index_writes_and_watermarks(tmp_path, monkeypatch):
     again = derive_industry_index(cfg, start=date(2026, 5, 16), end=date(2026, 5, 15))
     assert again["rows"] == 0
     assert "already current" in again["note"]
+
+
+def test_derive_industry_index_watermark_stops_before_interior_gap(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    calendar = cfg.curated_root / "trading_calendar" / "trade_date=2026"
+    calendar.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)],
+            "is_trading": [True, True, True],
+            "source": ["seed"] * 3,
+            "data_version": ["v1"] * 3,
+            "fetched_at": ["2026-08-05T00:00:00+00:00"] * 3,
+        }
+    ).write_parquet(calendar / "part-000.parquet")
+    frame = pl.DataFrame(
+        {
+            "trade_date": [date(2026, 8, 3), date(2026, 8, 5)],
+            "industry_code": ["240301", "240301"],
+            "level": ["L3", "L3"],
+            "weighting": ["equal", "equal"],
+            "ret": [0.05, 0.06],
+            "n_members": [2, 2],
+            "n_priced": [2, 2],
+            "n_excluded": [0, 0],
+            "amount": [2.0e8, 2.0e8],
+        }
+    )
+    monkeypatch.setattr(
+        "cnequity.derive.industry_index.compute_industry_index",
+        lambda *a, **k: frame,
+    )
+
+    derive_industry_index(cfg, start=date(2026, 8, 3), end=date(2026, 8, 5))
+
+    assert StateStore(cfg.meta_root).get_date("industry_index") == date(2026, 8, 3)
+
+
+def test_derive_industry_index_cleans_duplicate_existing_rows(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.derived_root / "industry_index" / "trade_date=2026"
+    part.mkdir(parents=True)
+    duplicate = {
+        "trade_date": [date(2026, 5, 14), date(2026, 5, 14)],
+        "industry_code": ["240301", "240301"],
+        "level": ["L3", "L3"],
+        "weighting": ["equal", "equal"],
+        "ret": [0.01, 0.02],
+        "n_members": [2, 2],
+        "n_priced": [2, 2],
+        "n_excluded": [0, 0],
+        "amount": [1.0e8, 1.0e8],
+        "source": ["derived", "derived"],
+        "data_version": ["v1", "v1"],
+        "fetched_at": [
+            datetime(2026, 5, 14, tzinfo=timezone.utc),
+            datetime(2026, 5, 14, 1, tzinfo=timezone.utc),
+        ],
+    }
+    pl.DataFrame(duplicate).write_parquet(part / "part-000.parquet")
+    pl.DataFrame(
+        {
+            **{key: [value[0]] for key, value in duplicate.items()},
+            "trade_date": [date(2026, 5, 13)],
+            "ret": [0.01],
+        }
+    ).write_parquet(part / "part-001.parquet")
+    fragments = part / "fragments"
+    fragments.mkdir()
+    pl.DataFrame(
+        {
+            **{key: [value[0]] for key, value in duplicate.items()},
+            "trade_date": [date(2026, 5, 12)],
+            "ret": [0.005],
+        }
+    ).write_parquet(fragments / "part-002.parquet")
+    new = pl.DataFrame(
+        {
+            "trade_date": [date(2026, 5, 15)],
+            "industry_code": ["240301"],
+            "level": ["L3"],
+            "weighting": ["equal"],
+            "ret": [0.03],
+            "n_members": [2],
+            "n_priced": [2],
+            "n_excluded": [0],
+            "amount": [1.0e8],
+        }
+    )
+    monkeypatch.setattr(
+        "cnequity.derive.industry_index.compute_industry_index",
+        lambda *a, **k: new,
+    )
+
+    derive_industry_index(cfg, start=date(2026, 5, 15), end=date(2026, 5, 15))
+    written = pl.read_parquet(part / "part-000.parquet")
+    assert written.height == 4
+    assert written.filter(pl.col("trade_date") == date(2026, 5, 14))["ret"].to_list() == [0.02]
+    assert written.filter(pl.col("trade_date") == date(2026, 5, 13))["ret"].to_list() == [0.01]
+    assert written.filter(pl.col("trade_date") == date(2026, 5, 12))["ret"].to_list() == [0.005]
+    assert [path.name for path in part.rglob("*.parquet")] == ["part-000.parquet"]
 
 
 def test_catchup_after_watermark_keeps_first_day(tmp_path, monkeypatch):

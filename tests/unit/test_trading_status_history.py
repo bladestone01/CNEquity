@@ -88,18 +88,48 @@ def test_derive_suspension_from_bar_gaps(tmp_path):
     (root / "curated" / "instruments").mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {
-            "symbol": ["600519.SH", "000001.SZ"],
-            "name": ["A", "B"],
-            "exchange": ["SH", "SZ"],
-            "asset_type": ["stock", "stock"],
-            "list_date": [date(2010, 1, 1), date(2010, 1, 1)],
-            "delist_date": [None, None],
-            "prev_symbol": [None, None],
-            "source": ["tdx", "tdx"],
-            "data_version": ["v1", "v1"],
-            "fetched_at": ["2024-06-28T00:00:00+00:00"] * 2,
+            "symbol": ["600519.SH"],
+            "name": ["A"],
+            "exchange": ["SH"],
+            "asset_type": ["stock"],
+            "list_date": [date(2010, 1, 1)],
+            "delist_date": [None],
+            "prev_symbol": [None],
+            "source": ["tdx"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-28T00:00:00+00:00"],
         }
     ).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
+    nested_instruments = root / "curated" / "instruments" / ".old-fragments"
+    nested_instruments.mkdir()
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"],
+            "name": ["B"],
+            "exchange": ["SZ"],
+            "asset_type": ["stock"],
+            "list_date": [date(2010, 1, 1)],
+            "delist_date": [None],
+            "prev_symbol": [None],
+            "source": ["tdx"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-28T00:00:00+00:00"],
+        }
+    ).write_parquet(nested_instruments / "part-old.parquet")
+
+    existing = root / "curated" / "trading_status" / "trade_date=2024-06" / "fragments"
+    existing.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 26)],
+            "is_trading": [True],
+            "status": ["N"],
+            "source": ["eastmoney"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-28T00:00:00+00:00"],
+        }
+    ).write_parquet(existing / "part-old.parquet")
 
     n = derive_suspension_history(cfg)
     assert n == 1  # only 000001 on 2024-06-27
@@ -110,6 +140,10 @@ def test_derive_suspension_from_bar_gaps(tmp_path):
     assert not (root / "curated" / "trading_status" / "trade_date=2024-06-27").exists()
 
     ts = pl.read_parquet(month_dir / "part-merged.parquet")
+    assert ts.filter(
+        (pl.col("symbol") == "600519.SH") & (pl.col("trade_date") == date(2024, 6, 26))
+    ).height == 1
+    assert [path.name for path in month_dir.rglob("*.parquet")] == ["part-merged.parquet"]
     susp = ts.filter(pl.col("status") == "suspended")
     assert susp.height == 1
     assert susp["symbol"][0] == "000001.SZ"

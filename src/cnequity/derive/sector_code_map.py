@@ -6,7 +6,6 @@ EastMoney uses one numeric board id in two spellings:
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -14,7 +13,9 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.derive.sector_routing import norm_sector_name
+from cnequity.domain.market_time import shanghai_today
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+from cnequity.storage.atomic import write_json_atomic, write_parquet_atomic
 
 MAP_DATASET = "sector_code_map"
 
@@ -92,7 +93,7 @@ def build_sector_code_map(
     as_of: date | None = None,
 ) -> tuple[pl.DataFrame, dict]:
     """Join clist BK boards to datacenter BOARD_CODEs via identity (+ name check)."""
-    as_of = as_of or date.today()
+    as_of = as_of or shanghai_today()
     rows: list[dict] = []
 
     concept_by_bk: dict[str, dict] = {}
@@ -185,7 +186,7 @@ def derive_sector_code_map(config: Config, *, as_of: date | None = None) -> dict
         raise RuntimeError("sector_code_map: empty map")
 
     config.meta_root.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(_map_path(config))
+    write_parquet_atomic(_map_path(config), df)
     summary["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    _summary_path(config).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    write_json_atomic(_summary_path(config), summary, indent=2, default=str)
     return summary
