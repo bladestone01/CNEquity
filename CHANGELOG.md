@@ -6,6 +6,31 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-08-16
+
+### Fixed
+
+- **Cross-process rate limiting no longer sleeps while holding the file lock.**
+  Requests reserve a shared `next_allowed_at` slot in a short lock transaction,
+  then wait after releasing the lock. Lock acquisition now has a bounded timeout
+  and fails explicitly instead of bypassing the limiter or hanging forever.
+- **Corporate-actions backfill is resumable at symbol-batch granularity.**
+  Successful chunks are staged immediately and recorded in the manifest; a
+  retry skips those chunks and fetches only the unreceipted symbols.
+- **Hardened source and storage boundaries across the ingestion pipeline.**
+  Malformed or incomplete adapter responses, invalid TDX payloads, unsafe
+  backfill windows, incomplete pipeline results, mixed partition layouts, and
+  non-atomic published artifacts are now rejected or handled explicitly.
+- **Aligned query and derived-data semantics.** Shard merging, primary-key
+  deduplication, partition reads, and industry/sector computations now share
+  the same canonical behavior.
+
+### Changed
+
+- Added rate-limit and corporate-actions recovery observability, manifest
+  heartbeat updates, and release/configuration documentation for the new
+  failure and retry behavior.
+
 ## [0.7.0] — 2026-08-15
 
 ### Changed
