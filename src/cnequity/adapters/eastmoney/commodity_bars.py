@@ -124,9 +124,7 @@ def _fetch_one_kline(
             continue
         if trade_date < start or trade_date > end:
             continue
-        if not all(
-            math.isfinite(value) for value in (open_, close, high, low, volume_raw, amount)
-        ):
+        if not all(math.isfinite(value) for value in (open_, close, high, low, volume_raw, amount)):
             continue
         try:
             volume = finite_int64(volume_raw, minimum=0)
@@ -229,9 +227,7 @@ def fetch_commodity_bars_range(
                         exc,
                     )
                     if strict:
-                        raise RuntimeError(
-                            f"commodity_bars failed for {symbol} ({secid})"
-                        ) from exc
+                        raise RuntimeError(f"commodity_bars failed for {symbol} ({secid})") from exc
                 time.sleep(0.25)
     domestic = (
         pl.DataFrame(rows)

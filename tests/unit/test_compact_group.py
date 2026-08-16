@@ -61,9 +61,7 @@ def test_staging_writer_lists_nested_run_fragments(tmp_path):
     )
     frame.write_parquet(nested / "part-recovered.parquet")
 
-    assert writer.list_run_files("fund_flow", "run-nested") == [
-        nested / "part-recovered.parquet"
-    ]
+    assert writer.list_run_files("fund_flow", "run-nested") == [nested / "part-recovered.parquet"]
 
 
 def test_compact_removes_stale_partition_fragments(tmp_path):

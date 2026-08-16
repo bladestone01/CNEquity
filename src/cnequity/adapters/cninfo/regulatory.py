@@ -98,9 +98,7 @@ def fetch_regulatory_events(
                     continue
                 ann_id = _announcement_id(item)
                 if ann_id is None:
-                    logger.warning(
-                        "CNINFO regulatory announcement missing identity; skipping"
-                    )
+                    logger.warning("CNINFO regulatory announcement missing identity; skipping")
                     continue
                 rows.append(
                     {

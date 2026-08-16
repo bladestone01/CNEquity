@@ -196,15 +196,13 @@ def daily_reconciliation_findings(
         scan_parquet_root(daily_root, partition_col="trade_date", start=start, end=end),
         "daily_bars",
     )
-    daily = (
-        daily_lf
-        .filter((pl.col("data_version") == DAILY_BARS_SHARES_VERSION) & (pl.col("volume") > 0))
-        .select(
-            "symbol",
-            "trade_date",
-            pl.col("volume").alias("daily_volume"),
-            pl.col("amount").alias("daily_amount"),
-        )
+    daily = daily_lf.filter(
+        (pl.col("data_version") == DAILY_BARS_SHARES_VERSION) & (pl.col("volume") > 0)
+    ).select(
+        "symbol",
+        "trade_date",
+        pl.col("volume").alias("daily_volume"),
+        pl.col("amount").alias("daily_amount"),
     )
     minute = (
         lf.group_by("symbol", "trade_date")

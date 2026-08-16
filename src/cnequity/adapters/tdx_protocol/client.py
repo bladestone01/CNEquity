@@ -398,9 +398,7 @@ def fetch_instruments(
             if not frames:
                 reason = "TDX returned no instruments"
                 return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
-            return pl.concat(frames, how="diagonal_relaxed").unique(
-                subset=["symbol"], keep="last"
-            )
+            return pl.concat(frames, how="diagonal_relaxed").unique(subset=["symbol"], keep="last")
     except ImportError:
         reason = "TDX wire client unavailable"
     except Exception as exc:
@@ -469,11 +467,9 @@ def fetch_daily_bars(
                         backfill=backfill,
                         on_page=on_heartbeat,
                     )
-            )
-            if rows:
-                return pl.DataFrame(rows).unique(
-                    subset=["symbol", "trade_date"], keep="last"
                 )
+            if rows:
+                return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
             reason = "TDX returned no bars"
     except ImportError:
         reason = "TDX wire client unavailable"
@@ -883,9 +879,7 @@ def fetch_corporate_actions(
 
     try:
         if not primary_only:
-            em_df = fetch_corporate_actions_eastmoney(
-                trade_date, backfill=backfill, config=config
-            )
+            em_df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill, config=config)
             if em_df.height:
                 frames.append(em_df.with_columns(pl.lit("eastmoney").alias("source")))
     except Exception as exc:
@@ -914,7 +908,9 @@ def fetch_corporate_actions(
 
     if allow_empty:
         return empty
-    return _fail_or_mock("corporate_actions", "no corporate actions from TDX or EastMoney", allow_mock, empty)
+    return _fail_or_mock(
+        "corporate_actions", "no corporate actions from TDX or EastMoney", allow_mock, empty
+    )
 
 
 def fetch_trading_status(

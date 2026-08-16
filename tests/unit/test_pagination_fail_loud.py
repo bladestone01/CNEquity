@@ -244,9 +244,7 @@ def test_regulatory_uses_totalpages_when_hasmore_is_false():
                 "announcementId": f"R{page}",
                 "announcementTitle": "行政处罚决定",
             }
-            return _Response(
-                {"announcements": [item], "hasMore": False, "totalpages": 2}
-            )
+            return _Response({"announcements": [item], "hasMore": False, "totalpages": 2})
 
     client = StaleHasMoreClient()
     df = fetch_regulatory_events(date(2024, 1, 31), client=client)

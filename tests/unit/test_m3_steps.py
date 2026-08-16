@@ -92,7 +92,7 @@ def test_capital_steps_reject_empty_canonical_feeds(
     StateStore(cfg.meta_root).set_date(dataset, date(2024, 6, 27))
     monkeypatch.setattr(cap, fetch_name, lambda *_args, **_kwargs: pl.DataFrame())
     with pytest.raises(RuntimeError, match=f"{dataset}: no rows returned"):
-          getattr(cap, step_name)(cfg, date(2024, 6, 28), "run-empty", {})
+        getattr(cap, step_name)(cfg, date(2024, 6, 28), "run-empty", {})
 
 
 def test_northbound_holdings_rejects_empty_daily_feed(cfg, monkeypatch):
@@ -119,9 +119,7 @@ def test_northbound_holdings_backfill_surfaces_missing_quarters(cfg, monkeypatch
 
     assert result["status"] == "warning"
     assert result["missing_periods"] == 2
-    assert result["context_updates"]["audit_findings"][0]["check"] == (
-        "backfill_missing_quarters"
-    )
+    assert result["context_updates"]["audit_findings"][0]["check"] == ("backfill_missing_quarters")
 
 
 def test_northbound_flows_skips_retired_window_without_source_request(cfg, monkeypatch):

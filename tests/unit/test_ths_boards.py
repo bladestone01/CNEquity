@@ -363,7 +363,7 @@ def test_fetch_board_catalog_rejects_empty_concept_listing(tmp_path, monkeypatch
         lambda url, *, config=None, timeout=20.0: (
             '<a href="/code/881121/x">煤炭</a>'
             if url == "http://ths/industry"
-            else '<html><body>challenge page</body></html>'
+            else "<html><body>challenge page</body></html>"
         ),
     )
 

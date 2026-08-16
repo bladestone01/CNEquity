@@ -779,9 +779,7 @@ def required_columns_for_dataset(dataset: str, schema: dict[str, pl.DataType]) -
     required.extend(col for col in PROVENANCE if col in schema and col not in required)
     required.extend(col for col in _CORE_BAR_REQUIRED_COLUMNS.get(dataset, ()) if col in schema)
     required.extend(
-        col
-        for col in _CORE_SEMANTIC_REQUIRED_COLUMNS.get(dataset, ())
-        if col in schema
+        col for col in _CORE_SEMANTIC_REQUIRED_COLUMNS.get(dataset, ()) if col in schema
     )
     return list(dict.fromkeys(required))
 

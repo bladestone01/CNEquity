@@ -476,19 +476,14 @@ def _staged_daily_bar_partial_symbols(
 
     sessions = list_trading_dates(config, start, end)
     partial: set[str] = set()
-    spans = (
-        staged.group_by("symbol")
-        .agg(
-            pl.col("trade_date").min().alias("first_date"),
-            pl.col("trade_date").max().alias("last_date"),
-            pl.col("trade_date").n_unique().alias("observed_days"),
-        )
+    spans = staged.group_by("symbol").agg(
+        pl.col("trade_date").min().alias("first_date"),
+        pl.col("trade_date").max().alias("last_date"),
+        pl.col("trade_date").n_unique().alias("observed_days"),
     )
     for row in spans.iter_rows(named=True):
         expected = [
-            session
-            for session in sessions
-            if row["first_date"] <= session <= row["last_date"]
+            session for session in sessions if row["first_date"] <= session <= row["last_date"]
         ]
         if row["observed_days"] < len(expected):
             partial.add(row["symbol"])
@@ -918,9 +913,7 @@ def _validate_index_bar_coverage(
     observed_symbols = set(df["symbol"].unique().to_list())
     missing_symbols = sorted(expected_symbols - observed_symbols)
     if missing_symbols:
-        raise RuntimeError(
-            "index_bars: missing complete series for " + ", ".join(missing_symbols)
-        )
+        raise RuntimeError("index_bars: missing complete series for " + ", ".join(missing_symbols))
 
     sessions = list_trading_dates(config, start, end)
     if not sessions:
@@ -988,7 +981,9 @@ def _validate_planned_stock_bars(
             try:
                 trade_date = date.fromisoformat(raw_date)
             except ValueError as exc:
-                raise RuntimeError(f"THS history returned an invalid trade_date for {symbol}") from exc
+                raise RuntimeError(
+                    f"THS history returned an invalid trade_date for {symbol}"
+                ) from exc
         else:
             raise RuntimeError(f"THS history returned an invalid trade_date for {symbol}")
         if not start <= trade_date <= end:

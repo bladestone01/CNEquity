@@ -513,9 +513,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     if not dataset_has_parquet(inst_root):
         return []
 
-    instruments = dedupe_lazy_by_primary_key(
-        scan_parquet_root(inst_root), "instruments"
-    ).collect()
+    instruments = dedupe_lazy_by_primary_key(scan_parquet_root(inst_root), "instruments").collect()
     if "asset_type" not in instruments.columns:
         return []
     stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())

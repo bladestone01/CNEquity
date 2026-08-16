@@ -143,7 +143,9 @@ def test_rejects_rows_from_a_different_requested_date(tmp_path):
     cfg._backfill_end = date(2026, 6, 2)
 
     def fetch_one(d: date) -> pl.DataFrame:
-        return pl.DataFrame([_fake_row(d if d == date(2026, 6, 1) else d + timedelta(days=1), "trade_date")])
+        return pl.DataFrame(
+            [_fake_row(d if d == date(2026, 6, 1) else d + timedelta(days=1), "trade_date")]
+        )
 
     with pytest.raises(RuntimeError, match="different or invalid trade_date"):
         walk_day_backfill(

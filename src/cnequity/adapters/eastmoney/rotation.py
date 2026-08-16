@@ -189,9 +189,7 @@ def fetch_sector_fund_flow(trade_date: date, *, config=None) -> pl.DataFrame:
     )
 
 
-def fetch_news_headlines(
-    trade_date: date, *, page_size: int = 200, config=None
-) -> pl.DataFrame:
+def fetch_news_headlines(trade_date: date, *, page_size: int = 200, config=None) -> pl.DataFrame:
     if page_size <= 0:
         raise ValueError("news page_size must be positive")
     rows: list[dict] = []
@@ -277,8 +275,4 @@ def fetch_news_headlines(
             )
     if not rows:
         logger.info("news_headlines: no items for %s (market may be closed)", target)
-    return (
-        pl.DataFrame(rows).unique(subset=["news_id"], keep="last")
-        if rows
-        else pl.DataFrame()
-    )
+    return pl.DataFrame(rows).unique(subset=["news_id"], keep="last") if rows else pl.DataFrame()

@@ -75,8 +75,7 @@ def _fetch_suspended_symbols(client: EastMoneyClient, trade_date: date) -> set[s
     matching_rows = [item for item in rows if _suspension_covers(item, trade_date)]
     if rows and not matching_rows:
         raise RuntimeError(
-            "EastMoney suspension response contains no row covering "
-            f"{trade_date.isoformat()}"
+            f"EastMoney suspension response contains no row covering {trade_date.isoformat()}"
         )
     symbols: set[str] = set()
     for item in matching_rows:

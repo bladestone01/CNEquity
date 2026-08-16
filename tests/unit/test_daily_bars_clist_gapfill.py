@@ -417,7 +417,9 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
     assert result["rows_written"] == 7
 
 
-def test_multiday_partial_symbol_is_gapfilled_without_overwriting_primary_rows(tmp_path, monkeypatch):
+def test_multiday_partial_symbol_is_gapfilled_without_overwriting_primary_rows(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     run_id = Manifest(cfg.manifest_path).start_run("backfill")
     start, end = date(2024, 6, 20), date(2024, 6, 24)

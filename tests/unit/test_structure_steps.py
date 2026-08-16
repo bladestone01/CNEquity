@@ -75,14 +75,11 @@ def test_existing_cni_as_of_date_requires_every_backfill_index(cfg):
             "as_of_date": [date(2024, 6, 28)],
         }
     ).write_parquet(part / "part-001.parquet")
-    assert (
-        st._existing_as_of_dates(
-            cfg,
-            "index_constituents",
-            required_index_symbols=required,
-        )
-        == {date(2024, 6, 28)}
-    )
+    assert st._existing_as_of_dates(
+        cfg,
+        "index_constituents",
+        required_index_symbols=required,
+    ) == {date(2024, 6, 28)}
 
 
 def test_sector_members_disabled_source(cfg):

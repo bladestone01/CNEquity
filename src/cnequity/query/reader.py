@@ -114,17 +114,9 @@ def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None,
     root_files = list(root.glob("*.parquet"))
     if parts and spec.partition_granularity == "quarter" and not root_files:
         return parts[0].start, parts[-1].end
-    if (
-        parts
-        and spec.query_date_col != spec.partition_col
-        and not root_files
-    ):
+    if parts and spec.query_date_col != spec.partition_col and not root_files:
         return parts[0].start, parts[-1].end
-    if (
-        parts
-        and all(part.start == part.end for part in parts)
-        and not root_files
-    ):
+    if parts and all(part.start == part.end for part in parts) and not root_files:
         return parts[0].start, parts[-1].end
 
     date_col = spec.query_date_col

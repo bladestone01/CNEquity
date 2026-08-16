@@ -185,11 +185,7 @@ def test_daily_fetch_queries_every_report():
 
 def test_daily_fetch_rejects_rows_from_another_notice_date():
     client = FakeDatacenterClient(
-        {
-            "RPT_LICO_FN_CPD": [
-                _lico_row(REPORTDATE="2024-03-31", NOTICE_DATE="2024-04-27")
-            ]
-        }
+        {"RPT_LICO_FN_CPD": [_lico_row(REPORTDATE="2024-03-31", NOTICE_DATE="2024-04-27")]}
     )
 
     with pytest.raises(RuntimeError, match="NOTICE_DATE row for 2024-04-28"):
@@ -210,7 +206,9 @@ def test_backfill_rejects_rows_from_another_report_period(monkeypatch):
 
     with pytest.raises(RuntimeError, match="REPORT_DATE row for 2024-03-31"):
         fetch_financial_statement_items(
-            date(2024, 6, 28), backfill=True, client=client  # type: ignore[arg-type]
+            date(2024, 6, 28),
+            backfill=True,
+            client=client,  # type: ignore[arg-type]
         )
 
 

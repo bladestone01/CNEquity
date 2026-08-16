@@ -30,7 +30,9 @@ def test_corporate_actions_stages_successful_chunks_for_retry(tmp_path, monkeypa
     cfg._backfill = True
     cfg._backfill_start = date(2024, 1, 1)
     cfg._backfill_end = date(2024, 6, 28)
-    monkeypatch.setattr(events, "load_symbols", lambda _cfg: ["600519.SH", "000001.SZ", "300750.SZ"])
+    monkeypatch.setattr(
+        events, "load_symbols", lambda _cfg: ["600519.SH", "000001.SZ", "300750.SZ"]
+    )
     calls = []
 
     def fake_fetch(_trade_date, *, symbols, **_kwargs):

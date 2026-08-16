@@ -29,9 +29,9 @@ def _lake(tmp_path) -> Config:
     sessions = list_trading_dates(cfg, date(2020, 1, 2), date(2024, 12, 31))
     bars_root = cfg.curated_root / "daily_bars"
     bars_root.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(
-        {"symbol": ["600519.SH"] * len(sessions), "trade_date": sessions}
-    ).write_parquet(bars_root / "part-0.parquet")
+    pl.DataFrame({"symbol": ["600519.SH"] * len(sessions), "trade_date": sessions}).write_parquet(
+        bars_root / "part-0.parquet"
+    )
     _partition(
         cfg,
         "trading_status",

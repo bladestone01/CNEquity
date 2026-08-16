@@ -133,9 +133,7 @@ def _range_filter(column: str, start: date, end: date) -> str:
     return f"({column}>='{start.isoformat()}')({column}<='{end.isoformat()}')"
 
 
-def _rows_in_date_window(
-    raw: list[dict], field: str, start: date, end: date
-) -> list[dict]:
+def _rows_in_date_window(raw: list[dict], field: str, start: date, end: date) -> list[dict]:
     rows = [
         item
         for item in raw
@@ -145,16 +143,13 @@ def _rows_in_date_window(
     label = f"{start.isoformat()}..{end.isoformat()}"
     if dropped:
         logger.warning(
-            "EastMoney shareholders dropped %d row(s) with invalid or unexpected "
-            "%s for %s",
+            "EastMoney shareholders dropped %d row(s) with invalid or unexpected %s for %s",
             dropped,
             field,
             label,
         )
     if raw and not rows:
-        raise RuntimeError(
-            f"EastMoney shareholders response contains no {field} row for {label}"
-        )
+        raise RuntimeError(f"EastMoney shareholders response contains no {field} row for {label}")
     return rows
 
 

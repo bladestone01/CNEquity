@@ -80,16 +80,14 @@ def _view_select_sql(
     """
     primary_key = PRIMARY_KEYS.get(name, [])
     source = (
-        f"read_parquet('{glob_path}', hive_partitioning={str(hive).lower()}, "
-        "union_by_name=true)"
+        f"read_parquet('{glob_path}', hive_partitioning={str(hive).lower()}, union_by_name=true)"
     )
     # A few pre-schema-migration fragments in the wild (and lightweight
     # bootstrap fixtures) do not carry provenance. There is no honest
     # freshness tie-breaker in that case; keep the raw view readable and let
     # the schema/quality checks report the malformed fragment.
     if not primary_key or (
-        columns is not None
-        and not set([*primary_key, "fetched_at"]).issubset(columns)
+        columns is not None and not set([*primary_key, "fetched_at"]).issubset(columns)
     ):
         return f"SELECT * FROM {source}"
     partition_by = ", ".join(primary_key)
@@ -120,10 +118,7 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
                 f"read_parquet('{glob_path}', "
                 f"hive_partitioning={str(hive).lower()}, union_by_name=true)"
             )
-            columns = {
-                row[0]
-                for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
-            }
+            columns = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()}
             con.execute(
                 f"""
                 CREATE OR REPLACE VIEW {name} AS

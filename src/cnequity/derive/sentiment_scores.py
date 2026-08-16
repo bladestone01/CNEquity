@@ -265,7 +265,9 @@ def _stock_news_sentiment(config: Config, trade_date: date) -> pl.DataFrame:
                 continue
             if payload.get("error"):
                 consecutive_failures += 1
-                logger.warning("stock_news fetch returned an error for %s: %s", sym, payload["error"])
+                logger.warning(
+                    "stock_news fetch returned an error for %s: %s", sym, payload["error"]
+                )
                 continue
             consecutive_failures = 0
             if payload.get("headline_count", 0) == 0:

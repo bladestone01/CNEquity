@@ -109,11 +109,7 @@ def _require_daily_bar_date_coverage(df, start: date, end: date) -> None:
     if "trade_date" not in df.columns:
         raise RuntimeError("daily_bars: TDX response is missing the trade_date column")
     dates = df.get_column("trade_date").cast(pl.Date, strict=False)
-    invalid = (
-        dates.is_null()
-        | (dates < start).fill_null(False)
-        | (dates > end).fill_null(False)
-    )
+    invalid = dates.is_null() | (dates < start).fill_null(False) | (dates > end).fill_null(False)
     count = int(invalid.sum())
     if count:
         raise RuntimeError(
@@ -256,9 +252,7 @@ def fetch_daily_bars_parallel(
     total_written = 0
     failed_symbols: list[str] = []
     rl = config.tdx_rate_limit_spec()
-    rate_limit_tuple = (
-        (rl.state_dir, rl.source, rl.min_interval, rl.lock_timeout) if rl else None
-    )
+    rate_limit_tuple = (rl.state_dir, rl.source, rl.min_interval, rl.lock_timeout) if rl else None
 
     def _run_batch(
         batch_id: str,

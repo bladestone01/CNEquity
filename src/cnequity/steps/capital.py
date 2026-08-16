@@ -85,10 +85,11 @@ def step_northbound_holdings(config: Config, trade_date: date, run_id: str, cont
                 end=getattr(config, "_backfill_end", None),
             )
         )
-        observed = {
-            value.isoformat()
-            for value in df.get_column("trade_date").drop_nulls().to_list()
-        } if not df.is_empty() and "trade_date" in df.columns else set()
+        observed = (
+            {value.isoformat() for value in df.get_column("trade_date").drop_nulls().to_list()}
+            if not df.is_empty() and "trade_date" in df.columns
+            else set()
+        )
         missing_periods = sorted(expected - observed)
     if df.is_empty():
         if not backfill:
@@ -259,13 +260,8 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
                                 f"margin_trading: fetch for {d.isoformat()} did not return "
                                 "the configured trade_date column"
                             )
-                        parsed_dates = df.get_column("trade_date").cast(
-                            pl.Date, strict=False
-                        )
-                        invalid = (
-                            parsed_dates.is_null()
-                            | (parsed_dates != d).fill_null(True)
-                        )
+                        parsed_dates = df.get_column("trade_date").cast(pl.Date, strict=False)
+                        invalid = parsed_dates.is_null() | (parsed_dates != d).fill_null(True)
                         invalid_count = int(invalid.sum())
                         if invalid_count:
                             raise RuntimeError(

@@ -93,9 +93,9 @@ def fetch_adj_factor_series(
 
     sina_col = _SINA_FACTOR_COLS[adjust_type]
     df = pl.DataFrame(rows).rename({"date": "trade_date", sina_col: "sina_factor"})
-    df = df.with_columns(
-        pl.col("trade_date").str.to_date("%Y-%m-%d", strict=False)
-    ).filter(pl.col("trade_date").is_not_null())
+    df = df.with_columns(pl.col("trade_date").str.to_date("%Y-%m-%d", strict=False)).filter(
+        pl.col("trade_date").is_not_null()
+    )
     if df.is_empty():
         raise ValueError(f"Sina {adjust_type} factor series contains no valid trade dates")
     df = df.with_columns(pl.col("sina_factor").cast(pl.Float64))

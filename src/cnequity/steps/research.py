@@ -20,10 +20,7 @@ def _quarter_labels(config: Config, trade_date: date) -> set[str]:
         start=getattr(config, "_backfill_start", None),
         end=getattr(config, "_backfill_end", None),
     )
-    return {
-        f"{period[:4]}Q{(int(period[5:7]) - 1) // 3 + 1}"
-        for period in periods
-    }
+    return {f"{period[:4]}Q{(int(period[5:7]) - 1) // 3 + 1}" for period in periods}
 
 
 @register_step("institutional_holdings", group="research", depends_on=["instruments"])
@@ -52,9 +49,7 @@ def step_institutional_holdings(
         if df.is_empty():
             result = {"rows_read": 0, "rows_written": 0}
         else:
-            result = write_fetched(
-                config, run_id, "institutional_holdings", df, source="eastmoney"
-            )
+            result = write_fetched(config, run_id, "institutional_holdings", df, source="eastmoney")
         result["status"] = "warning"
         result["missing_periods"] = len(missing_periods)
         result["context_updates"] = {

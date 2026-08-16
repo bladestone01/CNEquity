@@ -83,8 +83,7 @@ def roster_on(day: date, *, bs=None, login: bool = True) -> set[str]:
         if getattr(rs, "error_code", "0") != "0":
             message = getattr(rs, "error_msg", "") or "unknown error"
             raise RuntimeError(
-                f"baostock historical roster query failed for {day}: "
-                f"{rs.error_code} ({message})"
+                f"baostock historical roster query failed for {day}: {rs.error_code} ({message})"
             )
         out: set[str] = set()
         while rs.next():
@@ -122,7 +121,17 @@ def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
     while rs.next():
         r = rs.get_row_data()
         if len(r) == 9:
-            trade_raw, reported_code, open_raw, high_raw, low_raw, close_raw, volume_raw, amount_raw, status = r
+            (
+                trade_raw,
+                reported_code,
+                open_raw,
+                high_raw,
+                low_raw,
+                close_raw,
+                volume_raw,
+                amount_raw,
+                status,
+            ) = r
             if str(reported_code).strip().lower() != expected_code:
                 identity_mismatches += 1
                 logger.warning(

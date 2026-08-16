@@ -66,6 +66,4 @@ def fetch_sector_members(
         client.close()
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).unique(
-        subset=["symbol", "sector_code", "as_of_date"], keep="last"
-    )
+    return pl.DataFrame(rows).unique(subset=["symbol", "sector_code", "as_of_date"], keep="last")

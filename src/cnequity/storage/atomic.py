@@ -50,7 +50,9 @@ def write_parquet_atomic(path: Path, df: pl.DataFrame, **kwargs) -> Path:
     tmp = Path(tmp_name)
     try:
         df.write_parquet(tmp, **kwargs)
-        with tmp.open("rb") as handle:
+        # Windows rejects fsync on a read-only file descriptor with EBADF.
+        # Reopen read/write so the durability barrier works on every platform.
+        with tmp.open("r+b") as handle:
             os.fsync(handle.fileno())
         _replace_with_retry(tmp, path)
         return path

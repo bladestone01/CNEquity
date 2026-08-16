@@ -74,9 +74,7 @@ def test_duckdb_views_dedupe_duplicate_primary_keys(tmp_path):
 
     db = ensure_duckdb_views(Config(data_root=data_root))
     with duckdb.connect(str(db)) as con:
-        rows = con.execute(
-            "SELECT symbol, close FROM daily_bars ORDER BY symbol"
-        ).fetchall()
+        rows = con.execute("SELECT symbol, close FROM daily_bars ORDER BY symbol").fetchall()
     assert rows == [("600519.SH", 1900.0)]
 
 
@@ -104,7 +102,5 @@ def test_duckdb_views_merge_optional_columns_by_name(tmp_path):
 
     db = ensure_duckdb_views(Config(data_root=data_root))
     with duckdb.connect(str(db)) as con:
-        rows = con.execute(
-            "SELECT symbol, amount FROM daily_bars ORDER BY symbol"
-        ).fetchall()
+        rows = con.execute("SELECT symbol, amount FROM daily_bars ORDER BY symbol").fetchall()
     assert rows == [("000001.SZ", None), ("600519.SH", 1000.0)]

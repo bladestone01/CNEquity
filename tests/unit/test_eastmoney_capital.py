@@ -213,18 +213,18 @@ def test_fetch_northbound_holdings_and_flows(monkeypatch):
         cap,
         "fetch_datacenter",
         lambda *a, **k: [
-                {
-                    "SECUCODE": "600519.SH",
-                    "TRADE_DATE": "2025-03-31 00:00:00",
-                    "MUTUAL_TYPE": "001",
+            {
+                "SECUCODE": "600519.SH",
+                "TRADE_DATE": "2025-03-31 00:00:00",
+                "MUTUAL_TYPE": "001",
                 "HOLD_SHARES": 100,
                 "HOLD_MARKET_CAP": 200,
                 "HOLD_SHARES_RATIO": 0.1,
             },
-                {
-                    "SECUCODE": "600519.SH",
-                    "TRADE_DATE": "2025-03-31 00:00:00",
-                    "MUTUAL_TYPE": "001",
+            {
+                "SECUCODE": "600519.SH",
+                "TRADE_DATE": "2025-03-31 00:00:00",
+                "MUTUAL_TYPE": "001",
                 "HOLD_SHARES": 100,
                 "HOLD_MARKET_CAP": 200,
                 "HOLD_SHARES_RATIO": 0.1,

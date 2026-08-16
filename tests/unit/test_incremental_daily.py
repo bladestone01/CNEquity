@@ -96,9 +96,9 @@ def test_list_trading_dates_rebuilds_when_curated_calendar_is_partial(tmp_path):
     root.mkdir(parents=True)
     # A partially promoted calendar must not make the missing sessions look
     # like holidays and silently narrow a backfill window.
-    pl.DataFrame(
-        [{"trade_date": date(2024, 6, 26), "is_trading": True}]
-    ).write_parquet(root / "part-merged.parquet")
+    pl.DataFrame([{"trade_date": date(2024, 6, 26), "is_trading": True}]).write_parquet(
+        root / "part-merged.parquet"
+    )
 
     assert list_trading_dates(cfg, date(2024, 6, 24), date(2024, 6, 28)) == [
         date(2024, 6, 24),

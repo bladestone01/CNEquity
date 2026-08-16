@@ -381,9 +381,7 @@ def test_symbols_needing_backfill_does_not_skip_partial_window(tmp_path):
     ).write_parquet(part / "part-0.parquet")
 
     cfg = Config(data_root=root)
-    assert _symbols_needing_backfill(
-        cfg, ["600519.SH"], end=date(2024, 6, 3)
-    ) == ["600519.SH"]
+    assert _symbols_needing_backfill(cfg, ["600519.SH"], end=date(2024, 6, 3)) == ["600519.SH"]
 
 
 def test_symbols_needing_backfill_accepts_history_through_window_end(tmp_path):
@@ -404,9 +402,7 @@ def test_symbols_needing_backfill_accepts_history_through_window_end(tmp_path):
     ).write_parquet(part / "part-0.parquet")
 
     cfg = Config(data_root=root)
-    assert _symbols_needing_backfill(
-        cfg, ["600519.SH"], end=date(2024, 4, 29)
-    ) == []
+    assert _symbols_needing_backfill(cfg, ["600519.SH"], end=date(2024, 4, 29)) == []
 
 
 def test_symbols_needing_backfill_uses_delist_date_as_window_end(tmp_path):
@@ -442,6 +438,4 @@ def test_symbols_needing_backfill_uses_delist_date_as_window_end(tmp_path):
     ).write_parquet(part / "part-0.parquet")
 
     cfg = Config(data_root=root)
-    assert _symbols_needing_backfill(
-        cfg, ["600519.SH"], end=date(2024, 6, 3)
-    ) == []
+    assert _symbols_needing_backfill(cfg, ["600519.SH"], end=date(2024, 6, 3)) == []

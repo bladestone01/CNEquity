@@ -82,9 +82,7 @@ def _parse_payload(text: str) -> list[dict] | None:
     except json.JSONDecodeError as exc:
         raise SinaBarsError(f"unparseable Sina kline payload: {text[:120]!r}") from exc
     if not isinstance(payload, list):
-        raise SinaBarsError(
-            f"Sina kline payload is not a list: {type(payload).__name__}"
-        )
+        raise SinaBarsError(f"Sina kline payload is not a list: {type(payload).__name__}")
     rows: list[dict] = []
     for index, item in enumerate(payload):
         if not isinstance(item, dict):

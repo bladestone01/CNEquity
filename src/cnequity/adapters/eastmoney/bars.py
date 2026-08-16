@@ -193,6 +193,8 @@ def fetch_daily_bars(
         logger.warning("EastMoney kline: rejected %s malformed row(s)", rejected)
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last").sort(
-        ["trade_date", "symbol"]
+    return (
+        pl.DataFrame(rows)
+        .unique(subset=["symbol", "trade_date"], keep="last")
+        .sort(["trade_date", "symbol"])
     )

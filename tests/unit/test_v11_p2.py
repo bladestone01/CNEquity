@@ -54,9 +54,7 @@ def test_quarter_end_dates_floor_is_2001_not_2016():
 
 
 def test_quarter_end_dates_honor_explicit_backfill_window():
-    dates = _quarter_end_dates(
-        date(2026, 7, 16), start=date(2024, 1, 1), end=date(2024, 6, 30)
-    )
+    dates = _quarter_end_dates(date(2026, 7, 16), start=date(2024, 1, 1), end=date(2024, 6, 30))
     assert dates == ["2024-06-30", "2024-03-31"]
 
 

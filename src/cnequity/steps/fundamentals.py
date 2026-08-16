@@ -34,9 +34,7 @@ def _validate_valuation_history_batch(
         return df
     missing = [column for column in ("symbol", "trade_date") if column not in df.columns]
     if missing:
-        raise RuntimeError(
-            f"valuation_metrics: baostock history response is missing {missing}"
-        )
+        raise RuntimeError(f"valuation_metrics: baostock history response is missing {missing}")
 
     normalized = df.with_columns(
         pl.col("trade_date").cast(pl.Date, strict=False),
@@ -44,9 +42,7 @@ def _validate_valuation_history_batch(
     )
     dates = normalized.get_column("trade_date")
     invalid_dates = (
-        dates.is_null()
-        | (dates < start).fill_null(False)
-        | (dates > end).fill_null(False)
+        dates.is_null() | (dates < start).fill_null(False) | (dates > end).fill_null(False)
     )
     if normalized.filter(invalid_dates).height:
         raise RuntimeError(
@@ -275,10 +271,7 @@ def _symbols_needing_backfill(
                 delist_date = row.get("delist_date")
                 if list_date is not None and list_date > end:
                     expected_end[symbol] = None
-                elif (
-                    delist_date is not None
-                    and delist_date < _VALUATION_BACKFILL_START
-                ):
+                elif delist_date is not None and delist_date < _VALUATION_BACKFILL_START:
                     expected_end[symbol] = None
                 elif delist_date is not None and delist_date < end:
                     expected_end[symbol] = delist_date

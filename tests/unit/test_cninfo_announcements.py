@@ -287,9 +287,7 @@ class _OverrunClient:
         if data["column"] == "sse":
             return _FakeResponse({"announcements": [], "hasMore": False, "totalpages": 0})
         reported_total_pages = (
-            self.total_pages
-            if self.reported_total_pages is None
-            else self.reported_total_pages
+            self.total_pages if self.reported_total_pages is None else self.reported_total_pages
         )
         return _FakeResponse(
             {"announcements": [item], "hasMore": True, "totalpages": reported_total_pages}
@@ -320,9 +318,7 @@ def test_fetch_announcement_index_uses_totalpages_when_hasmore_is_false():
                 "announcementId": f"P{data['pageNum']}",
                 "announcementTitle": "公告",
             }
-            return _FakeResponse(
-                {"announcements": [item], "hasMore": False, "totalpages": 2}
-            )
+            return _FakeResponse({"announcements": [item], "hasMore": False, "totalpages": 2})
 
     client = StaleHasMoreClient()
     df = fetch_announcement_index(date(2024, 1, 31), client=client)
@@ -348,11 +344,16 @@ def test_fetch_announcement_index_normalizes_string_hasmore():
 
     client = StringMetaClient(
         {
-            "szse": [[{
-                "secCode": "000001",
-                "announcementId": "A1",
-                "announcementTitle": "公告",
-            }], []],
+            "szse": [
+                [
+                    {
+                        "secCode": "000001",
+                        "announcementId": "A1",
+                        "announcementTitle": "公告",
+                    }
+                ],
+                [],
+            ],
             "sse": [[]],
         }
     )
@@ -369,9 +370,7 @@ def test_fetch_announcement_index_normalizes_string_hasmore():
         ("hasMore", "sometimes", "hasMore.*boolean"),
     ],
 )
-def test_fetch_announcement_index_rejects_malformed_pagination_metadata(
-    field, value, message
-):
+def test_fetch_announcement_index_rejects_malformed_pagination_metadata(field, value, message):
     class MalformedMetaClient:
         def post(self, url, data):
             return _FakeResponse(
@@ -397,9 +396,7 @@ def test_fetch_announcement_index_rejects_malformed_pagination_metadata(
 
 
 def test_fetch_announcement_index_raises_runtime_error_on_transport_failure(monkeypatch):
-    monkeypatch.setattr(
-        "cnequity.adapters.cninfo.announcements.time.sleep", lambda *_: None
-    )
+    monkeypatch.setattr("cnequity.adapters.cninfo.announcements.time.sleep", lambda *_: None)
 
     class _BoomClient:
         def post(self, url, data):

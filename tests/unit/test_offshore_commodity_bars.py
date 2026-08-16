@@ -113,9 +113,7 @@ def test_fetch_offshore_skips_non_object_rows_and_keeps_valid_rows():
             ]
         ),
     )
-    df = fetch_offshore_commodity_bars_range(
-        date(2026, 7, 21), date(2026, 7, 21), client=client
-    )
+    df = fetch_offshore_commodity_bars_range(date(2026, 7, 21), date(2026, 7, 21), client=client)
     assert df.height == 1
 
 

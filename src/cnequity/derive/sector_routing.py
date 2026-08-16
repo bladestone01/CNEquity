@@ -180,9 +180,8 @@ def _latest_em_boards_from_lake(config: Config) -> list[dict]:
     files = list(latest.rglob("*.parquet"))
     if not files:
         return []
-    df = (
-        pl.concat([pl.read_parquet(path) for path in files], how="diagonal_relaxed")
-        .unique(subset=["sector_code"], keep="last", maintain_order=True)
+    df = pl.concat([pl.read_parquet(path) for path in files], how="diagonal_relaxed").unique(
+        subset=["sector_code"], keep="last", maintain_order=True
     )
     return [
         {

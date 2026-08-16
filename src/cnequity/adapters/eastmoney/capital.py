@@ -114,16 +114,14 @@ def _rows_for_report_date(raw: list[dict], field: str, expected: date) -> list[d
     dropped = len(raw) - len(rows)
     if dropped:
         logger.warning(
-            "EastMoney capital dropped %d row(s) with invalid or unexpected %s "
-            "for %s",
+            "EastMoney capital dropped %d row(s) with invalid or unexpected %s for %s",
             dropped,
             field,
             expected.isoformat(),
         )
     if raw and not rows:
         raise RuntimeError(
-            f"EastMoney capital response contains no {field} row for "
-            f"{expected.isoformat()}"
+            f"EastMoney capital response contains no {field} row for {expected.isoformat()}"
         )
     return rows
 
@@ -287,8 +285,7 @@ def fetch_northbound_holdings(
                 if not sym or channel is None:
                     if channel is None:
                         logger.warning(
-                            "EastMoney northbound holdings: skipping unknown "
-                            "MUTUAL_TYPE %r",
+                            "EastMoney northbound holdings: skipping unknown MUTUAL_TYPE %r",
                             item.get("MUTUAL_TYPE"),
                         )
                     continue
@@ -307,9 +304,7 @@ def fetch_northbound_holdings(
             client.close()
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).unique(
-        subset=["symbol", "trade_date", "channel"], keep="last"
-    )
+    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date", "channel"], keep="last")
 
 
 def fetch_northbound_flows_range(
@@ -450,9 +445,7 @@ def fetch_dragon_tiger(
         client.close()
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).unique(
-        subset=["symbol", "trade_date", "reason"], keep="last"
-    )
+    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date", "reason"], keep="last")
 
 
 def fetch_block_trades(

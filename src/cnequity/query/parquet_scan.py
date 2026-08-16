@@ -160,7 +160,9 @@ def scan_parquet_root(
                 return pl.scan_parquet(
                     [str(f) for f in all_files], hive_partitioning=use_hive
                 ).filter(pl.lit(False))
-            return pl.scan_parquet(parquet_glob(root), hive_partitioning=False).filter(pl.lit(False))
+            return pl.scan_parquet(parquet_glob(root), hive_partitioning=False).filter(
+                pl.lit(False)
+            )
         lf = pl.scan_parquet([str(f) for f in files], hive_partitioning=use_hive)
     if lf is None:
         if partitioned and partition_col:

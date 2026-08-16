@@ -31,6 +31,7 @@ TIMEOUT_SECONDS = 60.0
 class PBOCSeriesError(RuntimeError):
     """The publisher did not provide a complete requested series."""
 
+
 # The site mixes single- and double-quoted attributes within one page, so every
 # href pattern here accepts either.
 _YEAR_SECTION_RE = re.compile(r"""href=["']([^"']+)["'][^>]*>\s*(\d{4})年统计数据\s*</a>""")

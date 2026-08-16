@@ -67,11 +67,7 @@ def _acquire_posix(handle: IO, *, blocking: bool, timeout: float | None = None) 
         fcntl.flock(handle, fcntl.LOCK_EX)
         return
 
-    deadline = (
-        time.monotonic() + max(timeout, 0.0)
-        if blocking and timeout is not None
-        else None
-    )
+    deadline = time.monotonic() + max(timeout, 0.0) if blocking and timeout is not None else None
     while True:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -98,11 +94,7 @@ def _release_posix(handle: IO) -> None:
 def _acquire_windows(handle: IO, *, blocking: bool, timeout: float | None = None) -> None:
     import msvcrt
 
-    deadline = (
-        time.monotonic() + max(timeout, 0.0)
-        if blocking and timeout is not None
-        else None
-    )
+    deadline = time.monotonic() + max(timeout, 0.0) if blocking and timeout is not None else None
     while True:
         # The locked range starts at the current file position, and "a+" opens
         # at EOF — seek every time so both backends lock the same byte.

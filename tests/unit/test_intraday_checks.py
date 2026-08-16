@@ -188,9 +188,7 @@ def test_reconciliation_uses_one_canonical_daily_row(cfg):
         ),
         source="tdx_protocol",
         data_version="v2",
-    ).with_columns(
-        pl.lit(datetime(2020, 1, 1, tzinfo=timezone.utc)).alias("fetched_at")
-    )
+    ).with_columns(pl.lit(datetime(2020, 1, 1, tzinfo=timezone.utc)).alias("fetched_at"))
     part = cfg.curated_root / "daily_bars" / f"trade_date={TRADE_DATE.isoformat()}"
     stale.write_parquet(part / "part-stale.parquet")
 

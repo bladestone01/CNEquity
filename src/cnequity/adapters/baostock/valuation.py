@@ -266,7 +266,5 @@ def fetch_valuation_history(
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     if not df.is_empty():
-        df = df.unique(subset=["symbol", "trade_date"], keep="last").sort(
-            ["trade_date", "symbol"]
-        )
+        df = df.unique(subset=["symbol", "trade_date"], keep="last").sort(["trade_date", "symbol"])
     return df, failed

@@ -146,9 +146,7 @@ def test_index_constituents_fetch():
             ]
         }
     )
-    df = fetch_index_constituents(
-        date(2024, 6, 28), indices=["000300.SH"], client=client
-    )  # type: ignore[arg-type]
+    df = fetch_index_constituents(date(2024, 6, 28), indices=["000300.SH"], client=client)  # type: ignore[arg-type]
     assert df.height == 1
     assert df["index_symbol"][0] == "000300.SH"
     assert df["symbol"][0] == "600519.SH"
@@ -169,7 +167,9 @@ def test_index_constituents_rejects_a_stale_source_snapshot():
 
     with pytest.raises(RuntimeError, match="000300.SH"):
         fetch_index_constituents(
-            date(2024, 6, 28), indices=["000300.SH"], client=client  # type: ignore[arg-type]
+            date(2024, 6, 28),
+            indices=["000300.SH"],
+            client=client,  # type: ignore[arg-type]
         )
 
 
@@ -189,9 +189,7 @@ def test_index_constituents_rejects_an_empty_requested_index():
             return None
 
     with pytest.raises(RuntimeError, match="000300.SH"):
-        fetch_index_constituents(
-            date(2024, 6, 28), indices=["000300.SH"], client=_Client()
-        )
+        fetch_index_constituents(date(2024, 6, 28), indices=["000300.SH"], client=_Client())
 
 
 def test_index_constituents_explicit_empty_selection_is_a_noop():

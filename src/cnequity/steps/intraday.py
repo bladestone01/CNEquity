@@ -64,9 +64,7 @@ def _validate_minute_batch(
         )
     dates = normalized.get_column("trade_date")
     invalid_dates = (
-        dates.is_null()
-        | (dates < start).fill_null(False)
-        | (dates > end).fill_null(False)
+        dates.is_null() | (dates < start).fill_null(False) | (dates > end).fill_null(False)
     )
     if normalized.filter(invalid_dates).height:
         raise RuntimeError(

@@ -175,9 +175,7 @@ def test_fetch_hot_rank_continues_when_a_full_page_repeats_symbols(monkeypatch):
 def test_fetch_hot_rank_can_reject_an_incomplete_top_n(monkeypatch):
     mock_client = MagicMock()
     mock_resp = MagicMock()
-    mock_resp.json.return_value = {
-        "data": [{"sc": "SZ002185", "rk": 1, "rc": 0, "hisRc": 2}]
-    }
+    mock_resp.json.return_value = {"data": [{"sc": "SZ002185", "rk": 1, "rc": 0, "hisRc": 2}]}
     mock_client.post.return_value = mock_resp
 
     class CM:
@@ -305,9 +303,7 @@ def test_fetch_news_headlines_rejects_a_stalled_cursor(monkeypatch):
     mock_resp.json.return_value = {
         "data": {
             "sortEnd": "same-cursor",
-            "fastNewsList": [
-                {"code": "n1", "showTime": "2026-07-14 16:00:00", "title": "新闻"}
-            ],
+            "fastNewsList": [{"code": "n1", "showTime": "2026-07-14 16:00:00", "title": "新闻"}],
         }
     }
     mock_client.get.return_value = mock_resp

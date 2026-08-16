@@ -149,9 +149,9 @@ def test_range_query_prunes_whole_periods_but_still_filters_edges(tmp_path):
 def test_range_query_keeps_root_files_in_a_mixed_layout(tmp_path):
     root = tmp_path / "curated" / "index_bars"
     _write_partition(root, "trade_date", "2024", [date(2024, 3, 1)])
-    pl.DataFrame(
-        {"symbol": ["A"], "trade_date": [date(2024, 6, 28)], "x": [1.0]}
-    ).write_parquet(root / "part-legacy.parquet")
+    pl.DataFrame({"symbol": ["A"], "trade_date": [date(2024, 6, 28)], "x": [1.0]}).write_parquet(
+        root / "part-legacy.parquet"
+    )
 
     df = collect_parquet_root(
         root, partition_col="trade_date", start=date(2024, 6, 27), end=date(2024, 6, 30)

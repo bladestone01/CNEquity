@@ -46,9 +46,7 @@ def test_backfill_report_dates_floor_is_2006_not_2016():
 
 
 def test_backfill_report_dates_honor_explicit_backfill_window():
-    dates = _backfill_report_dates(
-        date(2026, 7, 16), start=date(2024, 1, 1), end=date(2024, 6, 30)
-    )
+    dates = _backfill_report_dates(date(2026, 7, 16), start=date(2024, 1, 1), end=date(2024, 6, 30))
     assert dates == ["2024-03-31", "2024-06-30"]
 
 

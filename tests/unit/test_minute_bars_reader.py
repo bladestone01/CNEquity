@@ -155,7 +155,12 @@ def test_qfq_keeps_prior_rows_adjusted_when_latest_factor_is_missing(cfg):
     _write_adj_factors(
         cfg,
         [
-            {"symbol": "600519.SH", "trade_date": date(2026, 7, 29), "adjust_type": "hfq", "factor": 1.0},
+            {
+                "symbol": "600519.SH",
+                "trade_date": date(2026, 7, 29),
+                "adjust_type": "hfq",
+                "factor": 1.0,
+            },
             {"symbol": "600519.SH", "trade_date": PREV, "adjust_type": "hfq", "factor": 2.0},
         ],
     )

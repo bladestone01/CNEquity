@@ -279,9 +279,7 @@ def _rows_for_notice_date(raw: list[dict], expected: date) -> list[dict]:
     return rows
 
 
-def _rows_for_report_period(
-    raw: list[dict], report: _Report, expected_period: str
-) -> list[dict]:
+def _rows_for_report_period(raw: list[dict], report: _Report, expected_period: str) -> list[dict]:
     rows = [
         item
         for item in raw
@@ -371,9 +369,7 @@ def fetch_financial_statement_items(
                     f"({_ANNOUNCE_SOURCE.report_date_field}='{period}')",
                     config=config,
                 )
-                announce_raw = _rows_for_report_period(
-                    announce_raw, _ANNOUNCE_SOURCE, period
-                )
+                announce_raw = _rows_for_report_period(announce_raw, _ANNOUNCE_SOURCE, period)
                 announce_dates = _announce_date_map(announce_raw)
                 parsed, _ = _parse_rows(announce_raw, _ANNOUNCE_SOURCE, default_notice=ds)
                 rows.extend(parsed)

@@ -107,7 +107,9 @@ def test_symbols_needing_backfill_does_not_count_duplicate_rows(cfg):
                 "fetched_at": f"2024-06-{day.day:02d}T00:00:00+00:00",
             }
         )
-    rows.extend({**rows[index], "fetched_at": f"2024-06-{index + 1:02d}T01:00:00+00:00"} for index in (0, 1))
+    rows.extend(
+        {**rows[index], "fetched_at": f"2024-06-{index + 1:02d}T01:00:00+00:00"} for index in (0, 1)
+    )
     pl.DataFrame(rows).write_parquet(part / "part-000.parquet")
 
     # Eight unique dates contain only six complete market-cap rows (75%). The
@@ -122,9 +124,7 @@ def test_backfill_valuation_locked_nothing_to_do(cfg, monkeypatch):
     )
     monkeypatch.setattr(fund, "load_symbols", lambda config: ["600519.SH"])
     monkeypatch.setattr(fund, "load_bar_universe", lambda config: {"600519.SH"})
-    monkeypatch.setattr(
-        fund, "_symbols_needing_backfill", lambda config, universe, **kwargs: []
-    )
+    monkeypatch.setattr(fund, "_symbols_needing_backfill", lambda config, universe, **kwargs: [])
     monkeypatch.setattr(fund, "_valuation_history_end", lambda config, trade_date: date(2024, 6, 1))
     result = fund._backfill_valuation_metrics_locked(cfg, date(2024, 6, 28), "run-v")
     assert result["rows_written"] == 0
@@ -273,6 +273,4 @@ def test_shareholder_backfill_surfaces_empty_windows(cfg, monkeypatch):
 
     assert result["status"] == "warning"
     assert result["empty_windows"] == 1
-    assert result["context_updates"]["audit_findings"][0]["check"] == (
-        "backfill_empty_windows"
-    )
+    assert result["context_updates"]["audit_findings"][0]["check"] == ("backfill_empty_windows")

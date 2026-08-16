@@ -355,8 +355,7 @@ def test_sina_nonfinite_open_interest_is_null():
     client.get.return_value = MagicMock(
         raise_for_status=MagicMock(),
         text=(
-            'x([{"d":"2026-07-21","o":"900","h":"910","l":"895",'
-            '"c":"905","v":"1000","p":"inf"}])'
+            'x([{"d":"2026-07-21","o":"900","h":"910","l":"895","c":"905","v":"1000","p":"inf"}])'
         ),
     )
     df = fetch_domestic_commodity_bars_range(
@@ -383,7 +382,7 @@ def test_sina_domestic_skips_non_object_rows_and_keeps_valid_rows():
     df = fetch_domestic_commodity_bars_range(
         date(2026, 7, 21),
         date(2026, 7, 21),
-        contracts=(('AU0.SHF', 'AU0', '沪金主连', 'SHF'),),
+        contracts=(("AU0.SHF", "AU0", "沪金主连", "SHF"),),
         client=client,
     )
     assert df.height == 1
@@ -414,8 +413,7 @@ def test_sina_int64_overflow_volume_is_dropped():
     client.get.return_value = MagicMock(
         raise_for_status=MagicMock(),
         text=(
-            'x([{\"d\":\"2026-07-21\",\"o\":\"900\",\"h\":\"910\",\"l\":\"895\",'
-            '\"c\":\"905\",\"v\":\"1e300\",\"p\":\"50\"}])'
+            'x([{"d":"2026-07-21","o":"900","h":"910","l":"895","c":"905","v":"1e300","p":"50"}])'
         ),
     )
     assert fetch_domestic_commodity_bars_range(

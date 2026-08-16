@@ -19,9 +19,7 @@ def test_parse_payload_null_and_bad_json():
 
 
 def test_parse_payload_skips_non_object_rows():
-    assert sina._parse_payload('[null,{"day":"2024-01-02"}]') == [
-        {"day": "2024-01-02"}
-    ]
+    assert sina._parse_payload('[null,{"day":"2024-01-02"}]') == [{"day": "2024-01-02"}]
 
 
 def test_parse_payload_rejects_non_list_json():

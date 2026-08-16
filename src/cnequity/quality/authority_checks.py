@@ -144,9 +144,7 @@ def _curated_status(config: Config, trade_date: date) -> tuple[set[str], set[str
     if out.is_empty():
         return None
     covered = set(out.get_column("symbol").to_list())
-    labeled = set(
-        out.filter(pl.col("status").is_in(["st", "*st"])).get_column("symbol").to_list()
-    )
+    labeled = set(out.filter(pl.col("status").is_in(["st", "*st"])).get_column("symbol").to_list())
     return covered, labeled
 
 

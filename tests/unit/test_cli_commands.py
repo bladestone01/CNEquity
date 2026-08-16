@@ -677,9 +677,7 @@ def test_delisted_repair_surfaces_incomplete_bars(cfg_path, monkeypatch):
             "status": "warning",
         },
     )
-    monkeypatch.setattr(
-        "cnequity.steps.delisted.purge_subscription_placeholders", lambda cfg: 0
-    )
+    monkeypatch.setattr("cnequity.steps.delisted.purge_subscription_placeholders", lambda cfg: 0)
     monkeypatch.setattr("cnequity.cli.main.ensure_duckdb_views", lambda cfg: Path("/tmp/x"))
 
     result = CliRunner().invoke(cli, ["delisted", "repair", "--config", cfg_path])

@@ -116,9 +116,7 @@ def fetch_institutional_holdings(
             )
             expected_period = _report_period(period)
             period_rows = [
-                item
-                for item in raw
-                if _report_period(item.get("REPORT_DATE")) == expected_period
+                item for item in raw if _report_period(item.get("REPORT_DATE")) == expected_period
             ]
             if raw and not period_rows:
                 raise RuntimeError(

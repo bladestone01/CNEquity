@@ -127,11 +127,7 @@ def _parse_rows(raw: list[dict]) -> list[dict]:
 
 
 def _rows_for_report_date(raw: list[dict], expected: str) -> list[dict]:
-    rows = [
-        item
-        for item in raw
-        if str(item.get("REPORT_DATE") or "")[:10] == expected
-    ]
+    rows = [item for item in raw if str(item.get("REPORT_DATE") or "")[:10] == expected]
     dropped = len(raw) - len(rows)
     if dropped:
         logger.warning(
@@ -142,8 +138,7 @@ def _rows_for_report_date(raw: list[dict], expected: str) -> list[dict]:
         )
     if raw and not rows:
         raise RuntimeError(
-            "EastMoney earnings disclosure response contains no REPORT_DATE row "
-            f"for {expected}"
+            f"EastMoney earnings disclosure response contains no REPORT_DATE row for {expected}"
         )
     return rows
 

@@ -57,15 +57,12 @@ def _validate_tick_batch(
     unexpected = sorted(set(returned_symbols.to_list()) - set(symbols))
     if unexpected:
         raise RuntimeError(
-            f"{DATASET}: tick response returned unexpected symbol(s): "
-            + ", ".join(unexpected[:5])
+            f"{DATASET}: tick response returned unexpected symbol(s): " + ", ".join(unexpected[:5])
         )
     dates = normalized.get_column("trade_date")
     invalid_dates = dates.is_null() | ~dates.is_in(sessions).fill_null(False)
     if normalized.filter(invalid_dates).height:
-        raise RuntimeError(
-            f"{DATASET}: tick response returned row(s) outside requested sessions"
-        )
+        raise RuntimeError(f"{DATASET}: tick response returned row(s) outside requested sessions")
     return normalized
 
 

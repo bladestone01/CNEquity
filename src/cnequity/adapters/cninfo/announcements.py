@@ -68,9 +68,7 @@ def _announcement_batch(data: object, *, column: str, page: int) -> list[dict]:
     if raw_batch is None:
         return []
     if not isinstance(raw_batch, list):
-        raise RuntimeError(
-            f"CNINFO announcements for {column} page {page} is not a list"
-        )
+        raise RuntimeError(f"CNINFO announcements for {column} page {page} is not a list")
     batch: list[dict] = []
     for index, item in enumerate(raw_batch):
         if not isinstance(item, dict):
@@ -122,9 +120,7 @@ def _pagination_has_more(data: dict, *, column: str, page: int) -> bool:
             return True
         if normalized in {"false", "0", "no", ""}:
             return False
-    raise RuntimeError(
-        f"CNINFO hasMore for {column} page {page} is not a boolean value"
-    )
+    raise RuntimeError(f"CNINFO hasMore for {column} page {page} is not a boolean value")
 
 
 def fetch_announcement_index(

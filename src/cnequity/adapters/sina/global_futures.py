@@ -151,8 +151,7 @@ def fetch_offshore_commodity_bars_range(
                 payload = resp.json()
                 if not isinstance(payload, list):
                     raise SinaGlobalFuturesPayloadError(
-                        "Sina global futures response is not a list "
-                        f"(got {type(payload).__name__})"
+                        f"Sina global futures response is not a list (got {type(payload).__name__})"
                     )
                 part = _parse_rows(
                     payload,

@@ -140,9 +140,12 @@ def test_derive_suspension_from_bar_gaps(tmp_path):
     assert not (root / "curated" / "trading_status" / "trade_date=2024-06-27").exists()
 
     ts = pl.read_parquet(month_dir / "part-merged.parquet")
-    assert ts.filter(
-        (pl.col("symbol") == "600519.SH") & (pl.col("trade_date") == date(2024, 6, 26))
-    ).height == 1
+    assert (
+        ts.filter(
+            (pl.col("symbol") == "600519.SH") & (pl.col("trade_date") == date(2024, 6, 26))
+        ).height
+        == 1
+    )
     assert [path.name for path in month_dir.rglob("*.parquet")] == ["part-merged.parquet"]
     susp = ts.filter(pl.col("status") == "suspended")
     assert susp.height == 1

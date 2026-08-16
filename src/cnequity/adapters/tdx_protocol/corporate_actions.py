@@ -135,9 +135,7 @@ def fetch_xdxr_for_symbol(
         rows = [r for r in rows if r["ex_date"] == on_date]
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).unique(
-        subset=["symbol", "ex_date", "action_type"], keep="last"
-    )
+    return pl.DataFrame(rows).unique(subset=["symbol", "ex_date", "action_type"], keep="last")
 
 
 def fetch_corporate_actions_tdx(

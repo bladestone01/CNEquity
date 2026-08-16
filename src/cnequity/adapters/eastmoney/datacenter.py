@@ -221,14 +221,10 @@ def fetch_datacenter(
                 f"EastMoney datacenter {report} returned success without a result object"
             )
         if expected_pages is None:
-            parsed_pages = _non_negative_int(
-                result.get("pages"), field="pages", report=report
-            )
+            parsed_pages = _non_negative_int(result.get("pages"), field="pages", report=report)
             if parsed_pages is not None:
                 expected_pages = parsed_pages
-            expected_count = _non_negative_int(
-                result.get("count"), field="count", report=report
-            )
+            expected_count = _non_negative_int(result.get("count"), field="count", report=report)
         raw_batch = result.get("data")
         if raw_batch is None:
             batch: list[dict] = []

@@ -60,9 +60,7 @@ def test_unpublished_months_are_skipped_not_zeroed():
 
 
 def test_nonfinite_values_are_skipped():
-    content = _workbook(
-        [["2026.01", "inf"], ["2026.02", "-inf"], ["2026.03", 100.0]]
-    )
+    content = _workbook([["2026.01", "inf"], ["2026.02", "-inf"], ["2026.03", 100.0]])
     assert _tables.parse_month_column(content, 1) == [
         {"obs_date": date(2026, 3, 31), "value": 100.0}
     ]

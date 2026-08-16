@@ -95,9 +95,7 @@ def test_institutional_backfill_surfaces_missing_quarters(cfg, monkeypatch):
 
     assert result["status"] == "warning"
     assert result["missing_periods"] == 2
-    assert result["context_updates"]["audit_findings"][0]["check"] == (
-        "backfill_missing_quarters"
-    )
+    assert result["context_updates"]["audit_findings"][0]["check"] == ("backfill_missing_quarters")
 
 
 def test_macro_risk_guards_and_writes(cfg, monkeypatch):

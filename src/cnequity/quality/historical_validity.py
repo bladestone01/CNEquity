@@ -129,11 +129,7 @@ def historical_universe_validity(
         )
 
     daily_bar_missing: list[date] = []
-    if (
-        window_valid
-        and requested_start is not None
-        and requested_end is not None
-    ):
+    if window_valid and requested_start is not None and requested_end is not None:
         daily_bar_missing = _daily_bar_missing_sessions(config, requested_start, requested_end)
         if daily_bar_missing:
             blockers.append(

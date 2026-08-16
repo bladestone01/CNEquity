@@ -46,6 +46,7 @@ _ARRAY = re.compile(r"\[.*\]", re.S)
 class SinaFuturesPayloadError(RuntimeError):
     """Raised when Sina answers with a non-data page or malformed JSONP."""
 
+
 # (lake_symbol, sina_symbol, name, exchange) — mirrors CONTINUOUS_CONTRACTS in
 # the EastMoney adapter one-for-one, so the lake's symbols do not change.
 DOMESTIC_CONTRACTS: tuple[tuple[str, str, str, str], ...] = (
@@ -88,9 +89,7 @@ def _parse_jsonp(text: str) -> list[dict]:
             "Sina domestic futures response contains invalid JSONP"
         ) from exc
     if not isinstance(payload, list):
-        raise SinaFuturesPayloadError(
-            "Sina domestic futures response JSONP payload is not a list"
-        )
+        raise SinaFuturesPayloadError("Sina domestic futures response JSONP payload is not a list")
     return payload
 
 

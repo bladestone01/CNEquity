@@ -53,6 +53,7 @@ def _finite_float(value: str) -> float:
         raise ValueError(f"non-finite numeric value: {value!r}")
     return parsed
 
+
 _KLINE_URL = "https://d.10jqka.com.cn/v6/line/bk_{code}/01/{part}.js"
 _INDUSTRY_URL = "https://q.10jqka.com.cn/thshy/"
 _CONCEPT_URL = "https://q.10jqka.com.cn/gn/"
@@ -306,9 +307,7 @@ def fetch_board_catalog(*, config: Config | None = None, refresh: bool = False) 
         )
 
     if unresolved:
-        raise ThsError(
-            f"THS concept catalog has {unresolved} concepts without usable index codes"
-        )
+        raise ThsError(f"THS concept catalog has {unresolved} concepts without usable index codes")
 
     # Same index can back two listings; keep one row per code.
     deduped: dict[str, dict] = {}
@@ -420,8 +419,7 @@ def fetch_board_bars(
         # advanced past a narrow gap). Treat that as a failed fetch rather than
         # allowing the caller to checkpoint an empty window as complete.
         raise ThsError(
-            f"THS {code} last window had no usable bars in "
-            f"{start.isoformat()}..{end.isoformat()}"
+            f"THS {code} last window had no usable bars in {start.isoformat()}..{end.isoformat()}"
         )
     return _with_change_pct(rows)
 
@@ -484,8 +482,7 @@ def sweep_board_bars(
             fetched = fetch_board_bars(board, start, end, config=config)
             if not fetched:
                 raise ThsError(
-                    f"THS {code} returned no usable bars in "
-                    f"{start.isoformat()}..{end.isoformat()}"
+                    f"THS {code} returned no usable bars in {start.isoformat()}..{end.isoformat()}"
                 )
             rows.extend(fetched)
             succeeded.append(code)

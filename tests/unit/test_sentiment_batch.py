@@ -129,12 +129,8 @@ def test_hot_rank_fallback_reads_all_latest_partition_shards(tmp_path):
     root = tmp_path / "data"
     part = root / "curated" / "hot_rank" / "trade_date=2024-06-27"
     part.mkdir(parents=True)
-    pl.DataFrame({"symbol": ["600519.SH"], "rank": [1]}).write_parquet(
-        part / "part-000.parquet"
-    )
-    pl.DataFrame({"symbol": ["000001.SZ"], "rank": [2]}).write_parquet(
-        part / "part-001.parquet"
-    )
+    pl.DataFrame({"symbol": ["600519.SH"], "rank": [1]}).write_parquet(part / "part-000.parquet")
+    pl.DataFrame({"symbol": ["000001.SZ"], "rank": [2]}).write_parquet(part / "part-001.parquet")
 
     assert _hot_rank_symbols(Config(data_root=root), date(2024, 6, 28), 2) == [
         "600519.SH",
@@ -154,9 +150,7 @@ def test_hot_rank_reader_filters_target_day_inside_month_partition(tmp_path):
         }
     ).write_parquet(part / "part-000.parquet")
 
-    assert _hot_rank_symbols(Config(data_root=root), date(2024, 6, 28), 2) == [
-        "600519.SH"
-    ]
+    assert _hot_rank_symbols(Config(data_root=root), date(2024, 6, 28), 2) == ["600519.SH"]
 
 
 def test_news_sentiment_universe_reads_daily_bars_inside_month_partition(tmp_path):
@@ -171,9 +165,7 @@ def test_news_sentiment_universe_reads_daily_bars_inside_month_partition(tmp_pat
         }
     ).write_parquet(part / "part-000.parquet")
 
-    assert _news_sentiment_symbols(Config(data_root=root), date(2024, 6, 28), 1) == [
-        "600519.SH"
-    ]
+    assert _news_sentiment_symbols(Config(data_root=root), date(2024, 6, 28), 1) == ["600519.SH"]
 
 
 def test_batch_sentiment_http_fallback_when_no_headlines(news_batch_lake):
