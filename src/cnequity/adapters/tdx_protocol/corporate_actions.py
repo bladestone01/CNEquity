@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 
 import polars as pl
@@ -20,6 +21,14 @@ _ACTION_TYPES = {
 }
 
 
+def _num(value: object) -> float:
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
+
+
 def _rows_from_xdxr(symbol: str, pdf: pl.DataFrame) -> list[dict]:
     rows: list[dict] = []
     for record in pdf.iter_rows(named=True):
@@ -28,15 +37,18 @@ def _rows_from_xdxr(symbol: str, pdf: pl.DataFrame) -> list[dict]:
         day = record.get("day")
         if not all(v is not None for v in (year, month, day)):
             continue
-        ex_date = date(int(year), int(month), int(day))
-        category = int(record.get("category") or 0)
+        try:
+            ex_date = date(int(year), int(month), int(day))
+            category = int(record.get("category") or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
         if category != 1:
             continue
 
-        fenhong = float(record.get("fenhong") or 0)
-        songzhuangu = float(record.get("songzhuangu") or 0)
-        peigu = float(record.get("peigu") or 0)
-        peigujia = float(record.get("peigujia") or 0)
+        fenhong = _num(record.get("fenhong"))
+        songzhuangu = _num(record.get("songzhuangu"))
+        peigu = _num(record.get("peigu"))
+        peigujia = _num(record.get("peigujia"))
 
         if fenhong > 0:
             rows.append(
@@ -79,7 +91,7 @@ def _rows_from_xdxr(symbol: str, pdf: pl.DataFrame) -> list[dict]:
                     # per-share contract: peigu is 每10股, divide by 10.
                     # peigujia is already a per-share price — leave as-is.
                     "allotment_ratio": peigu / 10.0,
-                    "allotment_price": peigujia if peigujia else None,
+                    "allotment_price": peigujia if peigujia > 0 else None,
                 }
             )
     return rows
@@ -91,6 +103,7 @@ def fetch_xdxr_for_symbol(
     *,
     rate_limit: RateLimitSpec | None = None,
     on_date: date | None = None,
+    strict: bool = False,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
     code, _, exch = symbol.partition(".")
@@ -107,6 +120,8 @@ def fetch_xdxr_for_symbol(
         raw = client.xdxr(symbol=code, market=market)
     except Exception as exc:
         logger.debug("TDX xdxr failed for %s: %s", symbol, exc)
+        if strict:
+            raise RuntimeError(f"TDX xdxr failed for {symbol}") from exc
         return pl.DataFrame()
 
     if raw is None or len(raw) == 0:
@@ -118,7 +133,9 @@ def fetch_xdxr_for_symbol(
         rows = [r for r in rows if r["ex_date"] == on_date]
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows)
+    return pl.DataFrame(rows).unique(
+        subset=["symbol", "ex_date", "action_type"], keep="last"
+    )
 
 
 def fetch_corporate_actions_tdx(
@@ -128,6 +145,7 @@ def fetch_corporate_actions_tdx(
     backfill: bool = False,
     client_factory,
     rate_limit: RateLimitSpec | None = None,
+    strict: bool = False,
 ) -> pl.DataFrame:
     client = None
     frames: list[pl.DataFrame] = []
@@ -136,7 +154,13 @@ def fetch_corporate_actions_tdx(
         with TDX_SESSION_LOCK:
             client = client_factory()
             for sym in symbols:
-                df = fetch_xdxr_for_symbol(client, sym, rate_limit=rate_limit, on_date=on_date)
+                df = fetch_xdxr_for_symbol(
+                    client,
+                    sym,
+                    rate_limit=rate_limit,
+                    on_date=on_date,
+                    strict=strict,
+                )
                 if df.height:
                     frames.append(df)
     finally:

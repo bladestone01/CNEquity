@@ -17,11 +17,13 @@ their own contract; scaling it on a guess would only move the break.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import date
 
 import polars as pl
 
+from cnequity.adapters.numeric import finite_int64
 from cnequity.adapters.tdx_protocol._decode import decoded_quantity
 from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
 from cnequity.domain.units import lots_to_shares
@@ -60,7 +62,10 @@ def _page_min_date(pdf: pl.DataFrame) -> date | None:
     for val in series:
         if val is None:
             continue
-        mins.append(_coerce_date(val))
+        try:
+            mins.append(_coerce_date(val))
+        except (TypeError, ValueError, OverflowError):
+            continue
     return min(mins) if mins else None
 
 
@@ -75,20 +80,41 @@ def _parse_bar_rows(
     date_col = _date_column(pdf)
     rows: list[dict] = []
     for row in pdf.iter_rows(named=True):
-        td = _coerce_date(row[date_col])
+        try:
+            td = _coerce_date(row[date_col])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
         if td < start or td > end:
             continue
-        raw_volume = int(decoded_quantity(row.get("volume", row.get("vol", 0))))
+        try:
+            open_ = float(row.get("open", 0))
+            high = float(row.get("high", 0))
+            low = float(row.get("low", 0))
+            close = float(row.get("close", 0))
+            volume = decoded_quantity(row.get("volume", row.get("vol", 0)))
+            amount = decoded_quantity(row.get("amount", 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not all(math.isfinite(value) for value in (open_, high, low, close, volume, amount)):
+            continue
+        try:
+            raw_volume = finite_int64(
+                volume,
+                minimum=0,
+                maximum=(2**63 - 1) // 100 if volume_in_lots else 2**63 - 1,
+            )
+        except ValueError:
+            continue
         rows.append(
             {
                 "symbol": sym,
                 "trade_date": td,
-                "open": float(row.get("open", 0)),
-                "high": float(row.get("high", 0)),
-                "low": float(row.get("low", 0)),
-                "close": float(row.get("close", 0)),
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
                 "volume": lots_to_shares(raw_volume) if volume_in_lots else raw_volume,
-                "amount": decoded_quantity(row.get("amount", 0)),
+                "amount": amount,
             }
         )
     return rows
@@ -137,12 +163,13 @@ def fetch_bars_paginated(
                     offset=_PAGE_SIZE,
                 )
         except Exception as exc:
-            if offset_pos == 0 or backfill:
-                raise TdxBarsPaginationError(
-                    f"TDX bars page failed for {sym} at start={offset_pos}"
-                ) from exc
-            logger.warning("TDX bars page failed for %s at start=%s: %s", sym, offset_pos, exc)
-            break
+            # A page is part of the requested symbol/window contract. Returning
+            # earlier pages as a successful incremental fetch silently advances
+            # the watermark past the missing tail, so every page failure must
+            # propagate to the batch/failover layer.
+            raise TdxBarsPaginationError(
+                f"TDX bars page failed for {sym} at start={offset_pos}"
+            ) from exc
 
         if raw is None or len(raw) == 0:
             break

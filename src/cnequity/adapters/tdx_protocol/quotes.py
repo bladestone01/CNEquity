@@ -179,6 +179,9 @@ class Quotes:
         for start in range(0, int(count), _SECURITY_LIST_PAGE):
             page = self._client.get_security_list(market, start)
             if not page:
-                break
+                raise RuntimeError(
+                    f"TDX security list for market={market} ended at offset={start} "
+                    f"before declared count={count}"
+                )
             out.extend(page)
         return out

@@ -33,11 +33,13 @@ and a threaded one did (181).
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import date, datetime, time
 
 import polars as pl
 
+from cnequity.adapters.numeric import finite_int64
 from cnequity.adapters.tdx_protocol._decode import decoded_quantity
 from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
 
@@ -141,18 +143,33 @@ def _rows_to_dicts(
         if not in_session(stamp):
             off_session += 1
             continue
+        try:
+            open_ = float(row.get("open", 0))
+            high = float(row.get("high", 0))
+            low = float(row.get("low", 0))
+            close = float(row.get("close", 0))
+            volume = decoded_quantity(row.get("volume", row.get("vol", 0)))
+            amount = decoded_quantity(row.get("amount", 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not all(math.isfinite(value) for value in (open_, high, low, close, volume, amount)):
+            continue
+        try:
+            volume_int = finite_int64(volume, minimum=0)
+        except ValueError:
+            continue
         out.append(
             {
                 "symbol": sym,
                 "trade_date": trade_date,
                 "bar_time": stamp,
                 "frequency": frequency,
-                "open": float(row.get("open", 0)),
-                "high": float(row.get("high", 0)),
-                "low": float(row.get("low", 0)),
-                "close": float(row.get("close", 0)),
-                "volume": int(decoded_quantity(row.get("volume", row.get("vol", 0)))),
-                "amount": decoded_quantity(row.get("amount", 0)),
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume_int,
+                "amount": amount,
             }
         )
     return out, off_session
@@ -174,13 +191,16 @@ def fetch_minute_bars_paginated(
     backfill: bool = False,
     on_page: Callable[[], None] | None = None,
     max_pages: int | None = None,
+    require_complete: bool = False,
 ) -> list[dict]:
     """Intraday bars for *sym* in [start, end], paging back through the tip.
 
     ``max_pages`` bounds the walk for callers that know the horizon; without it
     the loop still terminates on a short page or on reaching *start*, but a
     symbol whose history runs deeper than the window costs pages that are then
-    discarded.
+    discarded. When a caller needs a complete window, ``require_complete``
+    turns reaching that cap before observing *start* into an error instead of
+    returning a plausible-looking prefix.
     """
     category = category_for(frequency)
     code, exch = sym.split(".")
@@ -198,6 +218,11 @@ def fetch_minute_bars_paginated(
 
     while True:
         if max_pages is not None and page >= max_pages:
+            if require_complete:
+                raise TdxMinuteBarsError(
+                    f"TDX {frequency} page limit {max_pages} reached for {sym} "
+                    f"before reaching window start {start}"
+                )
             break
         wait_spec(rate_limit)
         try:
@@ -209,14 +234,13 @@ def fetch_minute_bars_paginated(
                 offset=_PAGE_SIZE,
             )
         except Exception as exc:
-            if offset_pos == 0 or backfill:
-                raise TdxMinuteBarsError(
-                    f"TDX {frequency} page failed for {sym} at start={offset_pos}"
-                ) from exc
-            logger.warning(
-                "TDX %s page failed for %s at start=%s: %s", frequency, sym, offset_pos, exc
-            )
-            break
+            # A later-page failure means the already collected rows are only
+            # a prefix of the requested window. Returning them as a successful
+            # symbol is worse than losing the symbol: the step would stage a
+            # plausible-looking but truncated session and advance its scope.
+            raise TdxMinuteBarsError(
+                f"TDX {frequency} page failed for {sym} at start={offset_pos}"
+            ) from exc
 
         if not raw:
             break

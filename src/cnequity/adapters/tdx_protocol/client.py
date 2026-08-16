@@ -242,9 +242,10 @@ def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
 
     code_col = "code" if "code" in pdf.columns else pdf.columns[0]
     name_col = "name" if "name" in pdf.columns else pdf.columns[1]
-    codes = pdf[code_col].cast(pl.Utf8).str.zfill(6)
+    codes = pdf[code_col].cast(pl.Utf8).str.strip_chars().str.zfill(6)
+    valid_codes = codes.str.contains(r"^\d{6}$")
     prefixes = PREFIX_WHITELIST.get(exch.upper(), ()) + ETF_PREFIXES.get(exch.upper(), ())
-    mask = pl.lit(False)
+    mask = valid_codes & pl.lit(False)
     for prefix in prefixes:
         mask = mask | codes.str.starts_with(prefix)
     for blocked in range(81, 90):
@@ -264,7 +265,7 @@ def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
         )
     rows = []
     for row in filtered.iter_rows(named=True):
-        code = str(row[code_col]).zfill(6)
+        code = str(row[code_col]).strip().zfill(6)
         name = str(row[name_col])
         if is_subscription_placeholder(name):
             continue
@@ -396,7 +397,9 @@ def fetch_instruments(
             if not frames:
                 reason = "TDX returned no instruments"
                 return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
-            return pl.concat(frames, how="diagonal_relaxed")
+            return pl.concat(frames, how="diagonal_relaxed").unique(
+                subset=["symbol"], keep="last"
+            )
     except ImportError:
         reason = "TDX wire client unavailable"
     except Exception as exc:
@@ -465,9 +468,11 @@ def fetch_daily_bars(
                         backfill=backfill,
                         on_page=on_heartbeat,
                     )
-                )
+            )
             if rows:
-                return pl.DataFrame(rows)
+                return pl.DataFrame(rows).unique(
+                    subset=["symbol", "trade_date"], keep="last"
+                )
             reason = "TDX returned no bars"
     except ImportError:
         reason = "TDX wire client unavailable"
@@ -492,6 +497,7 @@ def fetch_minute_bars(
     config: Config | None = None,
     on_heartbeat: Callable[[], None] | None = None,
     max_pages: int | None = None,
+    require_complete: bool = False,
     workers: int = 1,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Intraday bars for *symbols*, one TDX session for the whole batch.
@@ -530,6 +536,7 @@ def fetch_minute_bars(
             backfill=backfill,
             on_page=on_heartbeat,
             max_pages=max_pages,
+            require_complete=require_complete,
         )
 
     rows: list[dict] = []
@@ -858,6 +865,7 @@ def fetch_corporate_actions(
                 backfill=backfill,
                 client_factory=quotes_client_factory(config),
                 rate_limit=rate_limit,
+                strict=backfill and primary_only,
             )
             if tdx_df.height:
                 frames.append(tdx_df.with_columns(pl.lit("tdx_protocol").alias("source")))
@@ -868,7 +876,9 @@ def fetch_corporate_actions(
 
     try:
         if not primary_only:
-            em_df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill)
+            em_df = fetch_corporate_actions_eastmoney(
+                trade_date, backfill=backfill, config=config
+            )
             if em_df.height:
                 frames.append(em_df.with_columns(pl.lit("eastmoney").alias("source")))
     except Exception as exc:
@@ -887,6 +897,12 @@ def fetch_corporate_actions(
             )
         if not backfill:
             out = out.filter(pl.col("ex_date") == trade_date)
+        else:
+            backfill_start = getattr(config, "_backfill_start", None) or date(2016, 1, 1)
+            backfill_end = getattr(config, "_backfill_end", None) or trade_date
+            out = out.filter(
+                (pl.col("ex_date") >= backfill_start) & (pl.col("ex_date") <= backfill_end)
+            )
         return out.unique(subset=["symbol", "ex_date", "action_type"], keep="last")
 
     return _fail_or_mock(
@@ -903,6 +919,7 @@ def fetch_trading_status(
     *,
     rate_limit: RateLimitSpec | None = None,
     allow_mock: bool = False,
+    config: Config | None = None,
 ) -> pl.DataFrame:
     def _mock_status() -> pl.DataFrame:
         rows = [
@@ -921,7 +938,7 @@ def fetch_trading_status(
 
     wait_spec(rate_limit)
     try:
-        df = fetch_trading_status_eastmoney(symbols, trade_date)
+        df = fetch_trading_status_eastmoney(symbols, trade_date, config=config)
         if df.height:
             return df
         reason = "EastMoney returned no trading status rows"

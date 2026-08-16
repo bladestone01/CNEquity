@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import polars as pl
+import pytest
 
 from cnequity.adapters.tdx_protocol import corporate_actions as ca
 
@@ -36,6 +37,17 @@ def test_rows_from_xdxr_cash_bonus_allotment_and_skips():
                 "peigu": 0,
                 "peigujia": 0,
             },
+            # skipped: malformed ex-date must not abort the valid row below
+            {
+                "year": 2024,
+                "month": 13,
+                "day": 28,
+                "category": 1,
+                "fenhong": 10.0,
+                "songzhuangu": 0,
+                "peigu": 0,
+                "peigujia": 0,
+            },
             # cash + bonus + allotment same day
             {
                 "year": 2024,
@@ -57,6 +69,26 @@ def test_rows_from_xdxr_cash_bonus_allotment_and_skips():
     assert by_type["allotment"]["allotment_ratio"] == 0.3
     assert by_type["allotment"]["allotment_price"] == 8.5
     assert all(r["ex_date"] == date(2024, 6, 28) for r in rows)
+
+
+def test_rows_from_xdxr_rejects_nonfinite_numeric_fields():
+    pdf = pl.DataFrame(
+        [
+            {
+                "year": 2024,
+                "month": 6,
+                "day": 28,
+                "category": 1,
+                "fenhong": 1.0,
+                "songzhuangu": 0,
+                "peigu": 1.0,
+                "peigujia": "nan",
+            }
+        ]
+    )
+    rows = ca._rows_from_xdxr("600519.SH", pdf)
+    allotment = next(row for row in rows if row["action_type"] == "allotment")
+    assert allotment["allotment_price"] is None
 
 
 def test_fetch_xdxr_for_symbol_empty_and_filter(monkeypatch):
@@ -103,6 +135,40 @@ def test_fetch_xdxr_for_symbol_empty_and_filter(monkeypatch):
     df = ca.fetch_xdxr_for_symbol(Ok(), "600519.SH", on_date=date(2024, 6, 28))
     assert df.height == 1
     assert df["ex_date"].to_list() == [date(2024, 6, 28)]
+
+
+def test_fetch_xdxr_for_symbol_dedupes_duplicate_action_rows(monkeypatch):
+    monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: None)
+
+    class Client:
+        def xdxr(self, symbol, market=None):
+            return pd.DataFrame(
+                [
+                    {
+                        "year": 2024,
+                        "month": 6,
+                        "day": 28,
+                        "category": 1,
+                        "fenhong": 10.0,
+                        "songzhuangu": 0,
+                        "peigu": 0,
+                        "peigujia": 0,
+                    },
+                    {
+                        "year": 2024,
+                        "month": 6,
+                        "day": 28,
+                        "category": 1,
+                        "fenhong": 10.0,
+                        "songzhuangu": 0,
+                        "peigu": 0,
+                        "peigujia": 0,
+                    },
+                ]
+            )
+
+    df = ca.fetch_xdxr_for_symbol(Client(), "600519.SH")
+    assert df.height == 1
 
 
 def test_fetch_xdxr_for_symbol_resolves_bj_to_market_2(monkeypatch):
@@ -181,3 +247,20 @@ def test_fetch_corporate_actions_tdx_dedupes(monkeypatch):
     )
     assert empty.is_empty()
     assert "action_type" in empty.schema
+
+
+def test_fetch_corporate_actions_tdx_strict_rejects_symbol_fetch_error(monkeypatch):
+    monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "close_quotes_client", lambda client: None)
+
+    class Client:
+        def xdxr(self, symbol, market=None):
+            raise ConnectionError("socket reset")
+
+    with pytest.raises(RuntimeError, match="TDX xdxr failed for 600519.SH"):
+        ca.fetch_corporate_actions_tdx(
+            ["600519.SH"],
+            trade_date=date(2024, 6, 28),
+            client_factory=Client,
+            strict=True,
+        )

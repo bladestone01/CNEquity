@@ -50,6 +50,34 @@ def test_paginated_fetch_stops_when_page_older_than_start():
     assert client.calls == 1
 
 
+def test_paginated_fetch_skips_invalid_date_rows():
+    page = [
+        {
+            "datetime": "not-a-date",
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "amount": 1,
+        },
+        {
+            "datetime": "2024-06-27",
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "amount": 1,
+        },
+    ]
+    rows = fetch_bars_paginated(
+        FakeClient([page]), "600519.SH", date(2024, 6, 26), date(2024, 6, 27)
+    )
+    assert len(rows) == 1
+    assert rows[0]["trade_date"] == date(2024, 6, 27)
+
+
 def test_paginated_fetch_merges_pages_when_window_spans_pages():
     page1 = [
         {
@@ -137,7 +165,7 @@ def test_backfill_mid_page_failure_raises():
         )
 
 
-def test_incremental_mid_page_failure_returns_partial():
+def test_incremental_mid_page_failure_raises_instead_of_returning_partial():
     page1 = [
         {
             "datetime": date(2024, 6, 27),
@@ -170,11 +198,10 @@ def test_incremental_mid_page_failure_returns_partial():
         }
     ]
     client = FailOnSecondPageClient([page1, page2])
-    rows = fetch_bars_paginated(
-        client, "600519.SH", date(2024, 6, 25), date(2024, 6, 27), backfill=False
-    )
-    assert len(rows) == 2
-    assert {r["trade_date"] for r in rows} == {date(2024, 6, 26), date(2024, 6, 27)}
+    with pytest.raises(TdxBarsPaginationError, match="start=800"):
+        fetch_bars_paginated(
+            client, "600519.SH", date(2024, 6, 25), date(2024, 6, 27), backfill=False
+        )
     assert client.calls == 2
 
 
@@ -214,3 +241,31 @@ def test_stock_symbol_uses_bars_method():
     fetch_bars_paginated(client, "600519.SH", date(2024, 6, 1), date(2024, 6, 27))
     assert client.used_bars is True
     assert client.used_index is False
+
+
+def test_nonfinite_wire_values_are_skipped():
+    client = FakeClient(
+        [
+            [
+                {
+                    "datetime": date(2024, 6, 27),
+                    "open": float("nan"),
+                    "high": 1,
+                    "low": 1,
+                    "close": 1,
+                    "volume": 1,
+                    "amount": 1,
+                },
+                {
+                    "datetime": date(2024, 6, 26),
+                    "open": 1,
+                    "high": 1,
+                    "low": 1,
+                    "close": 1,
+                    "volume": 1,
+                    "amount": float("inf"),
+                },
+            ]
+        ]
+    )
+    assert fetch_bars_paginated(client, "600519.SH", date(2024, 6, 26), date(2024, 6, 27)) == []

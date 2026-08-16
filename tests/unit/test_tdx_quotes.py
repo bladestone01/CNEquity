@@ -126,12 +126,23 @@ def test_stocks_pages_until_empty(fake_wire):
     fake_wire.list_pages = {
         0: [{"code": "000001"}],
         1000: [{"code": "000002"}],
-        2000: [],
+        2000: [{"code": "000003"}],
     }
     client = q.Quotes(fake_wire, ("h", 1))
     out = client.stocks(q.MARKET_SZ)
-    assert [r["code"] for r in out] == ["000001", "000002"]
+    assert [r["code"] for r in out] == ["000001", "000002", "000003"]
     assert ("count", q.MARKET_SZ) in fake_wire.calls
+
+
+def test_stocks_rejects_empty_page_before_declared_count(fake_wire):
+    fake_wire.count = 2500
+    fake_wire.list_pages = {
+        0: [{"code": "000001"}],
+        1000: [],
+    }
+    client = q.Quotes(fake_wire, ("h", 1))
+    with pytest.raises(RuntimeError, match="before declared count=2500"):
+        client.stocks(q.MARKET_SZ)
 
 
 def test_stocks_rejects_unknown_market(fake_wire):

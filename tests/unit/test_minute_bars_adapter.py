@@ -152,6 +152,21 @@ def test_fetch_respects_max_pages():
     assert len(client.calls) == 2
 
 
+def test_fetch_can_reject_a_max_page_prefix_when_completeness_is_required():
+    page = _session(date(2026, 7, 31)) * 4
+    client = FakeClient([page[:800], page[:800], page[:800]])
+    with pytest.raises(TdxMinuteBarsError, match="page limit 2.*window start"):
+        fetch_minute_bars_paginated(
+            client,
+            "600519.SH",
+            date(2020, 1, 1),
+            date(2026, 7, 31),
+            max_pages=2,
+            require_complete=True,
+        )
+    assert len(client.calls) == 2
+
+
 def test_first_page_failure_always_raises():
     class Broken:
         def bars(self, **kwargs):
@@ -159,6 +174,25 @@ def test_first_page_failure_always_raises():
 
     with pytest.raises(TdxMinuteBarsError, match="start=0"):
         fetch_minute_bars_paginated(Broken(), "600519.SH", date(2026, 7, 31), date(2026, 7, 31))
+
+
+def test_later_page_failure_does_not_return_a_partial_window():
+    page = _session(date(2026, 7, 31)) * 4
+
+    class BrokenLater:
+        def __init__(self):
+            self.calls = 0
+
+        def bars(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return page[:800]
+            raise RuntimeError("connection reset")
+
+    with pytest.raises(TdxMinuteBarsError, match="start=800"):
+        fetch_minute_bars_paginated(
+            BrokenLater(), "600519.SH", date(2026, 7, 30), date(2026, 7, 31)
+        )
 
 
 def test_lunch_boundary_padding_bar_is_dropped():
@@ -200,6 +234,25 @@ def test_real_quantities_survive_the_zero_snap():
     )
     assert rows[0]["volume"] == 67700
     assert rows[0]["amount"] == 91_450_000.0
+
+
+def test_nonfinite_wire_values_are_skipped():
+    page = [
+        _bar(datetime(2026, 7, 31, 9, 31), close=float("nan")),
+        _bar(datetime(2026, 7, 31, 9, 32), amount=float("inf")),
+    ]
+    rows = fetch_minute_bars_paginated(
+        FakeClient([page]), "600519.SH", date(2026, 7, 31), date(2026, 7, 31)
+    )
+    assert rows == []
+
+
+def test_int64_overflow_volume_is_skipped():
+    page = [_bar(datetime(2026, 7, 31, 9, 31), volume=1e300, vol=1e300)]
+    rows = fetch_minute_bars_paginated(
+        FakeClient([page]), "600519.SH", date(2026, 7, 31), date(2026, 7, 31)
+    )
+    assert rows == []
 
 
 def test_duplicate_bars_are_deduped_by_primary_key():
@@ -371,16 +424,16 @@ class _RaisesAfterFirstPage:
         raise ConnectionError("host reset")
 
 
-def test_midsweep_failure_keeps_rows_already_collected_when_not_backfill():
+def test_midsweep_failure_raises_even_on_the_incremental_path():
     full_page = (_session(date(2026, 7, 31)) * 4)[:800]
     client = _RaisesAfterFirstPage(full_page)
-    # backfill=False (the daily-run default): a later page's failure must not
-    # discard what the sweep already has, and must not raise past the caller.
-    rows = fetch_minute_bars_paginated(
-        client, "600519.SH", date(2020, 1, 1), date(2026, 7, 31), backfill=False
-    )
+    # The daily-run default must not stage the first page as if the symbol were
+    # complete; a later-page failure is still a truncated window.
+    with pytest.raises(TdxMinuteBarsError, match="start=800"):
+        fetch_minute_bars_paginated(
+            client, "600519.SH", date(2020, 1, 1), date(2026, 7, 31), backfill=False
+        )
     assert client.calls == 2
-    assert len(rows) > 0
 
 
 def test_midsweep_failure_raises_when_backfill():

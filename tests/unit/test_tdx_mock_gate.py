@@ -89,3 +89,13 @@ def test_real_rows_get_real_source_label():
         data_version="v1",
     )
     assert set(df["source"].unique().to_list()) == {"tdx_protocol"}
+
+
+def test_daily_bars_dedupes_duplicate_symbol_input(monkeypatch):
+    row = {"symbol": "600519.SH", "trade_date": START, "close": 1.0}
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: object())
+    monkeypatch.setattr(tdx, "_close_quotes_client", lambda _client: None)
+    monkeypatch.setattr(tdx, "fetch_bars_paginated", lambda *_a, **_k: [row])
+
+    out = tdx.fetch_daily_bars(["600519.SH", "600519.SH"], START, END)
+    assert out.height == 1
