@@ -43,6 +43,24 @@ def test_fetch_datacenter_treats_empty_result_as_no_rows():
     assert rows == []
 
 
+def test_fetch_datacenter_rejects_success_without_result_object():
+    client = FakeClient([{"success": True}])
+    with pytest.raises(EastMoneyDatacenterError, match="without a result object"):
+        fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
+
+
+def test_fetch_datacenter_rejects_non_list_result_data():
+    client = FakeClient([{"success": True, "result": {"data": {"x": 1}}}])
+    with pytest.raises(EastMoneyDatacenterError, match="non-list result.data"):
+        fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
+
+
+def test_fetch_datacenter_rejects_non_object_rows():
+    client = FakeClient([{"success": True, "result": {"data": [{"x": 1}, None]}}])
+    with pytest.raises(EastMoneyDatacenterError, match="contains a non-object row"):
+        fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
+
+
 def test_fetch_datacenter_raises_on_api_rejection():
     client = FakeClient([{"success": False, "message": "TRADE_DATE列不存在", "code": 9501}])
     with pytest.raises(
@@ -108,6 +126,49 @@ def test_fetch_datacenter_stops_at_declared_pages():
     rows = fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
     assert len(rows) == 500
     assert client.calls == 1
+
+
+def test_fetch_datacenter_normalizes_string_page_metadata():
+    page1 = {
+        "success": True,
+        "result": {"pages": "2", "count": "750", "data": [{"x": 1}] * 500},
+    }
+    page2 = {
+        "success": True,
+        "result": {"pages": "2", "count": "750", "data": [{"x": 2}] * 250},
+    }
+    client = FakeClient([page1, page2])
+    rows = fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
+    assert len(rows) == 750
+    assert client.calls == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("pages", 1.5), ("pages", True), ("count", "unknown"), ("count", -1)],
+)
+def test_fetch_datacenter_rejects_malformed_page_metadata(field, value):
+    result = {"pages": 1, "count": 1, "data": [{"x": 1}]}
+    result[field] = value
+    client = FakeClient([{"success": True, "result": result}])
+    with pytest.raises(EastMoneyDatacenterError, match=f"invalid {field}"):
+        fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
+
+
+@pytest.mark.parametrize("field", ["pages", "count"])
+def test_fetch_datacenter_rejects_zero_metadata_with_rows(field):
+    result = {"pages": 1, "count": 1, "data": [{"x": 1}]}
+    result[field] = 0
+    client = FakeClient([{"success": True, "result": result}])
+    with pytest.raises(EastMoneyDatacenterError, match=f"declared {field}=0"):
+        fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
+
+
+def test_fetch_datacenter_rejects_rows_over_declared_count():
+    result = {"pages": 1, "count": 1, "data": [{"x": 1}, {"x": 2}]}
+    client = FakeClient([{"success": True, "result": result}])
+    with pytest.raises(EastMoneyDatacenterError, match="more than declared count=1"):
+        fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
 
 
 def test_fetch_datacenter_clamps_page_size_to_500():

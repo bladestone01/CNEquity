@@ -20,22 +20,27 @@ _CONCEPT_BOARD_TYPES = {"2", "3", "4"}
 
 
 def fetch_sector_members(
-    as_of_date: date, *, client: EastMoneyClient | None = None
+    as_of_date: date, *, client: EastMoneyClient | None = None, config=None
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
-    raw = fetch_datacenter(
-        client,
-        _BOARD_REPORT,
-        _BOARD_COLUMNS,
-        # Every board type, ~92k rows: clamped to 500 that is 185 pages, past
-        # the pageNumber cap, and the step failed every capital run. This report
-        # honors a full 5000-row page (measured 2026-08-11) — 19 pages, with
-        # room for the board list to keep growing.
-        page_size=5000,
-        trust_page_size=True,
-    )
+        client = EastMoneyClient(config=config)
+    try:
+        raw = fetch_datacenter(
+            client,
+            _BOARD_REPORT,
+            _BOARD_COLUMNS,
+            # Every board type, ~92k rows: clamped to 500 that is 185 pages, past
+            # the pageNumber cap, and the step failed every capital run. This report
+            # honors a full 5000-row page (measured 2026-08-11) — 19 pages, with
+            # room for the board list to keep growing.
+            page_size=5000,
+            trust_page_size=True,
+        )
+    except Exception:
+        if owns:
+            client.close()
+        raise
     rows = []
     for item in raw:
         if str(item.get("BOARD_TYPE_NEW") or "") not in _CONCEPT_BOARD_TYPES:
@@ -45,14 +50,22 @@ def fetch_sector_members(
         sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
         if not sym:
             continue
+        sector_code = str(item.get("BOARD_CODE") or "").strip()
+        sector_name = str(item.get("BOARD_NAME") or "").strip()
+        if not sector_code or not sector_name:
+            continue
         rows.append(
             {
                 "symbol": sym,
-                "sector_code": str(item.get("BOARD_CODE") or ""),
-                "sector_name": str(item.get("BOARD_NAME") or ""),
+                "sector_code": sector_code,
+                "sector_name": sector_name,
                 "as_of_date": as_of_date,
             }
         )
     if owns:
         client.close()
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(
+        subset=["symbol", "sector_code", "as_of_date"], keep="last"
+    )

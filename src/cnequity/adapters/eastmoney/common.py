@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime
 
-from cnequity.domain.symbols import format_symbol, is_all_a_symbol
+from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
 
 ALL_A_FS = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
 DATACENTER_BASE = "https://datacenter-web.eastmoney.com/api/data/v1/get"
@@ -37,7 +38,9 @@ def symbol_from_secucode(secucode: str | None) -> str | None:
     if "." not in text:
         return None
     code, exchange = text.split(".", 1)
-    code = code.zfill(6)
+    code = code.strip().zfill(6)
+    if len(code) != 6 or not code.isdigit():
+        return None
     if exchange not in {"SH", "SZ", "BJ"}:
         return None
     if not is_all_a_symbol(code, exchange):
@@ -50,32 +53,61 @@ def report_period_from_date(raw: str | None) -> str | None:
     if not raw:
         return None
     text = str(raw)[:10]
-    if len(text) < 7:
-        return text
-    year = text[:4]
-    month = int(text[5:7])
-    if month == 3:
-        q = "Q1"
-    elif month == 6:
-        q = "Q2"
-    elif month == 9:
-        q = "Q3"
-    else:
-        q = "Q4"
-    return f"{year}{q}"
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError:
+        return None
+    quarter_ends = {
+        (3, 31): "Q1",
+        (6, 30): "Q2",
+        (9, 30): "Q3",
+        (12, 31): "Q4",
+    }
+    quarter = quarter_ends.get((parsed.month, parsed.day))
+    return f"{parsed.year}{quarter}" if quarter else None
 
 
-def _to_float(value: object, default: float = 0.0) -> float:
+def _to_float(value: object, default: float | None = None) -> float | None:
+    """Parse a numeric field without turning bad input into a real zero.
+
+    A zero is meaningful for several EastMoney fields (for example a halted
+    security's volume), so missing, malformed, and non-finite values must stay
+    distinguishable from an observed zero. Callers that require a value should
+    reject ``None`` explicitly; nullable business fields can preserve it.
+    """
     if value is None or value == "" or value == "-":
         return default
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    return parsed if math.isfinite(parsed) else default
+
+
+def _to_int(
+    value: object,
+    default: int | None = None,
+    *,
+    minimum: int = -(2**63),
+    maximum: int = 2**63 - 1,
+) -> int | None:
+    """Parse an integer field without truncation or Int64 overflow.
+
+    EastMoney sometimes serializes integer fields as floating-point values.
+    Only finite, integral values within the range accepted by the curated
+    schemas are valid; malformed values remain nullable instead of aborting a
+    whole response or being silently truncated.
+    """
+    parsed = _to_float(value)
+    if parsed is None or not parsed.is_integer() or parsed < minimum or parsed > maximum:
+        return default
+    return int(parsed)
 
 
 def symbol_from_em(code: str, market_id: int) -> str | None:
-    code = str(code).zfill(6)
+    code = str(code).strip().zfill(6)
+    if len(code) != 6 or not code.isdigit():
+        return None
     exchange = "SH" if market_id == 1 else ("BJ" if market_id == 2 else "SZ")
     if not is_all_a_symbol(code, exchange):
         return None
@@ -88,18 +120,15 @@ def symbol_from_clist(code: str, market_id: int) -> str | None:
     Some EastMoney hosts (e.g. push2delay) return ``f13=0`` for every row;
     fall back to code-prefix exchange inference in that case.
     """
-    code = str(code).zfill(6)
+    code = str(code).strip().zfill(6)
+    if len(code) != 6 or not code.isdigit():
+        return None
     if market_id == 1:
         exchange = "SH"
     elif market_id == 2:
         exchange = "BJ"
     else:
-        if code.startswith(("60", "68")):
-            exchange = "SH"
-        elif code.startswith("92"):
-            exchange = "BJ"
-        else:
-            exchange = "SZ"
+        exchange = infer_exchange_from_code(code)
     if not is_all_a_symbol(code, exchange):
         return None
     return format_symbol(code, exchange)
@@ -110,6 +139,6 @@ def exchange_from_datacenter(row: dict) -> str:
     code = str(row.get("SECURITY_CODE") or row.get("SECUCODE", "").split(".")[0]).zfill(6)
     if "SH" in market or code.startswith(("60", "68")):
         return "SH"
-    if "BJ" in market or code.startswith("92"):
+    if "BJ" in market or market in {"2", "BSE"} or infer_exchange_from_code(code) == "BJ":
         return "BJ"
-    return "SZ"
+    return infer_exchange_from_code(code)

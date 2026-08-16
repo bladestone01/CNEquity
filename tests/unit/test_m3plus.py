@@ -7,6 +7,7 @@ import cnequity.steps  # noqa: F401
 from cnequity.adapters.eastmoney.fundamentals import fetch_financial_statement_items
 from cnequity.adapters.eastmoney.index_constituents import fetch_index_constituents
 from cnequity.adapters.eastmoney.industry import fetch_industry_members
+from cnequity.adapters.eastmoney.sectors import fetch_sector_members
 from cnequity.config import Config
 from cnequity.domain.schemas import validate_dataframe
 from cnequity.orchestrator.registry import get_step
@@ -145,10 +146,64 @@ def test_index_constituents_fetch():
             ]
         }
     )
-    df = fetch_index_constituents(date(2024, 6, 28), client=client)  # type: ignore[arg-type]
+    df = fetch_index_constituents(
+        date(2024, 6, 28), indices=["000300.SH"], client=client
+    )  # type: ignore[arg-type]
     assert df.height == 1
     assert df["index_symbol"][0] == "000300.SH"
     assert df["symbol"][0] == "600519.SH"
+
+
+def test_index_constituents_rejects_a_stale_source_snapshot():
+    client = FakeDatacenterClient(
+        {
+            "RPT_INDEX_CONSTITUENT": [
+                {
+                    "INDEX_CODE": "000300",
+                    "SECURITY_CODE": "600519",
+                    "TRADE_DATE": "2024-06-27",
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="000300.SH"):
+        fetch_index_constituents(
+            date(2024, 6, 28), indices=["000300.SH"], client=client  # type: ignore[arg-type]
+        )
+
+
+def test_index_constituents_rejects_an_empty_requested_index():
+    class _Client:
+        def get(self, url, **kwargs):
+            class _Response:
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"success": True, "result": {"data": []}}
+
+            return _Response()
+
+        def close(self):
+            return None
+
+    with pytest.raises(RuntimeError, match="000300.SH"):
+        fetch_index_constituents(
+            date(2024, 6, 28), indices=["000300.SH"], client=_Client()
+        )
+
+
+def test_index_constituents_explicit_empty_selection_is_a_noop():
+    class _Client:
+        def get(self, url, **kwargs):
+            raise AssertionError("empty index selection must not fetch the default universe")
+
+        def close(self):
+            return None
+
+    out = fetch_index_constituents(date(2024, 6, 28), indices=[], client=_Client())
+    assert out.is_empty()
 
 
 def test_industry_members_fetch():
@@ -167,6 +222,36 @@ def test_industry_members_fetch():
     df = fetch_industry_members(date(2024, 6, 28), client=client)  # type: ignore[arg-type]
     assert df.height == 1
     assert df["industry_name"][0] == "白酒"
+
+
+def test_sector_members_dedupes_and_skips_missing_board_keys():
+    client = FakeDatacenterClient(
+        {
+            "RPT_BOARD_CONSTITUENT": [
+                {
+                    "SECURITY_CODE": "600519",
+                    "BOARD_CODE": "BK0001",
+                    "BOARD_NAME": "白酒",
+                    "BOARD_TYPE_NEW": "3",
+                },
+                {
+                    "SECURITY_CODE": "600519",
+                    "BOARD_CODE": "BK0001",
+                    "BOARD_NAME": "白酒",
+                    "BOARD_TYPE_NEW": "3",
+                },
+                {
+                    "SECURITY_CODE": "600519",
+                    "BOARD_CODE": "",
+                    "BOARD_NAME": "缺少代码",
+                    "BOARD_TYPE_NEW": "3",
+                },
+            ]
+        }
+    )
+    df = fetch_sector_members(date(2024, 6, 28), client=client)  # type: ignore[arg-type]
+    assert df.height == 1
+    assert df["sector_code"].to_list() == ["BK0001"]
 
 
 @pytest.fixture

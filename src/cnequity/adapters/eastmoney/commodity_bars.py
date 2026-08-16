@@ -10,6 +10,7 @@ the exchange settle date of the source; watermark gaps reuse the SSE calendar
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import date
 from typing import TYPE_CHECKING
@@ -18,6 +19,7 @@ import polars as pl
 
 from cnequity.adapters.eastmoney.common import parse_em_ymd
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, is_transport_fail_fast
+from cnequity.adapters.numeric import finite_int64
 
 if TYPE_CHECKING:
     from cnequity.config import Config
@@ -116,9 +118,19 @@ def _fetch_one_kline(
             close = float(parts[2])
             high = float(parts[3])
             low = float(parts[4])
-            volume = int(float(parts[5]))
+            volume_raw = float(parts[5])
             amount = float(parts[6])
         except (ValueError, TypeError):
+            continue
+        if trade_date < start or trade_date > end:
+            continue
+        if not all(
+            math.isfinite(value) for value in (open_, close, high, low, volume_raw, amount)
+        ):
+            continue
+        try:
+            volume = finite_int64(volume_raw, minimum=0)
+        except (OverflowError, ValueError):
             continue
         if close <= 0:
             continue
@@ -159,6 +171,7 @@ def fetch_commodity_bars_range(
     config: Config | None = None,
     contracts: tuple[tuple[str, str, str, str], ...] | None = None,
     include_offshore: bool = True,
+    strict: bool = False,
 ) -> pl.DataFrame:
     """Fetch continuous-contract daily OHLC for [*start*, *end*] (inclusive).
 
@@ -177,7 +190,9 @@ def fetch_commodity_bars_range(
     """
     if start > end:
         return pl.DataFrame()
-    universe = contracts or CONTINUOUS_CONTRACTS
+    # Keep an explicit empty selection empty. ``None`` is the only spelling of
+    # "use the configured default universe" for a caller.
+    universe = CONTINUOUS_CONTRACTS if contracts is None else contracts
     rows: list[dict] = []
     client_kwargs: dict = {"config": config} if config is not None else {"min_interval": 0.5}
     em_enabled = False
@@ -213,6 +228,10 @@ def fetch_commodity_bars_range(
                         type(exc).__name__,
                         exc,
                     )
+                    if strict:
+                        raise RuntimeError(
+                            f"commodity_bars failed for {symbol} ({secid})"
+                        ) from exc
                 time.sleep(0.25)
     domestic = (
         pl.DataFrame(rows)
@@ -233,13 +252,39 @@ def fetch_commodity_bars_range(
 
         try:
             domestic = fetch_domestic_commodity_bars_range(
-                start, end, contracts=_sina_contracts(universe), config=config
+                start,
+                end,
+                contracts=_sina_contracts(universe),
+                config=config,
+                strict=strict,
             )
         except Exception as exc:  # noqa: BLE001 — offshore may still be writable
             logger.warning(
                 "commodity_bars: domestic fetch failed: %s: %s",
                 type(exc).__name__,
                 exc,
+            )
+            if strict:
+                raise
+
+    # The normal step requests one settled session.  A source can return valid
+    # rows for most contracts while silently omitting one (empty payload,
+    # malformed current row, or a per-contract outage); treating the combined
+    # non-empty frame as success would advance the dataset with a false partial
+    # success.  Do not apply this to historical ranges: a continuous contract
+    # may legitimately have no row before its own listing date.
+    if strict and start == end and universe:
+        expected = {symbol for symbol, *_ in universe}
+        observed = (
+            set(domestic.filter(pl.col("trade_date") == start)["symbol"].to_list())
+            if not domestic.is_empty()
+            else set()
+        )
+        missing = sorted(expected - observed)
+        if missing:
+            raise RuntimeError(
+                f"commodity_bars missing {len(missing)} domestic contract(s) on "
+                f"{start.isoformat()}: {', '.join(missing[:8])}"
             )
 
     offshore = pl.DataFrame()
@@ -249,17 +294,24 @@ def fetch_commodity_bars_range(
         )
 
         try:
-            offshore = fetch_offshore_commodity_bars_range(start, end)
+            offshore = fetch_offshore_commodity_bars_range(start, end, strict=strict)
         except Exception as exc:
             logger.warning(
                 "commodity_bars: offshore fetch failed: %s: %s",
                 type(exc).__name__,
                 exc,
             )
+            if strict:
+                raise
     return _concat_frames([domestic, offshore])
 
 
-def fetch_commodity_bars(trade_date: date, *, config: Config | None = None) -> pl.DataFrame:
+def fetch_commodity_bars(
+    trade_date: date,
+    *,
+    config: Config | None = None,
+    strict: bool = False,
+) -> pl.DataFrame:
     """Daily / backfill entrypoint.
 
     - Normal incremental: bars for *trade_date* only.
@@ -269,5 +321,5 @@ def fetch_commodity_bars(trade_date: date, *, config: Config | None = None) -> p
     if config is not None and getattr(config, "_backfill", False):
         start = getattr(config, "_backfill_start", None) or DEFAULT_BACKFILL_START
         end = getattr(config, "_backfill_end", None) or trade_date
-        return fetch_commodity_bars_range(start, end, config=config)
-    return fetch_commodity_bars_range(trade_date, trade_date, config=config)
+        return fetch_commodity_bars_range(start, end, config=config, strict=strict)
+    return fetch_commodity_bars_range(trade_date, trade_date, config=config, strict=strict)

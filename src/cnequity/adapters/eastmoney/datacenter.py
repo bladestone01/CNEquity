@@ -58,6 +58,32 @@ class _ServerBusy(Exception):
     """Datacenter said it was busy — retry, do not report a schema break."""
 
 
+def _non_negative_int(value: object, *, field: str, report: str) -> int | None:
+    """Normalize datacenter pagination metadata without silently disabling guards."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise EastMoneyDatacenterError(
+            f"EastMoney datacenter {report} returned invalid {field}={value!r}; "
+            "expected a non-negative integer"
+        )
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        raise EastMoneyDatacenterError(
+            f"EastMoney datacenter {report} returned invalid {field}={value!r}; "
+            "expected a non-negative integer"
+        )
+    if parsed < 0:
+        raise EastMoneyDatacenterError(
+            f"EastMoney datacenter {report} returned invalid {field}={value!r}; "
+            "expected a non-negative integer"
+        )
+    return parsed
+
+
 def _is_busy(message: str) -> bool:
     return any(token in message for token in _BUSY_MESSAGES)
 
@@ -173,7 +199,8 @@ def fetch_datacenter(
                     f"{max_retries} attempts; got {len(rows)} of {expected_count} rows"
                 ) from last_exc
             raise EastMoneyDatacenterError(
-                f"EastMoney datacenter {report} page {page} failed after {max_retries} attempts"
+                f"EastMoney datacenter {report} page {page} failed after {max_retries} attempts: "
+                f"{last_exc}"
             ) from last_exc
 
         if payload.get("success") is False:
@@ -188,17 +215,48 @@ def fetch_datacenter(
                 )
             break
 
-        result = payload.get("result") or {}
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise EastMoneyDatacenterError(
+                f"EastMoney datacenter {report} returned success without a result object"
+            )
         if expected_pages is None:
-            raw_pages = result.get("pages")
-            if isinstance(raw_pages, int) and raw_pages > 0:
-                expected_pages = raw_pages
-            raw_count = result.get("count")
-            if isinstance(raw_count, int):
-                expected_count = raw_count
-        batch = result.get("data") or []
+            parsed_pages = _non_negative_int(
+                result.get("pages"), field="pages", report=report
+            )
+            if parsed_pages is not None:
+                expected_pages = parsed_pages
+            expected_count = _non_negative_int(
+                result.get("count"), field="count", report=report
+            )
+        raw_batch = result.get("data")
+        if raw_batch is None:
+            batch: list[dict] = []
+        elif isinstance(raw_batch, list):
+            if any(not isinstance(item, dict) for item in raw_batch):
+                raise EastMoneyDatacenterError(
+                    f"EastMoney datacenter {report} page {page} contains a non-object row"
+                )
+            batch = raw_batch
+        else:
+            raise EastMoneyDatacenterError(
+                f"EastMoney datacenter {report} returned a non-list result.data"
+            )
+        if batch and expected_pages == 0:
+            raise EastMoneyDatacenterError(
+                f"EastMoney datacenter {report} declared pages=0 but returned rows"
+            )
+        if batch and expected_count == 0:
+            raise EastMoneyDatacenterError(
+                f"EastMoney datacenter {report} declared count=0 but returned rows"
+            )
         rows.extend(batch)
         shard_rows += len(batch)
+        if expected_count is not None and shard_rows > expected_count:
+            raise EastMoneyDatacenterError(
+                f"EastMoney datacenter {report} returned more than declared "
+                f"count={expected_count} rows ({shard_rows})"
+            )
         if stop_after is not None and stop_after(batch):
             stopped_early = True
             break

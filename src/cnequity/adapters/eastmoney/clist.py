@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 from cnequity.adapters.eastmoney.common import (
     ALL_A_FS,
     PUSH2_CLIST_HOSTS,
+    _to_int,
     symbol_from_clist,
 )
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
@@ -26,7 +27,7 @@ def _fetch_clist_page(
     page_size: int,
     max_retries: int = 3,
     retry_backoff_seconds: float = 1.0,
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int | None]:
     params = urlencode(
         {
             "pn": page,
@@ -47,9 +48,33 @@ def _fetch_clist_page(
             resp = client.get(url)
             resp.raise_for_status()
             payload = resp.json()
-            data = payload.get("data") or {}
-            diff = data.get("diff") or []
-            total = int(data.get("total") or 0)
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                raise RuntimeError("EastMoney clist response has no data object")
+            raw_diff = data.get("diff")
+            if raw_diff is None:
+                diff: list[dict] = []
+            elif isinstance(raw_diff, list):
+                if any(not isinstance(item, dict) for item in raw_diff):
+                    raise RuntimeError(
+                        "EastMoney clist response data.diff contains a non-object row"
+                    )
+                diff = raw_diff
+            else:
+                raise RuntimeError("EastMoney clist response data.diff is not a list")
+            raw_total = data.get("total")
+            if raw_total is None or raw_total == "":
+                total = None
+            else:
+                total = _to_int(raw_total, minimum=0)
+                if total is None:
+                    raise RuntimeError(
+                        "EastMoney clist response data.total is not a non-negative integer"
+                    )
+            if total is None and diff:
+                raise RuntimeError(
+                    "EastMoney clist response data.diff contains rows without a reported total"
+                )
             return diff, total
         except Exception as exc:
             last_exc = exc
@@ -59,7 +84,7 @@ def _fetch_clist_page(
                 break
             if attempt + 1 < max_retries:
                 time.sleep(retry_backoff_seconds * (attempt + 1))
-    raise RuntimeError(f"EastMoney clist page {page} failed on {host}") from last_exc
+    raise RuntimeError(f"EastMoney clist page {page} failed on {host}: {last_exc}") from last_exc
 
 
 def fetch_clist_pages(
@@ -74,14 +99,14 @@ def fetch_clist_pages(
     rows: list[dict] = []
     active_host: str | None = None
     page = 1
-    total = 0
+    reported_total: int | None = None
 
     while True:
         if active_host is None:
             page_rows: list[dict] = []
             for host in PUSH2_CLIST_HOSTS:
                 try:
-                    page_rows, total = _fetch_clist_page(
+                    page_rows, page_total = _fetch_clist_page(
                         client,
                         host=host,
                         fields=fields,
@@ -102,7 +127,7 @@ def fetch_clist_pages(
                 )
         else:
             try:
-                page_rows, total = _fetch_clist_page(
+                page_rows, page_total = _fetch_clist_page(
                     client,
                     host=active_host,
                     fields=fields,
@@ -125,7 +150,7 @@ def fetch_clist_pages(
                     if host == active_host:
                         continue
                     try:
-                        page_rows, total = _fetch_clist_page(
+                        page_rows, page_total = _fetch_clist_page(
                             client,
                             host=host,
                             fields=fields,
@@ -149,10 +174,39 @@ def fetch_clist_pages(
                         f"({len(rows)} rows fetched before failure)"
                     ) from exc
 
+        if page_total is not None:
+            if reported_total is not None and page_total != reported_total:
+                raise RuntimeError(
+                    "EastMoney clist pagination changed reported total "
+                    f"({reported_total} -> {page_total}) on page {page}"
+                )
+            reported_total = page_total
+
         if not page_rows:
+            if reported_total is not None and reported_total > len(rows):
+                raise RuntimeError(
+                    f"EastMoney clist page {page} returned empty before reported "
+                    f"total was reached ({len(rows)}/{reported_total} rows)"
+                )
             break
+        if reported_total is None:
+            raise RuntimeError(
+                f"EastMoney clist page {page} returned rows without a reported total"
+            )
+        next_row_count = len(rows) + len(page_rows)
+        if next_row_count > reported_total:
+            raise RuntimeError(
+                "EastMoney clist pagination exceeded reported total "
+                f"({next_row_count}/{reported_total})"
+            )
+        if len(page_rows) < page_size and next_row_count < reported_total:
+            raise RuntimeError(
+                f"EastMoney clist page {page} returned only {len(page_rows)} row(s) "
+                f"before reported total was reached ({next_row_count}/{reported_total}); "
+                "refusing a potentially truncated result"
+            )
         rows.extend(page_rows)
-        if len(rows) >= total:
+        if len(rows) >= reported_total:
             break
         page += 1
 
@@ -162,7 +216,8 @@ def fetch_clist_pages(
 def clist_rows_to_symbols(rows: list[dict]) -> list[tuple[str, dict]]:
     out: list[tuple[str, dict]] = []
     for item in rows:
-        sym = symbol_from_clist(str(item.get("f12", "")), int(item.get("f13", 0)))
+        market_id = _to_int(item.get("f13"), default=0, minimum=0)
+        sym = symbol_from_clist(str(item.get("f12", "")), market_id)
         if sym:
             out.append((sym, item))
     return out

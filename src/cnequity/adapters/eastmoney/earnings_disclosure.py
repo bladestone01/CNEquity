@@ -19,7 +19,7 @@ from cnequity.adapters.eastmoney.common import (
     symbol_from_secucode,
 )
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
-from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
 
 logger = logging.getLogger(__name__)
@@ -61,11 +61,29 @@ def _active_report_dates(trade_date: date) -> list[str]:
     )
 
 
-def _backfill_report_dates(trade_date: date) -> list[str]:
-    """Every quarter-end period from 2016 through the look-ahead window."""
+def _backfill_report_dates(
+    trade_date: date,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
+    """Quarter-end report periods in the requested backfill window.
+
+    The daily path owns the forward look-ahead; historical backfill ends at
+    ``trade_date`` (or the explicit CLI end), so future report periods cannot
+    leak into a historical slice.
+    """
+    lower = date(_BACKFILL_START_YEAR, 1, 1)
+    if start is not None:
+        lower = max(lower, start)
+    upper = trade_date
+    if end is not None:
+        upper = min(upper, end)
+    if lower > upper:
+        return []
     return _quarter_ends(
-        date(_BACKFILL_START_YEAR, 1, 1),
-        trade_date + timedelta(days=_WINDOW_AHEAD_DAYS),
+        lower,
+        upper,
     )
 
 
@@ -108,6 +126,28 @@ def _parse_rows(raw: list[dict]) -> list[dict]:
     return rows
 
 
+def _rows_for_report_date(raw: list[dict], expected: str) -> list[dict]:
+    rows = [
+        item
+        for item in raw
+        if str(item.get("REPORT_DATE") or "")[:10] == expected
+    ]
+    dropped = len(raw) - len(rows)
+    if dropped:
+        logger.warning(
+            "EastMoney earnings disclosure dropped %d row(s) with invalid or "
+            "unexpected REPORT_DATE for %s",
+            dropped,
+            expected,
+        )
+    if raw and not rows:
+        raise RuntimeError(
+            "EastMoney earnings disclosure response contains no REPORT_DATE row "
+            f"for {expected}"
+        )
+    return rows
+
+
 def fetch_earnings_disclosure_schedule(
     trade_date: date,
     *,
@@ -127,15 +167,16 @@ def fetch_earnings_disclosure_schedule(
         client = EastMoneyClient(config=config)
 
     if backfill:
-        report_dates = _backfill_report_dates(trade_date)
+        range_start = getattr(config, "_backfill_start", None)
+        range_end = getattr(config, "_backfill_end", None)
+        report_dates = _backfill_report_dates(trade_date, start=range_start, end=range_end)
     else:
         report_dates = _active_report_dates(trade_date)
 
     rows: list[dict] = []
     try:
         for report_date in report_dates:
-            if config is not None:
-                config.rate_limit("eastmoney")
+            rate_limit_if_unconfigured(client, config)
             raw = fetch_datacenter(
                 client,
                 _REPORT,
@@ -144,7 +185,7 @@ def fetch_earnings_disclosure_schedule(
                 sort_columns="SECURITY_CODE",
                 sort_types="1",
             )
-            rows.extend(_parse_rows(raw))
+            rows.extend(_parse_rows(_rows_for_report_date(raw, report_date)))
     finally:
         if owns:
             client.close()

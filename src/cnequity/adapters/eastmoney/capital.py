@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 
 import polars as pl
@@ -15,9 +16,9 @@ from cnequity.adapters.eastmoney.common import (
     symbol_from_secucode,
 )
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
-from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
-from cnequity.domain.symbols import format_symbol
+from cnequity.domain.symbols import infer_exchange_from_code
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,20 @@ NORTHBOUND_HISTORY_START = date(2014, 11, 17)
 NORTHBOUND_LAST_PUBLISHED = date(2024, 8, 16)
 
 
-def _channel(mutual_type: str | int | None) -> str:
+def _scaled_amount(value: float | None) -> float | None:
+    if value is None:
+        return None
+    scaled = value * _AMOUNT_SCALE
+    return scaled if math.isfinite(scaled) else None
+
+
+def _channel(mutual_type: str | int | None) -> str | None:
     text = str(mutual_type or "")
     if text in {"001", "1"} or "沪" in text or "SH" in text.upper():
         return "SH"
-    return "SZ"
+    if text in {"003", "3"} or "深" in text or "SZ" in text.upper():
+        return "SZ"
+    return None
 
 
 def _margin_symbol(item: dict) -> str | None:
@@ -81,7 +91,10 @@ def _margin_symbol(item: dict) -> str | None:
     elif "京" in market or "北" in market:
         exch = "BJ"
     else:
-        exch = "SZ"
+        # Some margin rows omit both SECUCODE and the market label.  Defaulting
+        # those rows to SZ mislabels 60/68xxxx Shanghai names and breaks joins
+        # with daily_bars; use the same code inference as the other adapters.
+        exch = infer_exchange_from_code(code)
     return symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
 
 
@@ -96,6 +109,32 @@ def _em_datetime_to_date(value) -> date | None:
         return None
 
 
+def _rows_for_report_date(raw: list[dict], field: str, expected: date) -> list[dict]:
+    rows = [item for item in raw if _report_row_matches_date(item, field, expected)]
+    dropped = len(raw) - len(rows)
+    if dropped:
+        logger.warning(
+            "EastMoney capital dropped %d row(s) with invalid or unexpected %s "
+            "for %s",
+            dropped,
+            field,
+            expected.isoformat(),
+        )
+    if raw and not rows:
+        raise RuntimeError(
+            f"EastMoney capital response contains no {field} row for "
+            f"{expected.isoformat()}"
+        )
+    return rows
+
+
+def _report_row_matches_date(item: dict, field: str, expected: date) -> bool:
+    actual = _em_datetime_to_date(item.get(field))
+    if actual == expected:
+        return True
+    return False
+
+
 def fetch_fund_flow(
     trade_date: date,
     *,
@@ -105,7 +144,12 @@ def fetch_fund_flow(
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
-    rows_raw = fetch_clist_pages(client, fields=_FUND_FLOW_FIELDS)
+    try:
+        rows_raw = fetch_clist_pages(client, fields=_FUND_FLOW_FIELDS)
+    except Exception:
+        if owns:
+            client.close()
+        raise
     rows = []
     for sym, item in clist_rows_to_symbols(rows_raw):
         rows.append(
@@ -121,7 +165,9 @@ def fetch_fund_flow(
         )
     if owns:
         client.close()
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
 
 
 def fetch_margin_trading(
@@ -134,14 +180,19 @@ def fetch_margin_trading(
     if client is None:
         client = EastMoneyClient(config=config)
     ds = trade_date.isoformat()
-    raw = fetch_datacenter(
-        client,
-        _MARGIN_REPORT,
-        _MARGIN_COLUMNS,
-        filter_expr=f"(DATE='{ds}')",
-    )
+    try:
+        raw = fetch_datacenter(
+            client,
+            _MARGIN_REPORT,
+            _MARGIN_COLUMNS,
+            filter_expr=f"(DATE='{ds}')",
+        )
+    except Exception:
+        if owns:
+            client.close()
+        raise
     rows = []
-    for item in raw:
+    for item in _rows_for_report_date(raw, "DATE", trade_date):
         sym = _margin_symbol(item)
         if not sym:
             continue
@@ -149,28 +200,42 @@ def fetch_margin_trading(
             {
                 "symbol": sym,
                 "trade_date": trade_date,
-                "margin_balance": float(item.get("RZYE") or 0),
-                "margin_buy": float(item.get("RZMRE") or 0),
-                "short_balance": float(item.get("RQYE") or 0),
-                "short_sell_volume": float(item.get("RQMCL") or 0),
+                "margin_balance": _to_float(item.get("RZYE")),
+                "margin_buy": _to_float(item.get("RZMRE")),
+                "short_balance": _to_float(item.get("RQYE")),
+                "short_sell_volume": _to_float(item.get("RQMCL")),
             }
         )
     if owns:
         client.close()
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
 
 
 _NORTH_BACKFILL_START_YEAR = 2016
 _NORTH_QUARTER_END_MMDD = (("03", "31"), ("06", "30"), ("09", "30"), ("12", "31"))
 
 
-def _quarter_end_dates(trade_date: date) -> list[str]:
-    """Quarter-end dates from 2016 through *trade_date*, most recent first."""
+def _quarter_end_dates(
+    trade_date: date,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
+    """Quarter-end dates in the requested window, most recent first."""
+    lower = date(_NORTH_BACKFILL_START_YEAR, 1, 1)
+    if start is not None:
+        lower = max(lower, start)
+    upper = trade_date if end is None else min(trade_date, end)
+    if lower > upper:
+        return []
+
     out: list[str] = []
-    for year in range(_NORTH_BACKFILL_START_YEAR, trade_date.year + 1):
+    for year in range(lower.year, upper.year + 1):
         for mm, dd in _NORTH_QUARTER_END_MMDD:
             ds = f"{year}-{mm}-{dd}"
-            if date.fromisoformat(ds) <= trade_date:
+            if lower <= date.fromisoformat(ds) <= upper:
                 out.append(ds)
     return sorted(out, reverse=True)
 
@@ -194,7 +259,12 @@ def fetch_northbound_holdings(
     if client is None:
         client = EastMoneyClient(config=config)
 
-    periods = _quarter_end_dates(trade_date)
+    if backfill:
+        range_start = getattr(config, "_backfill_start", None)
+        range_end = getattr(config, "_backfill_end", None)
+        periods = _quarter_end_dates(trade_date, start=range_start, end=range_end)
+    else:
+        periods = _quarter_end_dates(trade_date)
     if not backfill:
         # latest 2 quarters: the just-ended one may not be published yet, so
         # keep the last complete quarter fresh too.
@@ -203,8 +273,7 @@ def fetch_northbound_holdings(
     rows: list[dict] = []
     try:
         for period in periods:
-            if config is not None:
-                config.rate_limit("eastmoney")
+            rate_limit_if_unconfigured(client, config)
             raw = fetch_datacenter(
                 client,
                 _NORTH_HOLD_REPORT,
@@ -212,24 +281,35 @@ def fetch_northbound_holdings(
                 filter_expr=f"(TRADE_DATE='{period}')",
             )
             period_date = date.fromisoformat(period)
-            for item in raw:
+            for item in _rows_for_report_date(raw, "TRADE_DATE", period_date):
                 sym = symbol_from_secucode(item.get("SECUCODE"))
-                if not sym:
+                channel = _channel(item.get("MUTUAL_TYPE"))
+                if not sym or channel is None:
+                    if channel is None:
+                        logger.warning(
+                            "EastMoney northbound holdings: skipping unknown "
+                            "MUTUAL_TYPE %r",
+                            item.get("MUTUAL_TYPE"),
+                        )
                     continue
                 rows.append(
                     {
                         "symbol": sym,
                         "trade_date": period_date,
-                        "channel": _channel(item.get("MUTUAL_TYPE")),
-                        "holding_shares": float(item.get("HOLD_SHARES") or 0),
-                        "holding_mv": float(item.get("HOLD_MARKET_CAP") or 0),
-                        "holding_ratio": float(item.get("HOLD_SHARES_RATIO") or 0),
+                        "channel": channel,
+                        "holding_shares": _to_float(item.get("HOLD_SHARES")),
+                        "holding_mv": _to_float(item.get("HOLD_MARKET_CAP")),
+                        "holding_ratio": _to_float(item.get("HOLD_SHARES_RATIO")),
                     }
                 )
     finally:
         if owns:
             client.close()
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(
+        subset=["symbol", "trade_date", "channel"], keep="last"
+    )
 
 
 def fetch_northbound_flows_range(
@@ -279,20 +359,29 @@ def fetch_northbound_flows_range(
         row_date = _em_datetime_to_date(item.get("TRADE_DATE"))
         if row_date is None or not (start <= row_date <= end):
             continue
-        # Read the raw value, not ``_to_float``: that helper defaults a missing
-        # amount to 0.0, which is exactly the zero this dataset must not invent.
+        # Read the raw value first because a missing amount is not a real zero.
         # From 2024-08-19 the column is null on every northbound row.
         net = item.get("NET_DEAL_AMT")
         if net is None or net == "" or net == "-":
             withheld += 1
             continue
+        net_value = _to_float(net)
+        if net_value is None:
+            withheld += 1
+            continue
+        net_buy = _scaled_amount(net_value)
+        if net_buy is None:
+            withheld += 1
+            continue
+        buy_value = _to_float(item.get("BUY_AMT"))
+        sell_value = _to_float(item.get("SELL_AMT"))
         rows.append(
             {
                 "trade_date": row_date,
                 "channel": channel,
-                "net_buy": _to_float(net) * _AMOUNT_SCALE,
-                "buy_amount": _to_float(item.get("BUY_AMT")) * _AMOUNT_SCALE,
-                "sell_amount": _to_float(item.get("SELL_AMT")) * _AMOUNT_SCALE,
+                "net_buy": net_buy,
+                "buy_amount": _scaled_amount(buy_value),
+                "sell_amount": _scaled_amount(sell_value),
             }
         )
 
@@ -305,7 +394,9 @@ def fetch_northbound_flows_range(
             end.isoformat(),
             NORTHBOUND_LAST_PUBLISHED.isoformat(),
         )
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(subset=["trade_date", "channel"], keep="last")
 
 
 def fetch_northbound_flows(
@@ -327,32 +418,41 @@ def fetch_dragon_tiger(
     if client is None:
         client = EastMoneyClient(config=config)
     ds = trade_date.isoformat()
-    raw = fetch_datacenter(
-        client,
-        _DRAGON_REPORT,
-        _DRAGON_COLUMNS,
-        filter_expr=f"(TRADE_DATE='{ds}')",
-    )
+    try:
+        raw = fetch_datacenter(
+            client,
+            _DRAGON_REPORT,
+            _DRAGON_COLUMNS,
+            filter_expr=f"(TRADE_DATE='{ds}')",
+        )
+    except Exception:
+        if owns:
+            client.close()
+        raise
     rows = []
-    for item in raw:
+    for item in _rows_for_report_date(raw, "TRADE_DATE", trade_date):
         code = str(item.get("SECURITY_CODE", "")).zfill(6)
         exch = exchange_from_datacenter(item)
-        sym = format_symbol(code, exch)
-        if not symbol_from_em(code, 1 if exch == "SH" else 0):
+        sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+        if not sym:
             continue
         rows.append(
             {
                 "symbol": sym,
                 "trade_date": trade_date,
                 "reason": str(item.get("EXPLANATION") or ""),
-                "buy_amount": float(item.get("BILLBOARD_BUY_AMT") or 0),
-                "sell_amount": float(item.get("BILLBOARD_SELL_AMT") or 0),
-                "net_amount": float(item.get("BILLBOARD_NET_AMT") or 0),
+                "buy_amount": _to_float(item.get("BILLBOARD_BUY_AMT")),
+                "sell_amount": _to_float(item.get("BILLBOARD_SELL_AMT")),
+                "net_amount": _to_float(item.get("BILLBOARD_NET_AMT")),
             }
         )
     if owns:
         client.close()
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(
+        subset=["symbol", "trade_date", "reason"], keep="last"
+    )
 
 
 def fetch_block_trades(
@@ -365,14 +465,19 @@ def fetch_block_trades(
     if client is None:
         client = EastMoneyClient(config=config)
     ds = trade_date.isoformat()
-    raw = fetch_datacenter(
-        client,
-        _BLOCK_REPORT,
-        _BLOCK_COLUMNS,
-        filter_expr=f"(TRADE_DATE='{ds}')",
-    )
+    try:
+        raw = fetch_datacenter(
+            client,
+            _BLOCK_REPORT,
+            _BLOCK_COLUMNS,
+            filter_expr=f"(TRADE_DATE='{ds}')",
+        )
+    except Exception:
+        if owns:
+            client.close()
+        raise
     rows = []
-    for item in raw:
+    for item in _rows_for_report_date(raw, "TRADE_DATE", trade_date):
         code = str(item.get("SECURITY_CODE", "")).zfill(6)
         exch = exchange_from_datacenter(item)
         sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
@@ -382,12 +487,16 @@ def fetch_block_trades(
             {
                 "symbol": sym,
                 "trade_date": trade_date,
-                "price": float(item.get("AVERAGE_PRICE") or 0),
-                "volume": float(item.get("VOLUME") or 0),
-                "amount": float(item.get("DEAL_AMT") or 0),
-                "premium_ratio": float(item.get("PREMIUM_RATIO") or 0),
+                "price": _to_float(item.get("AVERAGE_PRICE")),
+                "volume": _to_float(item.get("VOLUME")),
+                "amount": _to_float(item.get("DEAL_AMT")),
+                "premium_ratio": _to_float(item.get("PREMIUM_RATIO")),
             }
         )
     if owns:
         client.close()
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(
+        subset=["symbol", "trade_date", "price", "volume"], keep="last"
+    )

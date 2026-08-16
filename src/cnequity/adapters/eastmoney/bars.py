@@ -23,6 +23,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
 from cnequity.adapters.eastmoney.common import _to_float, parse_em_ymd
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.numeric import finite_int64
 from cnequity.domain.symbols import parse_symbol
 from cnequity.domain.units import lots_to_shares
 
@@ -41,6 +42,16 @@ def _secid(symbol: str) -> str:
     return f"{_MARKET.get(info.exchange, '0')}.{info.code}"
 
 
+def _volume_shares(volume: float | None) -> int | None:
+    if volume is None:
+        return None
+    try:
+        lots = finite_int64(volume, minimum=0, maximum=(2**63 - 1) // 100)
+    except ValueError:
+        return None
+    return lots_to_shares(lots)
+
+
 def fetch_daily_bars_clist(
     trade_date: date,
     *,
@@ -57,35 +68,49 @@ def fetch_daily_bars_clist(
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
-    want = set(symbols) if symbols is not None else None
-    rows_raw = fetch_clist_pages(client, fields=_CLIST_BAR_FIELDS)
-    rows: list[dict] = []
-    for sym, item in clist_rows_to_symbols(rows_raw):
-        if want is not None and sym not in want:
-            continue
-        open_ = _to_float(item.get("f17"))
-        high = _to_float(item.get("f15"))
-        low = _to_float(item.get("f16"))
-        close = _to_float(item.get("f2"))
-        if open_ is None or high is None or low is None or close is None:
-            continue
-        vol = _to_float(item.get("f5"))
-        amount = _to_float(item.get("f6"))
-        rows.append(
-            {
-                "symbol": sym,
-                "trade_date": trade_date,
-                "open": float(open_),
-                "high": float(high),
-                "low": float(low),
-                "close": float(close),
-                "volume": lots_to_shares(vol or 0),
-                "amount": float(amount or 0.0),
-            }
-        )
-    if owns:
-        client.close()
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    try:
+        want = set(symbols) if symbols is not None else None
+        rows_raw = fetch_clist_pages(client, fields=_CLIST_BAR_FIELDS)
+        rows: list[dict] = []
+        rejected = 0
+        for sym, item in clist_rows_to_symbols(rows_raw):
+            if want is not None and sym not in want:
+                continue
+            open_ = _to_float(item.get("f17"))
+            high = _to_float(item.get("f15"))
+            low = _to_float(item.get("f16"))
+            close = _to_float(item.get("f2"))
+            vol = _to_float(item.get("f5"))
+            amount = _to_float(item.get("f6"))
+            volume = _volume_shares(vol)
+            if None in (open_, high, low, close, volume):
+                rejected += 1
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "trade_date": trade_date,
+                    "open": float(open_),
+                    "high": float(high),
+                    "low": float(low),
+                    "close": float(close),
+                    "volume": volume,
+                    # EastMoney normally supplies amount, but keep an unavailable
+                    # value null rather than manufacturing zero turnover.
+                    "amount": amount,
+                }
+            )
+        if rejected:
+            logger.warning(
+                "EastMoney clist bars: rejected %s row(s) with missing/invalid OHLCV",
+                rejected,
+            )
+    finally:
+        if owns:
+            client.close()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
 
 
 def fetch_daily_bars(
@@ -94,57 +119,80 @@ def fetch_daily_bars(
     end: date,
     *,
     client: EastMoneyClient | None = None,
+    config=None,
 ) -> pl.DataFrame:
     """Per-symbol historical kline (slow). Prefer :func:`fetch_daily_bars_clist` for tip."""
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
 
     beg = start.strftime("%Y%m%d")
     end_s = end.strftime("%Y%m%d")
     rows: list[dict] = []
-
-    for sym in symbols:
-        params = {
-            "secid": _secid(sym),
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-            "klt": "101",
-            "fqt": "0",
-            "beg": beg,
-            "end": end_s,
-        }
-        try:
-            resp = client.get(_KLINE_URL, params=params)
-            resp.raise_for_status()
-            klines = (resp.json().get("data") or {}).get("klines") or []
-        except Exception as exc:
-            logger.warning("EastMoney kline failed for %s: %s", sym, exc)
-            continue
-
-        for line in klines:
-            parts = str(line).split(",")
-            if len(parts) < 7:
-                continue
+    rejected = 0
+    try:
+        for sym in symbols:
+            params = {
+                "secid": _secid(sym),
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                "klt": "101",
+                "fqt": "0",
+                "beg": beg,
+                "end": end_s,
+            }
             try:
-                trade_date = parse_em_ymd(parts[0])
-            except ValueError:
+                resp = client.get(_KLINE_URL, params=params)
+                resp.raise_for_status()
+                klines = (resp.json().get("data") or {}).get("klines") or []
+            except Exception as exc:
+                logger.warning("EastMoney kline failed for %s: %s", sym, exc)
                 continue
-            rows.append(
-                {
-                    "symbol": sym,
-                    "trade_date": trade_date,
-                    "open": float(parts[1]),
-                    "close": float(parts[2]),
-                    "high": float(parts[3]),
-                    "low": float(parts[4]),
-                    "volume": lots_to_shares(float(parts[5])),
-                    "amount": float(parts[6]),
-                }
-            )
 
-    if owns:
-        client.close()
+            for line in klines:
+                parts = str(line).split(",")
+                if len(parts) < 7:
+                    rejected += 1
+                    continue
+                try:
+                    trade_date = parse_em_ymd(parts[0])
+                except (TypeError, ValueError):
+                    rejected += 1
+                    continue
+                if trade_date < start or trade_date > end:
+                    continue
+                open_ = _to_float(parts[1])
+                close = _to_float(parts[2])
+                high = _to_float(parts[3])
+                low = _to_float(parts[4])
+                volume = _to_float(parts[5])
+                amount = _to_float(parts[6])
+                volume_shares = _volume_shares(volume)
+                if None in (open_, close, high, low, volume_shares):
+                    rejected += 1
+                    continue
+                rows.append(
+                    {
+                        "symbol": sym,
+                        "trade_date": trade_date,
+                        "open": open_,
+                        "close": close,
+                        "high": high,
+                        "low": low,
+                        "volume": volume_shares,
+                        # EastMoney may omit turnover on a valid zero-volume
+                        # session; preserve that absence instead of writing a
+                        # fabricated zero.
+                        "amount": amount,
+                    }
+                )
+    finally:
+        if owns:
+            client.close()
+    if rejected:
+        logger.warning("EastMoney kline: rejected %s malformed row(s)", rejected)
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows)
+    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last").sort(
+        ["trade_date", "symbol"]
+    )

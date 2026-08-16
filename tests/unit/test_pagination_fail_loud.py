@@ -54,6 +54,118 @@ def test_clist_raises_on_midpagination_truncation(monkeypatch):
         fetch_clist_pages(FailSecondPage(), fields="f12,f13", page_size=5000)
 
 
+def test_clist_raises_on_empty_page_before_reported_total():
+    class EmptySecondPage:
+        def get(self, url, **kwargs):
+            if "pn=1" in url:
+                return _Resp(_clist_payload(["600000", "600001"], total=4))
+            return _Resp(_clist_payload([], total=4))
+
+    with pytest.raises(RuntimeError, match="empty before reported total"):
+        fetch_clist_pages(EmptySecondPage(), fields="f12,f13", page_size=2)
+
+
+def test_clist_raises_on_short_page_before_reported_total():
+    class ShortFirstPage:
+        def get(self, url, **kwargs):
+            if "pn=1" in url:
+                return _Resp(_clist_payload(["600000"], total=3))
+            return _Resp(_clist_payload(["600001", "600002"], total=3))
+
+    with pytest.raises(RuntimeError, match="potentially truncated result"):
+        fetch_clist_pages(ShortFirstPage(), fields="f12,f13", page_size=2)
+
+
+def test_clist_rejects_success_without_data_object():
+    class Malformed:
+        def get(self, url, **kwargs):
+            return _Resp({"success": True})
+
+    with pytest.raises(RuntimeError, match="no data object"):
+        clist._fetch_clist_page(
+            Malformed(),
+            host="https://push2.eastmoney.com",
+            fields="f12,f13",
+            fs="m:1",
+            page=1,
+            page_size=10,
+            max_retries=1,
+            retry_backoff_seconds=0,
+        )
+
+
+def test_clist_rejects_non_list_diff():
+    class Malformed:
+        def get(self, url, **kwargs):
+            return _Resp({"success": True, "data": {"total": 0, "diff": {}}})
+
+    with pytest.raises(RuntimeError, match="diff is not a list"):
+        clist._fetch_clist_page(
+            Malformed(),
+            host="https://push2.eastmoney.com",
+            fields="f12,f13",
+            fs="m:1",
+            page=1,
+            page_size=10,
+            max_retries=1,
+            retry_backoff_seconds=0,
+        )
+
+
+def test_clist_rejects_non_object_diff_rows():
+    class Malformed:
+        def get(self, url, **kwargs):
+            return _Resp({"success": True, "data": {"total": 1, "diff": [None]}})
+
+    with pytest.raises(RuntimeError, match="contains a non-object row"):
+        clist._fetch_clist_page(
+            Malformed(),
+            host="https://push2.eastmoney.com",
+            fields="f12,f13",
+            fs="m:1",
+            page=1,
+            page_size=10,
+            max_retries=1,
+            retry_backoff_seconds=0,
+        )
+
+
+def test_clist_rejects_non_integer_total():
+    class Malformed:
+        def get(self, url, **kwargs):
+            return _Resp({"success": True, "data": {"total": 1.5, "diff": []}})
+
+    with pytest.raises(RuntimeError, match="total is not a non-negative integer"):
+        clist._fetch_clist_page(
+            Malformed(),
+            host="https://push2.eastmoney.com",
+            fields="f12,f13",
+            fs="m:1",
+            page=1,
+            page_size=10,
+            max_retries=1,
+            retry_backoff_seconds=0,
+        )
+
+
+def test_clist_rejects_missing_total_when_rows_are_present():
+    class MissingTotal:
+        def get(self, url, **kwargs):
+            return _Resp({"data": {"diff": [{"f12": "600519", "f13": 1}]}})
+
+    with pytest.raises(RuntimeError, match="without a reported total"):
+        clist._fetch_clist_page(
+            MissingTotal(),
+            host="https://push2.eastmoney.com",
+            fields="f12,f13",
+            fs="m:1",
+            page=1,
+            page_size=10,
+            max_retries=1,
+            retry_backoff_seconds=0,
+        )
+
+
 def test_regulatory_raises_on_page_failure(monkeypatch):
     monkeypatch.setattr(cninfo_announcements.time, "sleep", lambda *_: None)
 
@@ -114,6 +226,56 @@ def test_regulatory_stops_at_totalpages_even_when_hasmore_lies():
     df = fetch_regulatory_events(date(2024, 1, 31), client=client)
     assert client.calls == 4  # szse pages 1..3, then sse's single (empty) page
     assert df.height == 3
+
+
+def test_regulatory_uses_totalpages_when_hasmore_is_false():
+    class StaleHasMoreClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, **kwargs):
+            self.calls += 1
+            column = kwargs["data"]["column"]
+            if column == "sse":
+                return _Response({"announcements": [], "hasMore": False, "totalpages": 0})
+            page = kwargs["data"]["pageNum"]
+            item = {
+                "secCode": "000001",
+                "announcementId": f"R{page}",
+                "announcementTitle": "行政处罚决定",
+            }
+            return _Response(
+                {"announcements": [item], "hasMore": False, "totalpages": 2}
+            )
+
+    client = StaleHasMoreClient()
+    df = fetch_regulatory_events(date(2024, 1, 31), client=client)
+    assert client.calls == 3
+    assert set(df["event_id"].to_list()) == {"reg-R1", "reg-R2"}
+
+
+def test_regulatory_rejects_malformed_pagination_metadata():
+    class Malformed:
+        def post(self, url, **kwargs):
+            return _Response(
+                {
+                    "announcements": [
+                        {
+                            "secCode": "000001",
+                            "announcementId": "R1",
+                            "announcementTitle": "行政处罚决定",
+                        }
+                    ],
+                    "totalpages": "unknown",
+                    "hasMore": True,
+                }
+            )
+
+        def close(self):
+            return None
+
+    with pytest.raises(RuntimeError, match="regulatory pagination failed.*totalpages"):
+        fetch_regulatory_events(date(2024, 1, 31), client=Malformed())
 
 
 def test_regulatory_survives_one_transient_error(monkeypatch):

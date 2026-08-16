@@ -12,6 +12,7 @@ from cnequity.domain.symbols import parse_symbol
 logger = logging.getLogger(__name__)
 
 _NEWS_URL = "https://np-anotice-stock.eastmoney.com/api/security/news"
+_MAX_DATE_PAGES = 100
 
 _MARKET_CODES = {"SH": "1", "SZ": "0", "BJ": "2"}
 
@@ -52,36 +53,99 @@ def fetch_stock_news(
     limit: int = 30,
     use_snownlp: bool = True,
     client: EastMoneyClient | None = None,
+    config=None,
 ) -> dict:
     """Fetch recent headlines for *symbol*; optionally filter to *on_date*."""
+    if limit <= 0:
+        raise ValueError("stock_news limit must be positive")
     info = parse_symbol(symbol)
     market = _MARKET_CODES.get(info.exchange, "0")
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
 
     params = {
         "stock_list": info.code,
         "page_size": str(limit),
-        "page_index": "1",
         "market_code": market,
         "client": "web",
     }
     items: list[dict] = []
     try:
-        resp = client.get(_NEWS_URL, params=params)
-        resp.raise_for_status()
-        payload = resp.json()
-        raw_list = (payload.get("data") or {}).get("list") or []
-        for raw in raw_list:
-            norm = _normalize_item(raw, use_snownlp=use_snownlp)
-            if norm is None:
-                continue
-            if on_date is not None:
-                pub = _parse_publish_date(norm.get("publish_time"))
-                if pub is not None and pub != on_date:
+        seen_pages: set[tuple[str, ...]] = set()
+        page_index = 1
+        while True:
+            params["page_index"] = str(page_index)
+            resp = client.get(_NEWS_URL, params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("EastMoney stock_news response is not an object")
+            raw_data = payload.get("data")
+            if raw_data is None:
+                raw_list = []
+            elif not isinstance(raw_data, dict):
+                raise RuntimeError("EastMoney stock_news response data is not an object")
+            else:
+                raw_list = raw_data.get("list")
+                if raw_list is None:
+                    raw_list = []
+                elif not isinstance(raw_list, list):
+                    raise RuntimeError("EastMoney stock_news response data.list is not a list")
+            if not raw_list:
+                break
+
+            page_signature = tuple(
+                str(
+                    item.get("art_code")
+                    or item.get("uniqueUrl")
+                    or item.get("url")
+                    or item.get("title")
+                    or ""
+                )
+                for item in raw_list
+                if isinstance(item, dict)
+            )
+            if page_signature in seen_pages:
+                raise RuntimeError("EastMoney stock_news pagination did not advance")
+            seen_pages.add(page_signature)
+
+            page_dates: list[date] = []
+            for index, raw in enumerate(raw_list):
+                if not isinstance(raw, dict):
+                    logger.warning(
+                        "EastMoney stock_news: skipping non-object row %s for %s",
+                        index,
+                        symbol,
+                    )
                     continue
-            items.append(norm)
+                norm = _normalize_item(raw, use_snownlp=use_snownlp)
+                if norm is None:
+                    continue
+                pub = _parse_publish_date(norm.get("publish_time"))
+                if pub is not None:
+                    page_dates.append(pub)
+                if on_date is not None:
+                    # A date-scoped request must never attribute an undated item
+                    # to the requested session. Keep undated items only for the
+                    # explicitly unscoped on-demand feed.
+                    if pub != on_date:
+                        continue
+                items.append(norm)
+
+            # The unscoped API contract is "recent headlines", so preserve its
+            # one-page limit. Date-scoped sentiment needs to walk older pages;
+            # EastMoney returns newest-first, so crossing before the target is
+            # the safe stopping point.
+            if on_date is None or len(raw_list) < limit:
+                break
+            if page_dates and min(page_dates) < on_date:
+                break
+            page_index += 1
+            if page_index > _MAX_DATE_PAGES:
+                raise RuntimeError(
+                    f"EastMoney stock_news pagination exceeded {_MAX_DATE_PAGES} pages"
+                )
     except Exception as exc:
         logger.warning("EastMoney stock_news failed for %s: %s", symbol, exc)
         if owns:
@@ -98,6 +162,10 @@ def fetch_stock_news(
     if owns:
         client.close()
 
+    # The endpoint can repeat an article across adjacent result pages or expose
+    # a revised row under the same stable id. Repeated headlines would inflate
+    # both headline_count and the aggregate sentiment used by the daily batch.
+    items = list({item["news_id"]: item for item in items}.values())
     scores = [float(i["sentiment_score"]) for i in items]
     return {
         "symbol": symbol,

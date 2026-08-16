@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from cnequity.adapters.eastmoney.valuation import fetch_valuation_metrics
 
 
@@ -45,6 +47,36 @@ def test_fetch_valuation_metrics_maps_fields(monkeypatch):
     assert row["float_mv"] == 2.0e12
 
 
+def test_fetch_valuation_metrics_dedupes_symbols(monkeypatch):
+    raw = [
+        {
+            "f12": "600519",
+            "f13": 1,
+            "f9": "35.2",
+            "f23": "12.1",
+            "f45": "8.4",
+            "f20": "2.1e12",
+            "f21": "2.0e12",
+        },
+        {
+            "f12": "600519",
+            "f13": 1,
+            "f9": "36.2",
+            "f23": "12.2",
+            "f45": "8.5",
+            "f20": "2.2e12",
+            "f21": "2.1e12",
+        },
+    ]
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.valuation.fetch_clist_pages",
+        lambda client, fields: raw,
+    )
+    df = fetch_valuation_metrics(date(2024, 6, 28), client=_Client())
+    assert df.height == 1
+    assert df["pe_ttm"][0] == 36.2
+
+
 def test_fetch_valuation_metrics_owns_and_closes_default_client(monkeypatch):
     created: list[_Client] = []
 
@@ -70,3 +102,21 @@ def test_fetch_valuation_metrics_empty_when_no_rows(monkeypatch):
     )
     df = fetch_valuation_metrics(date(2024, 6, 28), client=_Client())
     assert df.is_empty()
+
+
+def test_fetch_valuation_metrics_closes_owned_client_on_failure(monkeypatch):
+    created: list[_Client] = []
+
+    def _factory(**kwargs):
+        client = _Client()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.valuation.EastMoneyClient", _factory)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.valuation.fetch_clist_pages",
+        lambda client, fields: (_ for _ in ()).throw(RuntimeError("clist down")),
+    )
+    with pytest.raises(RuntimeError, match="clist down"):
+        fetch_valuation_metrics(date(2024, 6, 28))
+    assert created[0].closed is True

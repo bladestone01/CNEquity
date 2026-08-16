@@ -12,9 +12,9 @@ from datetime import date
 
 import polars as pl
 
-from cnequity.adapters.eastmoney.common import symbol_from_secucode
+from cnequity.adapters.eastmoney.common import _to_float, _to_int, symbol_from_secucode
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
-from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
 
 logger = logging.getLogger(__name__)
@@ -37,10 +37,8 @@ _RATING_BUCKETS = (
 
 
 def _num(value: object, default: float = 0.0) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
+    parsed = _to_float(value)
+    return parsed if parsed is not None else default
 
 
 def _dominant_rating(item: dict) -> str:
@@ -66,8 +64,7 @@ def fetch_analyst_consensus(
         client = EastMoneyClient(config=config)
 
     try:
-        if config is not None:
-            config.rate_limit("eastmoney")
+        rate_limit_if_unconfigured(client, config)
         raw = fetch_datacenter(client, _CONSENSUS_REPORT, _CONSENSUS_COLUMNS)
     finally:
         if owns:
@@ -78,23 +75,26 @@ def fetch_analyst_consensus(
         sym = symbol_from_secucode(item.get("SECUCODE"))
         if not sym:
             continue
-        year = item.get("YEAR1")
-        pmax = item.get("DEC_AIMPRICEMAX")
-        pmin = item.get("DEC_AIMPRICEMIN")
+        year = _to_float(item.get("YEAR1"))
+        pmax = _to_float(item.get("DEC_AIMPRICEMAX"))
+        pmin = _to_float(item.get("DEC_AIMPRICEMIN"))
         if pmax is not None and pmin is not None:
             target = (_num(pmax) + _num(pmin)) / 2.0
         else:
-            target = _num(pmax if pmax is not None else pmin)
+            target = pmax if pmax is not None else pmin
+        analyst_count = _to_float(item.get("RATING_ORG_NUM"))
         rows.append(
             {
                 "symbol": sym,
                 "forecast_date": trade_date,
-                "forecast_year": int(year) if year is not None else None,
-                "eps_forecast": _num(item.get("EPS1")),
-                "pe_forecast": 0.0,  # not exposed by RPT_WEB_RESPREDICT
+                "forecast_year": _to_int(year, minimum=1900, maximum=3000),
+                "eps_forecast": _to_float(item.get("EPS1")),
+                # RPT_WEB_RESPREDICT does not expose forward PE. Keep it
+                # unknown instead of writing a fake zero valuation.
+                "pe_forecast": None,
                 "target_price": target,
                 "rating": _dominant_rating(item),
-                "analyst_count": int(_num(item.get("RATING_ORG_NUM"))),
+                "analyst_count": _to_int(analyst_count, minimum=0),
             }
         )
 

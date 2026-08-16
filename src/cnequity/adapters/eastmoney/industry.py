@@ -19,23 +19,29 @@ def fetch_industry_members(
     as_of_date: date,
     *,
     client: EastMoneyClient | None = None,
+    config=None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
 
-    raw = fetch_datacenter(
-        client,
-        _BOARD_REPORT,
-        _BOARD_COLUMNS,
-        filter_expr=f'(BOARD_TYPE_NEW="{_INDUSTRY_BOARD_TYPE}")',
-        # Same report as sector_members, same measured 5000-row page. The
-        # industry slice is only ~17k rows today, but at the 500 clamp that is
-        # 34 pages and a third of the way to the pageNumber cap that broke
-        # sector_members; 5000 keeps it at 4.
-        page_size=5000,
-        trust_page_size=True,
-    )
+    try:
+        raw = fetch_datacenter(
+            client,
+            _BOARD_REPORT,
+            _BOARD_COLUMNS,
+            filter_expr=f'(BOARD_TYPE_NEW="{_INDUSTRY_BOARD_TYPE}")',
+            # Same report as sector_members, same measured 5000-row page. The
+            # industry slice is only ~17k rows today, but at the 500 clamp that is
+            # 34 pages and a third of the way to the pageNumber cap that broke
+            # sector_members; 5000 keeps it at 4.
+            page_size=5000,
+            trust_page_size=True,
+        )
+    except Exception:
+        if owns:
+            client.close()
+        raise
     rows: list[dict] = []
     for item in raw:
         code = str(item.get("SECURITY_CODE", "")).zfill(6)
@@ -43,12 +49,16 @@ def fetch_industry_members(
         sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
         if not sym:
             continue
+        industry_code = str(item.get("BOARD_CODE") or "").strip()
+        industry_name = str(item.get("BOARD_NAME") or "").strip()
+        if not industry_code or not industry_name:
+            continue
         rows.append(
             {
                 "symbol": sym,
                 "classification_system": "eastmoney",
-                "industry_code": str(item.get("BOARD_CODE") or ""),
-                "industry_name": str(item.get("BOARD_NAME") or ""),
+                "industry_code": industry_code,
+                "industry_name": industry_name,
                 "as_of_date": as_of_date,
             }
         )

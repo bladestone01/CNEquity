@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
+import pytest
 
 from cnequity.adapters.eastmoney.common import report_period_from_date
 from cnequity.adapters.eastmoney.earnings_disclosure import (
@@ -13,6 +14,7 @@ from cnequity.adapters.eastmoney.earnings_disclosure import (
     _parse_rows,
     fetch_earnings_disclosure_schedule,
 )
+from cnequity.config import Config
 from cnequity.domain.datasets import get_dataset
 from cnequity.domain.schemas import validate_dataframe
 from cnequity.orchestrator.registry import get_step
@@ -24,6 +26,8 @@ def test_report_period_from_date():
     assert report_period_from_date("2023-09-30") == "2023Q3"
     assert report_period_from_date("2022-12-31") == "2022Q4"
     assert report_period_from_date(None) is None
+    assert report_period_from_date("2024-06-31") is None
+    assert report_period_from_date("2024-13-31") is None
 
 
 def test_active_report_dates_covers_nearby_quarters():
@@ -38,6 +42,14 @@ def test_backfill_report_dates_floor_is_2006_not_2016():
     dates = _backfill_report_dates(date(2026, 7, 16))
     assert "2006-12-31" in dates
     assert "2005-12-31" not in dates
+    assert "2026-09-30" not in dates
+
+
+def test_backfill_report_dates_honor_explicit_backfill_window():
+    dates = _backfill_report_dates(
+        date(2026, 7, 16), start=date(2024, 1, 1), end=date(2024, 6, 30)
+    )
+    assert dates == ["2024-03-31", "2024-06-30"]
 
 
 def test_parse_rows_maps_a_share_and_skips_neeq():
@@ -114,8 +126,64 @@ def test_fetch_earnings_disclosure_schedule_parses(monkeypatch):
     assert out.height == 1
 
 
+def test_fetch_earnings_disclosure_rejects_rows_from_another_report_period(monkeypatch):
+    class _Client:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.earnings_disclosure._active_report_dates",
+        lambda _trade_date: ["2026-06-30"],
+    )
+
+    def fake_dc(client, report, columns, **kwargs):
+        return [
+            {
+                "SECUCODE": "000001.SZ",
+                "SECURITY_CODE": "000001",
+                "REPORT_DATE": "2026-03-31 00:00:00",
+                "APPOINT_PUBLISH_DATE": "2026-05-01",
+                "FIRST_APPOINT_DATE": "2026-05-01",
+                "ACTUAL_PUBLISH_DATE": "2026-05-01",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.earnings_disclosure.fetch_datacenter",
+        fake_dc,
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.earnings_disclosure.EastMoneyClient",
+        lambda **kwargs: _Client(),
+    )
+
+    with pytest.raises(RuntimeError, match="REPORT_DATE row for 2026-06-30"):
+        fetch_earnings_disclosure_schedule(date(2026, 7, 16))
+
+
 def test_earnings_disclosure_step_registered():
     assert get_step("earnings_disclosure_schedule").fn is not None
     spec = get_dataset("earnings_disclosure_schedule")
     assert spec.partition_col == "report_period"
     assert spec.watermark is False
+
+
+def test_earnings_disclosure_backfill_surfaces_missing_periods(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill = True
+    cfg._backfill_start = date(2020, 1, 1)
+    cfg._backfill_end = date(2020, 6, 30)
+    monkeypatch.setattr(
+        "cnequity.steps.events.fetch_earnings_disclosure_schedule",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
+
+    from cnequity.steps.events import step_earnings_disclosure_schedule
+
+    result = step_earnings_disclosure_schedule(cfg, date(2026, 6, 30), "run-gap", {})
+
+    assert result["status"] == "warning"
+    assert result["missing_periods"] == 2
+    assert result["context_updates"]["audit_findings"][0]["check"] == (
+        "backfill_missing_report_periods"
+    )

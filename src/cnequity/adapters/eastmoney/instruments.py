@@ -7,8 +7,7 @@ from datetime import date, datetime, timezone
 
 import polars as pl
 
-from cnequity.adapters.eastmoney.clist import fetch_clist_pages
-from cnequity.adapters.eastmoney.common import symbol_from_em
+from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 from cnequity.config import Config
 
@@ -20,16 +19,22 @@ def _parse_list_date(value: object) -> date | None:
         return None
     try:
         num = int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         try:
             return date.fromisoformat(str(value)[:10])
         except ValueError:
             return None
     if num > 1_000_000_000_000:
-        return datetime.fromtimestamp(num / 1000, tz=timezone.utc).date()
+        try:
+            return datetime.fromtimestamp(num / 1000, tz=timezone.utc).date()
+        except (OverflowError, OSError, ValueError):
+            return None
     text = str(num)
     if len(text) == 8:
-        return date.fromisoformat(f"{text[:4]}-{text[4:6]}-{text[6:8]}")
+        try:
+            return date.fromisoformat(f"{text[:4]}-{text[4:6]}-{text[6:8]}")
+        except ValueError:
+            return None
     return None
 
 
@@ -37,17 +42,20 @@ def fetch_list_date_map(
     *, client: EastMoneyClient | None = None, config: Config | None = None
 ) -> dict[str, date]:
     """Return symbol -> list_date for all A-shares from EastMoney clist."""
-    client = client or EastMoneyClient(config=config)
-    rows = fetch_clist_pages(client, fields="f12,f13,f26")
-    out: dict[str, date] = {}
-    for item in rows:
-        sym = symbol_from_em(str(item.get("f12", "")), int(item.get("f13") or 0))
-        if not sym:
-            continue
-        list_date = _parse_list_date(item.get("f26"))
-        if list_date is not None:
-            out[sym] = list_date
-    return out
+    owns = client is None
+    if client is None:
+        client = EastMoneyClient(config=config)
+    try:
+        rows = fetch_clist_pages(client, fields="f12,f13,f26")
+        out: dict[str, date] = {}
+        for sym, item in clist_rows_to_symbols(rows):
+            list_date = _parse_list_date(item.get("f26"))
+            if list_date is not None:
+                out[sym] = list_date
+        return out
+    finally:
+        if owns:
+            client.close()
 
 
 def enrich_instrument_list_dates(config: Config, df: pl.DataFrame) -> pl.DataFrame:
@@ -58,7 +66,6 @@ def enrich_instrument_list_dates(config: Config, df: pl.DataFrame) -> pl.DataFra
         return df
 
     try:
-        config.rate_limit("eastmoney")
         date_map = fetch_list_date_map(config=config)
     except Exception as exc:
         logger.warning("EastMoney instrument list_date enrichment failed: %s", exc)

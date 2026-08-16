@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import date, timedelta
 
 import polars as pl
 
-from cnequity.adapters.eastmoney.common import exchange_from_datacenter, symbol_from_em
+from cnequity.adapters.eastmoney.common import _to_float, exchange_from_datacenter, symbol_from_em
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
-
-logger = logging.getLogger(__name__)
 
 _UNLOCK_REPORT = "RPT_LIFT_STAGE"
 _UNLOCK_COLUMNS = (
@@ -34,12 +31,13 @@ def fetch_share_unlock_schedule(
     *,
     horizon_days: int = 180,
     client: EastMoneyClient | None = None,
+    config=None,
     max_retries: int = 3,
     retry_backoff_seconds: float = 5.0,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
-        client = EastMoneyClient()
+        client = EastMoneyClient(config=config)
 
     # No FREE_DATE range predicate. EastMoney's datacenter rejects range
     # comparisons on date columns outright — "参数预处理错误:
@@ -68,18 +66,20 @@ def fetch_share_unlock_schedule(
                 return parsed < start
         return False
 
-    raw = fetch_datacenter(
-        client,
-        _UNLOCK_REPORT,
-        _UNLOCK_COLUMNS,
-        sort_columns="FREE_DATE",
-        sort_types="-1",
-        stop_after=_page_is_past_window,
-        max_retries=max_retries,
-        retry_backoff_seconds=retry_backoff_seconds,
-    )
-    if owns:
-        client.close()
+    try:
+        raw = fetch_datacenter(
+            client,
+            _UNLOCK_REPORT,
+            _UNLOCK_COLUMNS,
+            sort_columns="FREE_DATE",
+            sort_types="-1",
+            stop_after=_page_is_past_window,
+            max_retries=max_retries,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
+    finally:
+        if owns:
+            client.close()
 
     rows: list[dict] = []
     for item in raw:
@@ -99,8 +99,8 @@ def fetch_share_unlock_schedule(
             {
                 "symbol": sym,
                 "unlock_date": unlock_date,
-                "unlock_shares": float(shares or 0),
-                "unlock_ratio": float(item.get("FREE_RATIO") or 0),
+                "unlock_shares": _to_float(shares),
+                "unlock_ratio": _to_float(item.get("FREE_RATIO")),
                 "unlock_type": str(item.get("FREE_SHARES_TYPE") or ""),
             }
         )

@@ -19,6 +19,8 @@ def test_num_handles_bad_values():
     assert _num("1.5") == 1.5
     assert _num(None) == 0.0
     assert _num("not-a-number") == 0.0
+    assert _num("nan") == 0.0
+    assert _num("inf") == 0.0
 
 
 def test_map_action_type_all_branches():
@@ -94,6 +96,26 @@ def test_parse_row_cash_dividend_divides_per_10_shares():
     assert parsed["allotment_price"] is None
 
 
+def test_parse_row_does_not_emit_nonfinite_amounts():
+    row = {
+        "SECURITY_CODE": "600519",
+        "EX_DIVIDEND_DATE": "2024-06-28",
+        "IMPL_PLAN_PROFILE": "10派1元",
+        "PRETAX_BONUS_RMB": "nan",
+    }
+    parsed = _parse_row(row)
+    assert parsed["cash_dividend"] == 0.0
+
+
+def test_parse_row_skips_invalid_equity_codes():
+    row = {
+        "SECURITY_CODE": "810001",
+        "EX_DIVIDEND_DATE": "2024-06-28",
+        "PRETAX_BONUS_RMB": "1",
+    }
+    assert _parse_row(row) is None
+
+
 class _Client:
     def __init__(self):
         self.closed = False
@@ -144,6 +166,44 @@ def test_fetch_corporate_actions_eastmoney_backfill_filter_and_dedupe(monkeypatc
     assert df.row(0, named=True)["bonus_ratio"] == 0.5
 
 
+def test_fetch_corporate_actions_eastmoney_honors_bounded_backfill_end(monkeypatch):
+    def _fake_fetch_datacenter(client, report, columns, *, filter_expr, **kwargs):
+        return [
+            {
+                "SECURITY_CODE": "600519",
+                "EX_DIVIDEND_DATE": "2024-06-30",
+                "IMPL_PLAN_PROFILE": "10派1",
+                "PRETAX_BONUS_RMB": "1",
+            },
+            {
+                "SECURITY_CODE": "600519",
+                "EX_DIVIDEND_DATE": "2024-07-01",
+                "IMPL_PLAN_PROFILE": "10派1",
+                "PRETAX_BONUS_RMB": "1",
+            },
+        ]
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.corporate_actions.fetch_datacenter",
+        _fake_fetch_datacenter,
+    )
+    config = type(
+        "Cfg",
+        (),
+        {
+            "_backfill_start": date(2024, 1, 1),
+            "_backfill_end": date(2024, 6, 30),
+            "max_retries": 3,
+            "retry_backoff_seconds": 5.0,
+            "rate_limit": lambda self, source: None,
+        },
+    )()
+    df = fetch_corporate_actions_eastmoney(
+        date(2024, 6, 30), backfill=True, client=_Client(), config=config
+    )
+    assert df["ex_date"].to_list() == [date(2024, 6, 30)]
+
+
 def test_fetch_corporate_actions_eastmoney_tip_filter_and_empty(monkeypatch):
     seen_filters = []
 
@@ -158,6 +218,26 @@ def test_fetch_corporate_actions_eastmoney_tip_filter_and_empty(monkeypatch):
     df = fetch_corporate_actions_eastmoney(date(2024, 6, 28), backfill=False, client=_Client())
     assert "2024-06-28" in seen_filters[0]
     assert df.is_empty()
+
+
+def test_fetch_corporate_actions_eastmoney_rejects_stale_daily_rows(monkeypatch):
+    def _fake_fetch_datacenter(client, report, columns, *, filter_expr, **kwargs):
+        return [
+            {
+                "SECURITY_CODE": "600519",
+                "EX_DIVIDEND_DATE": "2024-06-27",
+                "IMPL_PLAN_PROFILE": "10派1",
+                "PRETAX_BONUS_RMB": "1",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.corporate_actions.fetch_datacenter",
+        _fake_fetch_datacenter,
+    )
+
+    with pytest.raises(EastMoneyDatacenterError, match="EX_DIVIDEND_DATE row for 2024-06-28"):
+        fetch_corporate_actions_eastmoney(date(2024, 6, 28), client=_Client())
 
 
 def test_fetch_corporate_actions_eastmoney_owns_and_closes_default_client(monkeypatch):

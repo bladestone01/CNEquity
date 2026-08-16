@@ -22,20 +22,26 @@ def fetch_valuation_metrics(
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
-    rows_raw = fetch_clist_pages(client, fields=_VALUATION_FIELDS)
-    rows = []
-    for sym, item in clist_rows_to_symbols(rows_raw):
-        rows.append(
-            {
-                "symbol": sym,
-                "trade_date": trade_date,
-                "pe_ttm": _to_float(item.get("f9")),
-                "pb": _to_float(item.get("f23")),
-                "ps_ttm": _to_float(item.get("f45")),
-                "total_mv": _to_float(item.get("f20")),
-                "float_mv": _to_float(item.get("f21")),
-            }
-        )
-    if owns:
-        client.close()
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    try:
+        rows_raw = fetch_clist_pages(client, fields=_VALUATION_FIELDS)
+        rows = []
+        for sym, item in clist_rows_to_symbols(rows_raw):
+            rows.append(
+                {
+                    "symbol": sym,
+                    "trade_date": trade_date,
+                    "pe_ttm": _to_float(item.get("f9")),
+                    "pb": _to_float(item.get("f23")),
+                    "ps_ttm": _to_float(item.get("f45")),
+                    "total_mv": _to_float(item.get("f20")),
+                    "float_mv": _to_float(item.get("f21")),
+                }
+            )
+    finally:
+        if owns:
+            client.close()
+    return (
+        pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
+        if rows
+        else pl.DataFrame()
+    )

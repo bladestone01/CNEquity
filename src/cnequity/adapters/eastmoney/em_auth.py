@@ -160,6 +160,12 @@ def apply_push2_token(url: str, params) -> dict | None:
     return params
 
 
+def rate_limit_if_unconfigured(client: object, config: Config | None) -> None:
+    """Keep caller-owned clients paced without double-throttling configured ones."""
+    if config is not None and getattr(client, "config", None) is None:
+        config.rate_limit("eastmoney")
+
+
 def is_transport_fail_fast(exc: BaseException) -> bool:
     """True for failures that retrying the same request will not fix.
 

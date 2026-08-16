@@ -2,6 +2,8 @@
 
 from datetime import date
 
+import pytest
+
 from cnequity.adapters.eastmoney.fundamentals import (
     _ANNOUNCE_SOURCE,
     _REPORTS,
@@ -100,6 +102,15 @@ def test_announce_date_map_keys_on_symbol_and_period():
     assert _announce_date_map([_lico_row()]) == {("000002.SZ", "2016Q4"): date(2017, 3, 27)}
 
 
+def test_announce_date_map_uses_earliest_duplicate_notice_date():
+    rows = [
+        _lico_row(NOTICE_DATE="2017-03-28"),
+        _lico_row(NOTICE_DATE="2017-03-27"),
+    ]
+
+    assert _announce_date_map(rows) == {("000002.SZ", "2016Q4"): date(2017, 3, 27)}
+
+
 def test_lico_date_overrides_the_late_republication_date():
     """The whole point: FY2016 must be dated 2017-03, not 2018-03."""
     amap = _announce_date_map([_lico_row()])
@@ -130,6 +141,27 @@ def test_null_items_are_skipped_not_zero_filled():
     assert "total_equity" not in codes
 
 
+def test_nonfinite_items_are_skipped():
+    rows, _ = _parse_rows(
+        [_balance_row(TOTAL_EQUITY="nan", TOTAL_ASSETS="inf")],
+        _BALANCE,
+        default_notice="2026-07-21",
+    )
+    assert rows == []
+
+
+def test_invalid_announce_date_skips_only_the_bad_row():
+    rows, fallbacks = _parse_rows(
+        [_balance_row(NOTICE_DATE="not-a-date"), _balance_row()],
+        _BALANCE,
+        default_notice="2026-07-21",
+        announce_dates={},
+    )
+    assert fallbacks == 1
+    assert rows
+    assert {r["announce_date"] for r in rows} == {date(2018, 3, 27)}
+
+
 # --- daily path -------------------------------------------------------------
 
 
@@ -149,6 +181,37 @@ def test_daily_fetch_queries_every_report():
     assert set(df["statement_type"].to_list()) == {"income", "indicator", "balance"}
     assert {"total_assets", "total_equity", "bps", "revenue"} <= set(df["item_code"].to_list())
     assert set(df["announce_date"].to_list()) == {date(2024, 4, 28)}
+
+
+def test_daily_fetch_rejects_rows_from_another_notice_date():
+    client = FakeDatacenterClient(
+        {
+            "RPT_LICO_FN_CPD": [
+                _lico_row(REPORTDATE="2024-03-31", NOTICE_DATE="2024-04-27")
+            ]
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="NOTICE_DATE row for 2024-04-28"):
+        fetch_financial_statement_items(date(2024, 4, 28), client=client)  # type: ignore[arg-type]
+
+
+def test_backfill_rejects_rows_from_another_report_period(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.fundamentals._report_period_dates",
+        lambda *args, **kwargs: ["2024-03-31"],
+    )
+    client = FakeDatacenterClient(
+        {
+            "RPT_LICO_FN_CPD": [_lico_row(REPORTDATE="2024-03-31")],
+            "RPT_DMSK_FN_BALANCE": [_balance_row(REPORT_DATE="2023-12-31")],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="REPORT_DATE row for 2024-03-31"):
+        fetch_financial_statement_items(
+            date(2024, 6, 28), backfill=True, client=client  # type: ignore[arg-type]
+        )
 
 
 def _REPORTS_in(urls: list[str]) -> set[str]:

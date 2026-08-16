@@ -50,6 +50,25 @@ def test_strides_under_the_horizon_not_every_day(tmp_path, monkeypatch):
     assert set(calls) == {date(2026, 1, 1), date(2026, 1, 1) + timedelta(days=_UNLOCK_STRIDE_DAYS)}
 
 
+def test_last_stride_does_not_fetch_past_backfill_end(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill_start = date(2026, 1, 1)
+    cfg._backfill_end = date(2026, 6, 30)
+    horizons: list[tuple[date, int]] = []
+
+    def fake_fetch(d: date, *, horizon_days: int = 180, **_kw) -> pl.DataFrame:
+        horizons.append((d, horizon_days))
+        return pl.DataFrame()
+
+    monkeypatch.setattr("cnequity.steps.macro_risk.fetch_share_unlock_schedule", fake_fetch)
+    monkeypatch.setattr(cfg, "rate_limit", lambda source: None)
+
+    _backfill_share_unlock_schedule(cfg, date(2026, 7, 1), "run-1")
+
+    assert horizons[0] == (date(2026, 5, 31), 30)
+    assert horizons[-1] == (date(2026, 1, 1), 180)
+
+
 def test_walks_newest_stride_first(tmp_path, monkeypatch):
     """RPT_LIFT_STAGE is sorted FREE_DATE descending, so a stride targeting a
     recent date pages only the ~7 pages nearest the top, while one targeting
@@ -100,6 +119,26 @@ def test_flushes_per_stride_not_once_at_the_end(tmp_path, monkeypatch):
     staged = list((cfg.staging_root / "share_unlock_schedule").glob("**/*.parquet"))
     assert len(staged) == 2
     assert out["rows_written"] == sum(pl.read_parquet(f).height for f in staged)
+
+
+def test_dedupes_events_in_overlapping_stride_windows(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill_start = date(2026, 1, 1)
+    cfg._backfill_end = date(2026, 6, 30)
+    repeated = _row(date(2026, 3, 15))
+
+    def fake_fetch(d: date, *, horizon_days: int = 180, **_kw) -> pl.DataFrame:
+        return pl.DataFrame([repeated])
+
+    monkeypatch.setattr("cnequity.steps.macro_risk.fetch_share_unlock_schedule", fake_fetch)
+    monkeypatch.setattr(cfg, "rate_limit", lambda source: None)
+
+    out = _backfill_share_unlock_schedule(cfg, date(2026, 7, 1), "run-1")
+
+    staged = list((cfg.staging_root / "share_unlock_schedule").glob("**/*.parquet"))
+    assert len(staged) == 1
+    assert pl.read_parquet(staged[0]).height == 1
+    assert out == {"rows_read": 1, "rows_written": 1}
 
 
 def test_uses_the_patient_sweep_retry_budget_not_the_daily_default(tmp_path, monkeypatch):

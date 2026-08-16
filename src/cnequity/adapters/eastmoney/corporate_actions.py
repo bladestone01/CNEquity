@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 
 import polars as pl
@@ -11,9 +12,9 @@ from cnequity.adapters.eastmoney.datacenter import (
     EastMoneyDatacenterError,
     fetch_datacenter,
 )
-from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
-from cnequity.domain.symbols import format_symbol
+from cnequity.domain.symbols import format_symbol, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,10 @@ _COLUMNS = (
 
 def _num(value: object) -> float:
     try:
-        return float(value)  # type: ignore[arg-type]
+        parsed = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 def _map_action_type(row: dict) -> str | None:
@@ -85,6 +87,8 @@ def _parse_row(row: dict) -> dict | None:
         exchange = "BJ"
     else:
         exchange = "SZ"
+    if not code.isdigit() or not is_all_a_symbol(code, exchange):
+        return None
     symbol = format_symbol(code, exchange)
 
     action_type = _map_action_type(row)
@@ -132,6 +136,7 @@ def fetch_corporate_actions_eastmoney(
     if backfill:
         date_filter = ""
         floor = getattr(config, "_backfill_start", None) or _BACKFILL_FLOOR
+        ceiling = getattr(config, "_backfill_end", None) or trade_date
 
         def stop_after(batch: list[dict]) -> bool:
             for item in reversed(batch):
@@ -147,8 +152,7 @@ def fetch_corporate_actions_eastmoney(
     backoff = float(config.retry_backoff_seconds if config is not None else 5)
 
     try:
-        if config is not None:
-            config.rate_limit("eastmoney")
+        rate_limit_if_unconfigured(client, config)
         raw = fetch_datacenter(
             client,
             _REPORT,
@@ -172,10 +176,23 @@ def fetch_corporate_actions_eastmoney(
         ) from exc
 
     rows = []
+    outside_daily = 0
     for item in raw:
         parsed = _parse_row(item)
-        if parsed:
-            rows.append(parsed)
+        if not parsed:
+            continue
+        if not backfill and parsed["ex_date"] != trade_date:
+            outside_daily += 1
+            continue
+        if backfill and not (floor <= parsed["ex_date"] <= ceiling):
+            continue
+        rows.append(parsed)
+
+    if not backfill and outside_daily and not rows:
+        raise EastMoneyDatacenterError(
+            "EastMoney corporate_actions response contains no "
+            f"EX_DIVIDEND_DATE row for {trade_date.isoformat()}"
+        )
 
     if owns:
         client.close()

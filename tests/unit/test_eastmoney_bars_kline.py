@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from cnequity.adapters.eastmoney.bars import _secid, fetch_daily_bars
 
 
@@ -44,7 +46,10 @@ def test_secid_maps_exchange_to_market_code():
 
 
 def test_fetch_daily_bars_parses_kline_rows():
-    klines = ["20240628,10.0,10.5,11.0,9.0,1000,10500.0"]
+    klines = [
+        "20240531,9.0,9.5,10.0,8.5,900,8550.0",
+        "20240628,10.0,10.5,11.0,9.0,1000,10500.0",
+    ]
     client = _Client({"1.600519": klines})
     df = fetch_daily_bars(["600519.SH"], date(2024, 6, 1), date(2024, 6, 28), client=client)
     assert client.closed is False
@@ -70,6 +75,39 @@ def test_fetch_daily_bars_skips_short_and_unparsable_lines():
     df = fetch_daily_bars(["000001.SZ"], date(2024, 6, 1), date(2024, 6, 28), client=client)
     assert df.height == 1
     assert df.row(0, named=True)["trade_date"] == date(2024, 6, 28)
+
+
+def test_fetch_daily_bars_skips_bad_numeric_lines_and_keeps_valid_rows():
+    klines = [
+        "20240627,10.0,bad,11.0,9.0,1000,10500.0",
+        "20240628,10.0,10.5,11.0,9.0,1000,10500.0",
+    ]
+    client = _Client({"1.600519": klines})
+    df = fetch_daily_bars(["600519.SH"], date(2024, 6, 1), date(2024, 6, 28), client=client)
+    assert df.height == 1
+    assert df.row(0, named=True)["trade_date"] == date(2024, 6, 28)
+
+
+def test_fetch_daily_bars_skips_invalid_volume_lines():
+    klines = [
+        "20240627,10.0,10.5,11.0,9.0,1e300,10500.0",
+        "20240628,10.0,10.5,11.0,9.0,1000.0,10500.0",
+    ]
+    client = _Client({"1.600519": klines})
+    df = fetch_daily_bars(["600519.SH"], date(2024, 6, 1), date(2024, 6, 28), client=client)
+    assert df.height == 1
+    assert df.row(0, named=True)["volume"] == 100_000
+
+
+def test_fetch_daily_bars_dedupes_source_rows_by_trade_date():
+    klines = [
+        "20240628,10.0,10.5,11.0,9.0,1000,10500.0",
+        "20240628,10.1,10.6,11.1,9.1,1100,11550.0",
+    ]
+    client = _Client({"1.600519": klines})
+    df = fetch_daily_bars(["600519.SH"], date(2024, 6, 1), date(2024, 6, 28), client=client)
+    assert df.height == 1
+    assert df.row(0, named=True)["close"] == 10.6
 
 
 def test_fetch_daily_bars_continues_after_symbol_failure():
@@ -101,4 +139,22 @@ def test_fetch_daily_bars_owns_and_closes_default_client(monkeypatch):
     monkeypatch.setattr("cnequity.adapters.eastmoney.bars.EastMoneyClient", _factory)
     df = fetch_daily_bars(["600519.SH"], date(2024, 6, 1), date(2024, 6, 28))
     assert df.is_empty()
+    assert created[0].closed is True
+
+
+def test_fetch_daily_bars_closes_owned_client_when_symbol_processing_fails(monkeypatch):
+    created: list[_Client] = []
+
+    def _factory(**kwargs):
+        client = _Client({})
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.EastMoneyClient", _factory)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars._secid",
+        lambda symbol: (_ for _ in ()).throw(ValueError("bad symbol")),
+    )
+    with pytest.raises(ValueError, match="bad symbol"):
+        fetch_daily_bars(["not-a-symbol"], date(2024, 6, 1), date(2024, 6, 28))
     assert created[0].closed is True

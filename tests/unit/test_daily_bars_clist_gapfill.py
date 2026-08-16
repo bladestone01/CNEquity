@@ -15,6 +15,7 @@ from cnequity.steps.bars import (
     _finish_daily_bars,
     _gapfill_tip_via_clist,
     _reject_preopen_placeholder,
+    _staged_daily_bar_partial_symbols,
     _staged_daily_bar_symbols,
 )
 from cnequity.storage import StagingWriter
@@ -74,6 +75,16 @@ def test_fetch_daily_bars_clist_stamps_trade_date(monkeypatch):
             "f6": 1e6,
         },
         {
+            "f12": "600519",
+            "f13": 1,
+            "f17": 100.0,
+            "f15": 102.0,
+            "f16": 99.0,
+            "f2": 101.0,
+            "f5": 1000,
+            "f6": 1e6,
+        },
+        {
             "f12": "000001",
             "f13": 0,
             "f17": 10.0,
@@ -106,6 +117,84 @@ def test_fetch_daily_bars_clist_stamps_trade_date(monkeypatch):
     assert df["high"].to_list() == [102.0]
     assert df["low"].to_list() == [99.0]
     assert df["close"].to_list() == [101.0]
+
+
+def test_fetch_daily_bars_clist_drops_invalid_ohlcv_instead_of_zero(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_clist_pages",
+        lambda client, fields: [{}],
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.clist_rows_to_symbols",
+        lambda rows: [
+            (
+                "600519.SH",
+                {"f17": "bad", "f15": 102.0, "f16": 99.0, "f2": 101.0, "f5": 1000},
+            )
+        ],
+    )
+
+    class _Client:
+        def close(self):
+            pass
+
+    df = fetch_daily_bars_clist(date(2026, 7, 24), client=_Client())
+    assert df.is_empty()
+
+
+def test_fetch_daily_bars_clist_drops_invalid_volume(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_clist_pages",
+        lambda client, fields: [{}],
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.clist_rows_to_symbols",
+        lambda rows: [
+            (
+                "600519.SH",
+                {
+                    "f17": 100.0,
+                    "f15": 102.0,
+                    "f16": 99.0,
+                    "f2": 101.0,
+                    "f5": 1e300,
+                },
+            )
+        ],
+    )
+
+    class _Client:
+        def close(self):
+            pass
+
+    assert fetch_daily_bars_clist(date(2026, 7, 24), client=_Client()).is_empty()
+
+
+def test_fetch_daily_bars_clist_closes_owned_client_on_failure(monkeypatch):
+    from cnequity.adapters.eastmoney import bars as em_bars
+
+    created = []
+
+    class _OwnedClient:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    def _factory(**kwargs):
+        client = _OwnedClient()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(em_bars, "EastMoneyClient", _factory)
+    monkeypatch.setattr(
+        em_bars,
+        "fetch_clist_pages",
+        lambda client, fields: (_ for _ in ()).throw(RuntimeError("clist down")),
+    )
+    with pytest.raises(RuntimeError, match="clist down"):
+        fetch_daily_bars_clist(date(2026, 7, 24))
+    assert created[0].closed is True
 
 
 def test_tip_gapfill_writes_only_missing_keys(tmp_path, monkeypatch):
@@ -208,18 +297,30 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
 
     def _kline(symbols, s, e, **k):
         kline_calls.append(list(symbols))
-        return pl.DataFrame(
+        days = [
+            date(2024, 6, 20),
+            date(2024, 6, 21),
+            date(2024, 6, 24),
+            date(2024, 6, 25),
+            date(2024, 6, 26),
+            date(2024, 6, 27),
+            date(2024, 6, 28),
+        ]
+        rows = [
             {
-                "symbol": symbols,
-                "trade_date": [s] * len(symbols),
-                "open": [1.0] * len(symbols),
-                "high": [1.0] * len(symbols),
-                "low": [1.0] * len(symbols),
-                "close": [1.0] * len(symbols),
-                "volume": [1] * len(symbols),
-                "amount": [1.0] * len(symbols),
+                "symbol": symbol,
+                "trade_date": day,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1,
+                "amount": 1.0,
             }
-        )
+            for symbol in symbols
+            for day in days
+        ]
+        return pl.DataFrame(rows)
 
     monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist", _clist)
     monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
@@ -241,7 +342,44 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
     )
     assert clist_calls == []
     assert kline_calls == [["600519.SH"]]
-    assert result["rows_written"] == 1
+    assert result["rows_written"] == 7
+
+
+def test_multiday_partial_symbol_is_gapfilled_without_overwriting_primary_rows(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("backfill")
+    start, end = date(2024, 6, 20), date(2024, 6, 24)
+    symbol = "600519.SH"
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-start", _bar_frame([symbol], start)
+    )
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-end", _bar_frame([symbol], end)
+    )
+    assert _staged_daily_bar_partial_symbols(cfg, run_id, [symbol], start, end) == {symbol}
+
+    def _kline(symbols, s, e, **k):
+        days = [date(2024, 6, 20), date(2024, 6, 21), date(2024, 6, 24)]
+        return pl.concat([_bar_frame(symbols, day) for day in days])
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    result = _finish_daily_bars(
+        cfg,
+        end,
+        run_id,
+        start=start,
+        end=end,
+        expected_tdx_symbols=[symbol],
+        tdx_result={
+            "rows_read": 2,
+            "rows_written": 2,
+            "had_error": False,
+            "failed_symbols": [],
+        },
+        sina_result=None,
+    )
+    assert result["rows_written"] == 3  # two primary rows + one recovered interior day
+    assert _staged_daily_bar_symbols(cfg, run_id, None) == {symbol}
 
 
 def test_preopen_placeholder_still_rejects_clist_flat_zeros(tmp_path):

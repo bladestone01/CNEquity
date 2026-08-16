@@ -28,13 +28,14 @@ guess, and the count is logged.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 
 import polars as pl
 
 from cnequity.adapters.eastmoney.common import symbol_from_secucode
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
-from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
 
 logger = logging.getLogger(__name__)
@@ -85,9 +86,21 @@ def _num(value: object) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(value)  # type: ignore[arg-type]
+        parsed = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _holder_rank(value: object) -> int | None:
+    """Parse a ranked-holder key without letting one malformed row abort F10."""
+    parsed = _num(value)
+    if parsed is None or not parsed.is_integer():
+        return None
+    rank = int(parsed)
+    if not 0 < rank <= 2**63 - 1:
+        return None
+    return rank
 
 
 def _em_date(value: object) -> date | None:
@@ -120,6 +133,31 @@ def _range_filter(column: str, start: date, end: date) -> str:
     return f"({column}>='{start.isoformat()}')({column}<='{end.isoformat()}')"
 
 
+def _rows_in_date_window(
+    raw: list[dict], field: str, start: date, end: date
+) -> list[dict]:
+    rows = [
+        item
+        for item in raw
+        if (value := _em_date(item.get(field))) is not None and start <= value <= end
+    ]
+    dropped = len(raw) - len(rows)
+    label = f"{start.isoformat()}..{end.isoformat()}"
+    if dropped:
+        logger.warning(
+            "EastMoney shareholders dropped %d row(s) with invalid or unexpected "
+            "%s for %s",
+            dropped,
+            field,
+            label,
+        )
+    if raw and not rows:
+        raise RuntimeError(
+            f"EastMoney shareholders response contains no {field} row for {label}"
+        )
+    return rows
+
+
 def _fetch_filtered(
     client: EastMoneyClient,
     report: str,
@@ -128,8 +166,7 @@ def _fetch_filtered(
     *,
     config: Config | None,
 ) -> list[dict]:
-    if config is not None:
-        config.rate_limit("eastmoney")
+    rate_limit_if_unconfigured(client, config)
     return fetch_datacenter(
         client,
         report,
@@ -179,6 +216,7 @@ def fetch_share_structure(
             _range_filter(column, start, end),
             config=config,
         )
+        raw = _rows_in_date_window(raw, column, start, end)
     finally:
         if owns:
             client.close()
@@ -236,6 +274,7 @@ def fetch_shareholder_counts(
             _range_filter(column, start, end),
             config=config,
         )
+        raw = _rows_in_date_window(raw, column, start, end)
     finally:
         if owns:
             client.close()
@@ -275,7 +314,7 @@ def _holder_rows(
     for item in raw:
         symbol = symbol_from_secucode(item.get("SECUCODE"))
         end = _em_date(item.get("END_DATE"))
-        rank = item.get("HOLDER_RANK")
+        rank = _holder_rank(item.get("HOLDER_RANK"))
         name = str(item.get("HOLDER_NAME") or "").strip() or None
         if not symbol or end is None:
             # F10 covers B shares (200xxx.SZ / 900xxx.SH) and NEEQ (.NQ); the
@@ -292,7 +331,7 @@ def _holder_rows(
                 "symbol": symbol,
                 "record_date": end,
                 "holder_scope": scope,
-                "holder_rank": int(rank),
+                "holder_rank": rank,
                 "holder_name": name,
                 "holding_shares": _num(item.get("HOLD_NUM")),
                 "holding_pct": _num(item.get(pct_field)),
@@ -360,6 +399,8 @@ def fetch_top_holders(
             _range_filter("END_DATE", start, end),
             config=config,
         )
+        free_raw = _rows_in_date_window(free_raw, "END_DATE", start, end)
+        total_raw = _rows_in_date_window(total_raw, "END_DATE", start, end)
     finally:
         if owns:
             client.close()

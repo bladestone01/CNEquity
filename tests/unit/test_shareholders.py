@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
+import pytest
 
 from cnequity.adapters.eastmoney import shareholders as sh
 
@@ -100,6 +101,23 @@ def test_share_structure_is_swept_by_date_window_never_by_quarter_end(monkeypatc
     assert "END_DATE>='2025-01-01'" in expr
     assert "END_DATE<='2025-12-31'" in expr
     assert "END_DATE=2025" not in expr, "an equality filter would be the period-sweep bug"
+
+
+def test_share_structure_rejects_rows_outside_requested_window(monkeypatch):
+    row = {
+        "SECUCODE": "000001.SZ",
+        "END_DATE": "2024-12-31 00:00:00",
+        "TOTAL_SHARES": 1,
+        "UNLIMITED_SHARES": 1,
+        "LIMITED_SHARES": 0,
+        "FREELIQCI_SHARES": 1,
+        "CHANGE_REASON": "旧数据",
+        "NOTICE_DATE": NOTICE,
+    }
+    _patch(monkeypatch, {sh._EQUITY_REPORT: [row]})
+
+    with pytest.raises(RuntimeError, match="END_DATE row for 2025-01-01..2025-12-31"):
+        sh.fetch_share_structure(WIN_START, WIN_END, client=_Client())
 
 
 def test_share_structure_can_window_on_the_announcement_date_instead(monkeypatch):
@@ -227,6 +245,17 @@ def test_rows_without_a_rank_or_name_are_skipped(monkeypatch):
         bad[field] = None
         _patch(monkeypatch, {sh._FREEHOLDERS_REPORT: [bad]})
         assert sh.fetch_top_holders(WIN_START, WIN_END, client=_Client()).is_empty(), field
+
+
+def test_nonfinite_holder_rank_is_skipped_without_aborting_other_rows(monkeypatch):
+    bad = _holder("600519", 1, name="bad", pct_field="FREE_HOLDNUM_RATIO", pct=1.0, notice=NOTICE)
+    bad["HOLDER_RANK"] = "inf"
+    good = _holder("600519", 2, name="good", pct_field="FREE_HOLDNUM_RATIO", pct=1.0, notice=NOTICE)
+    _patch(monkeypatch, {sh._FREEHOLDERS_REPORT: [bad, good]})
+
+    df = sh.fetch_top_holders(WIN_START, WIN_END, client=_Client())
+    assert df.height == 1
+    assert df["holder_name"].to_list() == ["good"]
 
 
 def test_holders_tied_on_share_count_share_a_rank_and_both_survive(monkeypatch):

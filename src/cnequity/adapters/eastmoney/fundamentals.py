@@ -36,11 +36,14 @@ from datetime import date
 import polars as pl
 
 from cnequity.adapters.eastmoney.common import (
+    _to_float,
+    symbol_from_secucode,
+)
+from cnequity.adapters.eastmoney.common import (
     report_period_from_date as _report_period,
 )
-from cnequity.adapters.eastmoney.common import symbol_from_secucode
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
-from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
 
 logger = logging.getLogger(__name__)
@@ -195,19 +198,28 @@ def _parse_rows(
             continue
 
         announce_date = (announce_dates or {}).get((sym, report_period))
+        used_fallback = False
         if announce_date is None:
             if announce_dates is not None:
-                fallbacks += 1
+                used_fallback = True
             notice_raw = item.get("NOTICE_DATE") or default_notice
-            announce_date = date.fromisoformat(str(notice_raw)[:10])
+            try:
+                announce_date = date.fromisoformat(str(notice_raw)[:10])
+            except ValueError:
+                logger.warning(
+                    "financial_statement_items: skipping row with invalid announce date %r",
+                    notice_raw,
+                )
+                continue
+        if used_fallback:
+            fallbacks += 1
 
         for (statement_type, item_code), field in report.items.items():
             val = item.get(field)
             if val is None:
                 continue
-            try:
-                item_value = float(val)
-            except (TypeError, ValueError):
+            item_value = _to_float(val)
+            if item_value is None:
                 continue
             rows.append(
                 {
@@ -229,8 +241,7 @@ def _fetch_report(
     *,
     config: Config | None,
 ) -> list[dict]:
-    if config is not None:
-        config.rate_limit("eastmoney")
+    rate_limit_if_unconfigured(client, config)
     return fetch_datacenter(
         client,
         report.name,
@@ -238,6 +249,59 @@ def _fetch_report(
         filter_expr=filter_expr,
         page_size=500,
     )
+
+
+def _source_date(value: object) -> date | None:
+    text = str(value or "").strip()
+    if len(text) < 10:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _rows_for_notice_date(raw: list[dict], expected: date) -> list[dict]:
+    rows = [item for item in raw if _source_date(item.get("NOTICE_DATE")) == expected]
+    dropped = len(raw) - len(rows)
+    if dropped:
+        logger.warning(
+            "EastMoney financial statements dropped %d row(s) with invalid or "
+            "unexpected NOTICE_DATE for %s",
+            dropped,
+            expected.isoformat(),
+        )
+    if raw and not rows:
+        raise RuntimeError(
+            "EastMoney financial statement response contains no NOTICE_DATE row "
+            f"for {expected.isoformat()}"
+        )
+    return rows
+
+
+def _rows_for_report_period(
+    raw: list[dict], report: _Report, expected_period: str
+) -> list[dict]:
+    rows = [
+        item
+        for item in raw
+        if _report_period(item.get(report.report_date_field)) == _report_period(expected_period)
+    ]
+    dropped = len(raw) - len(rows)
+    if dropped:
+        logger.warning(
+            "%s dropped %d row(s) with invalid or unexpected %s for %s",
+            report.name,
+            dropped,
+            report.report_date_field,
+            expected_period,
+        )
+    if raw and not rows:
+        raise RuntimeError(
+            f"EastMoney {report.name} response contains no "
+            f"{report.report_date_field} row for {expected_period}"
+        )
+    return rows
 
 
 def _announce_date_map(raw: list[dict]) -> dict[tuple[str, str], date]:
@@ -250,9 +314,16 @@ def _announce_date_map(raw: list[dict]) -> dict[tuple[str, str], date]:
         if not sym or not period or not notice:
             continue
         try:
-            out[(sym, period)] = date.fromisoformat(str(notice)[:10])
+            notice_date = date.fromisoformat(str(notice)[:10])
         except ValueError:
             continue
+        key = (sym, period)
+        # LICO can return more than one row for a period after a restatement.
+        # Keep the first disclosure date regardless of source row ordering;
+        # using the last row would make PIT results depend on pagination order.
+        previous = out.get(key)
+        if previous is None or notice_date < previous:
+            out[key] = notice_date
     return out
 
 
@@ -284,7 +355,10 @@ def fetch_financial_statement_items(
     try:
         if not backfill:
             for report in _REPORTS:
-                raw = _fetch_report(client, report, f"(NOTICE_DATE='{ds}')", config=config)
+                raw = _rows_for_notice_date(
+                    _fetch_report(client, report, f"(NOTICE_DATE='{ds}')", config=config),
+                    trade_date,
+                )
                 parsed, _ = _parse_rows(raw, report, default_notice=ds)
                 rows.extend(parsed)
         else:
@@ -296,6 +370,9 @@ def fetch_financial_statement_items(
                     _ANNOUNCE_SOURCE,
                     f"({_ANNOUNCE_SOURCE.report_date_field}='{period}')",
                     config=config,
+                )
+                announce_raw = _rows_for_report_period(
+                    announce_raw, _ANNOUNCE_SOURCE, period
                 )
                 announce_dates = _announce_date_map(announce_raw)
                 parsed, _ = _parse_rows(announce_raw, _ANNOUNCE_SOURCE, default_notice=ds)
@@ -310,6 +387,7 @@ def fetch_financial_statement_items(
                         f"({report.report_date_field}='{period}')",
                         config=config,
                     )
+                    raw = _rows_for_report_period(raw, report, period)
                     parsed, fallbacks = _parse_rows(
                         raw,
                         report,

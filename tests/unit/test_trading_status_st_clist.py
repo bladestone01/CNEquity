@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import cnequity.adapters.eastmoney.trading_status as ts
 
 
@@ -27,10 +29,11 @@ def test_fetch_st_symbols_uses_clist_failover(monkeypatch):
     assert out == {"600519.SH", "000001.SZ"}
 
 
-def test_fetch_st_symbols_returns_empty_on_clist_failure(monkeypatch):
+def test_fetch_st_symbols_propagates_clist_failure(monkeypatch):
     monkeypatch.setattr(
         ts,
         "fetch_clist_pages",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("all hosts 502")),
     )
-    assert ts._fetch_st_symbols(client=object()) == set()  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="all hosts 502"):
+        ts._fetch_st_symbols(client=object())  # type: ignore[arg-type]

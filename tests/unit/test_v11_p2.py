@@ -53,9 +53,20 @@ def test_quarter_end_dates_floor_is_2001_not_2016():
     assert "2000-12-31" not in dates
 
 
-def test_institutional_holdings_parses():
+def test_quarter_end_dates_honor_explicit_backfill_window():
+    dates = _quarter_end_dates(
+        date(2026, 7, 16), start=date(2024, 1, 1), end=date(2024, 6, 30)
+    )
+    assert dates == ["2024-06-30", "2024-03-31"]
+
+
+def test_institutional_holdings_parses(monkeypatch):
     # Current RPT_MAIN_ORGHOLD schema: keyed by REPORT_DATE (no NOTICE_DATE),
     # HOULD_NUM / HOLD_VALUE / TOTALSHARES_RATIO, A-share via SECUCODE.
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.institutional._quarter_end_dates",
+        lambda *args, **kwargs: ["2024-03-31"],
+    )
     client = FakeDatacenterClient(
         {
             "RPT_MAIN_ORGHOLD": [
@@ -86,6 +97,47 @@ def test_institutional_holdings_parses():
     assert df["holding_ratio"][0] == 8.5
 
 
+def test_institutional_missing_numeric_fields_remain_null(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.institutional._quarter_end_dates",
+        lambda *args, **kwargs: ["2024-03-31"],
+    )
+    client = FakeDatacenterClient(
+        {
+            "RPT_MAIN_ORGHOLD": [
+                {
+                    "SECUCODE": "600519.SH",
+                    "REPORT_DATE": "2024-03-31",
+                    "ORG_TYPE_NAME": "基金",
+                    "HOULD_NUM": "",
+                    "TOTALSHARES_RATIO": "nan",
+                    "HOLD_VALUE": "inf",
+                }
+            ]
+        }
+    )
+    df = fetch_institutional_holdings(date(2024, 4, 28), client=client)  # type: ignore[arg-type]
+    assert df.row(0, named=True)["holding_shares"] is None
+    assert df.row(0, named=True)["holding_ratio"] is None
+    assert df.row(0, named=True)["holding_mv"] is None
+
+
+def test_institutional_holdings_rejects_a_response_from_another_period():
+    client = FakeDatacenterClient(
+        {
+            "RPT_MAIN_ORGHOLD": [
+                {
+                    "SECUCODE": "600519.SH",
+                    "REPORT_DATE": "2024-06-30",
+                    "ORG_TYPE_NAME": "基金",
+                }
+            ]
+        }
+    )
+    with pytest.raises(RuntimeError, match="no REPORT_DATE row"):
+        fetch_institutional_holdings(date(2024, 4, 28), client=client)  # type: ignore[arg-type]
+
+
 def test_analyst_consensus_parses():
     # Current RPT_WEB_RESPREDICT snapshot: EPS1/YEAR1, target = avg(min,max),
     # rating from the dominant RATING_*_NUM bucket, stamped forecast_date.
@@ -114,6 +166,48 @@ def test_analyst_consensus_parses():
     assert df["target_price"][0] == 1800.0
     assert df["rating"][0] == "buy"
     assert df["analyst_count"][0] == 12
+    assert df["pe_forecast"][0] is None
+
+
+def test_analyst_consensus_missing_numeric_fields_remain_null():
+    client = FakeDatacenterClient(
+        {
+            "RPT_WEB_RESPREDICT": [
+                {
+                    "SECUCODE": "600519.SH",
+                    "YEAR1": "bad",
+                    "EPS1": "",
+                    "DEC_AIMPRICEMAX": None,
+                    "DEC_AIMPRICEMIN": "bad",
+                    "RATING_ORG_NUM": None,
+                }
+            ]
+        }
+    )
+    df = fetch_analyst_consensus(date(2024, 6, 28), client=client)  # type: ignore[arg-type]
+    row = df.row(0, named=True)
+    assert row["forecast_year"] is None
+    assert row["eps_forecast"] is None
+    assert row["target_price"] is None
+    assert row["analyst_count"] is None
+    assert row["pe_forecast"] is None
+
+
+def test_analyst_consensus_rejects_invalid_integer_fields():
+    client = FakeDatacenterClient(
+        {
+            "RPT_WEB_RESPREDICT": [
+                {
+                    "SECUCODE": "600519.SH",
+                    "YEAR1": "2024.5",
+                    "RATING_ORG_NUM": -1.5,
+                }
+            ]
+        }
+    )
+    row = fetch_analyst_consensus(date(2024, 6, 28), client=client).row(0, named=True)
+    assert row["forecast_year"] is None
+    assert row["analyst_count"] is None
 
 
 @pytest.fixture
@@ -123,15 +217,20 @@ def sentiment_lake(tmp_path):
     part.mkdir(parents=True)
     pl.DataFrame(
         {
-            "announcement_id": ["a1", "a2", "a3"],
-            "symbol": ["600519.SH", "600519.SH", "000001.SZ"],
-            "title": ["业绩超预期增长", "分红方案公布", "日常经营公告"],
-            "announce_date": [date(2024, 6, 28)] * 3,
-            "category": ["", "", ""],
-            "url": ["", "", ""],
-            "source": ["cninfo"] * 3,
-            "data_version": ["v1"] * 3,
-            "fetched_at": ["2024-06-28T00:00:00+00:00"] * 3,
+            "announcement_id": ["a1", "a2", "a3", "a2"],
+            "symbol": ["600519.SH", "600519.SH", "000001.SZ", "600519.SH"],
+            "title": ["业绩超预期增长", "分红方案公布", "日常经营公告", "分红方案公布修订"],
+            "announce_date": [date(2024, 6, 28)] * 4,
+            "category": ["", "", "", ""],
+            "url": ["", "", "", ""],
+            "source": ["cninfo"] * 4,
+            "data_version": ["v1"] * 4,
+            "fetched_at": [
+                "2024-06-28T00:00:00+00:00",
+                "2024-06-28T00:00:00+00:00",
+                "2024-06-28T00:00:00+00:00",
+                "2024-06-28T00:00:01+00:00",
+            ],
         }
     ).write_parquet(part / "part-0.parquet")
     return Config(data_root=root)
