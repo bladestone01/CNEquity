@@ -9,7 +9,7 @@ from datetime import date
 import httpx
 import polars as pl
 
-from cnequity.domain.symbols import format_symbol, is_all_a_symbol
+from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -44,16 +44,87 @@ def post_with_retry(client: httpx.Client, url: str, *, data: dict) -> dict:
 
 
 def _symbol_from_cninfo(code: str, org_id: str | None = None) -> str | None:
-    code = str(code).zfill(6)
-    if code.startswith(("60", "68")):
-        exch = "SH"
-    elif code.startswith("92"):
-        exch = "BJ"
-    else:
-        exch = "SZ"
+    code = str(code).strip().zfill(6)
+    if len(code) != 6 or not code.isdigit():
+        return None
+    exch = infer_exchange_from_code(code)
     if not is_all_a_symbol(code, exch):
         return None
     return format_symbol(code, exch)
+
+
+def _announcement_id(item: dict) -> str | None:
+    """Stable CNINFO identity, or None for a row that cannot be keyed."""
+    value = item.get("announcementId") or item.get("adjunctUrl")
+    text = str(value or "").strip()
+    return text or None
+
+
+def _announcement_batch(data: object, *, column: str, page: int) -> list[dict]:
+    """Validate a CNINFO page while isolating malformed rows."""
+    if not isinstance(data, dict):
+        raise RuntimeError(f"CNINFO response for {column} page {page} is not an object")
+    raw_batch = data.get("announcements")
+    if raw_batch is None:
+        return []
+    if not isinstance(raw_batch, list):
+        raise RuntimeError(
+            f"CNINFO announcements for {column} page {page} is not a list"
+        )
+    batch: list[dict] = []
+    for index, item in enumerate(raw_batch):
+        if not isinstance(item, dict):
+            logger.warning(
+                "CNINFO announcements: skipping non-object row %s on %s page %s",
+                index,
+                column,
+                page,
+            )
+            continue
+        batch.append(item)
+    return batch
+
+
+def _pagination_total_pages(data: dict, *, column: str, page: int) -> int | None:
+    """Normalize the optional CNINFO page count without trusting bad metadata."""
+    raw_total = data.get("totalpages")
+    if raw_total is None:
+        return None
+    if isinstance(raw_total, bool):
+        raise RuntimeError(
+            f"CNINFO totalpages for {column} page {page} is not a non-negative integer"
+        )
+    if isinstance(raw_total, int):
+        total_pages = raw_total
+    elif isinstance(raw_total, str) and raw_total.strip().isdigit():
+        total_pages = int(raw_total.strip())
+    else:
+        raise RuntimeError(
+            f"CNINFO totalpages for {column} page {page} is not a non-negative integer"
+        )
+    if total_pages < 0:
+        raise RuntimeError(
+            f"CNINFO totalpages for {column} page {page} is not a non-negative integer"
+        )
+    return total_pages
+
+
+def _pagination_has_more(data: dict, *, column: str, page: int) -> bool:
+    """Normalize CNINFO's optional continuation flag."""
+    raw_has_more = data.get("hasMore")
+    if raw_has_more is None:
+        return False
+    if isinstance(raw_has_more, bool):
+        return raw_has_more
+    if isinstance(raw_has_more, str):
+        normalized = raw_has_more.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no", ""}:
+            return False
+    raise RuntimeError(
+        f"CNINFO hasMore for {column} page {page} is not a boolean value"
+    )
 
 
 def fetch_announcement_index(
@@ -88,21 +159,29 @@ def fetch_announcement_index(
             }
             try:
                 data = post_with_retry(client, _CNINFO_URL, data=payload)
+                batch = _announcement_batch(data, column=column, page=page)
+                total_pages = _pagination_total_pages(data, column=column, page=page)
+                has_more = _pagination_has_more(data, column=column, page=page)
             except Exception as exc:
                 logger.warning("CNINFO announcement page failed (%s p%s): %s", column, page, exc)
+                if owns:
+                    client.close()
                 raise RuntimeError(
-                    f"CNINFO announcement pagination failed for {column} page {page}"
+                    f"CNINFO announcement pagination failed for {column} page {page}: {exc}"
                 ) from exc
 
-            batch = data.get("announcements") or []
             if not batch:
                 break
-            total_pages = data.get("totalpages")
             for item in batch:
                 sym = _symbol_from_cninfo(str(item.get("secCode", "")))
                 if not sym:
                     continue
-                ann_id = str(item.get("announcementId") or item.get("adjunctUrl", ""))
+                ann_id = _announcement_id(item)
+                if ann_id is None:
+                    logger.warning(
+                        "CNINFO announcement missing announcementId and adjunctUrl; skipping"
+                    )
+                    continue
                 rows.append(
                     {
                         "announcement_id": ann_id,
@@ -121,7 +200,13 @@ def fetch_announcement_index(
                 # correct even on those overshot pages, so it is the one
                 # authoritative stop condition.
                 break
-            if not data.get("hasMore"):
+            if isinstance(total_pages, int):
+                # When the server supplies a page count, it is also the safer
+                # continuation signal: a stale false `hasMore` would otherwise
+                # silently drop the remaining pages.
+                page += 1
+                continue
+            if not has_more:
                 break
             page += 1
 

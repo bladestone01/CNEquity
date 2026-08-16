@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import logging
 import warnings
+from dataclasses import dataclass
 
 from cnequity.domain.symbols import format_symbol, is_all_a_symbol
 
@@ -49,6 +50,20 @@ SZSE_URL = (
 _SZSE_HEADERS = {"Referer": "https://www.szse.cn/"}
 _SZSE_CODE_COL = "A股代码"
 _SZSE_NAME_COL = "A股简称"
+
+
+@dataclass(frozen=True)
+class ExchangeNamesResult:
+    """Exchange-name snapshot plus per-exchange fetch failures.
+
+    ``fetch_exchange_names`` intentionally keeps its historical best-effort
+    behaviour for callers that only need the names. Quality checks need more
+    information: an empty contribution from one exchange must not be confused
+    with a complete comparison over that exchange.
+    """
+
+    names: dict[str, str]
+    failures: dict[str, str]
 
 
 def _client():
@@ -88,7 +103,7 @@ def fetch_sse_names(*, config=None) -> dict[str, str]:
         if len(fields) < 2 or not fields[0].isdigit():
             continue
         code = fields[0].zfill(6)
-        if is_all_a_symbol(code, "SH"):
+        if len(code) == 6 and is_all_a_symbol(code, "SH"):
             names[format_symbol(code, "SH")] = fields[1]
     if not names:
         logger.warning("SSE stock list returned no usable rows; format may have changed")
@@ -124,7 +139,7 @@ def fetch_szse_names(*, config=None) -> dict[str, str]:
         if code is None or name is None:
             continue
         code = str(code).strip().zfill(6)
-        if code.isdigit() and is_all_a_symbol(code, "SZ"):
+        if len(code) == 6 and code.isdigit() and is_all_a_symbol(code, "SZ"):
             names[format_symbol(code, "SZ")] = str(name).strip()
     if not names:
         logger.warning("SZSE stock list returned no usable rows; format may have changed")
@@ -142,3 +157,21 @@ def fetch_exchange_names(*, config=None) -> dict[str, str]:
     names = fetch_sse_names(config=config)
     names.update(fetch_szse_names(config=config))
     return names
+
+
+def fetch_exchange_names_with_status(*, config=None) -> ExchangeNamesResult:
+    """Fetch both exchange lists without hiding a partial publisher outage."""
+    names: dict[str, str] = {}
+    failures: dict[str, str] = {}
+    for exchange, fetch in (("sse", fetch_sse_names), ("szse", fetch_szse_names)):
+        try:
+            fetched = fetch(config=config)
+        except Exception as exc:  # noqa: BLE001 — record status for the audit
+            failures[exchange] = str(exc)
+            logger.warning("%s stock list unavailable during status fetch: %s", exchange, exc)
+            continue
+        if not fetched:
+            failures[exchange] = "no usable rows"
+            continue
+        names.update(fetched)
+    return ExchangeNamesResult(names=names, failures=failures)

@@ -26,13 +26,18 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
+
+from cnequity.adapters.numeric import finite_int64
+from cnequity.domain.market_time import shanghai_today
+from cnequity.storage.atomic import write_json_atomic
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,6 +45,13 @@ if TYPE_CHECKING:
     from cnequity.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite numeric value: {value!r}")
+    return parsed
 
 _KLINE_URL = "https://d.10jqka.com.cn/v6/line/bk_{code}/01/{part}.js"
 _INDUSTRY_URL = "https://q.10jqka.com.cn/thshy/"
@@ -54,6 +66,10 @@ _HEADERS = {"User-Agent": _UA, "Referer": "https://q.10jqka.com.cn/"}
 # `last.js` carries the most recent ~140 sessions; anything shorter than that
 # needs no year files at all, which keeps the daily job to one request a board.
 _LAST_WINDOW_SESSIONS = 140
+# `last.js` is measured in trading sessions, so its calendar reach is wider
+# than 140 days. Only use it when the requested end is recent enough that the
+# requested window can actually be present in that payload.
+_LAST_WINDOW_CALENDAR_DAYS = 220
 _CATALOG_FILE = "ths_board_catalog.json"
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_SECONDS = 2.0
@@ -75,6 +91,10 @@ _DEFAULT_PAGE_MIN_INTERVAL = 3.0
 
 class ThsError(RuntimeError):
     """A 同花顺 fetch failed in a way the caller must not paper over."""
+
+
+class ThsNotFoundError(ThsError):
+    """A historical period file does not exist for this board/security."""
 
 
 def _throttle(url: str, config: Config | None) -> None:
@@ -112,7 +132,7 @@ def _get(url: str, *, config: Config | None, timeout: float = 20.0) -> str:
             # that take 15-20 minutes apiece and make a 432-board sweep look
             # hung.
             if resp.status_code == 404:
-                raise ThsError(f"{url} -> HTTP 404 (no data for this period)")
+                raise ThsNotFoundError(f"{url} -> HTTP 404 (no data for this period)")
             last_exc = ThsError(f"{url} -> HTTP {resp.status_code}")
         if attempt + 1 < _MAX_RETRIES:
             time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
@@ -172,14 +192,11 @@ def load_cached_catalog(config: Config) -> list[dict]:
 
 def _save_catalog(config: Config, boards: list[dict]) -> None:
     path = _catalog_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {"fetched_at": date.today().isoformat(), "boards": boards},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_json_atomic(
+        path,
+        {"fetched_at": shanghai_today().isoformat(), "boards": boards},
+        ensure_ascii=False,
+        indent=2,
     )
 
 
@@ -252,10 +269,14 @@ def fetch_board_catalog(*, config: Config | None = None, refresh: bool = False) 
 
     boards = _parse_industry(_get(_INDUSTRY_URL, config=config))
     logger.info("THS catalog: %d industry boards", len(boards))
+    if not boards:
+        raise ThsError("THS industry catalog returned no usable boards")
 
     concept_html = _get(_CONCEPT_URL, config=config)
     inline = _parse_concept_inline(concept_html)
     links = _parse_concept_links(concept_html)
+    if not links:
+        raise ThsError("THS concept catalog returned no usable links")
     logger.info(
         "THS catalog: %d concepts listed, %d index codes inline; resolving the rest",
         len(links),
@@ -282,6 +303,11 @@ def fetch_board_catalog(*, config: Config | None = None, refresh: bool = False) 
                 # the listing code later costs a request per concept.
                 "detail_code": detail_code,
             }
+        )
+
+    if unresolved:
+        raise ThsError(
+            f"THS concept catalog has {unresolved} concepts without usable index codes"
         )
 
     # Same index can back two listings; keep one row per code.
@@ -312,12 +338,12 @@ def _parse_kline(payload: dict[str, Any], board: dict) -> list[dict]:
                     "sector_name": board["sector_name"],
                     "board_type": board["board_type"],
                     "trade_date": date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8])),
-                    "open": float(parts[1]),
-                    "high": float(parts[2]),
-                    "low": float(parts[3]),
-                    "close": float(parts[4]),
-                    "volume": int(float(parts[5])),
-                    "amount": float(parts[6]),
+                    "open": _finite_float(parts[1]),
+                    "high": _finite_float(parts[2]),
+                    "low": _finite_float(parts[3]),
+                    "close": _finite_float(parts[4]),
+                    "volume": finite_int64(_finite_float(parts[5]), minimum=0),
+                    "amount": _finite_float(parts[6]),
                 }
             )
         except ValueError:
@@ -357,31 +383,46 @@ def fetch_board_bars(
     code = board["sector_code"]
     span_days = (end - start).days
     parts: list[str]
-    if span_days <= _LAST_WINDOW_SESSIONS:
+    last_window_start = shanghai_today() - timedelta(days=_LAST_WINDOW_CALENDAR_DAYS)
+    if span_days <= _LAST_WINDOW_SESSIONS and end >= last_window_start:
         parts = ["last"]
     else:
         parts = [str(y) for y in range(start.year, end.year + 1)]
         # The current year's file lags intraday; `last` carries the freshest bars.
-        if end.year == date.today().year:
+        if end.year == shanghai_today().year:
             parts.append("last")
 
-    rows: list[dict] = []
-    seen: set[date] = set()
+    # The current year's file and ``last.js`` overlap.  The rolling endpoint is
+    # intentionally read last because it carries the freshest values, so merge
+    # by date instead of letting the first (annual-file) row win forever.
+    rows_by_date: dict[date, dict] = {}
     for part in parts:
         try:
             payload = _unwrap_jsonp(_get(_KLINE_URL.format(code=code, part=part), config=config))
         except ThsError as exc:
             # A missing year file is normal for a board younger than the window;
             # `last` failing is not, and neither is a transport error.
-            if part == "last":
+            if part == "last" or not isinstance(exc, ThsNotFoundError):
                 raise
             logger.debug("THS %s %s unavailable: %s", code, part, exc)
             continue
-        for row in _parse_kline(payload, board):
-            if row["trade_date"] in seen or not (start <= row["trade_date"] <= end):
+        part_rows = _parse_kline(payload, board)
+        if part == "last" and not part_rows:
+            raise ThsError(f"THS {code} last window returned no usable bars")
+        for row in part_rows:
+            if not (start <= row["trade_date"] <= end):
                 continue
-            seen.add(row["trade_date"])
-            rows.append(row)
+            rows_by_date[row["trade_date"]] = row
+    rows = list(rows_by_date.values())
+    if parts == ["last"] and not rows:
+        # A non-empty last.js payload can still be entirely newer than the
+        # requested window (for example when the source's rolling window has
+        # advanced past a narrow gap). Treat that as a failed fetch rather than
+        # allowing the caller to checkpoint an empty window as complete.
+        raise ThsError(
+            f"THS {code} last window had no usable bars in "
+            f"{start.isoformat()}..{end.isoformat()}"
+        )
     return _with_change_pct(rows)
 
 
@@ -440,7 +481,13 @@ def sweep_board_bars(
             )
         code = board["sector_code"]
         try:
-            rows.extend(fetch_board_bars(board, start, end, config=config))
+            fetched = fetch_board_bars(board, start, end, config=config)
+            if not fetched:
+                raise ThsError(
+                    f"THS {code} returned no usable bars in "
+                    f"{start.isoformat()}..{end.isoformat()}"
+                )
+            rows.extend(fetched)
             succeeded.append(code)
             pending.append(code)
             dead_streak = 0

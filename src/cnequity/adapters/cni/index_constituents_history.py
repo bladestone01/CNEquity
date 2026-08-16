@@ -149,7 +149,11 @@ def fetch_cni_index_adjustments(
                 "adjust_type": pl.Utf8,
             }
         )
-    return pl.DataFrame(rows)
+    return pl.DataFrame(rows).unique(
+        subset=["index_symbol", "symbol", "start_date", "end_date", "adjust_type"],
+        keep="last",
+        maintain_order=True,
+    )
 
 
 def expand_cni_constituents_as_of(

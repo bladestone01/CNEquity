@@ -10,16 +10,23 @@ from cnequity.adapters.cninfo.announcements import (
     _symbol_from_cninfo,
     fetch_announcement_index,
 )
+from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
 
 
 def test_symbol_from_cninfo_maps_exchange_prefixes():
     assert _symbol_from_cninfo("600519") == "600519.SH"
     assert _symbol_from_cninfo("000001") == "000001.SZ"
     assert _symbol_from_cninfo("920001") == "920001.BJ"
+    assert _symbol_from_cninfo("830001") == "830001.BJ"
 
 
 def test_symbol_from_cninfo_rejects_non_all_a_codes():
     assert _symbol_from_cninfo("810001") is None
+
+
+def test_symbol_from_cninfo_rejects_malformed_codes():
+    assert _symbol_from_cninfo("abc") is None
+    assert _symbol_from_cninfo("0000001") is None
 
 
 class _FakeResponse:
@@ -111,6 +118,24 @@ def test_fetch_announcement_index_owns_and_closes_default_client(monkeypatch):
     assert created[0].closed is True
 
 
+def test_fetch_announcement_index_closes_owned_client_on_failure(monkeypatch):
+    created: list[_FakeClient] = []
+
+    def _factory(**kwargs):
+        client = _FakeClient({"szse": [[]], "sse": [[]]})
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("cnequity.adapters.cninfo.announcements.httpx.Client", _factory)
+    monkeypatch.setattr(
+        "cnequity.adapters.cninfo.announcements.post_with_retry",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("cninfo down")),
+    )
+    with pytest.raises(RuntimeError, match="pagination failed"):
+        fetch_announcement_index(date(2024, 6, 28))
+    assert created[0].closed is True
+
+
 def test_fetch_announcement_index_skips_non_all_a_symbols():
     pages = {
         "szse": [
@@ -128,6 +153,100 @@ def test_fetch_announcement_index_skips_non_all_a_symbols():
     client = _FakeClient(pages)
     df = fetch_announcement_index(date(2024, 6, 28), client=client)
     assert df.is_empty()
+
+
+def test_fetch_announcement_index_skips_rows_without_stable_identity():
+    pages = {
+        "szse": [
+            [
+                {
+                    "secCode": "000001",
+                    "announcementTitle": "无法定位",
+                    "announcementType": "其他",
+                },
+                {
+                    "secCode": "000001",
+                    "announcementId": "A1",
+                    "announcementTitle": "可定位",
+                    "announcementType": "其他",
+                },
+            ]
+        ],
+        "sse": [[]],
+    }
+    df = fetch_announcement_index(date(2024, 6, 28), client=_FakeClient(pages))
+    assert df["announcement_id"].to_list() == ["A1"]
+
+
+def test_cninfo_skips_non_object_rows_and_keeps_valid_rows():
+    pages = {
+        "szse": [
+            [
+                None,
+                {
+                    "secCode": "000001",
+                    "announcementId": "A1",
+                    "announcementTitle": "有效公告",
+                },
+            ]
+        ],
+        "sse": [[]],
+    }
+    df = fetch_announcement_index(date(2024, 6, 28), client=_FakeClient(pages))
+    assert df["announcement_id"].to_list() == ["A1"]
+
+
+def test_cninfo_rejects_non_list_announcement_batch():
+    class MalformedClient:
+        def post(self, url, data):
+            return _FakeResponse({"announcements": {"announcementId": "A1"}})
+
+        def close(self):
+            pass
+
+    with pytest.raises(RuntimeError, match="announcements.*is not a list"):
+        fetch_announcement_index(date(2024, 6, 28), client=MalformedClient())
+
+
+def test_regulatory_skips_rows_without_stable_identity():
+    from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
+
+    pages = {
+        "szse": [
+            [
+                {
+                    "secCode": "000001",
+                    "announcementTitle": "行政处罚公告",
+                },
+                {
+                    "secCode": "000001",
+                    "announcementId": "R1",
+                    "announcementTitle": "行政处罚公告",
+                },
+            ]
+        ],
+        "sse": [[]],
+    }
+    df = fetch_regulatory_events(date(2024, 6, 28), client=_FakeClient(pages))
+    assert df["event_id"].to_list() == ["reg-R1"]
+
+
+def test_regulatory_skips_non_object_rows_and_keeps_valid_rows():
+    pages = {
+        "szse": [
+            [
+                None,
+                {
+                    "secCode": "000001",
+                    "announcementId": "R1",
+                    "announcementTitle": "行政处罚公告",
+                },
+            ]
+        ],
+        "sse": [[]],
+    }
+    df = fetch_regulatory_events(date(2024, 6, 28), client=_FakeClient(pages))
+    assert df["event_id"].to_list() == ["reg-R1"]
 
 
 def test_fetch_announcement_index_uses_rate_limiter_when_config_given():
@@ -150,8 +269,9 @@ class _OverrunClient:
     production (one day's szse column reached page 7727+ before an unrelated
     network blip finally killed the run)."""
 
-    def __init__(self, total_pages: int):
+    def __init__(self, total_pages: int, reported_total_pages=None):
         self.total_pages = total_pages
+        self.reported_total_pages = reported_total_pages
         self.calls = 0
 
     def post(self, url, data):
@@ -166,8 +286,13 @@ class _OverrunClient:
         }
         if data["column"] == "sse":
             return _FakeResponse({"announcements": [], "hasMore": False, "totalpages": 0})
+        reported_total_pages = (
+            self.total_pages
+            if self.reported_total_pages is None
+            else self.reported_total_pages
+        )
         return _FakeResponse(
-            {"announcements": [item], "hasMore": True, "totalpages": self.total_pages}
+            {"announcements": [item], "hasMore": True, "totalpages": reported_total_pages}
         )
 
     def close(self):
@@ -181,7 +306,101 @@ def test_fetch_announcement_index_stops_at_totalpages_even_when_hasmore_lies():
     assert df.height == 3
 
 
-def test_fetch_announcement_index_raises_runtime_error_on_transport_failure():
+def test_fetch_announcement_index_uses_totalpages_when_hasmore_is_false():
+    class StaleHasMoreClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, data):
+            self.calls += 1
+            if data["column"] == "sse":
+                return _FakeResponse({"announcements": [], "hasMore": False, "totalpages": 0})
+            item = {
+                "secCode": "000001",
+                "announcementId": f"P{data['pageNum']}",
+                "announcementTitle": "公告",
+            }
+            return _FakeResponse(
+                {"announcements": [item], "hasMore": False, "totalpages": 2}
+            )
+
+    client = StaleHasMoreClient()
+    df = fetch_announcement_index(date(2024, 1, 31), client=client)
+    assert client.calls == 3
+    assert set(df["announcement_id"].to_list()) == {"P1", "P2"}
+
+
+@pytest.mark.parametrize("total_pages", ["3", " 3 "])
+def test_fetch_announcement_index_accepts_string_totalpages(total_pages):
+    client = _OverrunClient(total_pages=3, reported_total_pages=total_pages)
+    df = fetch_announcement_index(date(2024, 1, 31), client=client)
+    assert client.calls == 4
+    assert df.height == 3
+
+
+def test_fetch_announcement_index_normalizes_string_hasmore():
+    class StringMetaClient(_FakeClient):
+        def post(self, url, data):
+            response = super().post(url, data)
+            payload = response.json()
+            payload["hasMore"] = "true" if payload["hasMore"] else "false"
+            return _FakeResponse(payload)
+
+    client = StringMetaClient(
+        {
+            "szse": [[{
+                "secCode": "000001",
+                "announcementId": "A1",
+                "announcementTitle": "公告",
+            }], []],
+            "sse": [[]],
+        }
+    )
+    df = fetch_announcement_index(date(2024, 1, 31), client=client)
+    assert len(client.calls) == 3
+    assert df.height == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("totalpages", 1.5, "totalpages.*non-negative integer"),
+        ("totalpages", True, "totalpages.*non-negative integer"),
+        ("hasMore", "sometimes", "hasMore.*boolean"),
+    ],
+)
+def test_fetch_announcement_index_rejects_malformed_pagination_metadata(
+    field, value, message
+):
+    class MalformedMetaClient:
+        def post(self, url, data):
+            return _FakeResponse(
+                {
+                    "announcements": [
+                        {
+                            "secCode": "000001",
+                            "announcementId": "A1",
+                            "announcementTitle": "公告",
+                        }
+                    ],
+                    "hasMore": False,
+                    "totalpages": 1,
+                    field: value,
+                }
+            )
+
+        def close(self):
+            pass
+
+    with pytest.raises(RuntimeError, match=message):
+        fetch_announcement_index(date(2024, 1, 31), client=MalformedMetaClient())
+
+
+def test_fetch_announcement_index_raises_runtime_error_on_transport_failure(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.cninfo.announcements.time.sleep", lambda *_: None
+    )
+
     class _BoomClient:
         def post(self, url, data):
             raise RuntimeError("network down")

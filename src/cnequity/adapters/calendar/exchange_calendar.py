@@ -19,6 +19,10 @@ _SEED_END = date(2027, 12, 31)
 CALENDAR_FORWARD_COVERAGE_WARN_DAYS = 90
 
 
+class CalendarCoverageError(RuntimeError):
+    """Raised when the calendar cannot safely classify a requested date."""
+
+
 def calendar_seed_end() -> date:
     """Last calendar date covered by bundled holiday seed data."""
     return _SEED_END
@@ -122,6 +126,21 @@ def build_trading_calendar(
         # Only consider bar-derived trading days for dates the seed does not
         # cover; within the seed range the seed wins outright.
         bar_trading_days = _trading_days_from_bars(curated_root) - seed_dates
+
+    if end > _SEED_END:
+        unknown_weekdays: list[date] = []
+        unknown_start = max(start, _SEED_END + timedelta(days=1))
+        d = unknown_start
+        while d <= end:
+            if d.weekday() < 5 and d not in bar_trading_days:
+                unknown_weekdays.append(d)
+            d += timedelta(days=1)
+        if unknown_weekdays:
+            raise CalendarCoverageError(
+                "trading calendar holiday seed ends at "
+                f"{_SEED_END.isoformat()}; cannot classify {unknown_weekdays[0].isoformat()} "
+                "without refreshed holidays_cn.py or curated bar evidence"
+            )
 
     # Before the seed and the holiday table begin, bars are the only evidence
     # there is: `_is_trading_day` would only strip weekends, marking every

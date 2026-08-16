@@ -9,7 +9,14 @@ from datetime import date
 import httpx
 import polars as pl
 
-from cnequity.adapters.cninfo.announcements import _symbol_from_cninfo, post_with_retry
+from cnequity.adapters.cninfo.announcements import (
+    _announcement_batch,
+    _announcement_id,
+    _pagination_has_more,
+    _pagination_total_pages,
+    _symbol_from_cninfo,
+    post_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,18 +74,21 @@ def fetch_regulatory_events(
             }
             try:
                 data = post_with_retry(client, _CNINFO_URL, data=payload)
+                batch = _announcement_batch(data, column=column, page=page)
+                total_pages = _pagination_total_pages(data, column=column, page=page)
+                has_more = _pagination_has_more(data, column=column, page=page)
             except Exception as exc:
                 # Don't truncate: short pages drop blacklist rows. Fail loud
                 # once retries (post_with_retry) are exhausted.
                 logger.warning("CNINFO regulatory page failed (%s p%s): %s", column, page, exc)
+                if owns:
+                    client.close()
                 raise RuntimeError(
-                    f"CNINFO regulatory pagination failed for {column} page {page}"
+                    f"CNINFO regulatory pagination failed for {column} page {page}: {exc}"
                 ) from exc
 
-            batch = data.get("announcements") or []
             if not batch:
                 break
-            total_pages = data.get("totalpages")
             for item in batch:
                 title = str(item.get("announcementTitle") or "")
                 if not pattern.search(title):
@@ -86,7 +96,12 @@ def fetch_regulatory_events(
                 sym = _symbol_from_cninfo(str(item.get("secCode", "")))
                 if not sym:
                     continue
-                ann_id = str(item.get("announcementId") or item.get("adjunctUrl", ""))
+                ann_id = _announcement_id(item)
+                if ann_id is None:
+                    logger.warning(
+                        "CNINFO regulatory announcement missing identity; skipping"
+                    )
+                    continue
                 rows.append(
                     {
                         "event_id": f"reg-{ann_id}",
@@ -101,7 +116,12 @@ def fetch_regulatory_events(
                 # be trusted past the server's own reported total — measured
                 # live, it stays true forever while replaying page 1's rows.
                 break
-            if not data.get("hasMore"):
+            if isinstance(total_pages, int):
+                # A stale false `hasMore` must not truncate the blacklist when
+                # the server still reports additional pages.
+                page += 1
+                continue
+            if not has_more:
                 break
             page += 1
 

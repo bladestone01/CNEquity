@@ -35,6 +35,10 @@ def test_a_reworded_release_parses_to_none_rather_than_a_guess():
     assert pmi_release.parse_pmi("<p>本月经济运行总体平稳。</p>") is None
 
 
+def test_out_of_range_pmi_is_rejected():
+    assert pmi_release.parse_pmi("<p>制造业采购经理指数（PMI）为101.0%</p>") is None
+
+
 _INDEX = """
 <a href="./202607/t20260731_1964253.html">2026年7月中国采购经理指数运行情况</a>
 <a href="./202606/t20260630_1963000.html">2026年6月中国采购经理指数运行情况</a>
@@ -81,6 +85,7 @@ def test_sse_list_is_parsed_from_the_tab_separated_download(monkeypatch):
         "公司代码 \t公司简称 \t代码\t简称\t上市日期\t\n"
         "600000\t  浦发银行\t  600000\t  浦发银行\t  1999-11-10\t\n"
         "600053\t  *ST九鼎\t  600053\t  *ST九鼎\t  1996-10-25\t\n"
+        "6000001\t  格式异常\t  6000001\t  格式异常\t  2020-01-01\t\n"
     ).encode("gbk")
 
     class _Resp:
@@ -110,3 +115,15 @@ def test_one_exchange_down_does_not_discard_the_other(monkeypatch):
     monkeypatch.setattr(st_lists, "fetch_sse_names", lambda **_kw: {"600053.SH": "*ST九鼎"})
     monkeypatch.setattr(st_lists, "fetch_szse_names", lambda **_kw: {})
     assert st_lists.fetch_exchange_names() == {"600053.SH": "*ST九鼎"}
+
+
+def test_status_fetch_reports_a_partial_exchange_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        st_lists,
+        "fetch_sse_names",
+        lambda **_kw: {"600053.SH": "*ST九鼎"},
+    )
+    monkeypatch.setattr(st_lists, "fetch_szse_names", lambda **_kw: {})
+    result = st_lists.fetch_exchange_names_with_status()
+    assert result.names == {"600053.SH": "*ST九鼎"}
+    assert result.failures == {"szse": "no usable rows"}

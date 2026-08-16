@@ -21,7 +21,8 @@ import logging
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from cnequity.adapters.ths.boards import ThsError, _get, _unwrap_jsonp
+from cnequity.adapters.numeric import finite_int64
+from cnequity.adapters.ths.boards import ThsNotFoundError, _finite_float, _get, _unwrap_jsonp
 
 if TYPE_CHECKING:
     from cnequity.config import Config
@@ -66,12 +67,12 @@ def _parse_index_kline(payload: dict[str, Any], symbol: str) -> list[dict]:
                 {
                     "symbol": symbol,
                     "trade_date": date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8])),
-                    "open": float(parts[1]),
-                    "high": float(parts[2]),
-                    "low": float(parts[3]),
-                    "close": float(parts[4]),
-                    "volume": int(float(parts[5])),
-                    "amount": float(parts[6]),
+                    "open": _finite_float(parts[1]),
+                    "high": _finite_float(parts[2]),
+                    "low": _finite_float(parts[3]),
+                    "close": _finite_float(parts[4]),
+                    "volume": finite_int64(_finite_float(parts[5]), minimum=0),
+                    "amount": _finite_float(parts[6]),
                     # Part of the row's identity, not the caller's to supply:
                     # index_bars keys on it and the schema requires it.
                     "frequency": "1d",
@@ -104,7 +105,7 @@ def fetch_index_bars_history(
             payload = _unwrap_jsonp(
                 _get(_INDEX_KLINE_URL.format(code=code, part=year), config=config)
             )
-        except ThsError as exc:
+        except ThsNotFoundError as exc:
             logger.debug("THS index %s (%s) %s unavailable: %s", symbol, code, year, exc)
             continue
         for row in _parse_index_kline(payload, symbol):

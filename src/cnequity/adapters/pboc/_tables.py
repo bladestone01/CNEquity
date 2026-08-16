@@ -17,6 +17,7 @@ from __future__ import annotations
 import calendar
 import io
 import logging
+import math
 import re
 from datetime import date
 
@@ -25,6 +26,10 @@ logger = logging.getLogger(__name__)
 BASE = "https://www.pbc.gov.cn"
 STATS_INDEX = f"{BASE}/diaochatongjisi/116219/116319/index.html"
 TIMEOUT_SECONDS = 60.0
+
+
+class PBOCSeriesError(RuntimeError):
+    """The publisher did not provide a complete requested series."""
 
 # The site mixes single- and double-quoted attributes within one page, so every
 # href pattern here accepts either.
@@ -139,6 +144,8 @@ def parse_month_column(content: bytes, value_column: int, *, unit: str = "亿元
             value = float(raw)
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(value):
+            continue
         rows.append({"obs_date": obs, "value": value})
     return rows
 
@@ -152,6 +159,7 @@ def fetch_yearly_series(
     config=None,
     source_name: str = "pboc",
     start_year: int = 2015,
+    strict: bool = False,
 ) -> list[dict]:
     """Walk every year ≥ ``start_year``, newest first, and merge the series.
 
@@ -161,39 +169,55 @@ def fetch_yearly_series(
     publication is the current official series, so descending order is
     load-bearing, not incidental.
 
-    Degrades to whatever it managed to read: a year that cannot be reached is
-    logged and skipped, so a later run fills the gap.
+    By default, degrades to whatever it managed to read: a year that cannot be
+    reached is logged and skipped, so a later run fills the gap. ``strict`` is
+    for canonical ingestion paths: any listed year's failure, empty parse, or
+    unavailable index raises instead of allowing a partial series to advance
+    the dataset watermark.
     """
     try:
         sections = year_sections()
     except Exception as exc:
         logger.warning("PBOC statistics index unavailable: %s", exc)
+        if strict:
+            raise PBOCSeriesError("PBOC statistics index unavailable") from exc
         return []
 
     seen: set[date] = set()
     rows: list[dict] = []
+    failures: dict[int, str] = {}
     for year in sorted((y for y in sections if y >= start_year), reverse=True):
         if config is not None:
             config.rate_limit(source_name)
         try:
             url = workbook_url(sections[year], topic=topic, table_label=table_label)
             if url is None:
-                logger.warning("PBOC %s: no %s workbook link found", year, table_label)
+                reason = f"no {table_label} workbook link found"
+                failures[year] = reason
+                logger.warning("PBOC %s: %s", year, reason)
                 continue
             year_rows = parse_month_column(get_bytes(url), value_column, unit=unit)
         except Exception as exc:
+            failures[year] = str(exc)
             logger.warning("PBOC %s %s skipped: %s", year, table_label, exc)
             continue
         if not year_rows:
+            failures[year] = "parsed to no rows; layout may have changed"
             logger.warning(
                 "PBOC %s %s parsed to no rows; layout may have changed", year, table_label
             )
+            continue
         for row in year_rows:
             if row["obs_date"] in seen:
                 continue
             seen.add(row["obs_date"])
             rows.append(row)
 
+    if strict and failures:
+        details = "; ".join(f"{year}: {reason}" for year, reason in sorted(failures.items()))
+        raise PBOCSeriesError(f"PBOC {table_label} series is incomplete: {details}")
     if not rows:
         logger.warning("PBOC %s returned no usable rows", table_label)
+        if strict:
+            raise PBOCSeriesError(f"PBOC {table_label} returned no usable rows")
     return rows

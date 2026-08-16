@@ -32,7 +32,9 @@ TABLE_LABEL = "社会融资规模增量统计表"
 _VALUE_COLUMN = 1
 
 
-def fetch_social_financing(*, config=None, start_year: int = 2015) -> list[dict]:
+def fetch_social_financing(
+    *, config=None, start_year: int = 2015, strict: bool = False
+) -> list[dict]:
     """社融增量 as ``[{"obs_date", "value"}, ...]``, newest year first."""
     return fetch_yearly_series(
         topic=TOPIC,
@@ -40,4 +42,5 @@ def fetch_social_financing(*, config=None, start_year: int = 2015) -> list[dict]
         value_column=_VALUE_COLUMN,
         config=config,
         start_year=start_year,
+        strict=strict,
     )

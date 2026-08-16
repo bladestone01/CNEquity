@@ -18,19 +18,14 @@ convention would double-write every month already in curated under a second key.
 from __future__ import annotations
 
 import calendar
-import logging
+import math
 import re
 from datetime import date
 
 import polars as pl
 
-from cnequity.adapters.eastmoney.datacenter import (
-    EastMoneyDatacenterError,
-    fetch_datacenter,
-)
+from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
-
-logger = logging.getLogger(__name__)
 
 _TREASURY_REPORT = "RPTA_WEB_TREASURYYIELD"
 _TREASURY_COLUMNS = "SOLAR_DATE,EMM00166466"
@@ -63,14 +58,24 @@ _EM_MONTHLY_SERIES = {
 }
 
 
-def _parse_obs_date(value: object, fallback: date) -> date:
+def _finite_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _parse_obs_date(value: object) -> date | None:
     if value is None:
-        return fallback
+        return None
     text = str(value)[:10]
     try:
         return date.fromisoformat(text)
     except ValueError:
-        return fallback
+        return None
 
 
 _MONTH_RE = re.compile(r"^(\d{4})[-年/.](\d{1,2})月?")
@@ -108,70 +113,61 @@ def _eastmoney_daily(client: EastMoneyClient, trade_date: date) -> list[dict]:
     ds = trade_date.isoformat()
     rows: list[dict] = []
 
-    try:
-        treasury = fetch_datacenter(
-            client,
-            _TREASURY_REPORT,
-            _TREASURY_COLUMNS,
-            filter_expr=f"(SOLAR_DATE='{ds}')",
-        )
-    except EastMoneyDatacenterError as exc:
-        logger.warning("EastMoney treasury indicator fetch skipped: %s", exc)
-        treasury = []
+    treasury = fetch_datacenter(
+        client,
+        _TREASURY_REPORT,
+        _TREASURY_COLUMNS,
+        filter_expr=f"(SOLAR_DATE='{ds}')",
+    )
     for item in treasury:
-        val = item.get("EMM00166466")
-        if val is not None:
+        val = _finite_float(item.get("EMM00166466"))
+        obs = _parse_obs_date(item.get("SOLAR_DATE"))
+        if val is not None and obs == trade_date:
             rows.append(
                 {
                     "indicator_id": "cnbond_yield_10y",
-                    "obs_date": _parse_obs_date(item.get("SOLAR_DATE"), trade_date),
-                    "value": float(val),
+                    "obs_date": obs,
+                    "value": val,
                     "frequency": "daily",
                     "source": "eastmoney",
                 }
             )
 
-    try:
-        shibor = fetch_datacenter(
-            client,
-            _SHIBOR_REPORT,
-            _SHIBOR_COLUMNS,
-            filter_expr=f"{_SHIBOR_FILTER}(REPORT_DATE='{ds}')",
-        )
-    except EastMoneyDatacenterError as exc:
-        logger.warning("EastMoney SHIBOR indicator fetch skipped: %s", exc)
-        shibor = []
+    shibor = fetch_datacenter(
+        client,
+        _SHIBOR_REPORT,
+        _SHIBOR_COLUMNS,
+        filter_expr=f"{_SHIBOR_FILTER}(REPORT_DATE='{ds}')",
+    )
     for item in shibor:
-        val = item.get("IR_RATE")
-        if val is not None:
+        val = _finite_float(item.get("IR_RATE"))
+        obs = _parse_obs_date(item.get("REPORT_DATE"))
+        if val is not None and obs == trade_date:
             rows.append(
                 {
                     "indicator_id": "shibor_3m",
-                    "obs_date": _parse_obs_date(item.get("REPORT_DATE"), trade_date),
-                    "value": float(val),
+                    "obs_date": obs,
+                    "value": val,
                     "frequency": "daily",
                     "source": "eastmoney",
                 }
             )
 
-    try:
-        lpr = fetch_datacenter(
-            client,
-            _LPR_REPORT,
-            _LPR_COLUMNS,
-            filter_expr=f"(TRADE_DATE='{ds}')",
-        )
-    except EastMoneyDatacenterError as exc:
-        logger.warning("EastMoney LPR indicator fetch skipped: %s", exc)
-        lpr = []
+    lpr = fetch_datacenter(
+        client,
+        _LPR_REPORT,
+        _LPR_COLUMNS,
+        filter_expr=f"(TRADE_DATE='{ds}')",
+    )
     for item in lpr:
-        val = item.get("LPR1Y")
-        if val is not None:
+        val = _finite_float(item.get("LPR1Y"))
+        obs = _parse_obs_date(item.get("TRADE_DATE"))
+        if val is not None and obs == trade_date:
             rows.append(
                 {
                     "indicator_id": "lpr_1y",
-                    "obs_date": _parse_obs_date(item.get("TRADE_DATE"), trade_date),
-                    "value": float(val),
+                    "obs_date": obs,
+                    "value": val,
                     "frequency": "monthly",
                     "source": "eastmoney",
                 }
@@ -193,19 +189,13 @@ def _eastmoney_monthly(client: EastMoneyClient, trade_date: date) -> list[dict]:
     for indicator_id, spec in _EM_MONTHLY_SERIES.items():
         report = spec["report"]
         value_column = spec["value_column"]
-        try:
-            records = fetch_datacenter(
-                client,
-                report,
-                spec["columns"],
-                sort_columns="REPORT_DATE",
-                sort_types="-1",
-            )
-        except EastMoneyDatacenterError as exc:
-            # Non-fatal, and deliberately louder than the AkShare path it
-            # replaced: a schema rejection here is a column rename worth seeing.
-            logger.warning("EastMoney %s (%s) fetch skipped: %s", indicator_id, report, exc)
-            continue
+        records = fetch_datacenter(
+            client,
+            report,
+            spec["columns"],
+            sort_columns="REPORT_DATE",
+            sort_types="-1",
+        )
 
         for item in records:
             obs = _parse_series_obs_date(item.get("REPORT_DATE") or item.get("TIME"))
@@ -214,9 +204,8 @@ def _eastmoney_monthly(client: EastMoneyClient, trade_date: date) -> list[dict]:
             val = item.get(value_column)
             if val is None:
                 continue
-            try:
-                value = float(val)
-            except (TypeError, ValueError):
+            value = _finite_float(val)
+            if value is None:
                 continue
             rows.append(
                 {
@@ -253,7 +242,10 @@ def _social_financing_rows(trade_date: date, *, config=None) -> list[dict]:
             "frequency": "monthly",
             "source": "pboc",
         }
-        for item in fetch_social_financing(config=config)
+        # This is a canonical write path. A partial set of PBOC years would
+        # look like a complete history to compact and could advance the macro
+        # watermark while leaving an interior gap, so fail the whole fetch.
+        for item in fetch_social_financing(config=config, strict=True)
         if item["obs_date"] <= trade_date
     ]
 
@@ -268,17 +260,19 @@ def fetch_macro_indicators(
     if client is None:
         client = EastMoneyClient(config=config)
 
-    rows = _eastmoney_daily(client, trade_date)
-    # Daily rates first, so an LPR row already published on the daily report
-    # wins over a monthly restatement of the same (indicator_id, obs_date).
-    seen = {(r["indicator_id"], r["obs_date"]) for r in rows}
-    for item in _eastmoney_monthly(client, trade_date):
-        key = (item["indicator_id"], item["obs_date"])
-        if key not in seen:
-            rows.append(item)
-            seen.add(key)
-    if owns:
-        client.close()
+    try:
+        rows = _eastmoney_daily(client, trade_date)
+        # Daily rates first, so an LPR row already published on the daily report
+        # wins over a monthly restatement of the same (indicator_id, obs_date).
+        seen = {(r["indicator_id"], r["obs_date"]) for r in rows}
+        for item in _eastmoney_monthly(client, trade_date):
+            key = (item["indicator_id"], item["obs_date"])
+            if key not in seen:
+                rows.append(item)
+                seen.add(key)
+    finally:
+        if owns:
+            client.close()
 
     for item in _social_financing_rows(trade_date, config=config):
         key = (item["indicator_id"], item["obs_date"])

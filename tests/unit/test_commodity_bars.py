@@ -6,6 +6,7 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 
 from cnequity.adapters.eastmoney.commodity_bars import (
     CONTINUOUS_CONTRACTS,
@@ -40,6 +41,9 @@ def test_fetch_commodity_bars_parses_kline():
             "klines": [
                 "2026-07-20,880.0,885.0,890.0,870.0,1000,123456.0,1.2",
                 "2026-07-21,885.0,892.4,893.5,875.0,1286,234567.0,1.1",
+                "2026-07-22,892.4,895.0,900.0,890.0,1200,345678.0,1.1",
+                "2026-07-22,nan,892.4,893.5,875.0,1286,234567.0,1.1",
+                "2026-07-23,885.0,892.4,893.5,875.0,inf,234567.0,1.1",
             ],
         }
     }
@@ -196,6 +200,69 @@ def test_transient_failures_still_retry():
     assert fake_client.get.call_count == 5
 
 
+def test_strict_eastmoney_failure_does_not_return_partial_success():
+    fake_client = MagicMock()
+    fake_client.get.side_effect = RuntimeError("contract route down")
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = None
+
+    only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
+    with patch(
+        "cnequity.adapters.eastmoney.commodity_bars.EastMoneyClient",
+        return_value=fake_client,
+    ):
+        with pytest.raises(RuntimeError, match="commodity_bars failed for AU0.SHF"):
+            fetch_commodity_bars_range(
+                date(2026, 7, 21),
+                date(2026, 7, 21),
+                contracts=only,
+                include_offshore=False,
+                config=_EastMoneyOnly(),
+                strict=True,
+            )
+
+
+def test_strict_daily_fetch_rejects_partial_contract_set(monkeypatch):
+    contracts = (
+        ("AU0.SHF", "113.AUM", "沪金主连", "SHF"),
+        ("AG0.SHF", "113.AGM", "沪银主连", "SHF"),
+    )
+
+    def fake_sina(start, end, *, contracts=None, config=None, **kwargs):
+        return pl.DataFrame(
+            [
+                {
+                    "symbol": "AU0.SHF",
+                    "name": "沪金主连",
+                    "exchange": "SHF",
+                    "trade_date": start,
+                    "open": 900.0,
+                    "high": 910.0,
+                    "low": 895.0,
+                    "close": 905.0,
+                    "volume": 1000,
+                    "amount": None,
+                    "open_interest": 50.0,
+                    "source": "sina",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        "cnequity.adapters.sina.domestic_futures.fetch_domestic_commodity_bars_range",
+        fake_sina,
+    )
+
+    with pytest.raises(RuntimeError, match="missing 1 domestic contract.*AG0.SHF"):
+        fetch_commodity_bars_range(
+            date(2026, 7, 21),
+            date(2026, 7, 21),
+            contracts=contracts,
+            include_offshore=False,
+            strict=True,
+        )
+
+
 def test_dataset_count_includes_commodity():
     assert "commodity_bars" in DATASETS
 
@@ -268,3 +335,92 @@ def test_sina_contract_mapping_covers_every_contract():
     assert len(derived) == len(CONTINUOUS_CONTRACTS)
     # Deriving from the lake symbol must reproduce the hand-written table.
     assert derived == DOMESTIC_CONTRACTS
+
+
+def test_explicit_empty_domestic_contracts_are_a_noop():
+    from cnequity.adapters.sina.domestic_futures import fetch_domestic_commodity_bars_range
+
+    client = MagicMock()
+    client.get.side_effect = AssertionError("empty contract selection must not fetch defaults")
+    df = fetch_domestic_commodity_bars_range(
+        date(2026, 7, 21), date(2026, 7, 21), contracts=(), client=client
+    )
+    assert df.is_empty()
+
+
+def test_sina_nonfinite_open_interest_is_null():
+    from cnequity.adapters.sina.domestic_futures import fetch_domestic_commodity_bars_range
+
+    client = MagicMock()
+    client.get.return_value = MagicMock(
+        raise_for_status=MagicMock(),
+        text=(
+            'x([{"d":"2026-07-21","o":"900","h":"910","l":"895",'
+            '"c":"905","v":"1000","p":"inf"}])'
+        ),
+    )
+    df = fetch_domestic_commodity_bars_range(
+        date(2026, 7, 21),
+        date(2026, 7, 21),
+        contracts=(("AU0.SHF", "AU0", "沪金主连", "SHF"),),
+        client=client,
+    )
+    assert df.height == 1
+    assert df["open_interest"][0] is None
+
+
+def test_sina_domestic_skips_non_object_rows_and_keeps_valid_rows():
+    from cnequity.adapters.sina.domestic_futures import fetch_domestic_commodity_bars_range
+
+    client = MagicMock()
+    client.get.return_value = MagicMock(
+        raise_for_status=MagicMock(),
+        text=(
+            'x([null,{"d":"2026-07-21","o":"900","h":"910",'
+            '"l":"895","c":"905","v":"1000","p":"50"}])'
+        ),
+    )
+    df = fetch_domestic_commodity_bars_range(
+        date(2026, 7, 21),
+        date(2026, 7, 21),
+        contracts=(('AU0.SHF', 'AU0', '沪金主连', 'SHF'),),
+        client=client,
+    )
+    assert df.height == 1
+
+
+def test_sina_domestic_malformed_jsonp_fails_strict_fetch():
+    from cnequity.adapters.sina.domestic_futures import fetch_domestic_commodity_bars_range
+
+    client = MagicMock()
+    client.get.return_value = MagicMock(
+        raise_for_status=MagicMock(),
+        text="<html>rate limited</html>",
+    )
+    with pytest.raises(RuntimeError, match="domestic commodity_bars failed for AU0.SHF"):
+        fetch_domestic_commodity_bars_range(
+            date(2026, 7, 21),
+            date(2026, 7, 21),
+            contracts=(("AU0.SHF", "AU0", "沪金主连", "SHF"),),
+            client=client,
+            strict=True,
+        )
+
+
+def test_sina_int64_overflow_volume_is_dropped():
+    from cnequity.adapters.sina.domestic_futures import fetch_domestic_commodity_bars_range
+
+    client = MagicMock()
+    client.get.return_value = MagicMock(
+        raise_for_status=MagicMock(),
+        text=(
+            'x([{\"d\":\"2026-07-21\",\"o\":\"900\",\"h\":\"910\",\"l\":\"895\",'
+            '\"c\":\"905\",\"v\":\"1e300\",\"p\":\"50\"}])'
+        ),
+    )
+    assert fetch_domestic_commodity_bars_range(
+        date(2026, 7, 21),
+        date(2026, 7, 21),
+        contracts=(("AU0.SHF", "AU0", "沪金主连", "SHF"),),
+        client=client,
+    ).is_empty()

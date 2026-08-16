@@ -31,7 +31,8 @@ import logging
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from cnequity.adapters.ths.boards import ThsError, _get, _unwrap_jsonp
+from cnequity.adapters.numeric import finite_int64
+from cnequity.adapters.ths.boards import ThsNotFoundError, _finite_float, _get, _unwrap_jsonp
 
 if TYPE_CHECKING:
     from cnequity.config import Config
@@ -61,12 +62,12 @@ def _parse_stock_kline(payload: dict[str, Any], symbol: str) -> list[dict]:
                 {
                     "symbol": symbol,
                     "trade_date": date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8])),
-                    "open": float(parts[1]),
-                    "high": float(parts[2]),
-                    "low": float(parts[3]),
-                    "close": float(parts[4]),
-                    "volume": int(float(parts[5])),
-                    "amount": float(parts[6]),
+                    "open": _finite_float(parts[1]),
+                    "high": _finite_float(parts[2]),
+                    "low": _finite_float(parts[3]),
+                    "close": _finite_float(parts[4]),
+                    "volume": finite_int64(_finite_float(parts[5]), minimum=0),
+                    "amount": _finite_float(parts[6]),
                 }
             )
         except ValueError:
@@ -94,7 +95,7 @@ def fetch_stock_bars(
             payload = _unwrap_jsonp(
                 _get(_STOCK_KLINE_URL.format(code=code, part=year), config=config)
             )
-        except ThsError as exc:
+        except ThsNotFoundError as exc:
             logger.debug("THS %s %s unavailable: %s", symbol, year, exc)
             continue
         for row in _parse_stock_kline(payload, symbol):

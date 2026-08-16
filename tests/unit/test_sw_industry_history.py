@@ -16,6 +16,7 @@ def test_exchange_and_code_to_symbol():
     assert sw.exchange_from_code("600519") == "SH"
     assert sw.exchange_from_code("000001") == "SZ"
     assert sw.exchange_from_code("920001") == "BJ"
+    assert sw.exchange_from_code("830001") == "BJ"
     assert sw._code_to_symbol("600519") == "600519.SH"
     assert sw._code_to_symbol("999999") is None
 
@@ -28,6 +29,12 @@ def test_fetch_sw_industry_intervals(monkeypatch):
                 "计入日期": "2021-01-01",
                 "行业代码": "801780",
                 "更新日期": "2021-01-02",
+            },
+            {
+                "股票代码": "600519",
+                "计入日期": "2021-01-01",
+                "行业代码": "801780",
+                "更新日期": "2021-01-03",
             },
             {
                 "股票代码": "000001",

@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 import polars as pl
 
-from cnequity.domain.symbols import format_symbol, is_all_a_symbol
+from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +73,7 @@ def sw_client(timeout: float = 120.0) -> httpx.Client:
 
 
 def exchange_from_code(code: str) -> str:
-    if code.startswith(("60", "68")):
-        return "SH"
-    if code.startswith(("43", "83", "87", "88", "92")):
-        return "BJ"
-    return "SZ"
+    return infer_exchange_from_code(code)
 
 
 def _code_to_symbol(code: str) -> str | None:
@@ -140,7 +136,11 @@ def fetch_sw_industry_intervals(*, client: httpx.Client | None = None) -> pl.Dat
         )
     if not rows:
         raise RuntimeError("Shenwan industry XLS produced no all_a symbols")
-    return pl.DataFrame(rows).sort(["symbol", "start_date"])
+    return (
+        pl.DataFrame(rows)
+        .unique(subset=["symbol", "start_date", "industry_code"], keep="last", maintain_order=True)
+        .sort(["symbol", "start_date"])
+    )
 
 
 def expand_sw_industry_as_of(

@@ -43,9 +43,14 @@ def test_parses_a_kline_row():
 
 
 def test_skips_malformed_and_short_rows():
-    payload = {"data": "bad;20150105,1,2,3,4,5,6;2015,1,2,3,4,5,6;;"}
+    payload = {
+        "data": (
+            "bad;20150105,1,2,3,4,5,6;20150106,nan,2,3,4,5,6;"
+            "20150107,1,2,3,4,1e300,6;2015,1,2,3,4,5,6;;"
+        )
+    }
     rows = _parse_stock_kline(payload, "600519.SH")
-    # Only the well-formed 8-digit-stamp row survives.
+    # Only the well-formed finite 8-digit-stamp row survives.
     assert [r["trade_date"] for r in rows] == [date(2015, 1, 5)]
 
 
@@ -61,12 +66,20 @@ def test_missing_year_is_skipped_not_fatal(monkeypatch):
 
     def fake_get(url, *, config=None, timeout=20.0):
         if "2014" in url:
-            raise mod.ThsError("404")
+            raise mod.ThsNotFoundError("404")
         return 'x({"data":"20150105,1,2,3,4,5,6"})'
 
     monkeypatch.setattr(mod, "_get", fake_get)
     rows = fetch_stock_bars("600519.SH", date(2014, 1, 1), date(2015, 12, 31))
     assert [r["trade_date"] for r in rows] == [date(2015, 1, 5)]
+
+
+def test_transport_error_is_not_treated_as_a_missing_year(monkeypatch):
+    from cnequity.adapters.ths import stock_bars as mod
+
+    monkeypatch.setattr(mod, "_get", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("500")))
+    with pytest.raises(RuntimeError, match="500"):
+        fetch_stock_bars("600519.SH", date(2015, 1, 1), date(2015, 12, 31))
 
 
 def test_hfq_derived_from_raw_is_continuous_across_a_seam():
@@ -225,7 +238,13 @@ def test_index_kline_rows_carry_frequency():
     from cnequity.adapters.ths.index_bars import _parse_index_kline
 
     rows = _parse_index_kline(
-        {"data": "20151231,3700.00,3740.00,3690.00,3731.00,123456,9876543210.00"},
+        {
+            "data": (
+                "20151231,3700.00,3740.00,3690.00,3731.00,123456,9876543210.00;"
+                "20160104,nan,3740.00,3690.00,3731.00,123456,9876543210.00;"
+                "20160105,3700.00,3740.00,3690.00,3731.00,1e300,9876543210.00"
+            )
+        },
         "000300.SH",
     )
     assert len(rows) == 1

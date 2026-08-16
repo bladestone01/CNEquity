@@ -59,6 +59,15 @@ def test_unpublished_months_are_skipped_not_zeroed():
     ]
 
 
+def test_nonfinite_values_are_skipped():
+    content = _workbook(
+        [["2026.01", "inf"], ["2026.02", "-inf"], ["2026.03", 100.0]]
+    )
+    assert _tables.parse_month_column(content, 1) == [
+        {"obs_date": date(2026, 3, 31), "value": 100.0}
+    ]
+
+
 def test_a_percentage_table_in_the_same_sheet_is_excluded():
     """The 2019 workbook stacks 表2 …增量占比数据 (单位：%) under the 亿元 table.
 
@@ -157,12 +166,37 @@ def test_one_unreachable_year_does_not_lose_the_rest(monkeypatch):
     assert [r["obs_date"] for r in rows] == [date(2026, 1, 31)]
 
 
+def test_strict_mode_rejects_a_partial_yearly_series(monkeypatch):
+    _patch_pipeline(
+        monkeypatch,
+        {2025: [["2025.01", 1.0]], 2026: [["2026.01", 2.0]]},
+    )
+
+    def _flaky(section, **kw):
+        if "2025" in section:
+            raise RuntimeError("timeout")
+        return section.replace("index.html", "wb")
+
+    monkeypatch.setattr(_tables, "workbook_url", _flaky)
+    with pytest.raises(_tables.PBOCSeriesError, match="2025"):
+        sf.fetch_social_financing(start_year=2015, strict=True)
+
+
 def test_unreachable_index_degrades_to_empty(monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(_tables, "year_sections", _boom)
     assert sf.fetch_social_financing() == []
+
+
+def test_strict_mode_rejects_an_unreachable_index(monkeypatch):
+    def _boom(*_a, **_k):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(_tables, "year_sections", _boom)
+    with pytest.raises(_tables.PBOCSeriesError, match="index unavailable"):
+        sf.fetch_social_financing(strict=True)
 
 
 @pytest.mark.parametrize("start_year", [2015, 2026])

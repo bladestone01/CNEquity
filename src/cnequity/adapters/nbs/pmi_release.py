@@ -22,6 +22,7 @@ failure being guarded against.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import date
 
@@ -85,7 +86,10 @@ def find_latest_release(index_html: str | None = None) -> tuple[date, str] | Non
 
 def parse_pmi(release_html: str) -> float | None:
     match = _PMI_RE.search(_plain_text(release_html))
-    return float(match.group(1)) if match else None
+    if not match:
+        return None
+    value = float(match.group(1))
+    return value if math.isfinite(value) and 0.0 <= value <= 100.0 else None
 
 
 def fetch_latest_pmi(*, config=None) -> dict | None:
