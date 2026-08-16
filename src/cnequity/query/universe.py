@@ -102,15 +102,20 @@ def coverage_start_date(
     # theoretical start would claim coverage before the first real row. Mixed
     # layouts and loose root-level files need the same exact scan.
     parts = list_partitions(root, date_col)
-    if parts and all(part.start == part.end for part in parts) and not list(root.glob("*.parquet")):
+    if (
+        dataset != "daily_bars"
+        and parts
+        and all(part.start == part.end for part in parts)
+        and not list(root.glob("*.parquet"))
+    ):
         return coverage_start_from_partitions(root, date_col)
     try:
-        return (
-            scan_parquet_root(root, partition_col=date_col)
-            .select(pl.col(date_col).min())
-            .collect()
-            .item()
+        scan = scan_parquet_root(
+            root,
+            partition_col=date_col,
+            traded_only=dataset == "daily_bars" and date_col == "trade_date",
         )
+        return scan.select(pl.col(date_col).min()).collect().item()
     except FileNotFoundError:
         return None
 
@@ -131,15 +136,20 @@ def coverage_end_date(
     if not root.exists():
         return None
     parts = list_partitions(root, date_col)
-    if parts and all(part.start == part.end for part in parts) and not list(root.glob("*.parquet")):
+    if (
+        dataset != "daily_bars"
+        and parts
+        and all(part.start == part.end for part in parts)
+        and not list(root.glob("*.parquet"))
+    ):
         return parts[-1].end
     try:
-        return (
-            scan_parquet_root(root, partition_col=date_col)
-            .select(pl.col(date_col).max())
-            .collect()
-            .item()
+        scan = scan_parquet_root(
+            root,
+            partition_col=date_col,
+            traded_only=dataset == "daily_bars" and date_col == "trade_date",
         )
+        return scan.select(pl.col(date_col).max()).collect().item()
     except FileNotFoundError:
         return None
 
@@ -209,6 +219,15 @@ def tradable_symbols_on_date(
             )
         return out
 
+    if strict:
+        covered_symbols = set(status.get_column("symbol").drop_nulls().to_list())
+        missing_symbols = sorted(set(out.get_column("symbol").to_list()) - covered_symbols)
+        if missing_symbols:
+            raise UniverseCoverageError(
+                f"all_a universe trading_status is missing {len(missing_symbols)} "
+                f"symbol(s) for {trade_date.isoformat()}, first={missing_symbols[0]}"
+            )
+
     bad = status.filter((~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES)))[
         "symbol"
     ]
@@ -269,13 +288,20 @@ def apply_universe_filter(
         return df.drop(["list_date", "delist_date"], strict=False)
 
     if strict and not df.is_empty():
-        requested_dates = set(df[date_col].unique().to_list())
-        covered_dates = set(status.select("trade_date").unique().collect()["trade_date"].to_list())
-        missing_dates = sorted(requested_dates - covered_dates)
-        if missing_dates:
+        requested = df.select(["symbol", date_col]).unique()
+        covered = (
+            status.select(["symbol", pl.col("trade_date").alias(date_col)])
+            .unique()
+            .collect()
+        )
+        missing = requested.join(covered, on=["symbol", date_col], how="anti")
+        if not missing.is_empty():
+            missing_dates = sorted(missing[date_col].unique().to_list())
+            missing_symbols = sorted(missing["symbol"].unique().to_list())
             raise UniverseCoverageError(
-                f"all_a universe trading_status missing {len(missing_dates)} date(s), "
-                f"first={missing_dates[0].isoformat()}"
+                f"all_a universe trading_status missing {missing.height} "
+                f"symbol-date row(s) across {len(missing_dates)} date(s), "
+                f"first={missing_symbols[0]}@{missing_dates[0].isoformat()}"
             )
 
     bad = (

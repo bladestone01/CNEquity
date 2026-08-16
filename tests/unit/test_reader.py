@@ -158,6 +158,33 @@ def test_load_daily_bars_universe_filters_st_and_suspended(lake):
     assert set(df["symbol"].to_list()) == {"600519.SH"}
 
 
+def test_load_universe_drops_invalid_price_placeholders_before_validation(lake):
+    bars_dir = lake.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 27)],
+            "open": [0.0],
+            "high": [0.0],
+            "low": [0.0],
+            "close": [0.0],
+            "volume": [0],
+            "amount": [0.0],
+            **_prov("eastmoney"),
+        }
+    ).write_parquet(bars_dir / "part-invalid.parquet")
+
+    df = load(
+        "daily_bars",
+        start="2024-06-27",
+        end="2024-06-27",
+        universe="all_a",
+        config=lake,
+    )
+    assert set(df["symbol"].to_list()) == {"600519.SH"}
+    assert df["close"].to_list() == [10.5]
+
+
 def test_load_universe_excludes_cdr_despite_missing_factors(lake):
     """CDR bars without adj_factors must not break strict_adj all_a loads."""
     inst_path = lake.curated_root / "instruments" / "part-merged.parquet"
@@ -244,6 +271,32 @@ def test_all_a_filter_rejects_missing_date_column(tmp_path):
         )
 
 
+def test_strict_all_a_filter_rejects_partial_status_coverage(lake):
+    status_dir = lake.curated_root / "trading_status" / "trade_date=2024-06-27"
+    (status_dir / "part-0.parquet").unlink()
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "trade_date": [date(2024, 6, 27)] * 2,
+            "is_trading": [True, True],
+            "status": ["normal", "normal"],
+            "source": ["eastmoney", "eastmoney"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [datetime(2024, 6, 28, 1, tzinfo=timezone.utc)] * 2,
+        }
+    ).write_parquet(status_dir / "part-partial.parquet")
+
+    with pytest.raises(ValueError, match="missing 1 symbol-date row"):
+        load(
+            "daily_bars",
+            start="2024-06-27",
+            end="2024-06-27",
+            universe="all_a",
+            strict_universe=True,
+            config=lake,
+        )
+
+
 def test_load_daily_bars_qfq_derived_from_hfq(lake):
     bars_dir = lake.curated_root / "daily_bars" / "trade_date=2024-06-26"
     bars_dir.mkdir(parents=True, exist_ok=True)
@@ -297,6 +350,59 @@ def test_load_financial_statement_items_pit(lake):
     assert df.height == 1
     assert df["item_code"][0] == "roe"
     assert df["announce_date"][0] == date(2024, 4, 28)
+
+
+def test_load_pit_date_range_honors_temporal_column(lake):
+    root = lake.curated_root / "announcement_index"
+    for announce_date in (date(2024, 1, 5), date(2024, 6, 28)):
+        part = root / f"announce_date={announce_date.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "announcement_id": [f"id-{announce_date}"],
+                "symbol": ["600519.SH"],
+                "title": ["公告"],
+                "announce_date": [announce_date],
+                "category": ["定期报告"],
+                "url": ["https://example.test"],
+                **_prov("cninfo"),
+            }
+        ).write_parquet(part / "part-0.parquet")
+
+    df = load(
+        "announcement_index",
+        start="2024-06-01",
+        end="2024-06-30",
+        as_of="2024-06-30",
+        config=lake,
+    )
+    assert df["announce_date"].to_list() == [date(2024, 6, 28)]
+
+
+def test_load_pit_date_range_maps_financial_periods(lake):
+    part = lake.curated_root / "financial_statement_items" / "report_period=2024Q2"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "report_period": ["2024Q2"],
+            "statement_type": ["income"],
+            "item_code": ["roe"],
+            "item_value": [0.3],
+            "announce_date": [date(2024, 7, 28)],
+            **_prov(),
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+    df = load(
+        "financial_statement_items",
+        start="2024-04-01",
+        end="2024-06-30",
+        as_of="2024-07-31",
+        items=["roe"],
+        config=lake,
+    )
+    assert df["report_period"].to_list() == ["2024Q2"]
 
 
 def test_load_financial_statement_items_requires_as_of(lake):
@@ -418,6 +524,83 @@ def test_list_datasets_uses_real_dates_inside_coarse_partitions(tmp_path):
 
     assert row["coverage_start"] == date(2026, 7, 20)
     assert row["coverage_end"] == date(2026, 7, 20)
+
+
+def test_list_datasets_keeps_catalog_readable_when_coarse_partition_is_corrupt(tmp_path):
+    import polars as pl
+
+    from cnequity.config import Config
+    from cnequity.query.reader import list_datasets
+
+    cfg = Config(data_root=tmp_path)
+    root = cfg.curated_root / "index_bars" / "trade_date=2026"
+    root.mkdir(parents=True)
+    (root / "broken.parquet").write_bytes(b"not a parquet file")
+
+    row = list_datasets(config=cfg).filter(pl.col("dataset") == "index_bars").to_dicts()[0]
+
+    assert row["has_data"] is True
+    assert row["coverage_start"] is None
+    assert row["coverage_end"] is None
+
+
+def test_list_datasets_does_not_count_empty_daily_bar_partition_as_coverage(tmp_path):
+    import polars as pl
+
+    from cnequity.config import Config
+    from cnequity.query.reader import list_datasets
+
+    cfg = Config(data_root=tmp_path)
+    root = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
+    root.mkdir(parents=True)
+    pl.DataFrame(schema={"symbol": pl.String, "trade_date": pl.Date, "volume": pl.Int64}).write_parquet(
+        root / "empty.parquet"
+    )
+
+    row = list_datasets(config=cfg).filter(pl.col("dataset") == "daily_bars").to_dicts()[0]
+
+    assert row["has_data"] is True
+    assert row["coverage_start"] is None
+    assert row["coverage_end"] is None
+
+
+def test_list_datasets_clamps_partial_derived_dense_tip(tmp_path):
+    from cnequity.query.reader import list_datasets
+
+    cfg = Config(data_root=tmp_path)
+    calendar = cfg.curated_root / "trading_calendar" / "trade_date=2026"
+    calendar.mkdir(parents=True)
+    sessions = [date(2026, 8, 3), date(2026, 8, 4)]
+    pl.DataFrame(
+        {
+            "trade_date": sessions,
+            "is_trading": [True, True],
+        }
+    ).write_parquet(calendar / "part-0.parquet")
+
+    root = cfg.curated_root / "market_breadth" / "trade_date=2026"
+    root.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [sessions[0]] * 7 + [sessions[1]],
+            "metric_id": [
+                "advance_count",
+                "decline_count",
+                "flat_count",
+                "limit_up_count",
+                "limit_down_count",
+                "advance_ratio",
+                "total_count",
+                "advance_count",
+            ],
+            "value": [1.0] * 8,
+        }
+    ).write_parquet(root / "part-0.parquet")
+
+    row = list_datasets(config=cfg).filter(pl.col("dataset") == "market_breadth").to_dicts()[0]
+
+    assert row["coverage_start"] == sessions[0]
+    assert row["coverage_end"] == sessions[0]
 
 
 def test_dataset_schema_contract():

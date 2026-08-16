@@ -104,7 +104,8 @@ instruments 每次日更从代码空间扫描的「在市但缺失」桶补齐�
 
 ## PIT（Point-in-Time）
 
-PIT 数据集：`financial_statement_items`、`announcement_index`。
+PIT 数据集：`financial_statement_items`、`announcement_index`、
+`share_structure`、`shareholder_counts`、`top_holders`。
 
 ```python
 items = load(
@@ -117,6 +118,11 @@ items = load(
 - 过滤 `announce_date <= as_of`
 - 同一 `(symbol, report_period, item)` 取 `announce_date` 最新一行
 - 禁止用 `end=` 代替 `as_of` 做财报对齐
+
+PIT 仍可使用 `start` / `end` 限定数据自身的日期列：公告与股东数据按
+`announce_date` / `change_date` / `count_date` / `record_date` 过滤；财报的
+`report_period` 是季度字符串，会按与日期边界相交的季度过滤。`as_of` 仍然是
+公告可见时间，不能被日期窗口替代。
 
 `announce_date` 在主键里，所以财报修订是**新增一版**而不是覆盖原值：同一科目可以同时存在
 首发值和修订值。默认只返回 `as_of` 当时生效的那一版；要看修订本身（修订幅度和方向本身

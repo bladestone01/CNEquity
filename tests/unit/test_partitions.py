@@ -160,6 +160,29 @@ def test_range_query_keeps_root_files_in_a_mixed_layout(tmp_path):
     assert df["trade_date"].to_list() == [date(2024, 6, 28)]
 
 
+def test_reads_legacy_and_current_files_with_different_columns(tmp_path):
+    root = tmp_path / "curated" / "daily_bars"
+    root.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["600000.SH"], "trade_date": [date(2024, 6, 27)], "close": [10.0]}
+    ).write_parquet(root / "legacy.parquet")
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "close": [10.5],
+            "volume": [100],
+        }
+    ).write_parquet(root / "current.parquet")
+
+    df = collect_parquet_root(root, partition_col="trade_date")
+
+    assert sorted(df["trade_date"].to_list()) == [date(2024, 6, 27), date(2024, 6, 28)]
+    assert df.sort("trade_date")["volume"].to_list() == [None, 100]
+    traded = collect_parquet_root(root, partition_col="trade_date", traded_only=True)
+    assert sorted(traded["trade_date"].to_list()) == [date(2024, 6, 27), date(2024, 6, 28)]
+
+
 def test_window_outside_coverage_returns_empty_not_error(tmp_path):
     root = tmp_path / "curated" / "index_bars"
     _write_partition(root, "trade_date", "2024", [date(2024, 3, 1)])

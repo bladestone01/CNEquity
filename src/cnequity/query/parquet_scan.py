@@ -132,6 +132,50 @@ def partition_files_in_range(
     return files
 
 
+def _scan_parquet_paths(
+    files: list[Path],
+    *,
+    hive: bool,
+    missing_columns: str = "raise",
+    extra_columns: str = "raise",
+    traded_only: bool = False,
+) -> pl.LazyFrame:
+    """Scan files, preserving columns across legacy/current schema mixes.
+
+    ``pl.scan_parquet([old, new])`` uses one file's schema as the contract and
+    raises when another file adds a column (for example legacy daily bars before
+    ``volume``). Keep the normal multi-file scan for the overwhelmingly common
+    uniform case; only build a diagonal lazy union when footer schemas differ.
+    """
+    paths = [str(path) for path in files]
+    if not paths:
+        raise FileNotFoundError("no parquet files to scan")
+    try:
+        schemas = [pl.read_parquet_schema(path) for path in paths]
+    except Exception:
+        # Keep construction lazy when a file is corrupt. Dataset audit first
+        # identifies and removes unreadable files before collecting the frame;
+        # forcing footer reads here would abort that isolation path early.
+        return pl.scan_parquet(
+            paths,
+            hive_partitioning=hive,
+            missing_columns=missing_columns,
+            extra_columns=extra_columns,
+        )
+    if all(schema == schemas[0] for schema in schemas[1:]):
+        lf = pl.scan_parquet(paths, hive_partitioning=hive)
+        if traded_only and "volume" in schemas[0]:
+            lf = lf.filter(pl.col("volume") > 0)
+        return lf
+    scans: list[pl.LazyFrame] = []
+    for path, schema in zip(paths, schemas, strict=True):
+        scan = pl.scan_parquet(path, hive_partitioning=hive)
+        if traded_only and "volume" in schema:
+            scan = scan.filter(pl.col("volume") > 0)
+        scans.append(scan)
+    return pl.concat(scans, how="diagonal_relaxed")
+
+
 def scan_parquet_root(
     root: Path,
     *,
@@ -140,6 +184,7 @@ def scan_parquet_root(
     end: date | None = None,
     symbols: list[str] | None = None,
     hive: bool | None = None,
+    traded_only: bool = False,
 ) -> pl.LazyFrame:
     if not dataset_has_parquet(root):
         msg = f"no parquet data under {root}"
@@ -157,22 +202,26 @@ def scan_parquet_root(
             # the real schema rather than raising, so callers can filter freely.
             all_files = partition_files_in_range(root, partition_col)
             if all_files:
-                return pl.scan_parquet(
-                    [str(f) for f in all_files], hive_partitioning=use_hive
+                return _scan_parquet_paths(
+                    all_files, hive=use_hive, traded_only=traded_only
                 ).filter(pl.lit(False))
-            return pl.scan_parquet(parquet_glob(root), hive_partitioning=False).filter(
-                pl.lit(False)
-            )
-        lf = pl.scan_parquet([str(f) for f in files], hive_partitioning=use_hive)
+            return _scan_parquet_paths(
+                sorted(root.rglob("*.parquet")), hive=False, traded_only=traded_only
+            ).filter(pl.lit(False))
+        lf = _scan_parquet_paths(files, hive=use_hive, traded_only=traded_only)
     if lf is None:
         if partitioned and partition_col:
             files = partition_files_in_range(root, partition_col)
             if files:
-                lf = pl.scan_parquet([str(f) for f in files], hive_partitioning=use_hive)
+                lf = _scan_parquet_paths(files, hive=use_hive, traded_only=traded_only)
             else:
-                lf = pl.scan_parquet(parquet_glob(root), hive_partitioning=False)
+                lf = _scan_parquet_paths(
+                    sorted(root.rglob("*.parquet")), hive=False, traded_only=traded_only
+                )
         else:
-            lf = pl.scan_parquet(parquet_glob(root), hive_partitioning=use_hive)
+            lf = _scan_parquet_paths(
+                sorted(root.rglob("*.parquet")), hive=use_hive, traded_only=traded_only
+            )
 
     # Still filter on the column: a coarse partition covers days outside the
     # window, and pruning alone would over-return at the period edges.
@@ -196,6 +245,19 @@ def scan_parquet_files(
 ) -> pl.LazyFrame:
     if not files:
         return pl.LazyFrame()
+    if missing_columns == "raise" and extra_columns == "raise":
+        # Keep the fast path for uniform files while making the default reader
+        # safe for a lake that is mid-schema migration.
+        return _scan_parquet_paths(files, hive=hive)
+    if missing_columns == "insert" and extra_columns == "ignore":
+        # A native scan chooses one file's schema and ``extra_columns=ignore``
+        # can silently discard a newly-added field when an old file sorts first.
+        return _scan_parquet_paths(
+            files,
+            hive=hive,
+            missing_columns=missing_columns,
+            extra_columns=extra_columns,
+        )
     return pl.scan_parquet(
         [str(path) for path in files],
         hive_partitioning=hive,
@@ -212,6 +274,7 @@ def collect_parquet_root(
     end: date | None = None,
     symbols: list[str] | None = None,
     hive: bool | None = None,
+    traded_only: bool = False,
 ) -> pl.DataFrame:
     return scan_parquet_root(
         root,
@@ -220,6 +283,7 @@ def collect_parquet_root(
         end=end,
         symbols=symbols,
         hive=hive,
+        traded_only=traded_only,
     ).collect()
 
 

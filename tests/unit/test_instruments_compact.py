@@ -455,6 +455,34 @@ def test_strict_tradable_universe_requires_status_coverage(tmp_path):
         tradable_symbols_on_date(cfg, date(2024, 6, 28), strict=True)
 
 
+def test_strict_tradable_universe_rejects_partial_status_coverage(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    curated_path = cfg.curated_root / "instruments" / "part-merged.parquet"
+    curated_path.parent.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            _instrument("600519.SH", list_date=date(2001, 8, 27)),
+            _instrument("600000.SH", list_date=date(1999, 11, 10)),
+        ]
+    ).write_parquet(curated_path)
+    status_path = cfg.curated_root / "trading_status" / "trade_date=2024-06-28" / "part-0.parquet"
+    status_path.parent.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "is_trading": [True],
+            "status": ["normal"],
+            "source": ["eastmoney"],
+            "data_version": ["v1"],
+            "fetched_at": [date(2024, 6, 28)],
+        }
+    ).write_parquet(status_path)
+
+    with pytest.raises(UniverseCoverageError, match=r"missing 1 symbol\(s\)"):
+        tradable_symbols_on_date(cfg, date(2024, 6, 28), strict=True)
+
+
 def test_tdx_instrument_frame_marks_cdr_asset_type():
     from cnequity.adapters.tdx_protocol.client import _filter_instrument_frame
 

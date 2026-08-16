@@ -116,14 +116,29 @@ def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None,
         return parts[0].start, parts[-1].end
     if parts and spec.query_date_col != spec.partition_col and not root_files:
         return parts[0].start, parts[-1].end
-    if parts and all(part.start == part.end for part in parts) and not root_files:
+    if (
+        dataset != "daily_bars"
+        and parts
+        and all(part.start == part.end for part in parts)
+        and not root_files
+    ):
         return parts[0].start, parts[-1].end
 
     date_col = spec.query_date_col
     if date_col is None:
         return None, None
     try:
-        lf = scan_parquet_root(root, partition_col=spec.partition_col, hive=False)
+        day_hive = bool(
+            parts
+            and all(part.start == part.end for part in parts)
+            and not root_files
+        )
+        lf = scan_parquet_root(
+            root,
+            partition_col=spec.partition_col,
+            hive=day_hive,
+            traded_only=dataset == "daily_bars",
+        )
         if date_col not in lf.collect_schema().names():
             return None, None
         bounds = (
@@ -136,6 +151,12 @@ def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None,
         )
     except FileNotFoundError:
         return None, None
+    if spec.name in {"market_breadth", "industry_index"} and bounds[1] is not None:
+        from cnequity.quality.verify import last_contiguous_dense_date
+
+        safe_end = last_contiguous_dense_date(config, spec)
+        if safe_end is not None:
+            return bounds[0], min(bounds[1], safe_end)
     return bounds[0], bounds[1]
 
 
@@ -146,6 +167,8 @@ def _read_dataset(
     start: date | None = None,
     end: date | None = None,
     symbols: list[str] | None = None,
+    universe: UniverseType | None = None,
+    strict_universe: bool = False,
 ) -> pl.DataFrame:
     root = _dataset_root(config, dataset)
     if not dataset_has_parquet(root):
@@ -166,6 +189,31 @@ def _read_dataset(
         raise ReaderError(
             f"no parquet data for dataset {dataset!r} under {root} (data_root={config.data_root})"
         ) from exc
+    # Apply semantic scope before strict schema validation.  Live snapshots
+    # legitimately contain retired, future-listed, and unavailable quote
+    # rows; those rows are outside an ``all_a`` query and must not make a
+    # scoped research read fail before the scope can remove them.
+    if universe and dataset == "daily_bars":
+        df = apply_universe_filter(
+            df,
+            config,
+            universe=universe,
+            date_col=DATE_COLUMNS[dataset],
+            strict=strict_universe,
+        )
+        price_cols = [col for col in ("open", "high", "low", "close") if col in df.columns]
+        if price_cols and not df.is_empty():
+            usable = pl.all_horizontal(pl.col(col) > 0 for col in price_cols)
+            dropped = df.filter(~usable).height
+            if dropped:
+                logger.warning(
+                    "daily_bars: dropped %d non-positive-price placeholder row(s) "
+                    "from universe=%s",
+                    dropped,
+                    universe,
+                )
+                df = df.filter(usable)
+
     if dataset in DATASET_SCHEMAS:
         df = validate_dataframe(df, dataset)
         return dedupe_by_primary_key(df, dataset)
@@ -186,6 +234,40 @@ def _apply_date_range(
     if end is not None:
         df = df.filter(pl.col(col) <= end)
     return df
+
+
+def _quarter_label(value: date) -> str:
+    """Map a calendar boundary to the report-period label it intersects."""
+    quarter = (value.month - 1) // 3 + 1
+    return f"{value.year}Q{quarter}"
+
+
+def _apply_pit_date_range(
+    df: pl.DataFrame,
+    dataset: str,
+    start: date | None,
+    end: date | None,
+) -> pl.DataFrame:
+    """Apply ``start``/``end`` to PIT rows without comparing dates to strings."""
+    if df.is_empty() or (start is None and end is None):
+        return df
+    column = DATE_COLUMNS.get(dataset)
+    if column is None or column not in df.columns:
+        return df
+    dtype = df.schema[column]
+    if dtype == pl.String:
+        if dataset != "financial_statement_items" or column != "report_period":
+            raise ReaderError(
+                f"{dataset}: start/end cannot filter non-temporal date column {column!r}"
+            )
+        if start is not None:
+            df = df.filter(pl.col(column) >= _quarter_label(start))
+        if end is not None:
+            df = df.filter(pl.col(column) <= _quarter_label(end))
+        return df
+    if dtype not in (pl.Date, pl.Datetime):
+        raise ReaderError(f"{dataset}: unsupported date-column type for {column!r}: {dtype}")
+    return _apply_date_range(df, dataset, start, end)
 
 
 def _apply_symbol_filter(df: pl.DataFrame, symbols: list[str] | None) -> pl.DataFrame:
@@ -392,23 +474,22 @@ def load(
             raise ReaderError(f"{dataset} requires as_of= for point-in-time queries")
         df = _read_dataset(cfg, dataset, symbols=symbols)
         df = _apply_pit_filters(df, dataset, as_of=as_of_d, items=items, all_vintages=all_vintages)
+        df = _apply_pit_date_range(df, dataset, start_d, end_d)
         df = _apply_symbol_filter(df, symbols)
         sort_cols = [
             c for c in ("announce_date", "symbol", "report_period", "item_code") if c in df.columns
         ]
         return df.sort(sort_cols) if sort_cols else df
 
-    df = _read_dataset(cfg, dataset, start=start_d, end=end_d, symbols=symbols)
-
-    if universe and dataset == "daily_bars":
-        date_col = DATE_COLUMNS[dataset]
-        df = apply_universe_filter(
-            df,
-            cfg,
-            universe=universe,
-            date_col=date_col,
-            strict=strict_universe,
-        )
+    df = _read_dataset(
+        cfg,
+        dataset,
+        start=start_d,
+        end=end_d,
+        symbols=symbols,
+        universe=universe,
+        strict_universe=strict_universe,
+    )
 
     # Intraday datasets join on (symbol, trade_date) like the daily bars do: a
     # corporate action applies to a whole session, so every bar in a day shares
@@ -503,7 +584,14 @@ def list_datasets(
         has_data = dataset_has_parquet(root)
         first_part = last_part = None
         if has_data and spec.partition_col:
-            first_part, last_part = _catalog_coverage_bounds(cfg, name)
+            try:
+                first_part, last_part = _catalog_coverage_bounds(cfg, name)
+            except (OSError, pl.exceptions.PolarsError, ValueError) as exc:
+                # The quality audit owns the detailed unreadable-file finding.
+                # Keep the catalog endpoint usable and avoid presenting a
+                # fabricated coverage bound when a coarse/mixed partition is
+                # damaged.
+                logger.warning("catalog coverage unavailable for %s: %s", name, exc)
         rows.append(
             {
                 "dataset": name,
