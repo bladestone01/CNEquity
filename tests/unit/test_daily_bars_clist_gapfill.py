@@ -284,6 +284,78 @@ def test_tip_tdx_fail_clist_recovers_step(tmp_path, monkeypatch):
     )
 
 
+def test_tip_total_loss_still_raises(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 7, 24)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
+        lambda trade_date, symbols=None, client=None, config=None: pl.DataFrame(),
+    )
+    with pytest.raises(RuntimeError, match="produced no staged tip rows"):
+        _finish_daily_bars(
+            cfg,
+            tip,
+            run_id,
+            start=tip,
+            end=tip,
+            expected_tdx_symbols=["600519.SH", "000001.SZ"],
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": ["600519.SH", "000001.SZ"],
+            },
+            sina_result=None,
+        )
+
+
+def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, monkeypatch):
+    # A symbol can still be legitimately missing after both TDX and the clist
+    # gap-fill had a shot at it (e.g. a trading halt/suspension). That must
+    # not fail the whole market-wide tip — regression test for a check that
+    # used to raise on any single missing key, every day some symbol halted.
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 7, 24)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
+        lambda trade_date, symbols=None, client=None, config=None: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [tip],
+                "open": [10.0],
+                "high": [11.0],
+                "low": [9.0],
+                "close": [10.5],
+                "volume": [100],
+                "amount": [1000.0],
+            }
+        ),
+    )
+    result = _finish_daily_bars(
+        cfg,
+        tip,
+        run_id,
+        start=tip,
+        end=tip,
+        expected_tdx_symbols=["600519.SH", "000001.SZ"],
+        tdx_result={
+            "rows_read": 0,
+            "rows_written": 0,
+            "had_error": True,
+            "failed_symbols": ["600519.SH", "000001.SZ"],
+        },
+        sina_result=None,
+    )
+    assert result["rows_written"] == 1
+    findings = result["context_updates"]["audit_findings"]
+    assert any(
+        f["check"] == "daily_bars_tip_missing_symbols" and "000001.SZ" in f["message"]
+        for f in findings
+    )
+
+
 def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     run_id = Manifest(cfg.manifest_path).start_run("backfill")

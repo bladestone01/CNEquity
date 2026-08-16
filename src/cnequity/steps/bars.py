@@ -383,13 +383,36 @@ def _finish_daily_bars(
         staged = _staged_daily_bar_symbols(config, run_id, trade_date)
         expected_symbols = set(expected_tdx_symbols) | set(expected_fallback_symbols or [])
         missing_staged = expected_symbols - staged
-        if missing_staged:
+        if expected_symbols and not staged:
             raise RuntimeError(
-                f"daily_bars {trade_date}: {len(missing_staged)} expected tip key(s) "
-                "remain missing after TDX and EastMoney clist gap-fill"
+                f"daily_bars {trade_date}: TDX failed and EastMoney clist gap-fill "
+                "produced no staged tip rows"
             )
-        # A tip is usable only after every expected TDX key is staged. Partial
-        # clist recovery must keep the step failed so the next run retries it.
+        if missing_staged:
+            # A handful of keys can legitimately stay missing (suspension,
+            # trading halt) even after TDX and the clist gap-fill both had a
+            # shot at them. Failing the whole market-wide tip over that would
+            # make every run fail on any given day some symbol is halted;
+            # surface it as a finding instead, same as the multi-day kline
+            # gap-fill already does for its own leftover keys.
+            preview = ", ".join(sorted(missing_staged)[:8])
+            suffix = "..." if len(missing_staged) > 8 else ""
+            findings.append(
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_tip_missing_symbols",
+                    "message": (
+                        f"daily_bars {trade_date}: {len(missing_staged)} expected tip "
+                        "key(s) remain missing after TDX and EastMoney clist gap-fill "
+                        f"(may be suspended): {preview}{suffix}"
+                    ),
+                    "missing_keys": len(missing_staged),
+                }
+            )
+        # A tip is usable once at least one expected key is staged; a handful
+        # of legitimately-missing symbols must not fail the whole run — see
+        # the daily_bars_tip_missing_symbols finding above.
         had_error = False
     elif had_error:
         raise RuntimeError("daily_bars: one or more symbol batches failed")
