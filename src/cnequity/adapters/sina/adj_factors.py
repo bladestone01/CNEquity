@@ -29,7 +29,10 @@ def to_sina_symbol(symbol: str) -> str:
 
 def _normalize_sina_rows(data: list) -> list[dict]:
     rows: list[dict] = []
-    for item in data:
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            logger.warning("Sina adj factors: skipping non-object row %s", index)
+            continue
         row = dict(item)
         if "d" in row and "date" not in row:
             row["date"] = row.pop("d")
@@ -46,10 +49,17 @@ def _parse_sina_factor_payload(text: str) -> list[dict]:
     if not match:
         raise ValueError("Sina adj factor response missing JSON payload")
     payload = json.loads(match.group(1))
+    if not isinstance(payload, dict):
+        raise ValueError("Sina adj factor response payload is not an object")
     data = payload.get("data")
     if not data:
         raise ValueError("Sina adj factor response has empty data")
-    return _normalize_sina_rows(data)
+    if not isinstance(data, list):
+        raise ValueError("Sina adj factor response data is not a list")
+    rows = _normalize_sina_rows(data)
+    if not rows:
+        raise ValueError("Sina adj factor response has no valid rows")
+    return rows
 
 
 def fetch_adj_factor_series(
@@ -83,10 +93,28 @@ def fetch_adj_factor_series(
 
     sina_col = _SINA_FACTOR_COLS[adjust_type]
     df = pl.DataFrame(rows).rename({"date": "trade_date", sina_col: "sina_factor"})
-    df = df.with_columns(pl.col("trade_date").str.to_date("%Y-%m-%d"))
+    df = df.with_columns(
+        pl.col("trade_date").str.to_date("%Y-%m-%d", strict=False)
+    ).filter(pl.col("trade_date").is_not_null())
+    if df.is_empty():
+        raise ValueError(f"Sina {adjust_type} factor series contains no valid trade dates")
     df = df.with_columns(pl.col("sina_factor").cast(pl.Float64))
+    invalid = df.filter(
+        pl.col("sina_factor").is_null()
+        | ~pl.col("sina_factor").is_finite()
+        | (pl.col("sina_factor") <= 0)
+    )
+    if not invalid.is_empty():
+        raise ValueError(
+            f"Sina {adjust_type} factor series contains "
+            f"{invalid.height} non-positive or non-finite value(s)"
+        )
     if adjust_type == "qfq":
         df = df.with_columns((1.0 / pl.col("sina_factor")).alias("factor"))
     else:
         df = df.with_columns(pl.col("sina_factor").alias("factor"))
-    return df.select(["trade_date", "factor"]).sort("trade_date")
+    return (
+        df.select(["trade_date", "factor"])
+        .unique(subset=["trade_date"], keep="last")
+        .sort("trade_date")
+    )

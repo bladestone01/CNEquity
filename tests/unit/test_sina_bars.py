@@ -18,6 +18,17 @@ def test_parse_payload_null_and_bad_json():
         sina._parse_payload("not-json")
 
 
+def test_parse_payload_skips_non_object_rows():
+    assert sina._parse_payload('[null,{"day":"2024-01-02"}]') == [
+        {"day": "2024-01-02"}
+    ]
+
+
+def test_parse_payload_rejects_non_list_json():
+    with pytest.raises(sina.SinaBarsError, match="not a list"):
+        sina._parse_payload('{"data": []}')
+
+
 def test_symbol_exists_and_fetch_filters(monkeypatch):
     rows = [
         {
@@ -53,6 +64,79 @@ def test_symbol_exists_and_fetch_filters(monkeypatch):
     assert df.height == 1
     assert df["volume"][0] == 2500  # 股 passes through — Sina already reports shares
     assert df["amount"][0] is None
+
+
+def test_fetch_skips_nonfinite_numeric_rows(monkeypatch):
+    monkeypatch.setattr(
+        sina,
+        "_request",
+        lambda symbol, datalen, client: [
+            {
+                "day": "2024-01-02",
+                "open": "nan",
+                "high": "11",
+                "low": "9",
+                "close": "10",
+                "volume": "100",
+            },
+            {
+                "day": "2024-01-03",
+                "open": "10",
+                "high": "11",
+                "low": "9",
+                "close": "10",
+                "volume": "100",
+            },
+        ],
+    )
+    df = sina.fetch_daily_bars_sina("600519.SH")
+    assert df["trade_date"].to_list() == [date(2024, 1, 3)]
+
+
+def test_fetch_dedupes_source_rows_by_trade_date(monkeypatch):
+    monkeypatch.setattr(
+        sina,
+        "_request",
+        lambda symbol, datalen, client: [
+            {
+                "day": "2024-01-03",
+                "open": "10",
+                "high": "11",
+                "low": "9",
+                "close": "10.5",
+                "volume": "100",
+            },
+            {
+                "day": "2024-01-03",
+                "open": "10.1",
+                "high": "11.1",
+                "low": "9.1",
+                "close": "10.6",
+                "volume": "110",
+            },
+        ],
+    )
+    df = sina.fetch_daily_bars_sina("600519.SH")
+    assert df.height == 1
+    assert df["close"][0] == 10.6
+
+
+def test_fetch_skips_int64_overflow_volume(monkeypatch):
+    monkeypatch.setattr(
+        sina,
+        "_request",
+        lambda symbol, datalen, client: [
+            {
+                "day": "2024-01-02",
+                "open": "10",
+                "high": "11",
+                "low": "9",
+                "close": "10",
+                "volume": "1e300",
+            }
+        ],
+    )
+    assert sina.fetch_daily_bars_sina("600519.SH").is_empty()
 
 
 def test_fetch_unknown_symbol_empty_schema(monkeypatch):

@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import date, timedelta
 
 import httpx
 import polars as pl
 
+from cnequity.adapters.numeric import finite_int64
 from cnequity.adapters.sina.adj_factors import to_sina_symbol
 from cnequity.domain.schemas import DAILY_BARS_SCHEMA
 
@@ -76,9 +78,20 @@ def _parse_payload(text: str) -> list[dict] | None:
     if not text or text == "null":
         return None
     try:
-        return json.loads(text)
+        payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise SinaBarsError(f"unparseable Sina kline payload: {text[:120]!r}") from exc
+    if not isinstance(payload, list):
+        raise SinaBarsError(
+            f"Sina kline payload is not a list: {type(payload).__name__}"
+        )
+    rows: list[dict] = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            logger.warning("Sina kline: skipping non-object payload row %s", index)
+            continue
+        rows.append(item)
+    return rows
 
 
 def _request(
@@ -165,7 +178,7 @@ def symbol_exists(symbol: str, *, client: httpx.Client | None = None) -> date | 
     for row in reversed(_without_synthetic_terminal_copies(rows)):
         trade_date = _row_date(row)
         try:
-            volume = float(row["volume"])
+            volume = finite_int64(float(row["volume"]), minimum=1)
         except (KeyError, TypeError, ValueError):
             continue
         if trade_date is not None and volume > 0:
@@ -196,15 +209,22 @@ def fetch_daily_bars_sina(
     for item in rows:
         try:
             trade_date = date.fromisoformat(str(item["day"])[:10])
+            open_ = float(item["open"])
+            high = float(item["high"])
+            low = float(item["low"])
+            close = float(item["close"])
+            volume = float(item["volume"])
+            if not all(math.isfinite(value) for value in (open_, high, low, close, volume)):
+                raise ValueError("non-finite numeric value")
             out.append(
                 {
                     "symbol": symbol,
                     "trade_date": trade_date,
-                    "open": float(item["open"]),
-                    "high": float(item["high"]),
-                    "low": float(item["low"]),
-                    "close": float(item["close"]),
-                    "volume": int(float(item["volume"])),
+                    "open": open_,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": finite_int64(volume, minimum=0),
                     # Sina does not report turnover; leave it null rather than
                     # inventing close × volume, which is not the traded amount.
                     "amount": None,
@@ -219,4 +239,4 @@ def fetch_daily_bars_sina(
         df = df.filter(pl.col("trade_date") >= start)
     if end is not None:
         df = df.filter(pl.col("trade_date") <= end)
-    return df.sort("trade_date")
+    return df.unique(subset=["symbol", "trade_date"], keep="last").sort("trade_date")

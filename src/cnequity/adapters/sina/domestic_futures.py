@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from datetime import date
 from typing import Any
 
 import httpx
 import polars as pl
+
+from cnequity.adapters.numeric import finite_int64
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,10 @@ _URL = (
     "x/InnerFuturesNewService.getDailyKLine"
 )
 _ARRAY = re.compile(r"\[.*\]", re.S)
+
+
+class SinaFuturesPayloadError(RuntimeError):
+    """Raised when Sina answers with a non-data page or malformed JSONP."""
 
 # (lake_symbol, sina_symbol, name, exchange) — mirrors CONTINUOUS_CONTRACTS in
 # the EastMoney adapter one-for-one, so the lake's symbols do not change.
@@ -64,20 +71,27 @@ def _f(x: Any) -> float | None:
     if x is None or x == "":
         return None
     try:
-        return float(x)
+        parsed = float(x)
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _parse_jsonp(text: str) -> list[dict]:
     match = _ARRAY.search(text or "")
     if not match:
-        return []
+        raise SinaFuturesPayloadError("Sina domestic futures response has no JSONP array")
     try:
         payload = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []
-    return payload if isinstance(payload, list) else []
+    except json.JSONDecodeError as exc:
+        raise SinaFuturesPayloadError(
+            "Sina domestic futures response contains invalid JSONP"
+        ) from exc
+    if not isinstance(payload, list):
+        raise SinaFuturesPayloadError(
+            "Sina domestic futures response JSONP payload is not a list"
+        )
+    return payload
 
 
 def _parse_rows(
@@ -90,7 +104,14 @@ def _parse_rows(
     end: date,
 ) -> list[dict]:
     rows: list[dict] = []
-    for item in payload:
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            logger.warning(
+                "domestic commodity_bars: skipping non-object row %s for %s",
+                index,
+                symbol,
+            )
+            continue
         raw = item.get("d")
         if not raw:
             continue
@@ -101,12 +122,27 @@ def _parse_rows(
         if trade_date < start or trade_date > end:
             continue
         close = _f(item.get("c"))
-        if close is None or close <= 0:
-            continue
         open_ = _f(item.get("o"))
         high = _f(item.get("h"))
         low = _f(item.get("l"))
         vol = _f(item.get("v"))
+        if (
+            close is None
+            or open_ is None
+            or high is None
+            or low is None
+            or vol is None
+            or not all(math.isfinite(v) for v in (open_, high, low, close, vol))
+            or min(open_, high, low, close) <= 0
+            or vol < 0
+        ):
+            logger.warning("domestic commodity_bars: malformed row for %s: %r", symbol, item)
+            continue
+        try:
+            volume = finite_int64(vol, minimum=0)
+        except ValueError:
+            logger.warning("domestic commodity_bars: malformed volume for %s: %r", symbol, item)
+            continue
         # `p` is open interest (持仓量) on this feed; `s` is settlement.
         oi = _f(item.get("p"))
         rows.append(
@@ -115,11 +151,11 @@ def _parse_rows(
                 "name": name,
                 "exchange": exchange,
                 "trade_date": trade_date,
-                "open": open_ if open_ and open_ > 0 else close,
-                "high": high if high and high > 0 else close,
-                "low": low if low and low > 0 else close,
+                "open": open_,
+                "high": high,
+                "low": low,
                 "close": close,
-                "volume": int(vol) if vol is not None else 0,
+                "volume": volume,
                 # Sina serves no turnover on this endpoint. Left null rather
                 # than derived from price × volume: a main-continuous series
                 # splices contracts, so that product is not the session's money.
@@ -138,11 +174,13 @@ def fetch_domestic_commodity_bars_range(
     contracts: tuple[tuple[str, str, str, str], ...] | None = None,
     client: httpx.Client | None = None,
     config=None,
+    strict: bool = False,
 ) -> pl.DataFrame:
     """Domestic main-continuous daily OHLC for [*start*, *end*] (inclusive)."""
     if start > end:
         return pl.DataFrame()
-    universe = contracts or DOMESTIC_CONTRACTS
+    # ``None`` selects the default contracts; ``()`` is an intentional no-op.
+    universe = DOMESTIC_CONTRACTS if contracts is None else contracts
     owns = client is None
     if client is None:
         client = httpx.Client(
@@ -164,7 +202,7 @@ def fetch_domestic_commodity_bars_range(
                 payload = _parse_jsonp(resp.text)
                 if not payload:
                     logger.warning(
-                        "domestic commodity_bars: unparseable payload for %s (%s)",
+                        "domestic commodity_bars: empty payload for %s (%s)",
                         symbol,
                         sina_sym,
                     )
@@ -193,6 +231,10 @@ def fetch_domestic_commodity_bars_range(
                     type(exc).__name__,
                     exc,
                 )
+                if strict:
+                    raise RuntimeError(
+                        f"domestic commodity_bars failed for {symbol} ({sina_sym})"
+                    ) from exc
     finally:
         if owns:
             client.close()
