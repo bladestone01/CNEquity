@@ -162,6 +162,62 @@ def load_st_checkpoint(config: Config, scope: dict[str, Any]) -> dict[str, Any]:
     """
     path = st_checkpoint_path(config, str(scope["scope_id"]))
     if not path.exists():
+        # The all-A universe can grow after a delisted/instrument recovery.
+        # In that case the exact scope hash changes even though the requested
+        # date window and evidence contract are unchanged. Reuse the most
+        # advanced compatible checkpoint as a seed; reusable_st_checkpoint_symbols
+        # will still verify that its positive facts survived compaction before
+        # the caller skips any symbol.
+        root = path.parent
+        current_symbols = set(scope.get("expected_symbols", []))
+        candidates: list[tuple[int, float, dict[str, Any]]] = []
+        for candidate_path in root.glob("*.json"):
+            if candidate_path == path:
+                continue
+            try:
+                candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            previous_scope = candidate.get("scope") or {}
+            previous_symbols = set(previous_scope.get("expected_symbols", []))
+            if not previous_symbols or not previous_symbols <= current_symbols:
+                continue
+            if any(
+                previous_scope.get(key) != scope.get(key)
+                for key in ("evidence_version", "source", "start", "end")
+            ):
+                continue
+            completed = set(candidate.get("completed_symbols", [])) & current_symbols
+            candidates.append(
+                (len(completed), candidate_path.stat().st_mtime, candidate)
+            )
+        if candidates:
+            _, _, previous = max(candidates, key=lambda item: (item[0], item[1]))
+            completed = sorted(set(previous.get("completed_symbols", [])) & current_symbols)
+            evidence_rows = {
+                symbol: int(count)
+                for symbol, count in (previous.get("evidence_rows_by_symbol") or {}).items()
+                if symbol in completed
+            }
+            unresolved = sorted(
+                set(previous.get("unresolved_symbols", [])) & current_symbols
+            )
+            logger.info(
+                "ST checkpoint scope grew from %d to %d symbols; inheriting %d completed symbols",
+                len(previous.get("scope", {}).get("expected_symbols", [])),
+                len(current_symbols),
+                len(completed),
+            )
+            return {
+                "schema_version": 1,
+                "claim": ST_COVERAGE_CLAIM,
+                "scope": scope,
+                "status": "incomplete" if unresolved else "pending",
+                "completed_symbols": completed,
+                "evidence_rows_by_symbol": evidence_rows,
+                "unresolved_symbols": unresolved,
+                "inherited_from_scope_id": previous.get("scope", {}).get("scope_id"),
+            }
         return {
             "schema_version": 1,
             "claim": ST_COVERAGE_CLAIM,

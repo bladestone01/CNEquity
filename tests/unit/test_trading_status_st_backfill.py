@@ -118,6 +118,42 @@ def test_new_run_rechecks_positive_rows_that_never_reached_storage(tmp_path, mon
     assert captured["symbols"] == ["600000.SH"]
 
 
+def test_scope_growth_inherits_compatible_checkpoint(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    old_scope = build_st_scope(
+        ["600000.SH", "600001.SH"],
+        date(2016, 1, 1),
+        date(2026, 7, 1),
+        universe="all_a",
+    )
+    from cnequity.quality.st_coverage import write_st_checkpoint
+
+    write_st_checkpoint(
+        cfg,
+        {
+            "schema_version": 1,
+            "claim": "historical_st_evidence",
+            "scope": old_scope,
+            "status": "pending",
+            "completed_symbols": ["600000.SH"],
+            "evidence_rows_by_symbol": {"600000.SH": 12},
+            "unresolved_symbols": [],
+        },
+    )
+
+    new_scope = build_st_scope(
+        ["600000.SH", "600001.SH", "600002.SH"],
+        date(2016, 1, 1),
+        date(2026, 7, 1),
+        universe="all_a",
+    )
+    checkpoint = load_st_checkpoint(cfg, new_scope)
+
+    assert checkpoint["scope"] == new_scope
+    assert checkpoint["completed_symbols"] == ["600000.SH"]
+    assert checkpoint["evidence_rows_by_symbol"] == {"600000.SH": 12}
+
+
 def test_failed_symbols_are_not_marked_and_surface_a_finding(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "data")
     _write_instruments(cfg, ["600000.SH", "600001.SH"])
