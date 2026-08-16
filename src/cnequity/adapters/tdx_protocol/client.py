@@ -245,9 +245,10 @@ def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
     codes = pdf[code_col].cast(pl.Utf8).str.strip_chars().str.zfill(6)
     valid_codes = codes.str.contains(r"^\d{6}$")
     prefixes = PREFIX_WHITELIST.get(exch.upper(), ()) + ETF_PREFIXES.get(exch.upper(), ())
-    mask = valid_codes & pl.lit(False)
+    mask = pl.lit(False)
     for prefix in prefixes:
         mask = mask | codes.str.starts_with(prefix)
+    mask = mask & valid_codes
     for blocked in range(81, 90):
         mask = mask & ~codes.str.starts_with(str(blocked))
     filtered = pdf.filter(mask)

@@ -469,8 +469,24 @@ def test_tdx_instrument_frame_rejects_malformed_codes():
 
     out = _filter_instrument_frame(
         pl.DataFrame(
-            {"code": ["abc", "0000001", "600519"], "name": ["bad", "bad", "Moutai"]}
+            {
+                "code": ["abc", "0000001", "600519"],
+                "name": ["bad", "bad", "Moutai"],
+            }
         ),
+        "SH",
+    )
+    assert out["symbol"].to_list() == ["600519.SH"]
+
+
+def test_tdx_instrument_frame_rejects_non_numeric_code_with_valid_prefix():
+    # "60abcd" starts with the SH "60" prefix but is not a clean 6-digit code —
+    # regression test for a mask that ANDed the digit-validity check with a
+    # literal False, silently disabling it while still passing prefix-only cases.
+    from cnequity.adapters.tdx_protocol.client import _filter_instrument_frame
+
+    out = _filter_instrument_frame(
+        pl.DataFrame({"code": ["60abcd", "600519"], "name": ["bad", "Moutai"]}),
         "SH",
     )
     assert out["symbol"].to_list() == ["600519.SH"]
