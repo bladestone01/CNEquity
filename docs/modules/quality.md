@@ -19,6 +19,9 @@
 | `source_diff.py` | 主源 vs snapshot 字段 diff |
 | `failover.py` | 主源失败时写 `source_snapshots` |
 
+质量报告（包括权威交叉校验结果）通过同目录临时文件原子发布；外部校验失败只记录
+状态，不用一份截断或半写入的报告覆盖上一次可读证据。
+
 ---
 
 ## audit.py
@@ -46,6 +49,13 @@
 | `adj_factor_reconciliation` | 复权收益极值 + 缺 corporate_actions |
 | `healthy` | 无 error 级 finding |
 
+与普通 run 级审计只检查当前活跃分区不同，`--full` 会对每个已有数据集的全部
+Parquet 文件逐文件执行 schema contract 检查，并对全历史范围执行 PK/必填字段
+检查。扫描按文件有界，不会把整个数据集一次性读入内存；历史文件可以缺少后来
+新增的可空列，但不能缺少主键、来源、版本、抓取时间或行情核心字段，也不能含
+NaN/Inf、非法 OHLC 关系等值。这样历史脏数据会进入 `error_findings`，而不是只在
+最新分区被发现。
+
 此外写入 `meta/quality/historical-validity-latest.json`。它把以下三项组合为独立的 `historical_all_a_universe_validity` 合同：
 
 - `daily_bars` 是否完整包住请求窗口
@@ -60,12 +70,22 @@ cne audit --full --research-start 2020-01-01 --research-end 2024-12-31
 
 该合同不替下游证明复权精确性、特征覆盖或财报 PIT 语义，这些由研究工作台继续组合门禁。
 
+### dense 数据集与 watermark
+
+`daily_bars`、`index_bars`、分钟线、分笔和 `adj_factors` 注册为
+`coverage_mode=session_dense`：它们承诺覆盖范围内每个交易日至少有数据。compact
+更新这类数据集的 watermark 时，会用交易日历检查从覆盖起点到最新落盘日的连续前缀，
+遇到内部缺口就停在缺口前一天。这样后续增量窗口仍会重试缺失日；仅靠最大
+`trade_date` 会把缺口永久留在 watermark 之后。稀疏事件/快照数据不使用这个闸门，
+因为没有记录不等于抓取失败。
+
 ---
 
 ## dataset_checks.py
 
 | 检查 | 严重度 |
 |------|--------|
+| schema contract | error（全量审计按文件检查历史必填字段、非有限数值与行情语义） |
 | PK 重复 | error |
 | `mixed_partition_granularity` | error（盘上分区粒度与注册表不一致；跨粒度会让同一 PK 出现两次） |
 | `source="mock"` 且非测试 | error |
@@ -199,9 +219,13 @@ findings，然后照常写入。curated 仍然只持有最新发布值，finding
 
 ## source_diff.py
 
-读取 `meta/source_snapshots/` 与 curated 抽样比对：
+读取 `meta/source_snapshots/` 与 curated 抽样比对；除了字段漂移，也会双向检查主备
+source 的 primary-key 覆盖，避免只发现“备源少了主源的行”，却漏掉“主源少了备源的行”：
 
 - 价格类：`price_tolerance_bps`（默认 10bps）
+- 先比较主备源 PK 覆盖，再比较字段值；`backup_missing_for_date`、
+  `primary_missing_for_date`、`backup_coverage_gap`、`no_pk_overlap` 都是
+  `warning`，不会把“没有可比数据”误读成“一致”
 - 输出 `meta/quality/source_diffs/{run_id}.json`
 
 **同 PK 不自动换源**（ADR-0003 **switching**）。**不相交 key 的路由**（BJ→sina、tip TDX 缺口→东财 clist）见 [ADR-0005](../adr/0005-source-routing-vs-switching.md)。

@@ -29,7 +29,7 @@ uv run pytest -m network tests/unit/test_datacenter_live_contracts.py -q
 |------|------|------|
 | `baostock login failed: 黑名单用户`（`10001011`） | IP 被免费 API 封禁：日请求 >5 万、或并发连接、或扫太快 | **停扫**；换出口或去 QQ 群求助解封。解封后用 `[sources.baostock]` 默认限速 resume，**勿并发** |
 | 东财 429 / Empty reply / 连接被掐 | 请求过密或海外出口 | 保持 `min_interval_seconds ≥ 1.0`；大陆出口或 `proxy`；见下文 sector_bars |
-| cninfo / pboc 间歇失败 | 同源风控 / 站点抖动 | 已按页/按调用 `rate_limit`；社融按年取全量，单年失败仅告警且不影响其他年，下次运行补回 |
+| cninfo / pboc 间歇失败 | 同源风控 / 站点抖动 | 已按页/按调用 `rate_limit`；社融主写入按年取全量，任一年失败即阻止本次宏观写入，待下次完整重试 |
 
 原则：**时间可以等，封禁成本远高于多等一天。** 勿为加速关掉 `min_interval` 或开多进程打同一免费源。
 

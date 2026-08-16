@@ -50,7 +50,8 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, backups/, meta/locks/
 4. PK dedupe：`sort("fetched_at").unique(subset=pk, keep="last")`
 5. 与已有 curated 分区 merge 后再 dedupe
 6. `atomic_write_parquet` 写 `part-merged.parquet`
-7. 成功则 `StateStore.advance_watermark(dataset, ...)`
+7. 成功写入后清理同一分区残留的旧 `*.parquet`，避免 canonical 文件与历史 fragment 被重复扫描
+8. 成功则按数据集覆盖语义更新 `StateStore` 水位；session-dense 数据集遇到内部交易日缺口时只推进到连续覆盖前缀，避免把缺口推到水位之后
 
 ### instruments 例外
 
@@ -76,7 +77,7 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, backups/, meta/locks/
 
 ## atomic.py
 
-防止 compact 中途崩溃留下半截 Parquet：先写 `.tmp` 再 `os.replace`。
+防止 compact 中途崩溃留下半截 Parquet：先写同目录唯一临时文件、flush/fsync，再 `os.replace`。唯一文件名也避免两个 worker 刷新同一派生/缓存目标时互相踩踏临时 footer。
 
 ---
 
@@ -98,6 +99,8 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, backups/, meta/locks/
 ## source_snapshots.py
 
 路径：`meta/source_snapshots/{dataset}/source={src}/data_version={ver}/...`
+
+每个 `run_id=` 目录还会保存 `_snapshot.json`，记录该 run 的逻辑创建/更新时间。读取最新备源和按保留期清理时优先使用这个时间，而不是目录 `mtime`；这样归档恢复、跨文件系统复制后仍不会把旧快照误判为最新。历史上没有该元数据的目录继续回退到 `mtime`。Parquet 与元数据都通过同目录临时文件原子发布；staging、派生缓存、路由表、stats 摘要和 on-demand 新闻缓存也遵循同一规则，避免半文件被下一轮当作有效输入。on-demand 发现 JSON 损坏时会放弃缓存并重新取数。如果进程在 Parquet 发布后、元数据发布前崩溃，下一次读取仍能使用兼容回退。
 
 - 主源 batch 失败时由 `quality/failover.py` 写入
 - **不**进入 curated

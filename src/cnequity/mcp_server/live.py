@@ -37,6 +37,7 @@ from datetime import date, timedelta
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.market_time import shanghai_today
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def window(start: str | None, end: str | None) -> tuple[date, date]:
     An unbounded default would have every casual question walk a decade of
     pages off a vendor that is paced at 100ms a request.
     """
-    end_d = date.fromisoformat(end) if end else date.today()
+    end_d = date.fromisoformat(end) if end else shanghai_today()
     start_d = date.fromisoformat(start) if start else end_d - timedelta(days=DEFAULT_DAYS)
     return start_d, end_d
 

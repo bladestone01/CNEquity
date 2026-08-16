@@ -58,6 +58,8 @@ bars = load("daily_bars", start="2024-01-01", adjust="hfq", strict_adj=True)
 
 **研究建议**：量化回测用 `hfq` + `strict_adj=True`；qfq 窗口 anchor 会漂移，不适合长期研究复现。
 
+`index_bars` 是指数点位，不是个股价格，不支持 `adjust=`；请直接使用原始指数水平。
+
 ### 存储约定
 
 - 湖内 `daily_bars` 存**未复权**价

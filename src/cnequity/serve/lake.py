@@ -39,6 +39,7 @@ from cnequity.domain.datasets import (
     history_mode_for,
     is_stale,
 )
+from cnequity.domain.market_time import shanghai_today
 from cnequity.domain.partitions import parse_partition
 from cnequity.storage.stats import (
     load_partition_stats,
@@ -186,12 +187,12 @@ class LakeView:
         def _build() -> date:
             from cnequity.steps.common import is_trading_day
 
-            day = date.today()
+            day = shanghai_today()
             for _ in range(15):
                 if is_trading_day(self.config, day):
                     return day
                 day -= timedelta(days=1)
-            return date.today()
+            return shanghai_today()
 
         return self._cached("anchor", _build)
 
@@ -709,7 +710,7 @@ class LakeView:
             "backfill_chunk_symbols": getattr(spec, "backfill_chunk_symbols", None),
             # The source's own floor, not this lake's backlog: earlier windows
             # return nothing rather than less, and no backfill reaches past it.
-            "earliest_available": spec.earliest_available(date.today()),
+            "earliest_available": spec.earliest_available(shanghai_today()),
             # Which *kind* of limit produced that floor. Without this the panel
             # cannot tell a fixed date from a rolling count, and a dataset
             # limited by a date (trade_ticks) reads as unlimited because its

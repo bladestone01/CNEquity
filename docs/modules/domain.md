@@ -42,7 +42,8 @@
 
 - 列齐全且类型匹配
 - 不允许未知列（strict）
-- PK 非空
+- PK、`source`、`data_version`、`fetched_at` 必须非空；字符串溯源/主键不能是空白
+- 所有浮点字段拒绝 `NaN` / `Inf`；行情数据额外校验价格、成交量与 OHLC 关系
 
 ### with_provenance(df, source, data_version)
 
@@ -74,6 +75,7 @@
 | `backfill_chunk_symbols` | 单次回填子跑的标的数（**tip-paged 源用**，与上一项互斥） |
 | `intraday_frequency` | bar 频率（`1m` / `5m`）。**行为字段**：设了就会被 audit 的会话检查、reader 的复权集合、`cne backfill --symbols` 认领 |
 | `row_grain` | 一行覆盖多久（`1m` / `5m` / `tick`）。**纯描述**，不驱动任何行为 |
+| `coverage_mode` | `session_dense` 表示覆盖区间内每个交易日都应有数据；`sparse` 表示事件/公告等允许空交易日 |
 
 **两组容易混的字段：**
 

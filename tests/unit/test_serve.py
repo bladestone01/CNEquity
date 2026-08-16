@@ -60,6 +60,10 @@ def _full_row(dataset: str, **values) -> dict:
             row[col] = blank[dtype]
         else:
             row[col] = 0
+    if dataset in {"daily_bars", "index_bars", "minute_bars", "minute_bars_5m"}:
+        row.update({"open": 9.0, "high": 11.0, "low": 8.0, "close": 10.0, "volume": 100})
+        if "amount" in row:
+            row["amount"] = 1_000.0
     row["source"] = "tdx_protocol"
     row["data_version"] = "v2"
     return {**row, **values}
@@ -87,6 +91,7 @@ def lake(config, monkeypatch):
     contract — can read them; the browsing tests go through it.
     """
     monkeypatch.setattr("cnequity.serve.lake.date", _FrozenDate)
+    monkeypatch.setattr("cnequity.serve.lake.shanghai_today", lambda: FROZEN_TODAY)
     last, prev = FROZEN_TODAY, FROZEN_TODAY - timedelta(days=1)
     bar = lambda sym, day, src="tdx_protocol": _full_row(  # noqa: E731
         "daily_bars", symbol=sym, trade_date=day, source=src
