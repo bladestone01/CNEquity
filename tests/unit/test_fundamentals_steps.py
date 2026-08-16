@@ -10,6 +10,7 @@ import pytest
 import cnequity.steps  # noqa: F401
 from cnequity.config import Config
 from cnequity.steps import fundamentals as fund
+from cnequity.steps.common import load_bar_universe
 
 
 @pytest.fixture
@@ -57,21 +58,89 @@ def test_financial_statement_items_writes_staging(cfg, monkeypatch):
         seen["backfill"] = backfill
         return pl.DataFrame(
             {
-                "symbol": ["600519.SH"],
-                "report_period": ["2024Q1"],
-                "statement_type": ["income"],
-                "item_code": ["roe"],
-                "item_value": [0.12],
-                "announce_date": [date(2024, 4, 20)],
+                "symbol": ["600519.SH"] * 4,
+                "report_period": ["2024Q1"] * 4,
+                "statement_type": ["income", "indicator", "balance", "cashflow"],
+                "item_code": ["revenue", "roe", "total_assets", "net_cash_operate"],
+                "item_value": [1_000_000.0, 0.12, 1_000_000.0, 100_000.0],
+                "announce_date": [date(2024, 4, 20)] * 4,
             }
         )
 
     monkeypatch.setattr(fund, "fetch_financial_statement_items", fake_fetch)
     cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 3, 31)
     result = fund.step_financial_statement_items(cfg, date(2024, 6, 28), "run-fsi", {})
     assert seen["backfill"] is True
-    assert result["rows_written"] == 1
+    assert result["rows_written"] == 4
+    assert result.get("status") is None
     assert list(cfg.staging_root.glob("financial_statement_items/**/*.parquet"))
+
+
+def test_financial_statement_items_backfill_surfaces_partial_report_families(cfg, monkeypatch):
+    cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 3, 31)
+    monkeypatch.setattr(
+        fund,
+        "fetch_financial_statement_items",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "report_period": ["2024Q1"],
+                "statement_type": ["income"],
+                "item_code": ["revenue"],
+                "item_value": [1_000_000.0],
+                "announce_date": [date(2024, 4, 20)],
+            }
+        ),
+    )
+
+    result = fund.step_financial_statement_items(cfg, date(2024, 6, 28), "run-fsi-partial", {})
+
+    assert result["status"] == "warning"
+    assert result["missing_statement_periods"] == 1
+    finding = result["context_updates"]["audit_findings"][0]
+    assert finding["check"] == "backfill_missing_statement_types"
+    assert finding["missing_statement_types"] == [
+        {"report_period": "2024Q1", "missing": ["balance", "cashflow", "indicator"]}
+    ]
+
+
+def test_financial_statement_items_backfill_surfaces_missing_income_statement(cfg, monkeypatch):
+    """A missing income statement must surface too, not just balance/cashflow.
+
+    fetch_financial_statement_items issues four independent requests -
+    income, indicator, balance, cashflow - so a period with only
+    balance/cashflow present is still incomplete.
+    """
+    cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 3, 31)
+    monkeypatch.setattr(
+        fund,
+        "fetch_financial_statement_items",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH", "600519.SH"],
+                "report_period": ["2024Q1", "2024Q1"],
+                "statement_type": ["balance", "cashflow"],
+                "item_code": ["total_assets", "net_cash_operate"],
+                "item_value": [1_000_000.0, 100_000.0],
+                "announce_date": [date(2024, 4, 20), date(2024, 4, 20)],
+            }
+        ),
+    )
+
+    result = fund.step_financial_statement_items(cfg, date(2024, 6, 28), "run-fsi-income", {})
+
+    assert result["status"] == "warning"
+    finding = result["context_updates"]["audit_findings"][0]
+    assert finding["check"] == "backfill_missing_statement_types"
+    assert finding["missing_statement_types"] == [
+        {"report_period": "2024Q1", "missing": ["income", "indicator"]}
+    ]
 
 
 def test_valuation_metrics_disabled(cfg):
@@ -89,6 +158,37 @@ def test_valuation_metrics_rejects_empty_snapshot(cfg, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="valuation_metrics: no rows returned"):
         fund.step_valuation_metrics(cfg, date(2024, 6, 28), "run-empty", {})
+
+
+def test_load_bar_universe_ignores_zero_volume_placeholders(cfg):
+    part = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "trade_date": [date(2024, 6, 28)] * 2,
+            "volume": [100, 0],
+        }
+    ).write_parquet(part / "part-000.parquet")
+
+    assert load_bar_universe(cfg) == {"600519.SH"}
+
+
+def test_load_bar_universe_keeps_legacy_rows_in_a_mixed_schema_lake(cfg):
+    root = cfg.curated_root / "daily_bars"
+    root.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["600519.SH"], "trade_date": [date(2024, 6, 27)]}
+    ).write_parquet(root / "legacy.parquet")
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"],
+            "trade_date": [date(2024, 6, 28)],
+            "volume": [0],
+        }
+    ).write_parquet(root / "current.parquet")
+
+    assert load_bar_universe(cfg) == {"600519.SH"}
 
 
 def test_symbols_needing_backfill_does_not_count_duplicate_rows(cfg):

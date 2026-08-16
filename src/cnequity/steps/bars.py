@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import date, datetime, time
+from datetime import date, datetime
+
+import polars as pl
 
 from cnequity.adapters.tdx_protocol.client import (
     INDEX_SYMBOLS,
@@ -13,7 +15,7 @@ from cnequity.adapters.tdx_protocol.client import (
     normalize_with_source,
 )
 from cnequity.config import Config
-from cnequity.domain.market_time import shanghai_now
+from cnequity.domain.market_time import A_SHARE_FINAL_AT, shanghai_now
 from cnequity.domain.symbols import split_by_quote_source
 from cnequity.orchestrator.registry import register_step
 from cnequity.orchestrator.worker_pool import fetch_daily_bars_parallel
@@ -33,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # The closing auction ends at 15:00. Leave a small settlement buffer before
 # trusting TDX's current daily bar; the default core schedule starts at 16:00.
-_DAILY_BAR_FINAL_AT = time(15, 5)
+_DAILY_BAR_FINAL_AT = A_SHARE_FINAL_AT
 
 
 def _reject_unfinished_daily_bar_window(
@@ -142,7 +144,11 @@ def _record_delegated_ownership_batch(
             separators=(",", ":"),
         )
         batch_id = f"ownership-{hashlib.sha256(identity.encode()).hexdigest()[:16]}"
-    if manifest.get_batch(run_id, batch_id) is None:
+    existing = manifest.get_batch(run_id, batch_id)
+    if existing is None or existing["status"] != "success":
+        # Re-open the same deterministic ownership batch on retry. Without
+        # this, finish_batch() only updates rows still marked ``running`` and
+        # a prior warning can never become successful after recovery completes.
         manifest.start_batch(
             run_id,
             batch_id,
@@ -151,7 +157,7 @@ def _record_delegated_ownership_batch(
             symbols=sorted(symbols),
             window_start=start.isoformat(),
             window_end=end.isoformat(),
-            blocks_compaction=False,
+            blocks_compaction=True,
         )
     manifest.finish_batch(
         run_id,
@@ -324,12 +330,14 @@ def _finish_daily_bars(
     findings: list[dict] = []
     had_error = bool(tdx_result.get("had_error"))
     failed_symbols = list(tdx_result.get("failed_symbols") or [])
+    fallback_failed_symbols: set[str] = set()
 
     if sina_result:
         rows_read += int(sina_result.get("rows_read", 0))
         rows_written += int(sina_result.get("rows_written", 0))
         if int(sina_result.get("failed_symbols", 0)):
             had_error = True
+        fallback_failed_symbols = set(sina_result.get("failed_symbol_names") or [])
         sina_findings = (sina_result.get("context_updates") or {}).get("audit_findings") or []
         findings.extend(sina_findings)
 
@@ -348,7 +356,7 @@ def _finish_daily_bars(
         partial_symbols = _staged_daily_bar_partial_symbols(
             config, run_id, all_expected_symbols, start, end
         )
-        failed_set = set(failed_symbols)
+        failed_set = set(failed_symbols) | fallback_failed_symbols
         if failed_set:
             gap = _gapfill_multiday_via_kline(
                 config,
@@ -883,6 +891,10 @@ def fetch_bars_via_sina(
     result: dict = {"rows_read": rows, "rows_written": rows}
     if failed:
         result["failed_symbols"] = len(failed)
+        # Keep the names as well as the count. The daily step can then route
+        # failed fallback symbols through the same historical gap-fill as TDX
+        # failures; a count alone cannot identify which keys need recovery.
+        result["failed_symbol_names"] = list(dict.fromkeys(failed))
         result["context_updates"] = {
             "audit_findings": [
                 {
@@ -1166,13 +1178,10 @@ def _delisted_universe(config: Config, start: date, end: date) -> list[str]:
     from cnequity.query.parquet_scan import scan_parquet_root
 
     bars_root = config.curated_root / "daily_bars"
-    have = set(
-        scan_parquet_root(bars_root, partition_col="trade_date", hive=False)
-        .select("symbol")
-        .unique()
-        .collect()["symbol"]
-        .to_list()
+    bars = scan_parquet_root(
+        bars_root, partition_col="trade_date", hive=False, traded_only=True
     )
+    have = set(bars.select("symbol").unique().collect()["symbol"].to_list())
 
     bs = import_baostock()
     _login(bs)

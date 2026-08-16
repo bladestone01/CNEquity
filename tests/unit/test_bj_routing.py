@@ -91,6 +91,7 @@ def test_one_dead_symbol_does_not_cost_the_whole_board(tmp_path):
 
     assert result["rows_written"] == 1
     assert result["failed_symbols"] == 1
+    assert result["failed_symbol_names"] == ["920000.BJ"]
     finding = result["context_updates"]["audit_findings"][0]
     assert finding["check"] == "fallback_source_incomplete"
     assert "920000.BJ" in finding["message"]

@@ -63,10 +63,20 @@ def run_incremental_fetched(
         out: dict = {"rows_read": 0, "rows_written": 0}
         if findings:
             out["context_updates"] = {"audit_findings": findings}
+            # A session-dense dataset is only complete when every requested
+            # trading session has a response. Keep the staged subset visible,
+            # but make the step retryable and block compact from checkpointing
+            # past the missing session. Snapshot coverage gaps are deliberately
+            # not promoted here: those missed historical snapshots cannot be
+            # replayed without manufacturing point-in-time values.
+            if any(f.get("check") == "session_dense_empty_days" for f in findings):
+                out["status"] = "warning"
         return out
     result = write_fetched(config, run_id, dataset, df, source=source)
     if findings:
         result["context_updates"] = {"audit_findings": findings}
+        if any(f.get("check") == "session_dense_empty_days" for f in findings):
+            result["status"] = "warning"
     return result
 
 

@@ -87,6 +87,14 @@ def _watermark_date_for(config: Config, dataset: str, partition_col: str) -> dat
 
     spec = DATASETS.get(dataset)
     if spec is not None and spec.coverage_mode == "session_dense":
+        if dataset == "index_bars":
+            # THS supplies legacy index history before the reliable TDX daily
+            # source begins. The old history contains source/calendar holes
+            # (for example 1991 Saturdays), which must remain audit findings
+            # but must not pin the live incremental watermark in 2000.
+            from cnequity.steps.common import BACKFILL_START
+
+            return last_contiguous_dense_date(config, spec, start=BACKFILL_START)
         return last_contiguous_dense_date(config, spec)
     return _max_partition_date(config, dataset, partition_col)
 
@@ -322,6 +330,12 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
     out: dict = {"rows_read": result.rows, "rows_written": result.rows}
     if result.findings:
         out["context_updates"] = {"audit_findings": result.findings}
+    if result.failed:
+        # A small failure ratio is allowed to keep the rest of the market
+        # usable, but it is still retryable state and must not make the run
+        # appear completely successful.
+        out["failed_tasks"] = len(result.failed)
+        out["status"] = "warning"
     if result.failed and result.fail_ratio > FAIL_RATIO_THRESHOLD:
         raise AdjFactorsDeriveError(
             (
@@ -346,7 +360,28 @@ def step_derive_industry_index(
 
     summary = derive_industry_index(config)
     rows = int(summary.get("rows") or 0)
-    return {"rows_read": rows, "rows_written": rows}
+    out: dict = {"rows_read": rows, "rows_written": rows}
+    note = str(summary.get("note") or "")
+    if (
+        rows == 0
+        and "already current" not in note
+        and "no 申万 membership rows" not in note
+    ):
+        out["status"] = "warning"
+        out["context_updates"] = {
+            "audit_findings": [
+                {
+                    "dataset": "industry_index",
+                    "severity": "warning",
+                    "check": "derived_empty",
+                    "message": (
+                        "industry_index produced no rows for the requested derive window; "
+                        f"{note or 'required membership, bars, or adjustment-factor inputs are missing'}"
+                    ),
+                }
+            ]
+        }
+    return out
 
 
 @register_step(

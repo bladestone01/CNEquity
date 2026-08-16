@@ -10,6 +10,7 @@ import pytest
 import cnequity.steps  # noqa: F401
 from cnequity.config import Config
 from cnequity.steps import commodity, macro_risk, newsboard, research, rotation
+from cnequity.steps.common import SnapshotBackfillError
 from cnequity.storage.state import StateStore
 
 
@@ -50,12 +51,12 @@ def test_research_writes(cfg, monkeypatch):
         "fetch_institutional_holdings",
         lambda trade_date, backfill=False, config=None: pl.DataFrame(
             {
-                "symbol": ["600519.SH"],
-                "holder_type": ["fund"],
-                "report_period": ["2024Q1"],
-                "holding_shares": [1.0],
-                "holding_ratio": [0.1],
-                "holding_mv": [1.0],
+                "symbol": [f"{600000 + i:06d}.SH" for i in range(100)],
+                "holder_type": ["fund"] * 100,
+                "report_period": ["2024Q1"] * 100,
+                "holding_shares": [1.0] * 100,
+                "holding_ratio": [0.1] * 100,
+                "holding_mv": [1.0] * 100,
             }
         ),
     )
@@ -76,9 +77,58 @@ def test_research_writes(cfg, monkeypatch):
         ),
     )
     assert (
-        research.step_institutional_holdings(cfg, date(2024, 6, 28), "r1", {})["rows_written"] == 1
+        research.step_institutional_holdings(cfg, date(2024, 6, 28), "r1", {})["rows_written"]
+        == 100
     )
     assert research.step_analyst_consensus(cfg, date(2024, 6, 28), "r2", {})["rows_written"] == 1
+
+
+def test_institutional_holdings_rejects_partial_period(cfg, monkeypatch):
+    monkeypatch.setattr(
+        research,
+        "fetch_institutional_holdings",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "holder_type": ["fund"],
+                "report_period": ["2024Q1"],
+                "holding_shares": [1.0],
+                "holding_ratio": [0.1],
+                "holding_mv": [1.0],
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="institutional_holdings: incomplete quarterly snapshot"):
+        research.step_institutional_holdings(cfg, date(2024, 6, 28), "r-partial", {})
+
+
+def test_snapshot_steps_reject_backfill(cfg, monkeypatch):
+    cfg._backfill = True
+    calls = {"consensus": 0, "calendar": 0}
+
+    def _consensus(*args, **kwargs):
+        calls["consensus"] += 1
+        return pl.DataFrame()
+
+    def _calendar(*args, **kwargs):
+        calls["calendar"] += 1
+        return pl.DataFrame()
+
+    monkeypatch.setattr(research, "fetch_analyst_consensus", _consensus)
+    monkeypatch.setattr(newsboard, "fetch_economic_calendar", _calendar)
+
+    with pytest.raises(SnapshotBackfillError, match="analyst_consensus"):
+        research.step_analyst_consensus(cfg, date(2024, 6, 28), "r-consensus", {})
+    with pytest.raises(SnapshotBackfillError, match="economic_calendar"):
+        newsboard.step_economic_calendar(cfg, date(2024, 6, 28), "r-calendar", {})
+    assert calls == {"consensus": 0, "calendar": 0}
+
+
+def test_economic_calendar_does_not_use_a_future_event_watermark():
+    from cnequity.domain.datasets import DATASETS
+
+    assert DATASETS["economic_calendar"].watermark is False
 
 
 def test_institutional_backfill_surfaces_missing_quarters(cfg, monkeypatch):
@@ -198,6 +248,41 @@ def test_rotation_snapshot_steps_reject_empty_feeds(cfg, monkeypatch):
         rotation.step_hot_rank(cfg, date(2024, 6, 28), "r-hot-empty", {})
     with pytest.raises(RuntimeError, match="sector_fund_flow: no rows returned"):
         rotation.step_sector_fund_flow(cfg, date(2024, 6, 28), "r-flow-empty", {})
+
+
+def test_sector_fund_flow_rejects_missing_board_category(cfg, monkeypatch):
+    monkeypatch.setattr(
+        rotation,
+        "fetch_sector_fund_flow",
+        lambda *a, **k: pl.DataFrame(
+            {
+                "sector_code": ["BK0001"],
+                "board_type": ["concept"],
+                "trade_date": [date(2024, 6, 28)],
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"missing board type\(s\): industry"):
+        rotation.step_sector_fund_flow(cfg, date(2024, 6, 28), "r-flow-partial", {})
+
+
+def test_sector_fund_flow_rejects_thin_board_category(cfg, monkeypatch):
+    monkeypatch.setattr(
+        rotation,
+        "fetch_sector_fund_flow",
+        lambda *a, **k: pl.DataFrame(
+            {
+                "sector_code": [f"HY{i:04d}" for i in range(49)]
+                + [f"BK{i:04d}" for i in range(100)],
+                "board_type": ["industry"] * 49 + ["concept"] * 100,
+                "trade_date": [date(2024, 6, 28)] * 149,
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"industry=49 \(minimum 50\)"):
+        rotation.step_sector_fund_flow(cfg, date(2024, 6, 28), "r-flow-thin", {})
     cfg.sources["eastmoney"] = True
     cfg.sources["sina"] = False
     # eastmoney still on → commodity ok path

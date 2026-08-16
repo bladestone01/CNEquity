@@ -63,12 +63,12 @@ def test_run_job_backfill_does_not_skip_weekend(tmp_path, monkeypatch):
         calls.append(trade_date)
         return pl.DataFrame(
             {
-                "symbol": ["600519.SH"],
-                "trade_date": [trade_date],
-                "margin_balance": [1.0],
-                "margin_buy": [0.0],
-                "short_balance": [0.0],
-                "short_sell_volume": [0.0],
+                "symbol": [f"{600000 + i:06d}.SH" for i in range(50)],
+                "trade_date": [trade_date] * 50,
+                "margin_balance": [1.0] * 50,
+                "margin_buy": [0.0] * 50,
+                "short_balance": [0.0] * 50,
+                "short_sell_volume": [0.0] * 50,
             }
         )
 

@@ -66,16 +66,41 @@ def _load_trading_calendar_df(
                 collect_parquet_root(curated, partition_col="trade_date", start=start, end=end),
                 "trading_calendar",
             )
-        except FileNotFoundError:
-            pass
+        except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+            logger.warning(
+                "curated trading_calendar scan failed for %s; salvaging readable files: %s",
+                curated,
+                exc,
+            )
         files = list(curated.glob("**/*.parquet"))
         if files:
-            lf = pl.scan_parquet([str(f) for f in files])
-            if start is not None:
-                lf = lf.filter(pl.col("trade_date") >= start)
-            if end is not None:
-                lf = lf.filter(pl.col("trade_date") <= end)
-            return dedupe_by_primary_key(lf.collect(), "trading_calendar")
+            try:
+                lf = pl.scan_parquet([str(f) for f in files])
+                if start is not None:
+                    lf = lf.filter(pl.col("trade_date") >= start)
+                if end is not None:
+                    lf = lf.filter(pl.col("trade_date") <= end)
+                return dedupe_by_primary_key(lf.collect(), "trading_calendar")
+            except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+                logger.warning(
+                    "mixed curated trading_calendar scan failed for %s; reading files individually: %s",
+                    curated,
+                    exc,
+                )
+                frames: list[pl.DataFrame] = []
+                for path in files:
+                    try:
+                        frames.append(pl.read_parquet(path))
+                    except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as file_exc:
+                        logger.warning("skipping unreadable trading_calendar file %s: %s", path, file_exc)
+                if frames:
+                    frame = pl.concat(frames, how="diagonal_relaxed")
+                    if "trade_date" in frame.columns:
+                        if start is not None:
+                            frame = frame.filter(pl.col("trade_date") >= start)
+                        if end is not None:
+                            frame = frame.filter(pl.col("trade_date") <= end)
+                    return dedupe_by_primary_key(frame, "trading_calendar")
     staging_root = config.staging_root / "trading_calendar"
     staging = sorted(staging_root.rglob("*.parquet")) if staging_root.exists() else []
     if staging:
@@ -309,7 +334,15 @@ def fetch_incremental_daily(
         _validate_trade_date(frame, dataset, trade_date, date_col=date_col)
         return frame, []
 
-    dates = incremental_trade_dates(config, dataset, trade_date)
+    spec = DATASETS.get(dataset)
+    if semantics == "snapshot" and spec is not None and not spec.watermark:
+        # Rolling live windows (for example share_unlock_schedule) are not
+        # incremental histories. Do not use a legacy state file to manufacture
+        # gap dates; the current snapshot is the only honest request and its
+        # future event dates must never become a watermark.
+        dates = [trade_date]
+    else:
+        dates = incremental_trade_dates(config, dataset, trade_date)
     if not dates:
         return pl.DataFrame(), []
 
@@ -416,15 +449,17 @@ def classify_daily_bar_ownership(
 
 
 def load_bar_universe(config: Config) -> set[str]:
-    """Symbols that carry at least one ``daily_bars`` row anywhere in the lake.
+    """Symbols that carry at least one traded ``daily_bars`` row in the lake.
 
-    This is the *tradable* universe as daily_bars actually realises it: delisted
-    names (source returns no bars) and never-traded instrument placeholders (IPO
-    listed but not yet trading) are absent. Live snapshots such as the EastMoney
-    valuation clist return those dead names, so filtering to this set keeps
-    valuation_metrics in lock-step with daily_bars coverage (audit check
-    ``valuation_bars_orphan_symbol``). A genuine IPO enters this set the same day
-    it first trades and gets a bar.
+    A suspended/pre-open placeholder can still be present in ``daily_bars`` with
+    ``volume=0``. It is not evidence that the symbol ever traded, so when the
+    column exists require positive volume. This is the *tradable* universe as
+    daily_bars actually realises it: delisted names (source returns no bars) and
+    never-traded instrument placeholders (IPO listed but not yet trading) are
+    absent. Live snapshots such as the EastMoney valuation clist return those
+    dead names, so filtering to this set keeps valuation_metrics in lock-step
+    with daily_bars coverage (audit check ``valuation_bars_orphan_symbol``). A
+    genuine IPO enters this set the same day it first trades and gets a bar.
 
     Returns an empty set when no bars exist yet; callers must treat that as
     "cannot reconcile" and skip filtering rather than dropping every row.
@@ -433,7 +468,22 @@ def load_bar_universe(config: Config) -> set[str]:
     files = list(bars_root.glob("**/*.parquet")) if bars_root.exists() else []
     if not files:
         return set()
-    return set(pl.scan_parquet(files).select("symbol").unique().collect()["symbol"].to_list())
+    # Apply the volume contract per file. A diagonal union would turn legacy
+    # files without ``volume`` into nulls, and a global ``volume > 0`` filter
+    # would then silently discard their valid row-based evidence.
+    scans: list[pl.LazyFrame] = []
+    for path in files:
+        scan = pl.scan_parquet(str(path))
+        if "volume" in scan.collect_schema().names():
+            scan = scan.filter(pl.col("volume") > 0)
+        scans.append(scan.select("symbol"))
+    return set(
+        pl.concat(scans, how="diagonal_relaxed")
+        .select("symbol")
+        .unique()
+        .collect()["symbol"]
+        .to_list()
+    )
 
 
 def _existing_dates(config: Config, dataset: str, date_col: str) -> set[date]:
@@ -441,7 +491,11 @@ def _existing_dates(config: Config, dataset: str, date_col: str) -> set[date]:
     files = list(root.glob("**/*.parquet")) if root.exists() else []
     if not files:
         return set()
-    return set(pl.scan_parquet(files).select(date_col).unique().collect()[date_col].to_list())
+    from cnequity.query.parquet_scan import scan_parquet_files
+
+    return set(
+        scan_parquet_files(files).select(date_col).unique().collect()[date_col].to_list()
+    )
 
 
 def walk_day_backfill(
@@ -455,6 +509,7 @@ def walk_day_backfill(
     date_col: str = "trade_date",
     floor: date = BACKFILL_START,
     flush_days: int = 60,
+    existing_dates_fn: Callable[[list[date]], set[date]] | None = None,
 ) -> dict:
     """Walk trading days for a dataset whose fetch answers one day at a time.
 
@@ -475,7 +530,11 @@ def walk_day_backfill(
     start = getattr(config, "_backfill_start", None) or floor
     end = getattr(config, "_backfill_end", None) or trade_date
     days = list_trading_dates(config, start, min(end, trade_date))
-    have = _existing_dates(config, dataset, date_col)
+    have = (
+        existing_dates_fn(days)
+        if existing_dates_fn is not None
+        else _existing_dates(config, dataset, date_col)
+    )
     todo = [d for d in days if d not in have]
     if not todo:
         return {"rows_read": 0, "rows_written": 0, "days_skipped": len(days)}
@@ -557,6 +616,11 @@ def walk_day_backfill(
         "days_empty": len(empty_days),
     }
     if empty_days:
+        # Keep direct step calls truthful as well as engine-managed calls. The
+        # engine promotes ``days_empty`` to warning, but callers that invoke a
+        # backfill step directly would otherwise receive ``success`` while
+        # known dates remain absent and retryable.
+        result["status"] = "warning"
         result["context_updates"] = {
             "audit_findings": [_backfill_empty_day_finding(dataset, empty_days)]
         }

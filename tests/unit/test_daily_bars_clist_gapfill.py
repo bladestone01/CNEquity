@@ -142,6 +142,28 @@ def test_fetch_daily_bars_clist_drops_invalid_ohlcv_instead_of_zero(monkeypatch)
     assert df.is_empty()
 
 
+def test_fetch_daily_bars_clist_drops_zero_price_placeholder(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_clist_pages",
+        lambda client, fields: [{}],
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.clist_rows_to_symbols",
+        lambda rows: [
+            (
+                "600519.SH",
+                {"f17": 0.0, "f15": 0.0, "f16": 0.0, "f2": 0.0, "f5": 1000},
+            )
+        ],
+    )
+
+    class _Client:
+        def close(self):
+            pass
+
+    assert fetch_daily_bars_clist(date(2026, 7, 24), client=_Client()).is_empty()
+
+
 def test_fetch_daily_bars_clist_drops_invalid_volume(monkeypatch):
     monkeypatch.setattr(
         "cnequity.adapters.eastmoney.bars.fetch_clist_pages",
@@ -454,6 +476,40 @@ def test_multiday_partial_symbol_is_gapfilled_without_overwriting_primary_rows(
     )
     assert result["rows_written"] == 3  # two primary rows + one recovered interior day
     assert _staged_daily_bar_symbols(cfg, run_id, None) == {symbol}
+
+
+def test_multiday_fallback_failure_is_gapfilled_by_symbol(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("backfill")
+    start, end = date(2024, 6, 20), date(2024, 6, 24)
+    symbol = "920001.BJ"
+    calls: list[list[str]] = []
+
+    def _kline(symbols, s, e, **k):
+        calls.append(list(symbols))
+        days = [date(2024, 6, 20), date(2024, 6, 21), date(2024, 6, 24)]
+        return pl.concat([_bar_frame(symbols, day) for day in days])
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    result = _finish_daily_bars(
+        cfg,
+        end,
+        run_id,
+        start=start,
+        end=end,
+        expected_tdx_symbols=[],
+        expected_fallback_symbols=[symbol],
+        tdx_result={"rows_read": 0, "rows_written": 0, "had_error": False},
+        sina_result={
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": 1,
+            "failed_symbol_names": [symbol],
+        },
+    )
+
+    assert calls == [[symbol]]
+    assert result["rows_written"] == 3
 
 
 def test_preopen_placeholder_still_rejects_clist_flat_zeros(tmp_path):

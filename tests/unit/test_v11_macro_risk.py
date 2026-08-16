@@ -142,6 +142,34 @@ def test_macro_indicators_rejects_empty_fetch(monkeypatch, tmp_path):
         macro_risk.step_macro_indicators(cfg, date(2024, 6, 28), "run-empty", {})
 
 
+def test_macro_indicators_warns_when_one_daily_series_is_missing(monkeypatch, tmp_path):
+    from cnequity.steps import macro_risk
+
+    cfg = Config(data_root=tmp_path / "data")
+    cfg.staging_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        macro_risk,
+        "fetch_macro_indicators",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {
+                "indicator_id": ["cnbond_yield_10y", "pmi_manufacturing"],
+                "obs_date": [date(2024, 6, 28), date(2024, 5, 31)],
+                "value": [2.25, 49.5],
+                "frequency": ["daily", "monthly"],
+                "source": ["eastmoney", "eastmoney"],
+            }
+        ),
+    )
+
+    result = macro_risk.step_macro_indicators(cfg, date(2024, 6, 28), "run-gap", {})
+
+    assert result["status"] == "warning"
+    finding = result["context_updates"]["audit_findings"][0]
+    assert finding["check"] == "daily_series_gap"
+    assert finding["missing_dates"]["2024-06-28"] == ["shibor_3m"]
+    assert len(finding["missing_dates"]) == 5
+
+
 def test_macro_indicators_honours_eastmoney_source_switch(tmp_path):
     from cnequity.steps import macro_risk
 
@@ -426,6 +454,52 @@ def test_market_breadth_computed_from_daily_bars(breadth_lake):
     assert metrics["decline_count"] == 1.0
     assert metrics["flat_count"] == 1.0
     assert metrics["total_count"] == 3.0
+
+
+def test_market_breadth_excludes_no_trade_placeholders(tmp_path):
+    root = tmp_path / "data"
+    curated = root / "curated"
+    calendar = curated / "trading_calendar" / "trade_date=2024-06-27"
+    calendar.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2024, 6, 27)],
+            "is_trading": [True],
+            "source": ["seed"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-27T00:00:00+00:00"],
+        }
+    ).write_parquet(calendar / "part-0.parquet")
+
+    for trade_date, closes in (
+        (date(2024, 6, 27), [10.0, 20.0]),
+        (date(2024, 6, 28), [11.0, 20.0]),
+    ):
+        part = curated / "daily_bars" / f"trade_date={trade_date.isoformat()}"
+        part.mkdir(parents=True)
+        pl.DataFrame(
+            {
+                "symbol": ["600001.SH", "600002.SH"],
+                "trade_date": [trade_date] * 2,
+                "open": closes,
+                "high": closes,
+                "low": closes,
+                "close": closes,
+                # The second row is a suspended/no-trade placeholder on the
+                # requested day and must not become a breadth flat count.
+                "volume": [100, 100 if trade_date == date(2024, 6, 27) else 0],
+                "amount": [1000.0, 1000.0 if trade_date == date(2024, 6, 27) else 0.0],
+                "source": ["tdx"] * 2,
+                "data_version": ["v1"] * 2,
+                "fetched_at": [f"{trade_date}T00:00:00+00:00"] * 2,
+            }
+        ).write_parquet(part / "part-0.parquet")
+
+    df = compute_market_breadth(Config(data_root=root), date(2024, 6, 28))
+    metrics = dict(zip(df["metric_id"].to_list(), df["value"].to_list(), strict=True))
+    assert metrics["advance_count"] == 1.0
+    assert metrics["flat_count"] == 0.0
+    assert metrics["total_count"] == 1.0
 
 
 def test_market_breadth_uses_board_and_st_specific_limit_thresholds(tmp_path):

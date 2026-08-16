@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import date
 
+import polars as pl
+
 from cnequity.adapters.eastmoney.consensus import fetch_analyst_consensus
 from cnequity.adapters.eastmoney.institutional import fetch_institutional_holdings
 from cnequity.config import Config
 from cnequity.derive.sentiment_scores import compute_sentiment_scores
 from cnequity.orchestrator.registry import register_step
 from cnequity.steps.http_common import empty_ok, run_incremental_fetched, write_fetched
+
+_MIN_INSTITUTIONAL_HOLDING_ROWS_PER_PERIOD = 100
 
 
 def _quarter_labels(config: Config, trade_date: date) -> set[str]:
@@ -23,6 +27,36 @@ def _quarter_labels(config: Config, trade_date: date) -> set[str]:
     return {f"{period[:4]}Q{(int(period[5:7]) - 1) // 3 + 1}" for period in periods}
 
 
+def _validate_institutional_holdings_snapshot(df):
+    """Reject a non-empty but obviously truncated quarterly holdings response."""
+    if df.is_empty():
+        return df
+    required = {"symbol", "holder_type", "report_period"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError(
+            "institutional_holdings: response is missing required column(s): "
+            + ", ".join(missing)
+        )
+    counts = (
+        df.unique(subset=["symbol", "holder_type", "report_period"])
+        .group_by("report_period")
+        .agg(pl.len().alias("_holding_rows"))
+        .filter(pl.col("_holding_rows") < _MIN_INSTITUTIONAL_HOLDING_ROWS_PER_PERIOD)
+    )
+    if not counts.is_empty():
+        details = ", ".join(
+            f"{row['report_period']}={row['_holding_rows']}"
+            for row in counts.iter_rows(named=True)
+        )
+        raise RuntimeError(
+            "institutional_holdings: incomplete quarterly snapshot; each observed "
+            f"period needs at least {_MIN_INSTITUTIONAL_HOLDING_ROWS_PER_PERIOD} "
+            f"unique holding row(s) ({details})"
+        )
+    return df
+
+
 @register_step("institutional_holdings", group="research", depends_on=["instruments"])
 def step_institutional_holdings(
     config: Config, trade_date: date, run_id: str, context: dict
@@ -32,7 +66,9 @@ def step_institutional_holdings(
     # Quarterly by REPORT_DATE: daily refreshes the latest quarter, backfill
     # walks all quarters from 2016.
     backfill = getattr(config, "_backfill", False)
-    df = fetch_institutional_holdings(trade_date, backfill=backfill, config=config)
+    df = _validate_institutional_holdings_snapshot(
+        fetch_institutional_holdings(trade_date, backfill=backfill, config=config)
+    )
     missing_periods: set[str] = set()
     if backfill:
         expected = _quarter_labels(config, trade_date)
@@ -76,9 +112,17 @@ def step_analyst_consensus(config: Config, trade_date: date, run_id: str, contex
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("analyst_consensus: eastmoney source disabled in config")
     # Live consensus snapshot stamped with trade_date (no dated EM report).
-    df = fetch_analyst_consensus(trade_date, config=config)
-    empty_ok(df, "analyst_consensus", trade_date)
-    return write_fetched(config, run_id, "analyst_consensus", df, source="eastmoney")
+    # Use the common helper so snapshot backfill is rejected and missed daily
+    # snapshots remain visible as coverage findings instead of looking complete.
+    return run_incremental_fetched(
+        config,
+        trade_date,
+        run_id,
+        "analyst_consensus",
+        lambda d: fetch_analyst_consensus(d, config=config),
+        source="eastmoney",
+        date_col="forecast_date",
+    )
 
 
 @register_step(

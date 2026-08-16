@@ -26,6 +26,16 @@ from cnequity.steps.http_common import run_incremental_fetched, write_fetched
 logger = logging.getLogger(__name__)
 
 _MARGIN_FLUSH_DAYS = 63  # stage a parquet part roughly every quarter of fetched days
+_MIN_MARGIN_SYMBOLS_PER_DAY = 50
+_NORTHBOUND_SZ_START = date(2016, 12, 5)
+# Stock Connect is closed on HK-only holidays that this codebase has no
+# calendar for (see step_northbound_flows); that mismatch alone is on the
+# order of a few percent of mainland trading days a year. Set well above
+# that so it doesn't mask a real fetch failure, but low enough that a
+# largely-empty response still trips it.
+_NORTHBOUND_GAP_TOLERANCE = 0.15
+_MIN_NORTHBOUND_HOLDING_ROWS_PER_PERIOD = 100
+_MIN_NORTHBOUND_HOLDING_ROWS_PER_CHANNEL = 50
 
 
 def _run_capital_step(
@@ -75,7 +85,9 @@ def step_northbound_holdings(config: Config, trade_date: date, run_id: str, cont
     from cnequity.steps.http_common import write_fetched
 
     backfill = getattr(config, "_backfill", False)
-    df = fetch_northbound_holdings(trade_date, backfill=backfill, config=config)
+    df = _validate_northbound_holdings_snapshot(
+        fetch_northbound_holdings(trade_date, backfill=backfill, config=config)
+    )
     missing_periods: list[str] = []
     if backfill:
         expected = set(
@@ -170,17 +182,161 @@ def step_northbound_flows(config: Config, trade_date: date, run_id: str, context
             "northbound_flows: no published rows in %s..%s", start.isoformat(), end.isoformat()
         )
         return {"rows_read": 0, "rows_written": 0}
+    expected_dates = list_trading_dates(config, start, end)
+    expected = {
+        (day, "SH") for day in expected_dates if day >= NORTHBOUND_HISTORY_START
+    }
+    expected.update(
+        (day, "SZ") for day in expected_dates if day >= _NORTHBOUND_SZ_START
+    )
+    required_columns = {"trade_date", "channel"}
+    missing_columns = sorted(required_columns - set(df.columns))
+    if missing_columns:
+        raise RuntimeError(
+            "northbound_flows: response is missing required column(s): "
+            + ", ".join(missing_columns)
+        )
+    observed = {
+        (day, channel)
+        for day, channel in df.select(["trade_date", "channel"]).iter_rows()
+        if day is not None and channel is not None
+    }
+    missing = sorted(expected - observed)
+    if missing:
+        # `expected` is built from the mainland trading calendar only: there
+        # is no Hong Kong / Stock Connect holiday calendar in this codebase.
+        # Stock Connect trades only when both mainland exchanges and HKEX are
+        # open, so a mainland trading day that is an HK-only holiday (Good
+        # Friday, HKSAR Establishment Day, etc.) always looks "missing" here
+        # even though the source published a genuinely complete range. That
+        # mismatch is small and well known (a handful of HK-only holidays a
+        # year); tolerate it, but still raise once the gap is far too large
+        # for that explanation to plausibly cover, which is the signature of
+        # a real fetch failure rather than a calendar mismatch.
+        sample = ", ".join(f"{day.isoformat()}/{channel}" for day, channel in missing[:8])
+        gap_ratio = len(missing) / len(expected)
+        if gap_ratio > _NORTHBOUND_GAP_TOLERANCE:
+            raise RuntimeError(
+                "northbound_flows: incomplete published range; missing "
+                f"{len(missing)} of {len(expected)} expected day/channel row(s) "
+                f"({gap_ratio:.0%}, e.g. {sample})"
+            )
+        logger.warning(
+            "northbound_flows: %s of %s expected day/channel row(s) absent from "
+            "%s..%s (e.g. %s) - within HK-holiday tolerance, not raised",
+            len(missing),
+            len(expected),
+            start.isoformat(),
+            end.isoformat(),
+            sample,
+        )
     return write_fetched(config, run_id, "northbound_flows", df, source="eastmoney")
 
 
-def _existing_margin_dates(config: Config) -> set[date]:
+def _existing_margin_dates(
+    config: Config,
+    *,
+    min_symbols: int = _MIN_MARGIN_SYMBOLS_PER_DAY,
+) -> set[date]:
     root = config.curated_root / "margin_trading"
     files = list(root.glob("**/*.parquet")) if root.exists() else []
     if not files:
         return set()
+    scan = pl.scan_parquet(files)
+    if "symbol" not in scan.collect_schema().names():
+        return set()
     return set(
-        pl.scan_parquet(files).select("trade_date").unique().collect()["trade_date"].to_list()
+        scan.group_by("trade_date")
+        .agg(pl.col("symbol").n_unique().alias("_symbol_count"))
+        .filter(pl.col("_symbol_count") >= min_symbols)
+        .select("trade_date")
+        .collect()
+        .get_column("trade_date")
+        .to_list()
     )
+
+
+def _margin_symbol_count(df: pl.DataFrame) -> int:
+    if "symbol" not in df.columns:
+        return 0
+    return df.get_column("symbol").drop_nulls().n_unique()
+
+
+def _validate_northbound_holdings_snapshot(df: pl.DataFrame) -> pl.DataFrame:
+    """Reject a non-empty but obviously truncated quarterly holdings response.
+
+    The report contains two independent exchange legs.  A total row floor is
+    not enough: a response containing only SH rows can still exceed the floor
+    while silently losing the whole SZ leg.
+    """
+    if df.is_empty():
+        return df
+    required = {"symbol", "trade_date", "channel"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError(
+            "northbound_holdings: response is missing required column(s): "
+            + ", ".join(missing)
+        )
+    unique = df.unique(subset=["symbol", "trade_date", "channel"])
+    counts = unique.group_by("trade_date").agg(pl.len().alias("_holding_rows"))
+    channel_counts = unique.group_by("trade_date", "channel").agg(
+        pl.len().alias("_channel_rows")
+    )
+    missing_channels: list[str] = []
+    for row in counts.iter_rows(named=True):
+        observed = set(
+            unique.filter(pl.col("trade_date") == row["trade_date"])
+            .get_column("channel")
+            .drop_nulls()
+            .to_list()
+        )
+        expected = {"SH"}
+        if row["trade_date"] >= _NORTHBOUND_SZ_START:
+            expected.add("SZ")
+        missing = sorted(expected - observed)
+        if missing:
+            missing_channels.append(
+                f"{row['trade_date']} missing {','.join(missing)}"
+            )
+
+    incomplete_channels = channel_counts.filter(
+        pl.col("_channel_rows") < _MIN_NORTHBOUND_HOLDING_ROWS_PER_CHANNEL
+    )
+    incomplete_totals = counts.filter(
+        pl.col("_holding_rows") < _MIN_NORTHBOUND_HOLDING_ROWS_PER_PERIOD
+    )
+    if not incomplete_totals.is_empty() or not incomplete_channels.is_empty() or missing_channels:
+        details = [
+            f"{row['trade_date']} total={row['_holding_rows']}"
+            for row in incomplete_totals.iter_rows(named=True)
+        ]
+        details.extend(
+            f"{row['trade_date']} {row['channel']}={row['_channel_rows']}"
+            for row in incomplete_channels.iter_rows(named=True)
+        )
+        details.extend(missing_channels)
+        raise RuntimeError(
+            "northbound_holdings: incomplete quarterly snapshot; each observed "
+            f"period needs at least {_MIN_NORTHBOUND_HOLDING_ROWS_PER_PERIOD} "
+            f"unique holding row(s), and each exchange channel needs at least "
+            f"{_MIN_NORTHBOUND_HOLDING_ROWS_PER_CHANNEL} row(s) ({'; '.join(details)})"
+        )
+    return df
+
+
+def _validate_margin_snapshot(df: pl.DataFrame, trade_date: date) -> pl.DataFrame:
+    """Reject a non-empty margin response that is obviously truncated."""
+    if df.is_empty():
+        return df
+    count = _margin_symbol_count(df)
+    if count < _MIN_MARGIN_SYMBOLS_PER_DAY:
+        raise RuntimeError(
+            "margin_trading: incomplete daily snapshot; expected at least "
+            f"{_MIN_MARGIN_SYMBOLS_PER_DAY} unique symbols on {trade_date.isoformat()}, "
+            f"got {count}"
+        )
+    return df
 
 
 def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> dict:
@@ -213,6 +369,7 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
     frames: list[pl.DataFrame] = []
     total_rows = 0
     empty_days: list[date] = []
+    incomplete_days: list[tuple[date, int]] = []
     n_parts = 0
 
     def flush() -> None:
@@ -268,6 +425,10 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
                                 f"margin_trading: fetch for {d.isoformat()} returned "
                                 f"{invalid_count} row(s) with a different or invalid trade_date"
                             )
+                        symbol_count = _margin_symbol_count(df)
+                        if symbol_count < _MIN_MARGIN_SYMBOLS_PER_DAY:
+                            incomplete_days.append((d, symbol_count))
+                            continue
                         frames.append(df)
                 done += len(chunk)
                 flush()
@@ -298,14 +459,35 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
     result = {
         "rows_read": total_rows,
         "rows_written": total_rows,
-        "days_fetched": len(todo) - len(empty_days),
+        "days_fetched": len(todo) - len(empty_days) - len(incomplete_days),
         "days_skipped": len(days) - len(todo),
         "days_empty": len(empty_days),
     }
+    if incomplete_days:
+        result["status"] = "warning"
+        result["failed_days"] = len(incomplete_days)
+        result.setdefault("context_updates", {})["audit_findings"] = [
+            {
+                "dataset": "margin_trading",
+                "severity": "warning",
+                "check": "backfill_incomplete_days",
+                "message": (
+                    f"margin_trading: {len(incomplete_days)} day(s) returned fewer than "
+                    f"{_MIN_MARGIN_SYMBOLS_PER_DAY} unique symbols; rows were not staged"
+                ),
+                "days": [
+                    {"trade_date": day.isoformat(), "symbols": count}
+                    for day, count in incomplete_days
+                ],
+            }
+        ]
     if empty_days:
-        result["context_updates"] = {
-            "audit_findings": [_backfill_empty_day_finding("margin_trading", empty_days)]
-        }
+        result.setdefault("context_updates", {})["audit_findings"] = [
+            *(result.get("context_updates", {}).get("audit_findings") or []),
+            _backfill_empty_day_finding("margin_trading", empty_days),
+        ]
+    if empty_days or incomplete_days:
+        result.setdefault("status", "warning")
     return result
 
 
@@ -313,8 +495,12 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
 def step_margin_trading(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_backfill", False):
         return _backfill_margin_trading(config, trade_date, run_id)
+
+    def _fetch(day: date, *, config: Config) -> pl.DataFrame:
+        return _validate_margin_snapshot(fetch_margin_trading(day, config=config), day)
+
     return _run_capital_step(
-        config, trade_date, run_id, "margin_trading", fetch_margin_trading, allow_empty=False
+        config, trade_date, run_id, "margin_trading", _fetch, allow_empty=False
     )
 
 

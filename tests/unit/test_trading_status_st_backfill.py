@@ -20,7 +20,7 @@ from cnequity.quality.st_coverage import (
     st_evidence_coverage_report,
 )
 from cnequity.steps import reference
-from cnequity.steps.reference import _backfill_trading_status_st
+from cnequity.steps.reference import _backfill_trading_status_st, _resolve_explicit_st_symbols
 
 
 def _write_instruments(config: Config, symbols: list[str]) -> None:
@@ -70,6 +70,31 @@ def test_writes_st_rows_and_marks_all_swept_symbols(tmp_path, monkeypatch):
     assert set(checkpoint["completed_symbols"]) == {"600000.SH", "600001.SH"}
     assert checkpoint["status"] == "complete"
     assert result["coverage_pending_compact"] is True
+
+
+def test_checkpoint_batches_match_provider_cooldown_batches(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    symbols = [f"60000{i}.SH" for i in range(5)]
+    _write_instruments(cfg, symbols)
+    monkeypatch.setattr(reference, "_ST_BACKFILL_CHUNK", 2)
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_fetch(symbols, start, end, **kwargs):
+        calls.append((list(symbols), kwargs["rest_after_batch"]))
+        return pl.DataFrame(schema={
+            "symbol": pl.Utf8,
+            "trade_date": pl.Date,
+            "is_trading": pl.Boolean,
+            "status": pl.Utf8,
+        }), []
+
+    monkeypatch.setattr("cnequity.adapters.baostock.st_history.fetch_st_history", fake_fetch)
+
+    result = _backfill_trading_status_st(cfg, date(2026, 7, 1), "run1")
+
+    assert result["coverage_pending_compact"] is True
+    assert [len(batch) for batch, _ in calls] == [2, 2, 1]
+    assert [rests for _, rests in calls] == [True, True, False]
 
 
 def test_new_run_rechecks_positive_rows_that_never_reached_storage(tmp_path, monkeypatch):
@@ -128,6 +153,16 @@ def test_legacy_sparse_checkpoint_is_not_completion_evidence(tmp_path, monkeypat
     _backfill_trading_status_st(cfg, date(2026, 7, 1), "run1")
 
     assert calls == [["600000.SH"]]
+
+
+def test_explicit_st_scope_rejects_cdr(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    _write_instruments(cfg, ["689009.SH"])
+
+    import pytest
+
+    with pytest.raises(ValueError, match="exactly one all-A instrument"):
+        _resolve_explicit_st_symbols(cfg, ["689009.SH"])
 
 
 def _patch_with_calls(monkeypatch, *, returns):

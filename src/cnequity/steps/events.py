@@ -36,9 +36,40 @@ from cnequity.steps.http_common import run_incremental_fetched, write_fetched
 _CANONICAL_BACKFILL = "tdx_protocol"
 _CANONICAL_DAILY = "eastmoney"
 _CORPORATE_ACTIONS_CHUNK_TASK = "corporate_actions_chunk"
+_MIN_EARNINGS_SCHEDULE_SYMBOLS_PER_PERIOD = 100
 
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_earnings_schedule_snapshot(df: pl.DataFrame) -> pl.DataFrame:
+    """Reject a non-empty but obviously truncated report-period snapshot."""
+    if df.is_empty():
+        return df
+    required = {"symbol", "report_period"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError(
+            "earnings_disclosure_schedule: response is missing required column(s): "
+            + ", ".join(missing)
+        )
+    counts = (
+        df.unique(subset=["symbol", "report_period"])
+        .group_by("report_period")
+        .agg(pl.len().alias("_symbol_count"))
+        .filter(pl.col("_symbol_count") < _MIN_EARNINGS_SCHEDULE_SYMBOLS_PER_PERIOD)
+    )
+    if not counts.is_empty():
+        details = ", ".join(
+            f"{row['report_period']}={row['_symbol_count']}"
+            for row in counts.iter_rows(named=True)
+        )
+        raise RuntimeError(
+            "earnings_disclosure_schedule: incomplete report-period snapshot; each "
+            f"observed period needs at least {_MIN_EARNINGS_SCHEDULE_SYMBOLS_PER_PERIOD} "
+            f"unique symbol(s) ({details})"
+        )
+    return df
 
 
 @register_step("corporate_actions", group="core", depends_on=["instruments"])
@@ -262,7 +293,9 @@ def step_earnings_disclosure_schedule(
     # Period-keyed like financial_statement_items (watermark=False): daily runs
     # refresh the open disclosure windows; backfill walks every period 2016+.
     backfill = getattr(config, "_backfill", False)
-    df = fetch_earnings_disclosure_schedule(trade_date, backfill=backfill, config=config)
+    df = _validate_earnings_schedule_snapshot(
+        fetch_earnings_disclosure_schedule(trade_date, backfill=backfill, config=config)
+    )
     missing_periods: set[str] = set()
     if backfill:
         expected = {

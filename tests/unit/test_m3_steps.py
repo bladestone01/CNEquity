@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
@@ -95,6 +95,29 @@ def test_capital_steps_reject_empty_canonical_feeds(
         getattr(cap, step_name)(cfg, date(2024, 6, 28), "run-empty", {})
 
 
+def test_margin_trading_rejects_partial_daily_feed(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+    from cnequity.storage.state import StateStore
+
+    StateStore(cfg.meta_root).set_date("margin_trading", date(2024, 6, 27))
+    monkeypatch.setattr(
+        cap,
+        "fetch_margin_trading",
+        lambda trade_date, **kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [trade_date],
+                "margin_balance": [1.0],
+                "margin_buy": [0.0],
+                "short_balance": [0.0],
+                "short_sell_volume": [0.0],
+            }
+        ),
+    )
+    with pytest.raises(RuntimeError, match="margin_trading: incomplete daily snapshot"):
+        cap.step_margin_trading(cfg, date(2024, 6, 28), "run-partial", {})
+
+
 def test_northbound_holdings_rejects_empty_daily_feed(cfg, monkeypatch):
     from cnequity.steps import capital as cap
 
@@ -120,6 +143,53 @@ def test_northbound_holdings_backfill_surfaces_missing_quarters(cfg, monkeypatch
     assert result["status"] == "warning"
     assert result["missing_periods"] == 2
     assert result["context_updates"]["audit_findings"][0]["check"] == ("backfill_missing_quarters")
+
+
+def test_northbound_holdings_rejects_partial_period(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+
+    monkeypatch.setattr(
+        cap,
+        "fetch_northbound_holdings",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2026, 6, 30)],
+                "channel": ["SH"],
+                "holding_shares": [1.0],
+                "holding_mv": [2.0],
+                "holding_ratio": [0.1],
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="northbound_holdings: incomplete quarterly snapshot"):
+        cap.step_northbound_holdings(cfg, date(2026, 8, 16), "run-partial", {})
+
+
+def test_northbound_holdings_rejects_missing_exchange_channel(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+
+    monkeypatch.setattr(
+        cap,
+        "fetch_northbound_holdings",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {
+                "symbol": [f"600{i:03d}.SH" for i in range(120)],
+                "trade_date": [date(2026, 6, 30)] * 120,
+                "channel": ["SH"] * 120,
+                "holding_shares": [1.0] * 120,
+                "holding_mv": [2.0] * 120,
+                "holding_ratio": [0.1] * 120,
+            }
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="northbound_holdings: incomplete quarterly snapshot.*missing SZ",
+    ):
+        cap.step_northbound_holdings(cfg, date(2026, 8, 16), "run-missing-channel", {})
 
 
 def test_northbound_flows_skips_retired_window_without_source_request(cfg, monkeypatch):
@@ -160,6 +230,71 @@ def test_northbound_flows_clips_backfill_to_published_range(cfg, monkeypatch):
     assert seen["window"] == (date(2014, 11, 17), date(2024, 8, 16))
 
 
+def test_northbound_flows_rejects_partial_published_range(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+
+    requested = [date(2024, 6, 27), date(2024, 6, 28)]
+    monkeypatch.setattr(cap, "incremental_trade_dates", lambda *args: requested)
+    monkeypatch.setattr(cap, "list_trading_dates", lambda *args: requested)
+    monkeypatch.setattr(
+        cap,
+        "fetch_northbound_flows_range",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "trade_date": [date(2024, 6, 28)],
+                "channel": ["SH"],
+                "net_buy": [1.0],
+                "buy_amount": [2.0],
+                "sell_amount": [1.0],
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="northbound_flows: incomplete published range"):
+        cap.step_northbound_flows(cfg, date(2024, 6, 28), "run-partial", {})
+
+
+def test_northbound_flows_tolerates_small_gap_from_untracked_hk_holidays(cfg, monkeypatch):
+    """A handful of missing day/channel rows must not fail the whole fetch.
+
+    There is no Hong Kong / Stock Connect holiday calendar in this codebase,
+    so a mainland trading day that Stock Connect skips because HKEX (not
+    SSE/SZSE) is closed always looks "missing" against the mainland-only
+    expected set. That must stay a warning, not a hard failure, as long as
+    the gap is small relative to the window.
+    """
+    from cnequity.steps import capital as cap
+
+    requested = [date(2024, 6, 3) + timedelta(days=i) for i in range(20)]
+    monkeypatch.setattr(cap, "incremental_trade_dates", lambda *args: requested)
+    monkeypatch.setattr(cap, "list_trading_dates", lambda *args: requested)
+    # 40 expected (day, channel) rows (20 days x SH+SZ); observed omits just
+    # one HK-holiday-style day entirely, an ~5% gap, well under tolerance.
+    hk_holiday = requested[7]
+    rows = [
+        (day, channel)
+        for day in requested
+        for channel in ("SH", "SZ")
+        if day != hk_holiday
+    ]
+    monkeypatch.setattr(
+        cap,
+        "fetch_northbound_flows_range",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "trade_date": [day for day, _ in rows],
+                "channel": [channel for _, channel in rows],
+                "net_buy": [1.0] * len(rows),
+                "buy_amount": [2.0] * len(rows),
+                "sell_amount": [1.0] * len(rows),
+            }
+        ),
+    )
+
+    result = cap.step_northbound_flows(cfg, requested[-1], "run-tolerant", {})
+    assert result["rows_written"] == len(rows)
+
+
 def test_trading_status_rejects_empty_feed(cfg, monkeypatch):
     from cnequity.steps import reference
 
@@ -171,6 +306,26 @@ def test_trading_status_rejects_empty_feed(cfg, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="trading_status: no rows returned"):
         reference.step_trading_status(cfg, date(2024, 6, 28), "run-empty", {})
+
+
+def test_trading_status_rejects_partial_feed(cfg, monkeypatch):
+    from cnequity.steps import reference
+
+    monkeypatch.setattr(reference, "load_symbols", lambda _cfg: ["600519.SH", "000001.SZ"])
+    monkeypatch.setattr(
+        reference,
+        "fetch_trading_status",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2024, 6, 28)],
+                "is_trading": [True],
+                "status": ["normal"],
+            }
+        ),
+    )
+    with pytest.raises(RuntimeError, match="incomplete daily snapshot"):
+        reference.step_trading_status(cfg, date(2024, 6, 28), "run-partial", {})
 
 
 def test_trading_status_preserves_incremental_findings(cfg, monkeypatch):

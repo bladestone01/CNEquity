@@ -334,13 +334,14 @@ def _is_all_a(symbol: str) -> bool:
 def _expected_financial_periods(config: Config, trade_date: date) -> set[str]:
     from cnequity.adapters.eastmoney.fundamentals import _report_period_dates
 
-    return set(
-        _report_period_dates(
+    return {
+        f"{period[:4]}Q{(int(period[5:7]) - 1) // 3 + 1}"
+        for period in _report_period_dates(
             trade_date,
             start=getattr(config, "_backfill_start", None),
             end=getattr(config, "_backfill_end", None),
         )
-    )
+    }
 
 
 @register_step("financial_statement_items", group="fundamentals", depends_on=["instruments"])
@@ -355,6 +356,7 @@ def step_financial_statement_items(
     backfill = getattr(config, "_backfill", False)
     df = fetch_financial_statement_items(trade_date, backfill=backfill, config=config)
     missing_periods: set[str] = set()
+    missing_statement_types: dict[str, list[str]] = {}
     if backfill:
         expected = _expected_financial_periods(config, trade_date)
         observed = (
@@ -363,7 +365,55 @@ def step_financial_statement_items(
             else set()
         )
         missing_periods = expected - observed
-    if backfill and missing_periods:
+        if not df.is_empty() and {"report_period", "statement_type"}.issubset(df.columns):
+            by_period = df.group_by("report_period").agg(
+                pl.col("statement_type").drop_nulls().unique().alias("statement_types")
+            )
+            for row in by_period.iter_rows(named=True):
+                period = row.get("report_period")
+                if period not in observed:
+                    continue
+                present = set(row.get("statement_types") or [])
+                # The four statement-type families fetch_financial_statement_items
+                # actually issues requests for (adapters/eastmoney/fundamentals.py);
+                # checking only a subset let a missing income statement pass as
+                # a complete period.
+                missing = sorted({"income", "indicator", "balance", "cashflow"} - present)
+                if missing:
+                    missing_statement_types[str(period)] = missing
+
+    findings: list[dict] = []
+    if missing_periods:
+        findings.append(
+            {
+                "dataset": "financial_statement_items",
+                "severity": "warning",
+                "check": "backfill_missing_report_periods",
+                "message": (
+                    f"financial statement items missing {len(missing_periods)} "
+                    f"requested report period(s): {', '.join(sorted(missing_periods)[:8])}"
+                ),
+                "missing_periods": sorted(missing_periods),
+            }
+        )
+    if missing_statement_types:
+        findings.append(
+            {
+                "dataset": "financial_statement_items",
+                "severity": "warning",
+                "check": "backfill_missing_statement_types",
+                "message": (
+                    f"financial statement items have incomplete report families in "
+                    f"{len(missing_statement_types)} report period(s)"
+                ),
+                "missing_statement_types": [
+                    {"report_period": period, "missing": missing}
+                    for period, missing in sorted(missing_statement_types.items())
+                ],
+            }
+        )
+
+    if backfill and findings:
         result: dict
         if df.is_empty():
             result = {"rows_read": 0, "rows_written": 0}
@@ -372,21 +422,11 @@ def step_financial_statement_items(
                 config, run_id, "financial_statement_items", df, source="eastmoney"
             )
         result["status"] = "warning"
-        result["missing_periods"] = len(missing_periods)
-        result["context_updates"] = {
-            "audit_findings": [
-                {
-                    "dataset": "financial_statement_items",
-                    "severity": "warning",
-                    "check": "backfill_missing_report_periods",
-                    "message": (
-                        f"financial statement items missing {len(missing_periods)} "
-                        f"requested report period(s): {', '.join(sorted(missing_periods)[:8])}"
-                    ),
-                    "missing_periods": sorted(missing_periods),
-                }
-            ]
-        }
+        if missing_periods:
+            result["missing_periods"] = len(missing_periods)
+        if missing_statement_types:
+            result["missing_statement_periods"] = len(missing_statement_types)
+        result["context_updates"] = {"audit_findings": findings}
         return result
     if df.is_empty():
         return {"rows_read": 0, "rows_written": 0}

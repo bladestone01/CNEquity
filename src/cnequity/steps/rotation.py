@@ -21,6 +21,43 @@ from cnequity.steps.http_common import run_incremental_fetched, write_fetched
 _SECTOR_BARS_BACKFILL_DAYS = 400
 _SECTOR_BARS_BACKFILL_STATE = "sector_bars_backfill"
 _SECTOR_BARS_FAILURE_THRESHOLD = 0.5
+_SECTOR_FLOW_BOARD_TYPES = frozenset({"concept", "industry"})
+_MIN_SECTOR_FLOW_ROWS_BY_TYPE = {"concept": 100, "industry": 50}
+
+
+def _validate_sector_fund_flow_snapshot(df):
+    """Reject a non-empty flow snapshot that is missing a board slice."""
+    if df.is_empty():
+        return df
+    required = {"sector_code", "board_type", "trade_date"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError(
+            "sector_fund_flow: response is missing required column(s): "
+            + ", ".join(missing)
+        )
+    observed = set(df.get_column("board_type").drop_nulls().to_list())
+    missing_types = sorted(_SECTOR_FLOW_BOARD_TYPES - observed)
+    unique = df.unique(subset=["sector_code", "board_type", "trade_date"])
+    counts = unique.group_by("board_type").len().rename({"len": "_sector_count"})
+    thin_types = {
+        row["board_type"]: row["_sector_count"]
+        for row in counts.iter_rows(named=True)
+        if row["board_type"] in _MIN_SECTOR_FLOW_ROWS_BY_TYPE
+        and row["_sector_count"] < _MIN_SECTOR_FLOW_ROWS_BY_TYPE[row["board_type"]]
+    }
+    if missing_types or thin_types:
+        details: list[str] = []
+        if missing_types:
+            details.append(f"missing board type(s): {', '.join(missing_types)}")
+        details.extend(
+            f"{board_type}={count} (minimum {_MIN_SECTOR_FLOW_ROWS_BY_TYPE[board_type]})"
+            for board_type, count in sorted(thin_types.items())
+        )
+        raise RuntimeError(
+            "sector_fund_flow: incomplete daily snapshot; " + "; ".join(details)
+        )
+    return df
 
 
 def _run_rotation_step(
@@ -265,7 +302,13 @@ def _backfill_sector_bars(config: Config, trade_date: date, run_id: str) -> dict
 @register_step("sector_fund_flow", group="research", depends_on=["instruments"])
 def step_sector_fund_flow(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     return _run_rotation_step(
-        config, trade_date, run_id, "sector_fund_flow", fetch_sector_fund_flow
+        config,
+        trade_date,
+        run_id,
+        "sector_fund_flow",
+        lambda d, *, config: _validate_sector_fund_flow_snapshot(
+            fetch_sector_fund_flow(d, config=config)
+        ),
     )
 
 

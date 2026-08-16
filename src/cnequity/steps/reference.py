@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 import polars as pl
 
+from cnequity.adapters.calendar.exchange_calendar import curated_bar_dates
 from cnequity.adapters.eastmoney.instruments import enrich_instrument_list_dates
 from cnequity.adapters.tdx_protocol.client import (
     fetch_instruments,
@@ -16,7 +17,12 @@ from cnequity.adapters.tdx_protocol.client import (
 )
 from cnequity.config import Config
 from cnequity.domain.schemas import with_provenance
-from cnequity.domain.symbols import is_all_a_symbol, is_tdx_servable, parse_symbol
+from cnequity.domain.symbols import (
+    is_all_a_symbol,
+    is_cdr_symbol,
+    is_tdx_servable,
+    parse_symbol,
+)
 from cnequity.orchestrator.registry import register_step
 from cnequity.quality.st_coverage import (
     ST_EVIDENCE_VERSION,
@@ -37,9 +43,12 @@ from cnequity.steps.http_common import write_fetched
 
 logger = logging.getLogger(__name__)
 
-# Flush + checkpoint every chunk so a mid-sweep baostock login death does not
-# discard hours of already-fetched ST rows (observed ~2950/5204 lost on one run).
-_ST_BACKFILL_CHUNK = 200
+# Flush + checkpoint on the same boundary as Baostock's anti-blacklist batch.
+# A larger chunk used to discard up to ~200 symbols of in-memory evidence when
+# a process died between checkpoints, even though the provider had already
+# paid the request cost. Keeping this at the provider batch size preserves the
+# required cooldown while limiting resumable loss to one batch.
+_ST_BACKFILL_CHUNK = 20
 
 
 @register_step("instruments", group="core", requires_workers=False)
@@ -186,18 +195,15 @@ def _earliest_bar_date(config: Config) -> date | None:
     existed and the audit reported them as bars on non-trading days — a warning
     about the calendar being short, dressed as a warning about the data.
     """
-    import polars as pl
-
     earliest: date | None = None
     for dataset in ("index_bars", "daily_bars"):
         root = config.curated_root / dataset
         if not root.exists():
             continue
-        files = list(root.glob("**/*.parquet"))
-        if not files:
+        dates = curated_bar_dates(config.curated_root, dataset)
+        if not dates:
             continue
-        frames = [pl.read_parquet(f, columns=["trade_date"]) for f in files]
-        first = pl.concat(frames, how="diagonal_relaxed")["trade_date"].min()
+        first = min(dates)
         if first is not None and (earliest is None or first < earliest):
             earliest = first
     return earliest
@@ -234,6 +240,7 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
         return _backfill_trading_status_st(config, trade_date, run_id)
 
     symbols = context.get("symbols") or load_symbols(config)
+    expected_symbols = set(symbols)
     rl = config.tdx_rate_limit_spec()
 
     # EastMoney is the only daily ST feed. An AkShare union used to sit here as a
@@ -246,13 +253,30 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
     # is a per-symbol sweep and stays where it is affordable: the `--backfill`
     # path below. See issue #3.
     def _fetch(day: date):
-        return fetch_trading_status(
+        frame = fetch_trading_status(
             symbols,
             day,
             rate_limit=rl,
             allow_mock=config.tdx_allow_mock,
             config=config,
         )
+        if frame.is_empty():
+            return frame
+        if "symbol" not in frame.columns:
+            raise RuntimeError("trading_status: response is missing the symbol column")
+        observed_symbols = set(frame.get_column("symbol").drop_nulls().to_list())
+        missing = sorted(expected_symbols - observed_symbols)
+        unexpected = sorted(observed_symbols - expected_symbols)
+        if missing or unexpected:
+            details: list[str] = []
+            if missing:
+                details.append(f"missing {len(missing)} requested symbol(s)")
+            if unexpected:
+                details.append(f"returned {len(unexpected)} unexpected symbol(s)")
+            raise RuntimeError(
+                "trading_status: incomplete daily snapshot; " + "; ".join(details)
+            )
+        return frame
 
     df, _findings = fetch_incremental_daily(
         config,
@@ -281,7 +305,9 @@ def _is_all_a(symbol: str) -> bool:
         info = parse_symbol(symbol)
     except ValueError:
         return False
-    return is_all_a_symbol(info.code, info.exchange)
+    return is_all_a_symbol(info.code, info.exchange) and not is_cdr_symbol(
+        info.code, info.exchange
+    )
 
 
 def _resolve_explicit_st_symbols(config: Config, raw: list[str]) -> list[str]:
@@ -354,7 +380,14 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
     rows_written = 0
     for offset in range(0, len(todo), _ST_BACKFILL_CHUNK):
         batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
-        df, failed = fetch_st_history(batch, start, end, config=config)
+        is_last_batch = offset + len(batch) >= len(todo)
+        df, failed = fetch_st_history(
+            batch,
+            start,
+            end,
+            config=config,
+            rest_after_batch=not is_last_batch,
+        )
         if not df.is_empty():
             chunk = write_fetched(
                 config,

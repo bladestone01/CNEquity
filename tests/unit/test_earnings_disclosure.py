@@ -185,3 +185,26 @@ def test_earnings_disclosure_backfill_surfaces_missing_periods(tmp_path, monkeyp
     assert result["context_updates"]["audit_findings"][0]["check"] == (
         "backfill_missing_report_periods"
     )
+
+
+def test_earnings_disclosure_step_rejects_partial_period(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    monkeypatch.setattr(
+        "cnequity.steps.events.fetch_earnings_disclosure_schedule",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": ["000001.SZ"],
+                "report_period": ["2026Q2"],
+                "scheduled_date": [date(2026, 8, 15)],
+                "first_scheduled_date": [date(2026, 8, 15)],
+                "actual_date": [date(2026, 8, 15)],
+            }
+        ),
+    )
+
+    from cnequity.steps.events import step_earnings_disclosure_schedule
+
+    with pytest.raises(
+        RuntimeError, match="earnings_disclosure_schedule: incomplete report-period snapshot"
+    ):
+        step_earnings_disclosure_schedule(cfg, date(2026, 8, 16), "run-partial", {})

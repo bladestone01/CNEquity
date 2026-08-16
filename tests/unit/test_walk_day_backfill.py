@@ -131,6 +131,7 @@ def test_empty_days_reported_not_fatal(tmp_path):
     assert out["days_empty"] == 1
     assert out["days_fetched"] == 1
     assert out["rows_written"] == 1
+    assert out["status"] == "warning"
     finding = out["context_updates"]["audit_findings"][0]
     assert finding["check"] == "backfill_empty_days"
     assert finding["severity"] == "warning"

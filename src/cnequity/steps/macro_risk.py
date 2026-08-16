@@ -4,15 +4,159 @@ from __future__ import annotations
 
 from datetime import date
 
+import polars as pl
+
 from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
 from cnequity.adapters.eastmoney.share_unlock import fetch_share_unlock_schedule
 from cnequity.adapters.macro.indicators import fetch_macro_indicators
 from cnequity.config import Config
-from cnequity.derive.market_breadth import compute_market_breadth
+from cnequity.derive.market_breadth import MARKET_BREADTH_METRICS, compute_market_breadth
 from cnequity.orchestrator.registry import register_step
 from cnequity.quality.macro_checks import macro_revision_findings
 from cnequity.steps.common import BACKFILL_START
 from cnequity.steps.http_common import run_incremental_fetched
+
+_REQUIRED_DAILY_MACRO_INDICATORS = frozenset({"cnbond_yield_10y", "shibor_3m"})
+_MARKET_BREADTH_METRICS = frozenset(MARKET_BREADTH_METRICS)
+
+
+def _existing_market_breadth_dates(config: Config, days: list[date]) -> set[date]:
+    """Only skip dates with a complete seven-metric breadth observation."""
+    if not days:
+        return set()
+    from cnequity.query.parquet_scan import collect_parquet_root
+
+    root = config.curated_root / "market_breadth"
+    if not root.exists():
+        return set()
+    try:
+        frame = collect_parquet_root(
+            root,
+            partition_col="trade_date",
+            start=min(days),
+            end=max(days),
+        )
+    except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError):
+        # A damaged existing partition is not complete evidence; let the
+        # backfill retry it and let compact/audit surface the damaged file.
+        return set()
+    required = {"trade_date", "metric_id", "value"}
+    if not required.issubset(frame.columns):
+        return set()
+    valid_metric = pl.col("metric_id").is_in(sorted(_MARKET_BREADTH_METRICS)) & pl.col(
+        "value"
+    ).is_not_null()
+    complete = (
+        frame.group_by("trade_date")
+        .agg(
+            pl.col("metric_id").filter(valid_metric).n_unique().alias("metric_count"),
+            pl.len().alias("row_count"),
+        )
+        .filter(
+            (pl.col("metric_count") == len(_MARKET_BREADTH_METRICS))
+            & (pl.col("row_count") == len(_MARKET_BREADTH_METRICS))
+        )
+    )
+    if complete.is_empty():
+        return set()
+    wide = frame.filter(valid_metric).group_by("trade_date").agg(
+        [
+            pl.col("value")
+            .filter(pl.col("metric_id") == metric)
+            .first()
+            .alias(metric)
+            for metric in MARKET_BREADTH_METRICS
+        ]
+    )
+    valid = wide.filter(
+        (pl.col("total_count") > 0)
+        & (pl.col("advance_count") >= 0)
+        & (pl.col("decline_count") >= 0)
+        & (pl.col("flat_count") >= 0)
+        & (pl.col("limit_up_count") >= 0)
+        & (pl.col("limit_down_count") >= 0)
+        & (pl.col("advance_ratio") >= 0)
+        & (pl.col("advance_ratio") <= 1)
+        & (
+            pl.col("advance_count")
+            + pl.col("decline_count")
+            + pl.col("flat_count")
+            == pl.col("total_count")
+        )
+        & (pl.col("limit_up_count") <= pl.col("advance_count"))
+        & (pl.col("limit_down_count") <= pl.col("decline_count"))
+        & (
+            (pl.col("advance_ratio") - pl.col("advance_count") / pl.col("total_count"))
+            .abs()
+            <= 1e-6
+        )
+    )
+    return set(complete.join(valid.select("trade_date"), on="trade_date")["trade_date"])
+
+
+def _missing_daily_macro_indicators(df, trade_date: date) -> list[str]:
+    """Return daily rate series absent for one requested session.
+
+    ``fetch_macro_indicators`` also returns the whole monthly history, so a
+    non-empty frame is not evidence that each daily feed answered. Keep this
+    check at the step boundary where the requested date is known.
+    """
+    if df.is_empty() or not {"indicator_id", "obs_date"}.issubset(df.columns):
+        return sorted(_REQUIRED_DAILY_MACRO_INDICATORS)
+    observed = {
+        indicator
+        for indicator, obs_date in df.select(["indicator_id", "obs_date"]).iter_rows()
+        if obs_date == trade_date
+    }
+    return sorted(_REQUIRED_DAILY_MACRO_INDICATORS - observed)
+
+
+def _validate_market_breadth_snapshot(df: pl.DataFrame) -> pl.DataFrame:
+    """Reject partial or duplicated derived metric sets before staging."""
+    if df.is_empty():
+        return df
+    required = {"trade_date", "metric_id", "value"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError(
+            "market_breadth: derived snapshot is missing required column(s): "
+            + ", ".join(missing)
+        )
+    if df["trade_date"].n_unique() != 1:
+        raise RuntimeError("market_breadth: derived snapshot must contain exactly one trade_date")
+    valid = df.filter(
+        pl.col("metric_id").is_in(sorted(_MARKET_BREADTH_METRICS))
+        & pl.col("value").is_not_null()
+    )
+    if df.height != len(_MARKET_BREADTH_METRICS) or (
+        valid.height != len(_MARKET_BREADTH_METRICS)
+        or valid.get_column("metric_id").n_unique() != len(_MARKET_BREADTH_METRICS)
+    ):
+        raise RuntimeError(
+            "market_breadth: incomplete derived snapshot; expected exactly "
+            f"{len(_MARKET_BREADTH_METRICS)} unique non-null metrics, got {df.height} row(s)"
+        )
+    values = {
+        row["metric_id"]: row["value"]
+        for row in valid.select("metric_id", "value").iter_rows(named=True)
+    }
+    total = values["total_count"]
+    counts = [values[name] for name in ("advance_count", "decline_count", "flat_count")]
+    if (
+        total is None
+        or total <= 0
+        or any(
+            value < 0
+            for value in [*counts, values["limit_up_count"], values["limit_down_count"]]
+        )
+        or not 0 <= values["advance_ratio"] <= 1
+        or sum(counts) != total
+        or values["limit_up_count"] > values["advance_count"]
+        or values["limit_down_count"] > values["decline_count"]
+        or abs(values["advance_ratio"] - values["advance_count"] / total) > 1e-6
+    ):
+        raise RuntimeError("market_breadth: derived snapshot violates count/ratio invariants")
+    return df
 
 
 @register_step("macro_indicators", group="macro_risk")
@@ -25,9 +169,13 @@ def step_macro_indicators(config: Config, trade_date: date, run_id: str, context
     # it is what lets a corrected history heal on the next run without a
     # migration (issue #3) — so this records the change rather than blocking it.
     revisions: list[dict] = []
+    daily_gaps: dict[date, list[str]] = {}
 
     def _fetch(day: date):
         df = fetch_macro_indicators(day, config=config)
+        missing = _missing_daily_macro_indicators(df, day)
+        if missing:
+            daily_gaps[day] = missing
         revisions.extend(macro_revision_findings(config, df, day))
         return df
 
@@ -46,6 +194,28 @@ def step_macro_indicators(config: Config, trade_date: date, run_id: str, context
     if revisions:
         updates = result.setdefault("context_updates", {})
         updates["audit_findings"] = [*(updates.get("audit_findings") or []), *revisions]
+    if daily_gaps:
+        samples = [
+            f"{day.isoformat()}: {', '.join(indicators)}"
+            for day, indicators in sorted(daily_gaps.items())[:5]
+        ]
+        updates = result.setdefault("context_updates", {})
+        updates["audit_findings"] = [
+            *(updates.get("audit_findings") or []),
+            {
+                "dataset": "macro_indicators",
+                "severity": "warning",
+                "check": "daily_series_gap",
+                "message": (
+                    f"{len(daily_gaps)} requested session(s) are missing daily macro "
+                    f"series ({'; '.join(samples)})"
+                ),
+                "missing_dates": {
+                    day.isoformat(): indicators for day, indicators in sorted(daily_gaps.items())
+                },
+            },
+        ]
+        result["status"] = "warning"
     return result
 
 
@@ -61,16 +231,17 @@ def step_market_breadth(config: Config, trade_date: date, run_id: str, context: 
             trade_date,
             run_id,
             "market_breadth",
-            lambda d: compute_market_breadth(config, d),
+            lambda d: _validate_market_breadth_snapshot(compute_market_breadth(config, d)),
             source="derived",
             floor=date(2001, 1, 1),
+            existing_dates_fn=lambda days: _existing_market_breadth_dates(config, days),
         )
     return run_incremental_fetched(
         config,
         trade_date,
         run_id,
         "market_breadth",
-        lambda d: compute_market_breadth(config, d),
+        lambda d: _validate_market_breadth_snapshot(compute_market_breadth(config, d)),
         source="derived",
         allow_empty=True,
     )
