@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cnequity"
-version = "0.7.1"
+version = "0.7.2"
 description = "Open, self-hosted financial data infrastructure for China markets, starting with A-shares"
 # Short PyPI page (absolute links only). GitHub keeps README.md / README.en.md.
 readme = "README.pypi.md"

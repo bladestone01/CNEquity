@@ -6,6 +6,38 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-16
+
+### Fixed
+
+- **Source adapters fail closed on truncated or malformed upstream payloads.**
+  Calendar, CNINFO, EastMoney, Sina, TDX, THS, and Baostock now reject incomplete
+  pages and contract-breaking rows instead of writing them through.
+- **Dataset watermarks and freshness follow coverage, not the newest file.**
+  Session-dense datasets stop the watermark at the first calendar gap, so a
+  sparse tip can no longer look complete.
+- **Delisted-stock backfill coverage is accurate and resumable.** Receipts and
+  repair track which symbols actually landed, and a retry continues from the
+  unreceipted remainder.
+- **No-trade placeholders no longer leak into derived datasets.** Adjustment
+  factors, industry indexes, market breadth, sentiment, and trading-status
+  history skip placeholder rows that are not real sessions.
+- **Ingestion steps reject partial or malformed snapshots.** Bars, capital,
+  fundamentals, structure, and related steps refuse incomplete batches instead
+  of compacting them as success.
+- **Quality audits no longer treat placeholders or partial reports as coverage.**
+  Dataset checks, cross-checks, derived checks, PIT checks, and the
+  historical-validity contract require real rows and a complete audit artifact.
+- **The query layer is placeholder-aware and PIT-correct.** Partition scans,
+  universe membership, and `load()` drop no-trade placeholders and honor as-of
+  semantics.
+- **CLI backfill recovery and reporting match what actually landed.** Progress,
+  receipts, and exit status no longer claim a completed window when only part
+  of the request was stored.
+- **ST coverage checkpoints survive an all-A universe growing.** A later run
+  with a larger compatible symbol set inherits completed symbols instead of
+  restarting from scratch.
+
 ## [0.7.1] — 2026-08-16
 
 ### Fixed
