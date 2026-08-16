@@ -104,6 +104,72 @@ def test_fetch_announcement_index_paginates_and_dedupes(monkeypatch):
     assert len(client.calls) == 3  # szse page1, szse page2, sse page1
 
 
+def test_cninfo_rejects_a_row_from_a_different_announcement_date():
+    pages = {
+        "szse": [
+            [
+                {
+                    "secCode": "000001",
+                    "announcementId": "A1",
+                    "announcementTitle": "跨日公告",
+                    "announcementTime": "2024-06-27 23:59:59",
+                }
+            ]
+        ],
+        "sse": [[]],
+    }
+
+    with pytest.raises(RuntimeError, match="does not match requested 2024-06-28"):
+        fetch_announcement_index(date(2024, 6, 28), client=_FakeClient(pages))
+
+    with pytest.raises(RuntimeError, match="does not match requested 2024-06-28"):
+        fetch_regulatory_events(date(2024, 6, 28), client=_FakeClient(pages))
+
+
+def test_cninfo_accepts_the_live_endpoint_epoch_millisecond_announcement_time():
+    """announcementTime is a Unix millisecond epoch on the real endpoint.
+
+    Confirmed live against https://www.cninfo.com.cn/new/hisAnnouncement/query:
+    the field is an int, not an ISO date string - only hand-written fixtures
+    used the string form, so this shape went untested before.
+    """
+    pages = {
+        "szse": [
+            [
+                {
+                    "secCode": "000001",
+                    "announcementId": "A1",
+                    "announcementTitle": "epoch公告",
+                    "announcementTime": 1719559800000,  # 2024-06-28 15:30 CST
+                }
+            ]
+        ],
+        "sse": [[]],
+    }
+
+    df = fetch_announcement_index(date(2024, 6, 28), client=_FakeClient(pages))
+    assert df.height == 1
+
+
+def test_cninfo_rejects_an_epoch_millisecond_row_from_a_different_date():
+    pages = {
+        "szse": [
+            [
+                {
+                    "secCode": "000001",
+                    "announcementId": "A1",
+                    "announcementTitle": "epoch公告",
+                    "announcementTime": 1719559800000,  # 2024-06-28, not 2024-06-27
+                }
+            ]
+        ],
+        "sse": [[]],
+    }
+
+    with pytest.raises(RuntimeError, match="does not match requested 2024-06-27"):
+        fetch_announcement_index(date(2024, 6, 27), client=_FakeClient(pages))
+
+
 def test_fetch_announcement_index_owns_and_closes_default_client(monkeypatch):
     created: list[_FakeClient] = []
 
@@ -304,6 +370,104 @@ def test_fetch_announcement_index_stops_at_totalpages_even_when_hasmore_lies():
     assert df.height == 3
 
 
+def test_fetch_announcement_index_rejects_a_repeated_page():
+    class RepeatedPageClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, data):
+            self.calls += 1
+            if data["column"] == "sse":
+                return _FakeResponse({"announcements": [], "hasMore": False})
+            return _FakeResponse(
+                {
+                    "announcements": [
+                        {
+                            "secCode": "000001",
+                            "announcementId": "same",
+                            "announcementTitle": "公告",
+                        }
+                    ],
+                    "hasMore": True,
+                }
+            )
+
+    client = RepeatedPageClient()
+    with pytest.raises(RuntimeError, match="announcement.*repeated page"):
+        fetch_announcement_index(date(2024, 1, 31), client=client)
+    assert client.calls == 2
+
+
+@pytest.mark.parametrize(
+    ("fetch", "title"),
+    [
+        (fetch_announcement_index, "公告"),
+        (fetch_regulatory_events, "行政处罚决定"),
+    ],
+)
+def test_cninfo_fetchers_continue_after_a_full_page_without_pagination_metadata(fetch, title):
+    class NoPaginationMetadataClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, data):
+            self.calls += 1
+            if data["column"] == "sse":
+                return _FakeResponse({"announcements": []})
+            page = data["pageNum"]
+            if page == 1:
+                batch = [
+                    {
+                        "secCode": "000001",
+                        "announcementId": f"full-{index}",
+                        "announcementTitle": title,
+                    }
+                    for index in range(30)
+                ]
+            elif page == 2:
+                batch = [
+                    {
+                        "secCode": "000001",
+                        "announcementId": "tail",
+                        "announcementTitle": title,
+                    }
+                ]
+            else:
+                batch = []
+            return _FakeResponse({"announcements": batch})
+
+    client = NoPaginationMetadataClient()
+    df = fetch(date(2024, 1, 31), client=client)
+    assert df.height == 31
+    assert client.calls == 3  # szse pages 1..2, then the empty sse page
+
+
+def test_fetch_announcement_index_rejects_empty_page_before_totalpages():
+    class EmptyPageClient:
+        def post(self, url, data):
+            if data["pageNum"] == 1:
+                return _FakeResponse(
+                    {
+                        "announcements": [
+                            {
+                                "secCode": "000001",
+                                "announcementId": "P1",
+                                "announcementTitle": "公告",
+                            }
+                        ],
+                        "hasMore": True,
+                        "totalpages": 2,
+                    }
+                )
+            return _FakeResponse({"announcements": [], "hasMore": False, "totalpages": 2})
+
+        def close(self):
+            pass
+
+    with pytest.raises(RuntimeError, match="empty page before the reported end"):
+        fetch_announcement_index(date(2024, 1, 31), client=EmptyPageClient())
+
+
 def test_fetch_announcement_index_uses_totalpages_when_hasmore_is_false():
     class StaleHasMoreClient:
         def __init__(self):
@@ -367,6 +531,7 @@ def test_fetch_announcement_index_normalizes_string_hasmore():
     [
         ("totalpages", 1.5, "totalpages.*non-negative integer"),
         ("totalpages", True, "totalpages.*non-negative integer"),
+        ("totalpages", 0, "totalpages=0 but returned rows"),
         ("hasMore", "sometimes", "hasMore.*boolean"),
     ],
 )

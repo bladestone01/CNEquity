@@ -38,33 +38,29 @@ def fetch_industry_members(
             page_size=5000,
             trust_page_size=True,
         )
-    except Exception:
+        rows: list[dict] = []
+        for item in raw:
+            code = str(item.get("SECURITY_CODE", "")).zfill(6)
+            exch = exchange_from_datacenter(item)
+            sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+            if not sym:
+                continue
+            industry_code = str(item.get("BOARD_CODE") or "").strip()
+            industry_name = str(item.get("BOARD_NAME") or "").strip()
+            if not industry_code or not industry_name:
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "classification_system": "eastmoney",
+                    "industry_code": industry_code,
+                    "industry_name": industry_name,
+                    "as_of_date": as_of_date,
+                }
+            )
+    finally:
         if owns:
             client.close()
-        raise
-    rows: list[dict] = []
-    for item in raw:
-        code = str(item.get("SECURITY_CODE", "")).zfill(6)
-        exch = exchange_from_datacenter(item)
-        sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
-        if not sym:
-            continue
-        industry_code = str(item.get("BOARD_CODE") or "").strip()
-        industry_name = str(item.get("BOARD_NAME") or "").strip()
-        if not industry_code or not industry_name:
-            continue
-        rows.append(
-            {
-                "symbol": sym,
-                "classification_system": "eastmoney",
-                "industry_code": industry_code,
-                "industry_name": industry_name,
-                "as_of_date": as_of_date,
-            }
-        )
-
-    if owns:
-        client.close()
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(

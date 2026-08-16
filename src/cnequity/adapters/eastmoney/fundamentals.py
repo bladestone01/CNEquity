@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 # Align with daily_bars research window; CLI --start/--end can clip further.
 _BACKFILL_START_YEAR = 2001
 _QUARTER_END_MMDD = (("03", "31"), ("06", "30"), ("09", "30"), ("12", "31"))
+_MIN_ANNOUNCE_DATE = date(_BACKFILL_START_YEAR, 1, 1)
 
 # Mirrors PRIMARY_KEYS["financial_statement_items"]: announce_date is part of the
 # key so a restatement adds a vintage instead of erasing the original.
@@ -203,9 +204,8 @@ def _parse_rows(
             if announce_dates is not None:
                 used_fallback = True
             notice_raw = item.get("NOTICE_DATE") or default_notice
-            try:
-                announce_date = date.fromisoformat(str(notice_raw)[:10])
-            except ValueError:
+            announce_date = _source_date(notice_raw)
+            if announce_date is None or announce_date < _MIN_ANNOUNCE_DATE:
                 logger.warning(
                     "financial_statement_items: skipping row with invalid announce date %r",
                     notice_raw,
@@ -311,9 +311,8 @@ def _announce_date_map(raw: list[dict]) -> dict[tuple[str, str], date]:
         notice = item.get("NOTICE_DATE")
         if not sym or not period or not notice:
             continue
-        try:
-            notice_date = date.fromisoformat(str(notice)[:10])
-        except ValueError:
+        notice_date = _source_date(notice)
+        if notice_date is None or notice_date < _MIN_ANNOUNCE_DATE:
             continue
         key = (sym, period)
         # LICO can return more than one row for a period after a restatement.

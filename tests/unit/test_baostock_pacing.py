@@ -67,3 +67,25 @@ def test_default_interval_without_config():
     # Two per-symbol default intervals (1.0) plus one batch rest (45) after first
     # batch boundary only when index % 50 == 0 — with 2 symbols, no batch rest.
     assert sleeps.count(1.0) == 2
+
+
+def test_split_sweep_can_rest_after_its_final_provider_batch():
+    sleeps: list[float] = []
+    cfg = SimpleNamespace(
+        baostock_batch_size=2,
+        baostock_batch_rest_seconds=9.0,
+        rate_limit=lambda _source: None,
+    )
+
+    fetch_per_symbol(
+        ["A.SH", "B.SH"],
+        date(2020, 1, 1),
+        date(2020, 12, 31),
+        lambda _bs, symbol, _s, _e: [{"symbol": symbol}],
+        bs=_NoQueryBaostock(),
+        sleep=sleeps.append,
+        config=cfg,
+        rest_after_batch=True,
+    )
+
+    assert sleeps.count(9.0) == 1

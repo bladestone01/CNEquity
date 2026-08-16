@@ -159,6 +159,25 @@ def test_shareholder_counts_maps_the_concentration_inputs(monkeypatch):
     assert row["announce_date"] == date(2025, 8, 23)
 
 
+def test_undated_shareholder_counts_are_dropped_from_pit_data(monkeypatch):
+    good = {
+        "SECUCODE": "000001.SZ",
+        "END_DATE": "2025-06-30 00:00:00",
+        "HOLDER_TOTAL_NUM": 443583,
+        "TOTAL_NUM_RATIO": -12.0341,
+        "AVG_FREE_SHARES": 43747,
+        "AVG_HOLD_AMT": 517077.94,
+        "NOTICE_DATE": NOTICE,
+    }
+    undated = {**good, "SECUCODE": "600000.SH", "NOTICE_DATE": None}
+    _patch(monkeypatch, {sh._HOLDERNUM_REPORT: [good, undated]})
+
+    df = sh.fetch_shareholder_counts(WIN_START, WIN_END, client=_Client())
+
+    assert df["symbol"].to_list() == ["000001.SZ"]
+    assert df["announce_date"].null_count() == 0
+
+
 # --- top_holders -------------------------------------------------------------
 
 
@@ -236,6 +255,22 @@ def test_undated_total_rows_are_dropped_not_stamped_with_the_period(monkeypatch)
     df = sh.fetch_top_holders(WIN_START, WIN_END, client=_Client())
     assert "000001.SH" not in df["symbol"].to_list()
     assert df["announce_date"].null_count() == 0
+
+
+def test_undated_float_rows_are_dropped_from_pit_data(monkeypatch):
+    bad = _holder(
+        "600519",
+        1,
+        name="undated",
+        pct_field="FREE_HOLDNUM_RATIO",
+        pct=1.0,
+        notice=None,
+    )
+    _patch(monkeypatch, {sh._FREEHOLDERS_REPORT: [bad]})
+
+    df = sh.fetch_top_holders(WIN_START, WIN_END, client=_Client())
+
+    assert df.is_empty()
 
 
 def test_rows_without_a_rank_or_name_are_skipped(monkeypatch):

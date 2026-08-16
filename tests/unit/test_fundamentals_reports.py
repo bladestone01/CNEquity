@@ -111,6 +111,10 @@ def test_announce_date_map_uses_earliest_duplicate_notice_date():
     assert _announce_date_map(rows) == {("000002.SZ", "2016Q4"): date(2017, 3, 27)}
 
 
+def test_announce_date_map_ignores_source_sentinel_date():
+    assert _announce_date_map([_lico_row(NOTICE_DATE="1900-01-01")]) == {}
+
+
 def test_lico_date_overrides_the_late_republication_date():
     """The whole point: FY2016 must be dated 2017-03, not 2018-03."""
     amap = _announce_date_map([_lico_row()])
@@ -160,6 +164,18 @@ def test_invalid_announce_date_skips_only_the_bad_row():
     assert fallbacks == 1
     assert rows
     assert {r["announce_date"] for r in rows} == {date(2018, 3, 27)}
+
+
+def test_source_sentinel_announce_date_is_not_a_pit_vintage():
+    rows, fallbacks = _parse_rows(
+        [_balance_row(NOTICE_DATE="1900-01-01")],
+        _BALANCE,
+        default_notice="2026-07-21",
+        announce_dates={},
+    )
+
+    assert rows == []
+    assert fallbacks == 0
 
 
 # --- daily path -------------------------------------------------------------

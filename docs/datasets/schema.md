@@ -278,7 +278,9 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
 > `shares_after = shares × (1 + bonus_ratio + transfer_ratio)`，
 > `cash = shares × cash_dividend`。`allotment_price` 是每股价格而非比率，不做除 10。
 > 注意：TDX `xdxr` 不拆分送/转，会把送转合计写入 `bonus_ratio`（`transfer_ratio=0`）；
-> 总乘数正确，但送/转拆分仅在东财日更路径可区分。
+> 总乘数正确，但送/转拆分仅在东财日更路径可区分。东财一条同时包含派息、送股、
+> 转增的方案会拆成多条 `(symbol, ex_date, action_type)` 记录，避免单一 `action_type`
+> 把其它分配分量置零。
 
 #### adj_factors
 

@@ -32,6 +32,7 @@ and a threaded one did (181).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from collections.abc import Callable
@@ -46,6 +47,7 @@ from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
 logger = logging.getLogger(__name__)
 
 _PAGE_SIZE = 800
+_MAX_PAGES = 1000
 
 # category → (label, bars per full session). The label is what lands in the
 # `frequency` column and what the CLI accepts.
@@ -154,6 +156,12 @@ def _rows_to_dicts(
             continue
         if not all(math.isfinite(value) for value in (open_, high, low, close, volume, amount)):
             continue
+        # TDX occasionally pads a no-quote minute with an all-zero OHLC row.
+        # A positive stale close with zero volume is retained (it carries the
+        # suspension state), but a zero price is not a usable market print and
+        # would poison downstream resampling and price validation.
+        if any(value <= 0 for value in (open_, high, low, close)):
+            continue
         try:
             volume_int = finite_int64(volume, minimum=0)
         except ValueError:
@@ -215,8 +223,13 @@ def fetch_minute_bars_paginated(
     all_rows: list[dict] = []
     off_session_total = 0
     page = 0
+    seen_page_signatures: set[str] | None = set() if max_pages is None else None
 
     while True:
+        if max_pages is None and page >= _MAX_PAGES:
+            raise TdxMinuteBarsError(
+                f"TDX {frequency} pagination exceeded {_MAX_PAGES} pages for {sym}"
+            )
         if max_pages is not None and page >= max_pages:
             if require_complete:
                 raise TdxMinuteBarsError(
@@ -244,6 +257,15 @@ def fetch_minute_bars_paginated(
 
         if not raw:
             break
+
+        if seen_page_signatures is not None:
+            page_signature = hashlib.sha256(repr(raw).encode()).hexdigest()
+            if page_signature in seen_page_signatures:
+                raise TdxMinuteBarsError(
+                    f"TDX {frequency} pagination did not advance for {sym} "
+                    f"at start={offset_pos}"
+                )
+            seen_page_signatures.add(page_signature)
 
         page_rows, off_session = _rows_to_dicts(raw, sym, frequency, start, end)
         off_session_total += off_session

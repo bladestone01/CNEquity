@@ -152,6 +152,16 @@ def test_fetch_respects_max_pages():
     assert len(client.calls) == 2
 
 
+def test_fetch_rejects_a_repeated_page_without_a_configured_page_cap():
+    page = _session(date(2026, 7, 31)) * 4
+    client = FakeClient([page[:800], page[:800]])
+    with pytest.raises(TdxMinuteBarsError, match="pagination did not advance"):
+        fetch_minute_bars_paginated(
+            client, "600519.SH", date(2020, 1, 1), date(2026, 7, 31)
+        )
+    assert len(client.calls) == 2
+
+
 def test_fetch_can_reject_a_max_page_prefix_when_completeness_is_required():
     page = _session(date(2026, 7, 31)) * 4
     client = FakeClient([page[:800], page[:800], page[:800]])
@@ -225,6 +235,16 @@ def test_no_trade_minute_stores_exact_zeros():
     )
     assert rows[0]["volume"] == 0
     assert rows[0]["amount"] == 0.0
+
+
+def test_zero_price_padding_is_skipped():
+    page = [_bar(datetime(2026, 7, 31, 14, 59), open=0.0, high=0.0, low=0.0, close=0.0, vol=0)]
+
+    rows = fetch_minute_bars_paginated(
+        FakeClient([page]), "600519.SH", date(2026, 7, 31), date(2026, 7, 31)
+    )
+
+    assert rows == []
 
 
 def test_real_quantities_survive_the_zero_snap():

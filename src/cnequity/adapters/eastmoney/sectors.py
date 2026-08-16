@@ -37,33 +37,30 @@ def fetch_sector_members(
             page_size=5000,
             trust_page_size=True,
         )
-    except Exception:
+        rows = []
+        for item in raw:
+            if str(item.get("BOARD_TYPE_NEW") or "") not in _CONCEPT_BOARD_TYPES:
+                continue
+            code = str(item.get("SECURITY_CODE", "")).zfill(6)
+            exch = exchange_from_datacenter(item)
+            sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+            if not sym:
+                continue
+            sector_code = str(item.get("BOARD_CODE") or "").strip()
+            sector_name = str(item.get("BOARD_NAME") or "").strip()
+            if not sector_code or not sector_name:
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "sector_code": sector_code,
+                    "sector_name": sector_name,
+                    "as_of_date": as_of_date,
+                }
+            )
+    finally:
         if owns:
             client.close()
-        raise
-    rows = []
-    for item in raw:
-        if str(item.get("BOARD_TYPE_NEW") or "") not in _CONCEPT_BOARD_TYPES:
-            continue
-        code = str(item.get("SECURITY_CODE", "")).zfill(6)
-        exch = exchange_from_datacenter(item)
-        sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
-        if not sym:
-            continue
-        sector_code = str(item.get("BOARD_CODE") or "").strip()
-        sector_name = str(item.get("BOARD_NAME") or "").strip()
-        if not sector_code or not sector_name:
-            continue
-        rows.append(
-            {
-                "symbol": sym,
-                "sector_code": sector_code,
-                "sector_name": sector_name,
-                "as_of_date": as_of_date,
-            }
-        )
-    if owns:
-        client.close()
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(subset=["symbol", "sector_code", "as_of_date"], keep="last")

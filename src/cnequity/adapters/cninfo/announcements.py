@@ -2,18 +2,28 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from datetime import date
+from datetime import date, datetime
 
 import httpx
 import polars as pl
 
+from cnequity.domain.market_time import SHANGHAI_TZ
 from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
+
+# Epoch-millisecond bounds used to recognize a Unix ms timestamp regardless of
+# which of the three candidate keys carried it: 2000-01-01 / 2100-01-01 in
+# epoch ms. Both bounds sit orders of magnitude away from an 8-digit YYYYMMDD
+# value, so there is no ambiguity between the two shapes.
+_EPOCH_MS_MIN = 946_684_800_000
+_EPOCH_MS_MAX = 4_102_444_800_000
 
 logger = logging.getLogger(__name__)
 
 _CNINFO_URL = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
+_PAGE_SIZE = 30
 
 # A single unretried request killing a multi-year backfill walk over a
 # transient 504 is how a 30-minute cninfo hiccup turns into hours of redone
@@ -58,6 +68,47 @@ def _announcement_id(item: dict) -> str | None:
     value = item.get("announcementId") or item.get("adjunctUrl")
     text = str(value or "").strip()
     return text or None
+
+
+def _validate_source_date(item: dict, trade_date: date, *, column: str) -> None:
+    """Reject a CNINFO row whose own date disagrees with the requested day.
+
+    ``seDate`` is supposed to be an exact server-side filter, but the endpoint
+    has returned rows outside that filter in the past. The old adapter stamped
+    every row with ``trade_date`` without inspecting ``announcementTime``, so a
+    cross-day response could be written into the wrong partition and still pass
+    the generic by-date validation. Fixtures and older payloads may omit the
+    field; absence is tolerated, but a present malformed or different date is a
+    source-contract failure.
+    """
+    raw = next(
+        (item[key] for key in ("announcementTime", "announcementDate", "announceDate") if key in item),
+        None,
+    )
+    if raw is None or str(raw).strip() == "":
+        return
+    numeric: int | None = None
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        numeric = raw
+    elif isinstance(raw, str) and raw.strip().isdigit():
+        numeric = int(raw.strip())
+    if numeric is not None and _EPOCH_MS_MIN <= numeric <= _EPOCH_MS_MAX:
+        # The live endpoint sends announcementTime as a Unix millisecond
+        # epoch, not a date string; only hand-written fixtures use ISO text.
+        source_date = datetime.fromtimestamp(numeric / 1000, tz=SHANGHAI_TZ).date()
+    else:
+        text = str(raw).strip().replace("/", "-")
+        try:
+            source_date = date.fromisoformat(text[:10])
+        except ValueError as exc:
+            raise RuntimeError(
+                f"CNINFO {column} row has invalid announcement date {raw!r}"
+            ) from exc
+    if source_date != trade_date:
+        raise RuntimeError(
+            f"CNINFO {column} row date {source_date.isoformat()} does not match "
+            f"requested {trade_date.isoformat()}"
+        )
 
 
 def _announcement_batch(data: object, *, column: str, page: int) -> list[dict]:
@@ -123,6 +174,11 @@ def _pagination_has_more(data: dict, *, column: str, page: int) -> bool:
     raise RuntimeError(f"CNINFO hasMore for {column} page {page} is not a boolean value")
 
 
+def _pagination_page_signature(batch: list[dict]) -> str:
+    """Stable identity for a page, used to detect a non-advancing source."""
+    return json.dumps(batch, sort_keys=True, default=str, separators=(",", ":"))
+
+
 def fetch_announcement_index(
     trade_date: date,
     *,
@@ -137,6 +193,7 @@ def fetch_announcement_index(
     rows: list[dict] = []
     for column in ("szse", "sse"):
         page = 1
+        seen_page_signatures: set[str] = set()
         while True:
             if config is not None:
                 config.rate_limit("cninfo")
@@ -158,6 +215,20 @@ def fetch_announcement_index(
                 batch = _announcement_batch(data, column=column, page=page)
                 total_pages = _pagination_total_pages(data, column=column, page=page)
                 has_more = _pagination_has_more(data, column=column, page=page)
+                has_more_present = data.get("hasMore") is not None
+                if batch and total_pages == 0:
+                    raise RuntimeError(
+                        f"CNINFO announcements for {column} page {page} declared "
+                        "totalpages=0 but returned rows"
+                    )
+                if batch:
+                    page_signature = _pagination_page_signature(batch)
+                    if page_signature in seen_page_signatures:
+                        raise RuntimeError(
+                            f"CNINFO announcements pagination repeated page for "
+                            f"{column} page {page}"
+                        )
+                    seen_page_signatures.add(page_signature)
             except Exception as exc:
                 logger.warning("CNINFO announcement page failed (%s p%s): %s", column, page, exc)
                 if owns:
@@ -167,8 +238,20 @@ def fetch_announcement_index(
                 ) from exc
 
             if not batch:
+                if (
+                    isinstance(total_pages, int)
+                    and total_pages > 0
+                    and page <= total_pages
+                ) or (
+                    total_pages is None and has_more
+                ):
+                    raise RuntimeError(
+                        f"CNINFO announcements returned an empty page before the "
+                        f"reported end for {column} page {page}"
+                    )
                 break
             for item in batch:
+                _validate_source_date(item, trade_date, column=column)
                 sym = _symbol_from_cninfo(str(item.get("secCode", "")))
                 if not sym:
                     continue
@@ -203,6 +286,12 @@ def fetch_announcement_index(
                 page += 1
                 continue
             if not has_more:
+                # Some CNINFO responses omit both continuation fields. A full
+                # page is then evidence that another request may be needed;
+                # stopping on it silently truncates a busy disclosure day.
+                if total_pages is None and not has_more_present and len(batch) >= _PAGE_SIZE:
+                    page += 1
+                    continue
                 break
             page += 1
 

@@ -157,6 +157,7 @@ def fetch_per_symbol(
     deadline: float = _PER_SYMBOL_DEADLINE_SECONDS,
     on_deadline: Callable[[], None] = _force_close_baostock_socket,
     config=None,
+    rest_after_batch: bool = False,
 ) -> tuple[list[dict], list[str]]:
     """Drive ``fetch_one(bs, symbol, start, end)`` over ``symbols`` with retry/relogin.
 
@@ -256,5 +257,14 @@ def fetch_per_symbol(
             bs.logout()
         except Exception:  # noqa: BLE001
             pass
+
+    # Callers that split a long sweep into checkpoint-sized batches need the
+    # same cooldown that the in-process loop applies before symbol N+1. Keep
+    # the default off so short one-shot adapter calls do not sleep after their
+    # final request.
+    if rest_after_batch and config is not None and n_symbols:
+        batch = int(getattr(config, "baostock_batch_size", _DEFAULT_BATCH_SIZE))
+        if batch > 0 and n_symbols % batch == 0:
+            _batch_rest(config, n_symbols, sleep=sleep)
 
     return rows, failed

@@ -24,8 +24,14 @@ def fetch_valuation_metrics(
         client = EastMoneyClient(config=config)
     try:
         rows_raw = fetch_clist_pages(client, fields=_VALUATION_FIELDS)
+        mapped_rows = clist_rows_to_symbols(rows_raw)
+        if len(mapped_rows) != len(rows_raw):
+            raise RuntimeError(
+                "EastMoney valuation_metrics clist returned "
+                f"{len(rows_raw) - len(mapped_rows)} unmappable security row(s)"
+            )
         rows = []
-        for sym, item in clist_rows_to_symbols(rows_raw):
+        for sym, item in mapped_rows:
             rows.append(
                 {
                     "symbol": sym,

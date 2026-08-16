@@ -144,25 +144,28 @@ def fetch_fund_flow(
         client = EastMoneyClient(config=config)
     try:
         rows_raw = fetch_clist_pages(client, fields=_FUND_FLOW_FIELDS)
-    except Exception:
+        mapped_rows = clist_rows_to_symbols(rows_raw)
+        if len(mapped_rows) != len(rows_raw):
+            raise RuntimeError(
+                "EastMoney fund_flow clist returned "
+                f"{len(rows_raw) - len(mapped_rows)} unmappable security row(s)"
+            )
+        rows = []
+        for sym, item in mapped_rows:
+            rows.append(
+                {
+                    "symbol": sym,
+                    "trade_date": trade_date,
+                    "main_net_inflow": _to_float(item.get("f62")),
+                    "super_large_net_inflow": _to_float(item.get("f66")),
+                    "large_net_inflow": _to_float(item.get("f72")),
+                    "medium_net_inflow": _to_float(item.get("f78")),
+                    "small_net_inflow": _to_float(item.get("f84")),
+                }
+            )
+    finally:
         if owns:
             client.close()
-        raise
-    rows = []
-    for sym, item in clist_rows_to_symbols(rows_raw):
-        rows.append(
-            {
-                "symbol": sym,
-                "trade_date": trade_date,
-                "main_net_inflow": _to_float(item.get("f62")),
-                "super_large_net_inflow": _to_float(item.get("f66")),
-                "large_net_inflow": _to_float(item.get("f72")),
-                "medium_net_inflow": _to_float(item.get("f78")),
-                "small_net_inflow": _to_float(item.get("f84")),
-            }
-        )
-    if owns:
-        client.close()
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
@@ -185,27 +188,24 @@ def fetch_margin_trading(
             _MARGIN_COLUMNS,
             filter_expr=f"(DATE='{ds}')",
         )
-    except Exception:
+        rows = []
+        for item in _rows_for_report_date(raw, "DATE", trade_date):
+            sym = _margin_symbol(item)
+            if not sym:
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "trade_date": trade_date,
+                    "margin_balance": _to_float(item.get("RZYE")),
+                    "margin_buy": _to_float(item.get("RZMRE")),
+                    "short_balance": _to_float(item.get("RQYE")),
+                    "short_sell_volume": _to_float(item.get("RQMCL")),
+                }
+            )
+    finally:
         if owns:
             client.close()
-        raise
-    rows = []
-    for item in _rows_for_report_date(raw, "DATE", trade_date):
-        sym = _margin_symbol(item)
-        if not sym:
-            continue
-        rows.append(
-            {
-                "symbol": sym,
-                "trade_date": trade_date,
-                "margin_balance": _to_float(item.get("RZYE")),
-                "margin_buy": _to_float(item.get("RZMRE")),
-                "short_balance": _to_float(item.get("RQYE")),
-                "short_sell_volume": _to_float(item.get("RQMCL")),
-            }
-        )
-    if owns:
-        client.close()
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
@@ -420,29 +420,26 @@ def fetch_dragon_tiger(
             _DRAGON_COLUMNS,
             filter_expr=f"(TRADE_DATE='{ds}')",
         )
-    except Exception:
+        rows = []
+        for item in _rows_for_report_date(raw, "TRADE_DATE", trade_date):
+            code = str(item.get("SECURITY_CODE", "")).zfill(6)
+            exch = exchange_from_datacenter(item)
+            sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+            if not sym:
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "trade_date": trade_date,
+                    "reason": str(item.get("EXPLANATION") or ""),
+                    "buy_amount": _to_float(item.get("BILLBOARD_BUY_AMT")),
+                    "sell_amount": _to_float(item.get("BILLBOARD_SELL_AMT")),
+                    "net_amount": _to_float(item.get("BILLBOARD_NET_AMT")),
+                }
+            )
+    finally:
         if owns:
             client.close()
-        raise
-    rows = []
-    for item in _rows_for_report_date(raw, "TRADE_DATE", trade_date):
-        code = str(item.get("SECURITY_CODE", "")).zfill(6)
-        exch = exchange_from_datacenter(item)
-        sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
-        if not sym:
-            continue
-        rows.append(
-            {
-                "symbol": sym,
-                "trade_date": trade_date,
-                "reason": str(item.get("EXPLANATION") or ""),
-                "buy_amount": _to_float(item.get("BILLBOARD_BUY_AMT")),
-                "sell_amount": _to_float(item.get("BILLBOARD_SELL_AMT")),
-                "net_amount": _to_float(item.get("BILLBOARD_NET_AMT")),
-            }
-        )
-    if owns:
-        client.close()
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(subset=["symbol", "trade_date", "reason"], keep="last")
@@ -465,29 +462,26 @@ def fetch_block_trades(
             _BLOCK_COLUMNS,
             filter_expr=f"(TRADE_DATE='{ds}')",
         )
-    except Exception:
+        rows = []
+        for item in _rows_for_report_date(raw, "TRADE_DATE", trade_date):
+            code = str(item.get("SECURITY_CODE", "")).zfill(6)
+            exch = exchange_from_datacenter(item)
+            sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
+            if not sym:
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "trade_date": trade_date,
+                    "price": _to_float(item.get("AVERAGE_PRICE")),
+                    "volume": _to_float(item.get("VOLUME")),
+                    "amount": _to_float(item.get("DEAL_AMT")),
+                    "premium_ratio": _to_float(item.get("PREMIUM_RATIO")),
+                }
+            )
+    finally:
         if owns:
             client.close()
-        raise
-    rows = []
-    for item in _rows_for_report_date(raw, "TRADE_DATE", trade_date):
-        code = str(item.get("SECURITY_CODE", "")).zfill(6)
-        exch = exchange_from_datacenter(item)
-        sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))
-        if not sym:
-            continue
-        rows.append(
-            {
-                "symbol": sym,
-                "trade_date": trade_date,
-                "price": _to_float(item.get("AVERAGE_PRICE")),
-                "volume": _to_float(item.get("VOLUME")),
-                "amount": _to_float(item.get("DEAL_AMT")),
-                "premium_ratio": _to_float(item.get("PREMIUM_RATIO")),
-            }
-        )
-    if owns:
-        client.close()
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(

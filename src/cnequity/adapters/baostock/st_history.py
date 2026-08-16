@@ -100,6 +100,7 @@ def fetch_st_history(
     bs=None,
     sleep=time.sleep,
     config=None,
+    rest_after_batch: bool = False,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Per-symbol historical ST/normal evidence over ``[start, end]``.
 
@@ -121,6 +122,7 @@ def fetch_st_history(
         sleep=sleep,
         label="baostock ST",
         config=config,
+        rest_after_batch=rest_after_batch,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     if not df.is_empty():

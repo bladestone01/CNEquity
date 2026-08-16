@@ -10,6 +10,7 @@ from cnequity.adapters.eastmoney.corporate_actions import (
     _map_action_type,
     _num,
     _parse_row,
+    _parse_rows,
     fetch_corporate_actions_eastmoney,
 )
 from cnequity.adapters.eastmoney.datacenter import EastMoneyDatacenterError
@@ -94,6 +95,71 @@ def test_parse_row_cash_dividend_divides_per_10_shares():
     assert parsed["transfer_ratio"] == 0.0
     assert parsed["allotment_ratio"] is None
     assert parsed["allotment_price"] is None
+
+
+def test_parse_rows_preserves_combined_cash_and_bonus_plan():
+    rows = _parse_rows(
+        {
+            "SECUCODE": "002010.SZ",
+            "SECURITY_CODE": "002010",
+            "EX_DIVIDEND_DATE": "2007-06-06",
+            "PRETAX_BONUS_RMB": "0.5",
+            "BONUS_RATIO": "3",
+            "IT_RATIO": "0",
+            "BONUS_IT_RATIO": "3",
+            "IMPL_PLAN_PROFILE": "10送3.00派0.50元(含税)",
+        }
+    )
+
+    by_type = {row["action_type"]: row for row in rows}
+    assert set(by_type) == {"cash_dividend", "bonus"}
+    assert by_type["cash_dividend"]["cash_dividend"] == pytest.approx(0.05)
+    assert by_type["bonus"]["bonus_ratio"] == pytest.approx(0.3)
+
+
+def test_parse_rows_preserves_combined_bonus_and_transfer_plan():
+    rows = _parse_rows(
+        {
+            "SECUCODE": "000001.SZ",
+            "SECURITY_CODE": "000001",
+            "EX_DIVIDEND_DATE": "2024-06-28",
+            "BONUS_RATIO": "3",
+            "IT_RATIO": "7",
+            "BONUS_IT_RATIO": "10",
+            "IMPL_PLAN_PROFILE": "10送3转7",
+        }
+    )
+
+    by_type = {row["action_type"]: row for row in rows}
+    assert set(by_type) == {"bonus", "transfer"}
+    assert by_type["bonus"]["bonus_ratio"] == pytest.approx(0.3)
+    assert by_type["transfer"]["transfer_ratio"] == pytest.approx(0.7)
+
+
+def test_parse_rows_combined_ratio_does_not_emit_phantom_sibling_row():
+    """Combined-field fallback must not also fire the other type's text OR.
+
+    ``BONUS_RATIO``/``IT_RATIO`` both 0 with only ``BONUS_IT_RATIO`` populated
+    resolves the whole ratio onto exactly one of bonus/transfer via the plan
+    text. When that text mentions both "转" and "送" (a real combined-plan
+    wording), the type that lost the split must not still emit a zero-ratio
+    row just because its own keyword also appears in the same text.
+    """
+    rows = _parse_rows(
+        {
+            "SECUCODE": "000002.SZ",
+            "SECURITY_CODE": "000002",
+            "EX_DIVIDEND_DATE": "2024-06-28",
+            "BONUS_RATIO": "0",
+            "IT_RATIO": "0",
+            "BONUS_IT_RATIO": "10",
+            "IMPL_PLAN_PROFILE": "10送5转5",
+        }
+    )
+
+    by_type = {row["action_type"]: row for row in rows}
+    assert set(by_type) == {"bonus"}
+    assert by_type["bonus"]["bonus_ratio"] == pytest.approx(1.0)
 
 
 def test_parse_row_does_not_emit_nonfinite_amounts():
@@ -254,6 +320,29 @@ def test_fetch_corporate_actions_eastmoney_owns_and_closes_default_client(monkey
         lambda *a, **k: [],
     )
     fetch_corporate_actions_eastmoney(date(2024, 6, 28))
+    assert created[0].closed is True
+
+
+def test_fetch_corporate_actions_closes_owned_client_when_parsing_fails(monkeypatch):
+    created: list[_Client] = []
+
+    def _factory(**kwargs):
+        client = _Client()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.corporate_actions.EastMoneyClient", _factory)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.corporate_actions.fetch_datacenter",
+        lambda *a, **k: [{}],
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.corporate_actions._parse_rows",
+        lambda row: (_ for _ in ()).throw(RuntimeError("bad corporate action row")),
+    )
+
+    with pytest.raises(RuntimeError, match="bad corporate action row"):
+        fetch_corporate_actions_eastmoney(date(2024, 6, 28))
     assert created[0].closed is True
 
 

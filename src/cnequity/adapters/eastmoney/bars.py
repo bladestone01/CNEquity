@@ -83,7 +83,14 @@ def fetch_daily_bars_clist(
             vol = _to_float(item.get("f5"))
             amount = _to_float(item.get("f6"))
             volume = _volume_shares(vol)
-            if None in (open_, high, low, close, volume):
+            # A clist row with zero OHLC is an unavailable quote, not a valid
+            # traded bar.  EastMoney includes retired/newly-issued names in
+            # the live roster, so accepting it here leaks price=0 rows into
+            # curated storage and makes every downstream bar query fail the
+            # numeric market-data contract.
+            if None in (open_, high, low, close, volume) or any(
+                value <= 0 for value in (open_, high, low, close)
+            ):
                 rejected += 1
                 continue
             rows.append(

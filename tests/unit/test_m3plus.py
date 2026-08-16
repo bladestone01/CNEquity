@@ -152,6 +152,38 @@ def test_index_constituents_fetch():
     assert df["symbol"][0] == "600519.SH"
 
 
+@pytest.mark.parametrize(
+    ("module_name", "fetcher"),
+    [
+        ("cnequity.adapters.eastmoney.sectors", fetch_sector_members),
+        ("cnequity.adapters.eastmoney.industry", fetch_industry_members),
+    ],
+)
+def test_membership_adapters_close_owned_client_when_parsing_fails(monkeypatch, module_name, fetcher):
+    created = []
+
+    class _Client:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def _factory(**kwargs):
+        client = _Client()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(f"{module_name}.EastMoneyClient", _factory)
+    monkeypatch.setattr(
+        f"{module_name}.fetch_datacenter",
+        lambda *args, **kwargs: [object()],
+    )
+    with pytest.raises(AttributeError, match="get"):
+        fetcher(date(2024, 6, 28))
+    assert created[0].closed is True
+
+
 def test_index_constituents_rejects_a_stale_source_snapshot():
     client = FakeDatacenterClient(
         {

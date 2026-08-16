@@ -91,6 +91,24 @@ def test_fetch_skips_nonfinite_numeric_rows(monkeypatch):
     assert df["trade_date"].to_list() == [date(2024, 1, 3)]
 
 
+def test_fetch_skips_nonpositive_price_rows(monkeypatch):
+    monkeypatch.setattr(
+        sina,
+        "_request",
+        lambda symbol, datalen, client: [
+            {
+                "day": "2024-01-02",
+                "open": "0",
+                "high": "0",
+                "low": "0",
+                "close": "0",
+                "volume": "100",
+            }
+        ],
+    )
+    assert sina.fetch_daily_bars_sina("600519.SH").is_empty()
+
+
 def test_fetch_dedupes_source_rows_by_trade_date(monkeypatch):
     monkeypatch.setattr(
         sina,
@@ -184,6 +202,24 @@ def test_symbol_probe_uses_last_positive_volume_bar(monkeypatch):
 
     assert sina.symbol_exists("688287.SH") == date(2026, 6, 8)
     assert seen["datalen"] > 1
+
+
+def test_symbol_probe_expands_after_zero_volume_tail(monkeypatch):
+    tail = [
+        {"day": f"2026-06-{day:02d}", "volume": "0"}
+        for day in range(9, 19)
+    ]
+    full = [{"day": "2020-07-31", "volume": "100"}, *tail]
+    seen: list[int] = []
+
+    def request(symbol, datalen, client):
+        seen.append(datalen)
+        return tail if datalen == sina._PROBE_TAIL_LEN else full
+
+    monkeypatch.setattr(sina, "_request", request)
+
+    assert sina.symbol_exists("600001.SH") == date(2020, 7, 31)
+    assert seen == [sina._PROBE_TAIL_LEN, sina._FULL_HISTORY_LEN]
 
 
 def test_request_uses_client(monkeypatch):

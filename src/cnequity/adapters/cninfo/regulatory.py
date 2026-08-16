@@ -10,11 +10,14 @@ import httpx
 import polars as pl
 
 from cnequity.adapters.cninfo.announcements import (
+    _PAGE_SIZE,
     _announcement_batch,
     _announcement_id,
     _pagination_has_more,
+    _pagination_page_signature,
     _pagination_total_pages,
     _symbol_from_cninfo,
+    _validate_source_date,
     post_with_retry,
 )
 
@@ -56,6 +59,7 @@ def fetch_regulatory_events(
 
     for column in ("szse", "sse"):
         page = 1
+        seen_page_signatures: set[str] = set()
         while True:
             if config is not None:
                 config.rate_limit("cninfo")
@@ -77,6 +81,20 @@ def fetch_regulatory_events(
                 batch = _announcement_batch(data, column=column, page=page)
                 total_pages = _pagination_total_pages(data, column=column, page=page)
                 has_more = _pagination_has_more(data, column=column, page=page)
+                has_more_present = data.get("hasMore") is not None
+                if batch and total_pages == 0:
+                    raise RuntimeError(
+                        f"CNINFO regulatory for {column} page {page} declared "
+                        "totalpages=0 but returned rows"
+                    )
+                if batch:
+                    page_signature = _pagination_page_signature(batch)
+                    if page_signature in seen_page_signatures:
+                        raise RuntimeError(
+                            f"CNINFO regulatory pagination repeated page for "
+                            f"{column} page {page}"
+                        )
+                    seen_page_signatures.add(page_signature)
             except Exception as exc:
                 # Don't truncate: short pages drop blacklist rows. Fail loud
                 # once retries (post_with_retry) are exhausted.
@@ -88,8 +106,20 @@ def fetch_regulatory_events(
                 ) from exc
 
             if not batch:
+                if (
+                    isinstance(total_pages, int)
+                    and total_pages > 0
+                    and page <= total_pages
+                ) or (
+                    total_pages is None and has_more
+                ):
+                    raise RuntimeError(
+                        f"CNINFO regulatory returned an empty page before the "
+                        f"reported end for {column} page {page}"
+                    )
                 break
             for item in batch:
+                _validate_source_date(item, trade_date, column=column)
                 title = str(item.get("announcementTitle") or "")
                 if not pattern.search(title):
                     continue
@@ -120,6 +150,9 @@ def fetch_regulatory_events(
                 page += 1
                 continue
             if not has_more:
+                if total_pages is None and not has_more_present and len(batch) >= _PAGE_SIZE:
+                    page += 1
+                    continue
                 break
             page += 1
 

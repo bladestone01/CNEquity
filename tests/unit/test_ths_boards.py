@@ -123,6 +123,17 @@ def test_parse_kline_and_change_pct():
     assert out[1]["change_pct"] == pytest.approx((12 / 11 - 1) * 100, rel=1e-3)
 
 
+def test_parse_kline_skips_impossible_positive_volume_ohlc():
+    board = {"sector_code": "881121", "sector_name": "煤炭", "board_type": "industry"}
+
+    rows = ths._parse_kline(
+        {"data": "20250102,100,104,99,110,1000,1500000000"},
+        board,
+    )
+
+    assert rows == []
+
+
 def test_catalog_cache_roundtrip_and_seed_fallback(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     boards = [

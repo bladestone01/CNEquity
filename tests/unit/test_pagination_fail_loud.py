@@ -76,6 +76,27 @@ def test_clist_raises_on_short_page_before_reported_total():
         fetch_clist_pages(ShortFirstPage(), fields="f12,f13", page_size=2)
 
 
+def test_clist_deduplicates_boundary_rows_before_counting_total():
+    class RepeatedBoundary:
+        def get(self, url, **kwargs):
+            if "pn=1" in url:
+                return _Resp(_clist_payload(["600000", "600001"], total=3))
+            return _Resp(_clist_payload(["600001", "600002"], total=3))
+
+    rows = fetch_clist_pages(RepeatedBoundary(), fields="f12,f13", page_size=2)
+
+    assert [row["f12"] for row in rows] == ["600000", "600001", "600002"]
+
+
+def test_clist_rejects_a_full_repeated_page_before_looping():
+    class RepeatedFullPage:
+        def get(self, url, **kwargs):
+            return _Resp(_clist_payload(["600000", "600001"], total=4))
+
+    with pytest.raises(RuntimeError, match="pagination did not advance"):
+        fetch_clist_pages(RepeatedFullPage(), fields="f12,f13", page_size=2)
+
+
 def test_clist_rejects_success_without_data_object():
     class Malformed:
         def get(self, url, **kwargs):
@@ -226,6 +247,30 @@ def test_regulatory_stops_at_totalpages_even_when_hasmore_lies():
     df = fetch_regulatory_events(date(2024, 1, 31), client=client)
     assert client.calls == 4  # szse pages 1..3, then sse's single (empty) page
     assert df.height == 3
+
+
+def test_regulatory_rejects_empty_page_before_totalpages():
+    class EmptyPageClient:
+        def post(self, url, **kwargs):
+            page = kwargs["data"]["pageNum"]
+            if page == 1:
+                return _Response(
+                    {
+                        "announcements": [
+                            {
+                                "secCode": "000001",
+                                "announcementId": "R1",
+                                "announcementTitle": "行政处罚决定",
+                            }
+                        ],
+                        "hasMore": True,
+                        "totalpages": 2,
+                    }
+                )
+            return _Response({"announcements": [], "hasMore": False, "totalpages": 2})
+
+    with pytest.raises(RuntimeError, match="empty page before the reported end"):
+        fetch_regulatory_events(date(2024, 1, 31), client=EmptyPageClient())
 
 
 def test_regulatory_uses_totalpages_when_hasmore_is_false():

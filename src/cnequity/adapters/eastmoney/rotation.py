@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _HOT_RANK_URL = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList"
 _NEWS_URL = "https://np-listapi.eastmoney.com/comm/web/getFastNewsList"
+_HOT_MAX_PAGES = 100
 _NEWS_MAX_PAGES = 100
 
 _CONCEPT_FS = "m:90+t:3"
@@ -90,9 +91,15 @@ def fetch_hot_rank(
     rows_by_symbol: dict[str, dict] = {}
     page_size = 100
     page = 1
+    seen_pages: set[str] = set()
     client_kwargs = {"config": config} if config is not None else {}
     with EastMoneyClient(**client_kwargs) as client:
         while len(rows_by_symbol) < top_n:
+            if page > _HOT_MAX_PAGES:
+                raise RuntimeError(
+                    f"EastMoney hot rank pagination exceeded {_HOT_MAX_PAGES} pages "
+                    f"with {len(rows_by_symbol)} unique A-share symbols"
+                )
             body = json.dumps(
                 {
                     "appId": "appId01",
@@ -114,6 +121,13 @@ def fetch_hot_rank(
             batch = _object_rows(payload.get("data"), source="hot rank")
             if not batch:
                 break
+            fingerprint = json.dumps(batch, sort_keys=True, default=str, separators=(",", ":"))
+            if fingerprint in seen_pages:
+                raise RuntimeError(
+                    f"EastMoney hot rank pagination repeated page {page}; "
+                    "refusing a potentially incomplete result"
+                )
+            seen_pages.add(fingerprint)
             for item in batch:
                 sym = _hot_symbol(item.get("sc", ""))
                 if not sym:
@@ -146,11 +160,14 @@ def fetch_hot_rank(
 def _fetch_board_rows(client: EastMoneyClient, fs: str, board_type: str) -> list[dict]:
     # Smaller pages: pz=5000 often trips push2 502 mid-universe; 100 is stable.
     raw = fetch_clist_pages(client, fields=_BOARD_FIELDS, fs=fs, page_size=100)
+    missing_codes = sum(1 for item in raw if not str(item.get("f12") or "").strip())
+    if missing_codes:
+        raise RuntimeError(
+            f"EastMoney {board_type} board clist returned {missing_codes} row(s) without f12"
+        )
     rows: list[dict] = []
     for item in raw:
-        code = str(item.get("f12") or "").strip()
-        if not code:
-            continue
+        code = str(item["f12"]).strip()
         rows.append(
             {
                 "sector_code": code,

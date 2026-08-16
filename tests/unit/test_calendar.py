@@ -69,6 +69,38 @@ def test_seed_is_authoritative_over_index_bars(tmp_path):
     assert cal["is_trading"][0] is False
 
 
+def test_daily_placeholder_does_not_create_pre_seed_session(tmp_path):
+    root = tmp_path / "curated" / "daily_bars"
+    root.mkdir(parents=True)
+    days = [date(2010, 2, 10), date(2010, 2, 17), date(2010, 2, 22)]
+    pl.DataFrame(
+        {
+            "trade_date": days,
+            "symbol": ["600519.SH"] * 3,
+            "volume": [100, 0, 100],
+        }
+    ).write_parquet(root / "part-000.parquet")
+
+    cal = build_trading_calendar(
+        date(2010, 2, 10), date(2010, 2, 24), curated_root=tmp_path / "curated"
+    )
+    assert date(2010, 2, 17) not in set(cal.filter(pl.col("is_trading"))["trade_date"])
+
+
+def test_corrupt_bar_file_does_not_abort_calendar_derivation(tmp_path):
+    root = tmp_path / "curated" / "index_bars"
+    root.mkdir(parents=True)
+    valid_date = date(2010, 2, 10)
+    pl.DataFrame({"trade_date": [valid_date], "symbol": ["000001"]}).write_parquet(
+        root / "valid.parquet"
+    )
+    (root / "broken.parquet").write_bytes(b"not a parquet file")
+
+    cal = build_trading_calendar(valid_date, valid_date, curated_root=tmp_path / "curated")
+
+    assert cal["is_trading"][0] is True
+
+
 def test_calendar_forward_coverage_days():
     assert calendar_seed_end() == date(2027, 12, 31)
     assert calendar_forward_coverage_days(date(2027, 10, 2)) == 90

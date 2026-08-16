@@ -115,6 +115,55 @@ def test_fund_flow_closes_owned_client_when_clist_fails(monkeypatch):
     assert created[0].closed is True
 
 
+def test_fund_flow_rejects_unmappable_clist_rows(monkeypatch):
+    monkeypatch.setattr(
+        cap,
+        "fetch_clist_pages",
+        lambda *args, **kwargs: [{"f12": "600519", "f13": 1}, {"f12": "123456"}],
+    )
+    with pytest.raises(RuntimeError, match="fund_flow clist returned 1 unmappable"):
+        cap.fetch_fund_flow(date(2025, 1, 2), client=SimpleNamespace(close=lambda: None))
+
+
+def test_capital_adapters_close_owned_client_when_parsing_fails(monkeypatch):
+    created = []
+
+    class _Client:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def _factory(**kwargs):
+        client = _Client()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cap, "EastMoneyClient", _factory)
+    monkeypatch.setattr(cap, "fetch_clist_pages", lambda *args, **kwargs: [{}])
+    monkeypatch.setattr(
+        cap,
+        "clist_rows_to_symbols",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad clist row")),
+    )
+    with pytest.raises(RuntimeError, match="bad clist row"):
+        cap.fetch_fund_flow(date(2025, 1, 2))
+
+    monkeypatch.setattr(cap, "fetch_datacenter", lambda *args, **kwargs: [{}])
+    monkeypatch.setattr(
+        cap,
+        "_rows_for_report_date",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad report row")),
+    )
+    for fetcher in (cap.fetch_margin_trading, cap.fetch_dragon_tiger, cap.fetch_block_trades):
+        with pytest.raises(RuntimeError, match="bad report row"):
+            fetcher(date(2025, 1, 2))
+
+    assert len(created) == 4
+    assert all(client.closed for client in created)
+
+
 def test_capital_missing_numeric_fields_remain_null(monkeypatch):
     client = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr(

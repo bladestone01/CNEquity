@@ -173,15 +173,27 @@ def symbol_exists(symbol: str, *, client: httpx.Client | None = None) -> date | 
     rows = _request(symbol, _PROBE_TAIL_LEN, client)
     if not rows:
         return None
-    for row in reversed(_without_synthetic_terminal_copies(rows)):
-        trade_date = _row_date(row)
-        try:
-            volume = finite_int64(float(row["volume"]), minimum=1)
-        except (KeyError, TypeError, ValueError):
-            continue
-        if trade_date is not None and volume > 0:
-            return trade_date
-    return None
+
+    def _last_positive(candidates: list[dict]) -> date | None:
+        for row in reversed(_without_synthetic_terminal_copies(candidates)):
+            trade_date = _row_date(row)
+            try:
+                volume = finite_int64(float(row["volume"]), minimum=1)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if trade_date is not None and volume > 0:
+                return trade_date
+        return None
+
+    last_positive = _last_positive(rows)
+    if last_positive is not None:
+        return last_positive
+
+    # A long terminal suspension can fill the cheap probe window with
+    # zero-volume placeholders. Confirm that case with the full history before
+    # permanently filing the code as never-issued.
+    full_rows = _request(symbol, _FULL_HISTORY_LEN, client)
+    return _last_positive(full_rows or [])
 
 
 def fetch_daily_bars_sina(
@@ -214,6 +226,8 @@ def fetch_daily_bars_sina(
             volume = float(item["volume"])
             if not all(math.isfinite(value) for value in (open_, high, low, close, volume)):
                 raise ValueError("non-finite numeric value")
+            if any(value <= 0 for value in (open_, high, low, close)):
+                raise ValueError("non-positive OHLC value")
             out.append(
                 {
                     "symbol": symbol,

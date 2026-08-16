@@ -291,6 +291,14 @@ def fetch_shareholder_counts(
                 "announce_date": _em_date(item.get("NOTICE_DATE")),
             }
         )
+    undated = sum(row["announce_date"] is None for row in rows)
+    if undated:
+        logger.info(
+            "shareholder_counts %s: dropping %d row(s) without a disclosure date",
+            f"{start.isoformat()}..{end.isoformat()}",
+            undated,
+        )
+        rows = [row for row in rows if row["announce_date"] is not None]
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(subset=["symbol", "count_date", "announce_date"], keep="last")
@@ -457,6 +465,14 @@ def fetch_top_holders(
         ],
         keep="last",
     )
+    undated = deduped.filter(pl.col("announce_date").is_null()).height
+    if undated:
+        logger.info(
+            "top_holders %s: dropping %d row(s) without a disclosure date",
+            label,
+            undated,
+        )
+        deduped = deduped.drop_nulls("announce_date")
     # What survives here is a genuine restatement under the same disclosure
     # date, not a rank tie — ties are two different holders and holder_name
     # keeps them apart. Logged because collapsing is a second reason the row

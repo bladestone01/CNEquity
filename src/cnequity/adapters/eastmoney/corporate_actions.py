@@ -72,9 +72,21 @@ def _ex_date(row: dict) -> date | None:
 
 
 def _parse_row(row: dict) -> dict | None:
+    """Parse the first standard event in one EastMoney row.
+
+    Kept as a small compatibility helper for callers/tests that expect one
+    dict.  Fetch paths use ``_parse_rows`` so a combined cash + stock plan does
+    not lose any component.
+    """
+    rows = _parse_rows(row)
+    return rows[0] if rows else None
+
+
+def _parse_rows(row: dict) -> list[dict]:
+    """Expand one EastMoney plan row into one row per standard action type."""
     ex_date = _ex_date(row)
     if ex_date is None:
-        return None
+        return []
 
     secucode = str(row.get("SECUCODE") or "")
     code_part, _, suffix = secucode.partition(".")
@@ -88,29 +100,57 @@ def _parse_row(row: dict) -> dict | None:
     else:
         exchange = "SZ"
     if not code.isdigit() or not is_all_a_symbol(code, exchange):
-        return None
+        return []
     symbol = format_symbol(code, exchange)
-
-    action_type = _map_action_type(row)
-    if not action_type:
-        return None
 
     # EM values are per-10-shares; divide by 10 for the per-share contract.
     cash = _num(row.get("PRETAX_BONUS_RMB")) / 10.0
     bonus = _num(row.get("BONUS_RATIO")) / 10.0
     transfer = _num(row.get("IT_RATIO")) / 10.0
-    return {
-        "symbol": symbol,
-        "ex_date": ex_date,
-        "action_type": action_type,
-        "cash_dividend": cash if action_type == "cash_dividend" else 0.0,
-        "bonus_ratio": bonus if action_type == "bonus" else 0.0,
-        "transfer_ratio": transfer if action_type == "transfer" else 0.0,
-        # RPT_SHAREBONUS_DET carries no allotment (配股) price/ratio columns;
-        # allotment detail is a separate report, out of scope for daily ex-date.
-        "allotment_ratio": None,
-        "allotment_price": None,
-    }
+    impl = str(row.get("IMPL_PLAN_PROFILE") or "").lower()
+    combined_resolved = False
+    if bonus == 0.0 and transfer == 0.0:
+        # Older/alternate report shapes expose only the combined 送转 field.
+        # Preserve the total multiplier; when the plan text identifies a pure
+        # 转增 plan, keep its semantic type as transfer.
+        combined = _num(row.get("BONUS_IT_RATIO")) / 10.0
+        if combined > 0:
+            combined_resolved = True
+            if "转" in impl and "送" not in impl:
+                transfer = combined
+            else:
+                bonus = combined
+
+    rows: list[dict] = []
+
+    def add(action_type: str, *, cash_dividend=0.0, bonus_ratio=0.0, transfer_ratio=0.0):
+        rows.append(
+            {
+                "symbol": symbol,
+                "ex_date": ex_date,
+                "action_type": action_type,
+                "cash_dividend": cash_dividend,
+                "bonus_ratio": bonus_ratio,
+                "transfer_ratio": transfer_ratio,
+                # RPT_SHAREBONUS_DET carries no allotment (配股) price/ratio
+                # columns; allotment detail is a separate report, out of scope
+                # for daily ex-date.
+                "allotment_ratio": None,
+                "allotment_price": None,
+            }
+        )
+
+    # Once the combined 送转 field resolved bonus vs. transfer above, the
+    # plan text has already done its job picking a side; falling back to it
+    # again here would let the *other* type's shared "转"/"送" mention add a
+    # second, phantom zero-ratio row for whichever type lost that split.
+    if cash > 0 or any(token in impl for token in ("派", "息", "现金")):
+        add("cash_dividend", cash_dividend=cash)
+    if bonus > 0 or (not combined_resolved and "送" in impl):
+        add("bonus", bonus_ratio=bonus)
+    if transfer > 0 or (not combined_resolved and "转" in impl):
+        add("transfer", transfer_ratio=transfer)
+    return rows
 
 
 def fetch_corporate_actions_eastmoney(
@@ -152,50 +192,48 @@ def fetch_corporate_actions_eastmoney(
     backoff = float(config.retry_backoff_seconds if config is not None else 5)
 
     try:
-        rate_limit_if_unconfigured(client, config)
-        raw = fetch_datacenter(
-            client,
-            _REPORT,
-            _COLUMNS,
-            filter_expr=date_filter,
-            sort_columns=_EX_DATE_COL,
-            sort_types="-1",
-            max_retries=retries,
-            retry_backoff_seconds=backoff,
-            stop_after=stop_after,
-        )
-    except EastMoneyDatacenterError:
+        try:
+            rate_limit_if_unconfigured(client, config)
+            raw = fetch_datacenter(
+                client,
+                _REPORT,
+                _COLUMNS,
+                filter_expr=date_filter,
+                sort_columns=_EX_DATE_COL,
+                sort_types="-1",
+                max_retries=retries,
+                retry_backoff_seconds=backoff,
+                stop_after=stop_after,
+            )
+        except EastMoneyDatacenterError:
+            raise
+        except Exception as exc:
+            raise EastMoneyDatacenterError(
+                f"EastMoney corporate_actions failed for filter {date_filter!r}"
+            ) from exc
+
+        rows = []
+        outside_daily = 0
+        for item in raw:
+            parsed_rows = _parse_rows(item)
+            if not parsed_rows:
+                continue
+            for parsed in parsed_rows:
+                if not backfill and parsed["ex_date"] != trade_date:
+                    outside_daily += 1
+                    continue
+                if backfill and not (floor <= parsed["ex_date"] <= ceiling):
+                    continue
+                rows.append(parsed)
+
+        if not backfill and outside_daily and not rows:
+            raise EastMoneyDatacenterError(
+                "EastMoney corporate_actions response contains no "
+                f"EX_DIVIDEND_DATE row for {trade_date.isoformat()}"
+            )
+    finally:
         if owns:
             client.close()
-        raise
-    except Exception as exc:
-        if owns:
-            client.close()
-        raise EastMoneyDatacenterError(
-            f"EastMoney corporate_actions failed for filter {date_filter!r}"
-        ) from exc
-
-    rows = []
-    outside_daily = 0
-    for item in raw:
-        parsed = _parse_row(item)
-        if not parsed:
-            continue
-        if not backfill and parsed["ex_date"] != trade_date:
-            outside_daily += 1
-            continue
-        if backfill and not (floor <= parsed["ex_date"] <= ceiling):
-            continue
-        rows.append(parsed)
-
-    if not backfill and outside_daily and not rows:
-        raise EastMoneyDatacenterError(
-            "EastMoney corporate_actions response contains no "
-            f"EX_DIVIDEND_DATE row for {trade_date.isoformat()}"
-        )
-
-    if owns:
-        client.close()
 
     if not rows:
         return pl.DataFrame()

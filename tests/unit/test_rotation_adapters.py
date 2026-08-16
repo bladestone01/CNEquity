@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from cnequity.adapters.eastmoney.rotation import (
+    _fetch_board_rows,
     _hot_symbol,
     _news_symbols,
     fetch_hot_rank,
@@ -29,6 +30,15 @@ def test_news_symbols_routes_beijing_codes():
 
 def test_news_symbols_skips_malformed_codes():
     assert _news_symbols(["2.abc", "2.920001"]) == "920001.BJ"
+
+
+def test_fetch_board_rows_rejects_rows_without_codes(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.rotation.fetch_clist_pages",
+        lambda *args, **kwargs: [{"f12": "BK0001"}, {"f14": "missing-code"}],
+    )
+    with pytest.raises(RuntimeError, match=r"concept board clist returned 1 row\(s\) without f12"):
+        _fetch_board_rows(object(), "m:90+t:3", "concept")
 
 
 def test_fetch_hot_rank_normalizes(monkeypatch):
@@ -169,6 +179,27 @@ def test_fetch_hot_rank_continues_when_a_full_page_repeats_symbols(monkeypatch):
     df = fetch_hot_rank(date(2026, 7, 14), top_n=3)
 
     assert set(df["symbol"].to_list()) == {"002185.SZ", "000001.SZ", "600519.SH"}
+    assert mock_client.post.call_count == 2
+
+
+def test_fetch_hot_rank_rejects_a_repeated_page(monkeypatch):
+    mock_client = MagicMock()
+    response = MagicMock()
+    response.json.return_value = {
+        "data": [{"sc": "SZ002185", "rk": i, "rc": 0, "hisRc": i} for i in range(100)]
+    }
+    mock_client.post.return_value = response
+
+    class CM:
+        def __enter__(self):
+            return mock_client
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM())
+    with pytest.raises(RuntimeError, match="repeated page"):
+        fetch_hot_rank(date(2026, 7, 14), top_n=2)
     assert mock_client.post.call_count == 2
 
 

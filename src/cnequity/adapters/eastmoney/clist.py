@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from urllib.parse import urlencode
@@ -15,6 +16,15 @@ from cnequity.adapters.eastmoney.common import (
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 
 logger = logging.getLogger(__name__)
+
+
+def _row_key(item: dict) -> tuple[str, str]:
+    """Stable identity for one clist security row across page boundaries."""
+    for field in ("f12", "SECURITY_CODE", "code"):
+        value = item.get(field)
+        if value is not None and str(value).strip():
+            return field, str(value).strip()
+    return "row", json.dumps(item, sort_keys=True, default=str, separators=(",", ":"))
 
 
 def _fetch_clist_page(
@@ -96,7 +106,7 @@ def fetch_clist_pages(
     # rotation boards. Callers that need fewer round-trips may pass a larger pz.
     page_size: int = 100,
 ) -> list[dict]:
-    rows: list[dict] = []
+    rows_by_key: dict[tuple[str, str], dict] = {}
     active_host: str | None = None
     page = 1
     reported_total: int | None = None
@@ -123,7 +133,7 @@ def fetch_clist_pages(
                 # Full-universe snapshot: don't persist a truncated page.
                 raise RuntimeError(
                     f"EastMoney clist page {page} failed on all hosts "
-                    f"({len(rows)} rows fetched before failure)"
+                    f"({len(rows_by_key)} rows fetched before failure)"
                 )
         else:
             try:
@@ -171,7 +181,7 @@ def fetch_clist_pages(
                 if not recovered:
                     raise RuntimeError(
                         f"EastMoney clist page {page} failed on all hosts "
-                        f"({len(rows)} rows fetched before failure)"
+                        f"({len(rows_by_key)} rows fetched before failure)"
                     ) from exc
 
         if page_total is not None:
@@ -183,21 +193,29 @@ def fetch_clist_pages(
             reported_total = page_total
 
         if not page_rows:
-            if reported_total is not None and reported_total > len(rows):
+            if reported_total is not None and reported_total > len(rows_by_key):
                 raise RuntimeError(
                     f"EastMoney clist page {page} returned empty before reported "
-                    f"total was reached ({len(rows)}/{reported_total} rows)"
+                    f"total was reached ({len(rows_by_key)}/{reported_total} rows)"
                 )
             break
         if reported_total is None:
             raise RuntimeError(
                 f"EastMoney clist page {page} returned rows without a reported total"
             )
-        next_row_count = len(rows) + len(page_rows)
+        previous_row_count = len(rows_by_key)
+        for item in page_rows:
+            rows_by_key[_row_key(item)] = item
+        next_row_count = len(rows_by_key)
         if next_row_count > reported_total:
             raise RuntimeError(
                 "EastMoney clist pagination exceeded reported total "
                 f"({next_row_count}/{reported_total})"
+            )
+        if next_row_count == previous_row_count and next_row_count < reported_total:
+            raise RuntimeError(
+                f"EastMoney clist pagination did not advance on page {page} "
+                f"({next_row_count}/{reported_total} unique rows)"
             )
         if len(page_rows) < page_size and next_row_count < reported_total:
             raise RuntimeError(
@@ -205,12 +223,11 @@ def fetch_clist_pages(
                 f"before reported total was reached ({next_row_count}/{reported_total}); "
                 "refusing a potentially truncated result"
             )
-        rows.extend(page_rows)
-        if len(rows) >= reported_total:
+        if len(rows_by_key) >= reported_total:
             break
         page += 1
 
-    return rows
+    return list(rows_by_key.values())
 
 
 def clist_rows_to_symbols(rows: list[dict]) -> list[tuple[str, dict]]:

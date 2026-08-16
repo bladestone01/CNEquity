@@ -79,6 +79,44 @@ def load_seed_calendar(path: Path | None = None) -> pl.DataFrame:
     return df.with_columns(pl.col("trade_date").str.to_date(strict=False))
 
 
+def _bar_dates(curated_root: Path, dataset: str) -> set[date]:
+    """Return dates with usable rows from one curated bar dataset.
+
+    A stock daily-bar placeholder (flat OHLC, ``volume=0``) means that the
+    instrument did not trade; it must not create a pre-seed trading session.
+    Older lakes predate the volume contract, so files without that column keep
+    their historical row-presence semantics. Index bars are also kept row-based
+    because index volume has different units and zero can be a valid quote.
+    """
+    root = curated_root / dataset
+    if not root.exists():
+        return set()
+    dates: set[date] = set()
+    for path in root.glob("**/*.parquet"):
+        try:
+            scan = pl.scan_parquet(str(path))
+            names = scan.collect_schema().names()
+            if "trade_date" not in names:
+                continue
+            if dataset == "daily_bars" and "volume" in names:
+                scan = scan.filter(pl.col("volume") > 0)
+            values = scan.select("trade_date").collect().get_column("trade_date").drop_nulls()
+            dates.update(values.to_list())
+        except (OSError, pl.exceptions.PolarsError, ValueError) as exc:
+            # Calendar construction is also used by health/audit commands.
+            # A bad bar file must be reported by the dataset audit, but should
+            # not prevent the calendar from being built from the other files.
+            logger.warning("Skipping unreadable %s bar file %s: %s", dataset, path, exc)
+    return dates
+
+
+def curated_bar_dates(curated_root: Path, dataset: str) -> set[date]:
+    """Public helper for calendar/reference steps to share bar-date semantics."""
+    if dataset not in {"daily_bars", "index_bars"}:
+        raise ValueError(f"unsupported bar dataset: {dataset!r}")
+    return _bar_dates(curated_root, dataset)
+
+
 def _trading_days_from_bars(curated_root: Path) -> set[date]:
     """Dates any bar dataset recorded — a session nobody traded does not exist.
 
@@ -91,14 +129,7 @@ def _trading_days_from_bars(curated_root: Path) -> set[date]:
     """
     days: set[date] = set()
     for dataset in ("index_bars", "daily_bars"):
-        root = curated_root / dataset
-        if not root.exists():
-            continue
-        files = list(root.glob("**/*.parquet"))
-        if not files:
-            continue
-        frames = [pl.read_parquet(f, columns=["trade_date"]) for f in files]
-        days |= set(pl.concat(frames, how="diagonal_relaxed")["trade_date"].to_list())
+        days |= curated_bar_dates(curated_root, dataset)
     return days
 
 

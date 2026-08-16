@@ -85,3 +85,19 @@ def test_earliest_bar_date_considers_index_bars_too(tmp_path):
         pl.DataFrame({"trade_date": [day]}).write_parquet(root / "part-0.parquet")
 
     assert _earliest_bar_date(cfg) == date(1990, 12, 19)
+
+
+def test_earliest_bar_date_ignores_daily_placeholder_only_rows(tmp_path):
+    from cnequity.steps.reference import _earliest_bar_date
+
+    cfg = Config(data_root=tmp_path / "lake")
+    daily = cfg.curated_root / "daily_bars" / "trade_date=1980"
+    index = cfg.curated_root / "index_bars" / "trade_date=1990"
+    daily.mkdir(parents=True, exist_ok=True)
+    index.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"trade_date": [date(1980, 1, 2)], "volume": [0]}).write_parquet(
+        daily / "part-0.parquet"
+    )
+    pl.DataFrame({"trade_date": [date(1990, 12, 19)]}).write_parquet(index / "part-0.parquet")
+
+    assert _earliest_bar_date(cfg) == date(1990, 12, 19)

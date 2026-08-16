@@ -331,18 +331,28 @@ def _parse_kline(payload: dict[str, Any], board: dict) -> list[dict]:
             continue
         stamp = parts[0]
         try:
+            open_ = _finite_float(parts[1])
+            high = _finite_float(parts[2])
+            low = _finite_float(parts[3])
+            close = _finite_float(parts[4])
+            volume = finite_int64(_finite_float(parts[5]), minimum=0)
+            amount = _finite_float(parts[6])
+            if any(value <= 0 for value in (open_, high, low, close)):
+                continue
+            if volume > 0 and (high < max(open_, close) or low > min(open_, close)):
+                continue
             rows.append(
                 {
                     "sector_code": board["sector_code"],
                     "sector_name": board["sector_name"],
                     "board_type": board["board_type"],
                     "trade_date": date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8])),
-                    "open": _finite_float(parts[1]),
-                    "high": _finite_float(parts[2]),
-                    "low": _finite_float(parts[3]),
-                    "close": _finite_float(parts[4]),
-                    "volume": finite_int64(_finite_float(parts[5]), minimum=0),
-                    "amount": _finite_float(parts[6]),
+                    "open": open_,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": volume,
+                    "amount": amount,
                 }
             )
         except ValueError:

@@ -165,6 +165,17 @@ def test_backfill_mid_page_failure_raises():
         )
 
 
+def test_repeated_page_fails_instead_of_looping_forever():
+    page = [_bar(date(2024, 6, 27))] * 800
+    client = FakeClient([page, page])
+
+    with pytest.raises(TdxBarsPaginationError, match="did not advance"):
+        fetch_bars_paginated(
+            client, "600519.SH", date(2016, 1, 1), date(2024, 6, 27), backfill=True
+        )
+    assert client.calls == 2
+
+
 def test_incremental_mid_page_failure_raises_instead_of_returning_partial():
     page1 = [
         {

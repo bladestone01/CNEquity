@@ -16,6 +16,7 @@ their own contract; scaling it on a guess would only move the break.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from collections.abc import Callable
@@ -31,6 +32,7 @@ from cnequity.domain.units import lots_to_shares
 logger = logging.getLogger(__name__)
 
 _PAGE_SIZE = 800
+_MAX_PAGES = 1000
 
 
 class TdxBarsPaginationError(RuntimeError):
@@ -143,8 +145,15 @@ def fetch_bars_paginated(
     market = 1 if exch == "SH" else (0 if exch == "SZ" else 2)
     offset_pos = 0
     all_rows: list[dict] = []
+    seen_pages: set[str] = set()
+    page_count = 0
 
     while True:
+        page_count += 1
+        if page_count > _MAX_PAGES:
+            raise TdxBarsPaginationError(
+                f"TDX bars pagination exceeded {_MAX_PAGES} pages for {sym}"
+            )
         wait_spec(rate_limit)
         try:
             if is_index:
@@ -180,6 +189,13 @@ def fetch_bars_paginated(
             pdf = pl.from_pandas(raw)
         else:
             pdf = pl.DataFrame(raw)
+
+        page_signature = hashlib.sha256(repr(pdf.to_dicts()).encode()).hexdigest()
+        if page_signature in seen_pages:
+            raise TdxBarsPaginationError(
+                f"TDX bars pagination did not advance for {sym} at start={offset_pos}"
+            )
+        seen_pages.add(page_signature)
 
         page_rows = _parse_bar_rows(pdf, sym, start, end, volume_in_lots=not is_index)
         if page_rows:
