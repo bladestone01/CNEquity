@@ -1,6 +1,6 @@
 # derive 模块
 
-路径：`src/ashare_lake/derive/`
+路径：`src/cnequity/derive/`
 
 由 curated 数据**可重算**的派生数据集。与 `steps/finalize.py` 中的 `derive_adj_factors` step 集成。
 
@@ -10,8 +10,8 @@
 
 | 文件 | 输出 | 触发 |
 |------|------|------|
-| `adj_factors.py` | `derived/adj_factors` | `asl derive adj_factors` / daily finalize |
-| `trading_status_history.py` | 写入 `curated/trading_status` | `asl derive trading_status` |
+| `adj_factors.py` | `derived/adj_factors` | `cne derive adj_factors` / daily finalize |
+| `trading_status_history.py` | 写入 `curated/trading_status` | `cne derive trading_status` |
 | `market_breadth.py` | `market_breadth` | macro_risk step 内调用 |
 | `sentiment_scores.py` | `sentiment_scores` | research step 内调用 |
 
@@ -47,7 +47,7 @@
 
 ## trading_status_history.py
 
-`derive_suspension_history(cfg, *, start=None, end=None)` / `asl derive trading_status [--start] [--end]`：
+`derive_suspension_history(cfg, *, start=None, end=None)` / `cne derive trading_status [--start] [--end]`：
 
 - 对比 `daily_bars` 有成交的日期与 `trading_calendar`
 - 推断历史停牌区间

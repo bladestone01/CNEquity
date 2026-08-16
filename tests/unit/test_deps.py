@@ -2,14 +2,14 @@ import uuid
 
 import pytest
 
-import ashare_lake.steps  # noqa: F401 — register steps
-from ashare_lake.orchestrator.deps import (
+import cnequity.steps  # noqa: F401 — register steps
+from cnequity.orchestrator.deps import (
     CyclicDependencyError,
     UnknownStepError,
     step_execution_levels,
     validate_steps_registered,
 )
-from ashare_lake.orchestrator.registry import register_step
+from cnequity.orchestrator.registry import register_step
 
 
 def test_reference_wave_steps_are_single_parallel_level():

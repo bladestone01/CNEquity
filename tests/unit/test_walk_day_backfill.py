@@ -15,8 +15,8 @@ from datetime import date
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.steps.common import walk_day_backfill
+from cnequity.config import Config
+from cnequity.steps.common import walk_day_backfill
 
 
 def _fake_row(d: date, date_col: str) -> dict:
@@ -147,6 +147,38 @@ def test_end_clamped_to_trade_date(tmp_path):
     )
 
     assert fetched == [date(2026, 6, 29), date(2026, 6, 30)]
+
+
+def test_flushes_already_fetched_days_before_reraising(tmp_path):
+    """Measured in production: announcement_index ran 9.6h, hit a DNS blip on
+    one day mid-window, and landed zero new curated days — every day fetched
+    since the last flush boundary was lost with the exception. A raise must
+    honor the same "kill costs only the unflushed chunk" promise as a kill."""
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill_start = date(2026, 6, 1)
+    cfg._backfill_end = date(2026, 6, 10)  # under one 60-day flush window
+    poison = date(2026, 6, 5)
+
+    def fetch_one(d: date) -> pl.DataFrame:
+        if d == poison:
+            raise RuntimeError("simulated DNS blip")
+        return pl.DataFrame([_fake_row(d, "trade_date")])
+
+    try:
+        walk_day_backfill(
+            cfg, date(2026, 7, 1), "run-1", "market_breadth", fetch_one, source="derived"
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected the poisoned day's error to propagate")
+
+    staged = list((cfg.staging_root / "market_breadth").glob("**/*.parquet"))
+    assert len(staged) == 1
+    df = pl.read_parquet(staged[0])
+    # Every weekday strictly before the poison day landed; the poison day and
+    # anything after it never got the chance to fetch.
+    assert set(df["trade_date"].to_list()) == {date(2026, 6, d) for d in (1, 2, 3, 4)}
 
 
 def test_start_falls_back_to_the_floor_argument(tmp_path):

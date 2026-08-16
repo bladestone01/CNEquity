@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from ashare_lake import file_lock
-from ashare_lake.file_lock import LockUnavailable, exclusive_lock, is_locked
+from cnequity import file_lock
+from cnequity.file_lock import LockUnavailable, exclusive_lock, is_locked, lake_mutation_lock
 
 # ---------------------------------------------------------------- real backend
 
@@ -68,6 +68,16 @@ def test_is_locked_reports_holder_state(tmp_path):
     with exclusive_lock(path):
         assert is_locked(path) is True
     assert is_locked(path) is False
+
+
+def test_lake_mutation_lock_shares_compact_lock_with_run_lock(tmp_path):
+    """Maintenance must contend with the orchestrator's compact lock."""
+    from cnequity.orchestrator.run_lock import RunLockError, run_lock
+
+    with lake_mutation_lock(tmp_path):
+        with pytest.raises(RunLockError):
+            with run_lock(tmp_path, "compact", blocking=False):
+                pass
 
 
 def _hold_lock(path: str, seconds: float) -> bool:
@@ -268,7 +278,7 @@ def test_is_locked_treats_open_oserror_as_held(tmp_path, monkeypatch):
 def test_daily_group_collision_explains_the_skip(tmp_path):
     import pytest
 
-    from ashare_lake.orchestrator.run_lock import (
+    from cnequity.orchestrator.run_lock import (
         DAILY_INGESTION_LOCK,
         RunLockError,
         run_lock,
@@ -287,7 +297,7 @@ def test_daily_group_collision_explains_the_skip(tmp_path):
 def test_other_locks_keep_the_generic_message(tmp_path):
     import pytest
 
-    from ashare_lake.orchestrator.run_lock import RunLockError, run_lock
+    from cnequity.orchestrator.run_lock import RunLockError, run_lock
 
     with run_lock(tmp_path, "some-run-id"):
         with pytest.raises(RunLockError, match="locked by another process"):

@@ -1,14 +1,14 @@
 # 配置参考
 
-配置文件格式：TOML。模板随包装在 `ashare_lake.config.templates`；仓库内副本为 `configs/ashare-lake.example.toml`。
+配置文件格式：TOML。模板随包装在 `cnequity.config.templates`；仓库内副本为 `configs/cnequity.example.toml`。
 
 ```bash
-asl config init                              # 推荐：写出 configs/ashare-lake.toml
-asl config init --data-root /data/ashare-lake
-asl config validate --config configs/ashare-lake.toml
+cne config init                              # 推荐：写出 configs/cnequity.toml
+cne config init --data-root /data/cnequity
+cne config validate --config configs/cnequity.toml
 ```
 
-加载与校验：`ashare_lake.config.loader`。
+加载与校验：`cnequity.config.loader`。
 
 ---
 
@@ -16,7 +16,7 @@ asl config validate --config configs/ashare-lake.toml
 
 | 键 | 类型 | 默认 | 说明 |
 |----|------|------|------|
-| `root` | string | `./data/ashare-lake` | 数据湖根目录；**生产建议绝对路径** |
+| `root` | string | `./data/cnequity` | 数据湖根目录；**生产建议绝对路径** |
 
 派生路径（代码内自动计算，无需配置）：
 
@@ -24,7 +24,7 @@ asl config validate --config configs/ashare-lake.toml
 - `{root}/curated` — canonical 数据集
 - `{root}/derived` — 派生数据集（如 adj_factors）
 - `{root}/meta` — manifest、水位、质量 findings
-- `{root}/duckdb/ashare-lake.duckdb` — DuckDB 视图库
+- `{root}/duckdb/cnequity.duckdb` — DuckDB 视图库
 
 ---
 
@@ -169,13 +169,13 @@ Wave DAG：每个 wave 含 `name`、`parallel`（wave 内 step 是否并行）�
 > ~5400 只约 50 分钟,曾经超出到 `capital` 的 30 分钟间隔,导致资金面组每天被跳过。
 > 撞锁时报错会明确说明是被跳过,以及去哪里调间隔。
 
-`asl run daily --group <name>` 只跑该组 steps。
+`cne run daily --group <name>` 只跑该组 steps。
 
 ---
 
 ## `[minute_bars]`
 
-可选日内线。默认关闭，且**不在** `[job.daily.waves]` 上——全市场 1m 约 35MB/日、8.4GB/年，不能变成没人要时 `asl init` 的成本。开启后用 `asl run daily --group intraday` 或 `asl backfill`。
+可选日内线。默认关闭，且**不在** `[job.daily.waves]` 上——全市场 1m 约 35MB/日、8.4GB/年，不能变成没人要时 `cne init` 的成本。开启后用 `cne run daily --group intraday` 或 `cne backfill`。
 
 | 键 | 默认 | 说明 |
 |----|------|------|
@@ -185,7 +185,7 @@ Wave DAG：每个 wave 含 `name`、`parallel`（wave 内 step 是否并行）�
 | `frequencies` | `["1m"]` | `"1m"` → `minute_bars`；`"5m"` → `minute_bars_5m` |
 | `fetch_workers` | `4` | 并发 TDX 连接数（不提高请求速率，只消网络空转；上限仍约 10 req/s） |
 
-**源端视野**（实测 2026-08-01）：1m ≈ 95 个交易日，5m ≈ 491 个交易日。更早窗口返回空；`asl backfill … --start` 早于视野会直接拒绝。磁盘与耗时见 [runbook — 日内数据](../operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
+**源端视野**（实测 2026-08-01）：1m ≈ 95 个交易日，5m ≈ 491 个交易日。更早窗口返回空；`cne backfill … --start` 早于视野会直接拒绝。磁盘与耗时见 [runbook — 日内数据](../operations/runbook.md#日内数据minute_bars--minute_bars_5m)。
 
 ---
 
@@ -218,7 +218,7 @@ names = [
 | `enabled` | OnDemandService 开关 |
 | `datasets` | 按需抓取的数据集名列表。默认仅 `stock_news`、`research_reports`；`announcement_body` / `financial_reports` 尚未实现 |
 
-缓存路径：`meta/on_demand/{dataset}/{symbol}.json`。通过 `asl query --dataset X --symbol Y` 访问。失败或未实现的结果不会写入缓存。
+缓存路径：`meta/on_demand/{dataset}/{symbol}.json`。通过 `cne query --dataset X --symbol Y` 访问。失败或未实现的结果不会写入缓存。
 
 ---
 
@@ -226,7 +226,7 @@ names = [
 
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `path` | `{data.root}/duckdb/ashare-lake.duckdb` | 支持 `{data.root}` 占位符 |
+| `path` | `{data.root}/duckdb/cnequity.duckdb` | 支持 `{data.root}` 占位符 |
 | `memory_limit` | `2GB` | DuckDB 内存上限 |
 | `threads` | 4 | 查询线程数 |
 
@@ -234,23 +234,23 @@ names = [
 
 ## 环境变量（仅 `scripts/*.sh`）
 
-下列变量由 [运维脚本](../operations/scripts.md) 读取；**`asl` CLI 不读**（配置路径仍用 `--config` 或默认 `configs/ashare-lake.toml`）。
+下列变量由 [运维脚本](../operations/scripts.md) 读取；**`cne` CLI 不读**（配置路径仍用 `--config` 或默认 `configs/cnequity.toml`）。
 
 | 变量 | 默认 | 作用 |
 |------|------|------|
-| `ASL_CONFIG` | `configs/ashare-lake.toml` | 脚本传入 `asl --config` 的路径 |
-| `ASL_LOG_DIR` | `{data.root}/logs` | 日志目录 |
-| `ASL_GROUPS` | 全部调度组（不含需显式开启的 `intraday`） | 覆盖 pipeline 要跑的组 |
-| `ASL_NOTIFY` | `1` | `0` 关闭 macOS 通知 |
-| `ASL_BACKUP_DIR` | 湖内 backups | 元数据备份目录 |
-| `ASL_BACKUP_RETENTION_DAYS` | 14 | 备份保留天数 |
+| `CNE_CONFIG` | `configs/cnequity.toml` | 脚本传入 `cne --config` 的路径 |
+| `CNE_LOG_DIR` | `{data.root}/logs` | 日志目录 |
+| `CNE_GROUPS` | 全部调度组（不含需显式开启的 `intraday`） | 覆盖 pipeline 要跑的组 |
+| `CNE_NOTIFY` | `1` | `0` 关闭 macOS 通知 |
+| `CNE_BACKUP_DIR` | 湖内 backups | 元数据备份目录 |
+| `CNE_BACKUP_RETENTION_DAYS` | 14 | 备份保留天数 |
 
 ---
 
 ## 配置与代码关系
 
 ```
-ashare-lake.toml
+cnequity.toml
     → load_config() → Config dataclass
     → validate_config() → 引用 step/group 合法性
     → JobEngine(cfg) / load(..., config=cfg)

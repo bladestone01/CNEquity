@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from ashare_lake.adapters.cninfo.announcements import (
+from cnequity.adapters.cninfo.announcements import (
     _symbol_from_cninfo,
     fetch_announcement_index,
 )
@@ -105,7 +105,7 @@ def test_fetch_announcement_index_owns_and_closes_default_client(monkeypatch):
         created.append(client)
         return client
 
-    monkeypatch.setattr("ashare_lake.adapters.cninfo.announcements.httpx.Client", _factory)
+    monkeypatch.setattr("cnequity.adapters.cninfo.announcements.httpx.Client", _factory)
     df = fetch_announcement_index(date(2024, 6, 28))
     assert df.is_empty()
     assert created[0].closed is True
@@ -140,6 +140,45 @@ def test_fetch_announcement_index_uses_rate_limiter_when_config_given():
     client = _FakeClient({"szse": [[]], "sse": [[]]})
     fetch_announcement_index(date(2024, 6, 28), client=client, config=_Cfg())
     assert calls == ["cninfo", "cninfo"]
+
+
+class _OverrunClient:
+    """Reproduces a measured live cninfo behavior: past its own reported
+    ``totalpages``, the server keeps re-serving page 1's rows with
+    ``hasMore`` still true, forever. Without a cap on ``totalpages`` itself,
+    the pagination loop never exits — this is what actually happened in
+    production (one day's szse column reached page 7727+ before an unrelated
+    network blip finally killed the run)."""
+
+    def __init__(self, total_pages: int):
+        self.total_pages = total_pages
+        self.calls = 0
+
+    def post(self, url, data):
+        self.calls += 1
+        page = data["pageNum"]
+        real_page = min(page, self.total_pages)
+        item = {
+            "secCode": "000001",
+            "announcementId": f"P{real_page}",
+            "announcementTitle": "x",
+            "adjunctUrl": "/x.pdf",
+        }
+        if data["column"] == "sse":
+            return _FakeResponse({"announcements": [], "hasMore": False, "totalpages": 0})
+        return _FakeResponse(
+            {"announcements": [item], "hasMore": True, "totalpages": self.total_pages}
+        )
+
+    def close(self):
+        pass
+
+
+def test_fetch_announcement_index_stops_at_totalpages_even_when_hasmore_lies():
+    client = _OverrunClient(total_pages=3)
+    df = fetch_announcement_index(date(2024, 1, 31), client=client)
+    assert client.calls == 4  # szse pages 1..3, then sse's single (empty) page
+    assert df.height == 3
 
 
 def test_fetch_announcement_index_raises_runtime_error_on_transport_failure():

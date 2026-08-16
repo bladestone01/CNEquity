@@ -1,9 +1,38 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.derive.trading_status_history import derive_suspension_history
+from cnequity.config import Config
+from cnequity.derive.trading_status_history import (
+    derive_suspension_history,
+    status_evidence_rank,
+)
+
+
+def test_status_evidence_precedence_is_pit_aware():
+    trade_day = date(2024, 6, 28)
+    assert status_evidence_rank({"source": "baostock", "trade_date": trade_day}) == 0
+    assert (
+        status_evidence_rank(
+            {
+                "source": "eastmoney",
+                "trade_date": trade_day,
+                "fetched_at": datetime(2024, 6, 28, 7, 30, tzinfo=timezone.utc),
+            }
+        )
+        == 0
+    )
+    assert (
+        status_evidence_rank(
+            {
+                "source": "eastmoney",
+                "trade_date": trade_day,
+                "fetched_at": datetime(2024, 7, 1, 8, 0, tzinfo=timezone.utc),
+            }
+        )
+        == 2
+    )
+    assert status_evidence_rank({"source": "derived_bar_gap", "trade_date": trade_day}) == 1
 
 
 def _write(root, dataset, partition_col, val, df):

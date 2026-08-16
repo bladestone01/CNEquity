@@ -5,11 +5,12 @@ from datetime import date
 import polars as pl
 import pytest
 
-from ashare_lake.adapters.baostock.instruments import fetch_instrument_basics
-from ashare_lake.config import Config
-from ashare_lake.steps.reference import _merge_delisted_instruments
-from ashare_lake.storage.instruments import compact_instruments
-from ashare_lake.storage.parquet import StagingWriter
+from cnequity.adapters.baostock.instruments import fetch_instrument_basics
+from cnequity.config import Config
+from cnequity.steps.delisted import known_delisted_instruments
+from cnequity.steps.reference import _merge_delisted_instruments
+from cnequity.storage.instruments import compact_instruments
+from cnequity.storage.parquet import StagingWriter
 
 
 class _FakeResultSet:
@@ -114,7 +115,7 @@ def _config_with_baostock(tmp_path, enabled=True):
 def test_merge_appends_delisted_and_fills_list_dates(tmp_path, monkeypatch):
     cfg = _config_with_baostock(tmp_path)
     monkeypatch.setattr(
-        "ashare_lake.adapters.baostock.instruments.import_baostock",
+        "cnequity.adapters.baostock.instruments.import_baostock",
         lambda: _FakeBaostock(_ROWS),
     )
     live = _live_snapshot(["600519.SH", "000001.SZ"])
@@ -127,13 +128,28 @@ def test_merge_appends_delisted_and_fills_list_dates(tmp_path, monkeypatch):
     assert dead["source"].item() == "baostock"
     # list_date backfilled onto the still-listed name from baostock's ipoDate.
     assert merged.filter(pl.col("symbol") == "600519.SH")["list_date"].item() == date(2001, 8, 27)
+    assert known_delisted_instruments(cfg, date(2026, 1, 1)) == {
+        "000003.SZ": date(2002, 6, 14),
+        "600001.SH": date(2009, 12, 25),
+    }
+
+
+def test_inferred_instrument_delist_date_is_not_formal_identity(tmp_path):
+    cfg = _config_with_baostock(tmp_path)
+    path = cfg.curated_root / "instruments" / "part-merged.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _live_snapshot(["600001.SH"]).with_columns(
+        pl.lit(date(2009, 12, 25), dtype=pl.Date).alias("delist_date")
+    ).write_parquet(path)
+
+    assert known_delisted_instruments(cfg, date(2026, 1, 1)) == {}
 
 
 def test_merge_skips_names_baostock_calls_listed_but_snapshot_omits(tmp_path, monkeypatch):
     """Ambiguous rows must not inject untradable symbols into all_a."""
     cfg = _config_with_baostock(tmp_path)
     monkeypatch.setattr(
-        "ashare_lake.adapters.baostock.instruments.import_baostock",
+        "cnequity.adapters.baostock.instruments.import_baostock",
         lambda: _FakeBaostock(_ROWS),
     )
     live = _live_snapshot(["600519.SH"])

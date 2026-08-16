@@ -5,7 +5,7 @@
 
 ## Context
 
-ashare-lake has several non-obvious architecture choices (storage format,
+CNEquity has several non-obvious architecture choices (storage format,
 orchestration model, multi-source policy). New contributors need to understand
 *why*, not just *what*.
 

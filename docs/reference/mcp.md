@@ -1,39 +1,56 @@
 # MCP：把湖接给 AI agent
 
-`asl serve` 把湖给人看，`asl mcp` 把湖给模型用。同样**只读**：这里没有任何触发采集、重试、清理的入口，采集仍然只在 CLI 上，由人来跑。
+`cne serve` 把湖给人看，`cne mcp` 把湖给模型用。同样**只读**：这里没有任何触发采集、重试、清理的入口，采集仍然只在 CLI 上，由人来跑。
+
+当前实现是标准 MCP over stdio，不绑定 Claude 或任何特定模型。客户端拉起
+`cne mcp` 子进程，在 stdin/stdout 管道上交换 JSON-RPC；支持 stdio MCP 的
+agent 都可以复用同一条命令和配置。
 
 三条路，按你手上有什么选：
 
 ```bash
 # ① 已经有湖 —— 完整口径
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml
+cne mcp --config /abs/path/to/cnequity.toml
 
-# ② 还没有湖，先试试 —— asl demo 给 30 秒真数据
-asl demo
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/configs/ashare-lake.demo.toml
+# ② 还没有湖，先试试 —— cne demo 给 30 秒真数据
+cne demo
+cne mcp --config /abs/path/to/configs/cnequity.demo.toml
 
 # ③ 不建湖 —— 现拉现给，不落盘
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml --live
+cne mcp --config /abs/path/to/cnequity.toml --live
 ```
 
 传输是 stdio：客户端拉起进程，在管道上讲 JSON-RPC，不需要手动执行。
 
 **`--config` 和配置里的 `[data].root` 都要用绝对路径。** MCP 客户端从哪个目录启动进程是不确定的，而相对的 `data.root` 是相对**工作目录**解析的——于是湖解析到一个不存在的路径，每个工具都回「no parquet data」，agent 如实报告「没有数据」。这句话对那个路径是真的，对你的湖是假的。
 
-`asl config init` 写出的配置本来就是绝对路径。启动时会检查 curated 下是否有 parquet，没有就直接退出并打印解析后的路径，而不是伺服一个空湖。
+`cne config init` 写出的配置本来就是绝对路径。启动时会检查 curated 下是否有 parquet，没有就直接退出并打印解析后的路径，而不是伺服一个空湖。
 
-其它客户端（Codex、Cline、任何支持 MCP 的编辑器）填等价的配置即可：
+在客户端的 MCP 配置中，把上面的命令填成 `command` / `args`。下面是常见
+的通用 JSON 形状；不同 agent 的文件位置和 UI 名称可能不同，但 server
+参数不变：
 
 ```json
 {
   "mcpServers": {
-    "ashare-lake": {
-      "command": "asl",
-      "args": ["mcp", "--config", "/abs/path/to/ashare-lake.toml"]
+    "cnequity": {
+      "command": "cne",
+      "args": ["mcp", "--config", "/abs/path/to/cnequity.toml"]
     }
   }
 }
 ```
+
+兼容性边界：
+
+| 客户端连接方式 | 当前支持 | 说明 |
+|---|---|---|
+| 本地 stdio 子进程 | ✅ | 任意支持 MCP stdio 的 agent，包括 Codex、Claude、Cline、Cursor、Windsurf、Gemini CLI 等 |
+| MCP Streamable HTTP / URL | 尚未提供 | 当前 `cne mcp` 没有 HTTP listener；需要 URL 型远程部署时应使用反向代理/本地 stdio bridge，或后续启用 HTTP transport |
+
+所以“是否支持某个 agent”取决于它是否支持 MCP stdio，而不是模型名称。若
+目标 agent 只能接收 URL，需单独增加 Streamable HTTP 传输，不能把 stdio
+命令伪装成 HTTP 服务。
 
 ---
 
@@ -101,6 +118,8 @@ curated 每行都带 `source` / `data_version` / `fetched_at`，逐行返回会�
 
 湖里有 `news_headlines`、`flash_news_wire` —— 供应商文本，不是我们写的内容，而 agent 会读它。也就是说到达这个工具的 SQL 可能被湖里摄入的内容影响。解析器能把 `SELECT ... -- ; DROP` 和两条语句分清楚，正则不能。连接本身也是 read-only，两者互补：read-only 拦不住 `COPY ... TO`（它写的是数据库文件之外的路径）。
 
+SQL 连接还会被限制为只允许访问 `curated/` 和 `derived/` 两个 lake 目录，关闭 DuckDB external access 及扩展自动安装/加载，并锁定这些配置。因此 `read_text`、`read_csv`、`read_parquet`、HTTP URL 等指向 lake 外部的文件访问会失败；这不是操作系统沙箱，部署不可信 agent 时仍应使用进程/容器级隔离。
+
 被拒绝的例子：多语句、`DROP`、`CREATE`、`ATTACH`、`COPY ... TO`。
 
 `daily_bars_adj` 是现成视图，带 `hfq_*` / `qfq_*` 与 `adj_is_exact`，优先用它而不是自己 join `adj_factors`。
@@ -121,7 +140,7 @@ curated 每行都带 `source` / `data_version` / `fetched_at`，逐行返回会�
 
 ## 依赖：没有新增
 
-服务端是手写的 stdio JSON-RPC 循环（`ashare_lake/mcp_server/protocol.py`），不用官方 `mcp` SDK。原因写在模块 docstring 里：`mcp` 2.0 会拉进 15 个包——OAuth 用的 cryptography / pyjwt / truststore、没人导出的 opentelemetry，以及本项目已锁 httpx 之外的**第二套 HTTP 栈**。而 `pip install ashare-lake` 无 extras 装齐一切这条承诺，比这 200 行代码值钱。
+服务端是手写的 stdio JSON-RPC 循环（`cnequity/mcp_server/protocol.py`），不用官方 `mcp` SDK。原因写在模块 docstring 里：`mcp` 2.0 会拉进 15 个包——OAuth 用的 cryptography / pyjwt / truststore、没人导出的 opentelemetry，以及本项目已锁 httpx 之外的**第二套 HTTP 栈**。而 `pip install cnequity` 无 extras 装齐一切这条承诺，比这 200 行代码值钱。
 
 需要 sampling / roots / elicitation / HTTP 传输时再换 SDK——那才是它挣回体积的地方。
 
@@ -129,7 +148,7 @@ curated 每行都带 `source` / `data_version` / `fetched_at`，逐行返回会�
 
 ## 排障
 
-**客户端报 parse error，服务端看着正常。** stdout 就是 JSON-RPC 线路，任何多余输出都会污染它。`asl mcp` 已经把日志定向到 stderr（MCP 客户端会当作服务端日志收集）；如果你在 fork 里加了 `print`，那就是原因。
+**客户端报 parse error，服务端看着正常。** stdout 就是 JSON-RPC 线路，任何多余输出都会污染它。`cne mcp` 已经把日志定向到 stderr（MCP 客户端会当作服务端日志收集）；如果你在 fork 里加了 `print`，那就是原因。
 
 **工具报 "no parquet data for dataset X"。** 该数据集在这个湖里还是空的。调 `describe_lake --include_empty` 看注册了但没数据的清单，或跑对应的 step。
 
@@ -139,5 +158,5 @@ curated 每行都带 `source` / `data_version` / `fetched_at`，逐行返回会�
 
 ## 相关文档
 
-- [CLI](cli.md#asl-mcp) · [Python API](python-api.md)
+- [CLI](cli.md#cne-mcp) · [Python API](python-api.md)
 - [数据集目录](../datasets/catalog.md) · [查询指南](../datasets/query-guide.md)

@@ -8,7 +8,7 @@ gets the source to block us, so the choice is worth pinning down.
 
 from __future__ import annotations
 
-from ashare_lake.adapters.ths import boards
+from cnequity.adapters.ths import boards
 
 
 def _record_sources(monkeypatch) -> list[str]:

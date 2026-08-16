@@ -1,30 +1,32 @@
-<h1 align="center">ASL · ashare-lake</h1>
-<p align="center"><b>A daily-refreshable local A-share research lake for humans and AI agents</b></p>
+<h1 align="center">CNEquity · Open financial data infrastructure</h1>
+<p align="center"><b>Starting with China's A-share market, CNEquity turns fragmented sources into a refreshable, reproducible local data layer for people and AI agents.</b></p>
 
 <p align="center">
-  <a href="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/ashare-lake/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://pypi.org/project/ashare-lake/"><img src="https://img.shields.io/pypi/v/ashare-lake.svg" alt="PyPI"></a>
+  <a href="https://github.com/rootSunc/cnequity/actions/workflows/ci.yml"><img src="https://github.com/rootSunc/cnequity/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/cnequity/"><img src="https://img.shields.io/pypi/v/cnequity?logo=pypi&amp;logoColor=white&amp;color=orange" alt="PyPI version"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://rootsunc.github.io/ashare-lake/"><img src="https://img.shields.io/badge/docs-site-2f80ed.svg" alt="Docs site"></a>
+  <a href="https://rootsunc.github.io/cnequity/"><img src="https://img.shields.io/badge/docs-site-2f80ed.svg" alt="Docs site"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/文档-中文-lightgrey.svg" alt="中文"></a>
 </p>
 
 <p align="center">
-  No token or signup. Self-hosted, daily-refreshable, and queryable from Python, DuckDB, Polars, or AI agents.<br>
+  Open, self-hosted, and signup-free. Ingest once, refresh daily, and serve the same contract to Python, DuckDB, Polars, or AI agents.<br>
   <b>42 registered datasets · adjustment / historical universes / PIT · 6 MCP tools · row-level provenance</b>
 </p>
 
 <p align="center">
-  <img src="docs/assets/asl-serve-hero-demo.png" alt="ashare-lake illustrative dashboard with synthetic full-coverage heatmap" width="1100" />
+  <img src="docs/assets/cne-serve-hero-demo.png" alt="CNEquity illustrative dashboard with synthetic full-coverage heatmap" width="1100" />
 </p>
 
 > This is a synthetic README demo, explicitly marked `ILLUSTRATIVE DEMO`; the full-coverage heatmap is not a claim about current production data.
 
+CNEquity is open financial data infrastructure for China markets. It starts with A-shares and turns fragmented market, fundamental, event, flow, industry, and macro sources into an open, local data layer with provenance and a stable research contract.
+
 ## Architecture
 
 <p align="center">
-  <img src="architecture-diagram-v2.png" alt="ashare-lake architecture diagram" width="1100" />
+  <img src="docs/assets/architecture-diagram-v3.png" alt="CNEquity architecture diagram" width="1100" />
 </p>
 <p align="center"><sub>Public sources → adapters and orchestration → local Parquet lake → quality, query, and read-only services</sub></p>
 
@@ -33,22 +35,22 @@ The boundary is deliberate: adapters fetch, the orchestrator schedules and retri
 ## Data in ~30 seconds
 
 ```bash
-pip install ashare-lake    # no token, credit, or signup
-asl demo                   # real data: 5 names × 30 sessions
+pip install cnequity    # no token, credit, or signup
+cne demo                   # real data: 5 names × 30 sessions
 ```
 
 Measured at about 25 seconds. Needs **TDX quote hosts** reachable (mainland access is more reliable);
-if it fails, try `asl sources --only tdx_protocol`. The demo writes to its own
-`data/ashare-lake-demo/` directory and never touches a full lake.
+if it fails, try `cne sources --only tdx_protocol`. The demo writes to its own
+`data/cnequity-demo/` directory and never touches a full lake.
 
 <p align="center">
-  <img src="docs/assets/asl-demo.png" alt="asl demo: phased fetch with sample daily bars" width="820" />
+  <img src="docs/assets/cne-demo.png" alt="cne demo: phased fetch with sample daily bars" width="820" />
 </p>
 
 ```python
-from ashare_lake.query import load
+from cnequity.query import load
 
-bars = load("daily_bars", data_root="data/ashare-lake-demo")
+bars = load("daily_bars", data_root="data/cnequity-demo")
 ```
 
 If you only need a current quote, a fetch API may be enough. Build a lake when you need reproducible history,
@@ -57,7 +59,7 @@ survivorship-safe universes, or point-in-time research.
 To see why the adjustment contract matters (this also queries Sina and expands to about three years):
 
 ```bash
-asl demo --research --symbols 600519.SH
+cne demo --research --symbols 600519.SH
 # raw return -24.25% → hfq return -14.39% (example output; changes with the as-of date)
 ```
 
@@ -84,25 +86,25 @@ python scripts/survivorship_gap.py --svg docs/assets/survivorship-gap.svg
 ## Your own lake, in four commands
 
 ```bash
-pip install ashare-lake
-asl config init            # writes configs/ashare-lake.toml
-asl init                   # every symbol × the last 3 years (~1 hour)
-asl run daily              # this one line, each trading day after
+pip install cnequity
+cne config init            # writes configs/cnequity.toml
+cne init                   # every symbol × the last 3 years (~1 hour)
+cne run daily              # this one line, each trading day after
 ```
 
-`asl init` defaults to **shallow, never narrow**: the last 3 years, every symbol.
+`cne init` defaults to **shallow, never narrow**: the last 3 years, every symbol.
 Trimming symbols instead would build the survivorship bias this lake exists to
 avoid straight into it, whereas shallow is honest — `coverage_start` records it.
-Want everything: `asl init --profile full` (~3x the time). Deepen any time:
+Want everything: `cne init --profile full` (~3x the time). Deepen any time:
 
 ```bash
-asl backfill daily_bars --start 2016-01-01 --end <your coverage_start>
+cne backfill daily_bars --start 2016-01-01 --end <your coverage_start>
 ```
 
 **Wire into an AI agent** (optional, once the lake exists):
 
 ```bash
-claude mcp add ashare-lake -- asl mcp --config "$(pwd)/configs/ashare-lake.toml"
+claude mcp add cnequity -- cne mcp --config "$(pwd)/configs/cnequity.toml"
 ```
 
 With MCP wired up, ask in plain language:
@@ -142,10 +144,10 @@ them. **Fetch tools give you now; a lake gives you history.**
 
 AkShare and agent fetch skills answer "how do I fetch?" — a snapshot of now,
 with no history contract. Tushare is cloud wide tables. Qlib / vn.py are
-research / trading platforms. **ASL** owns the middle: many sources, one
+research / trading platforms. **CNE** owns the middle: many sources, one
 contract, a resumable local Parquet lake.
 
-| What you care about | **ashare-lake** | AkShare / fetch skills | Tushare Pro | Qlib / vn.py |
+| What you care about | **CNEquity** | AkShare / fetch skills | Tushare Pro | Qlib / vn.py |
 |--|--|--|--|--|
 | Local, resumable data base | **Lake + daily jobs** | On-demand; you own orchestration | Cloud credits | Platform-tied |
 | Provenance | **Row-level** | Usually no shared contract | Platform fields | Varies |
@@ -156,7 +158,7 @@ Point by point: [comparison](docs/comparison.md).
 
 ## Datasets
 
-**39** registered datasets (synced with `domain/datasets.py`). Columns:
+**42** registered datasets (synced with `domain/datasets.py`). Columns:
 [schema](docs/datasets/schema.md); orchestration:
 [catalog](docs/datasets/catalog.md).
 
@@ -177,45 +179,45 @@ Intraday (1m / 5m / ticks) is **off by default** — see
 
 ## Keeping it current
 
-`asl run daily` runs every group for the day. Put it in crontab and that is the
+`cne run daily` runs every group for the day. Put it in crontab and that is the
 whole daily job:
 
 ```bash
 # after the close on weekdays; non-trading days skip themselves
-30 16 * * 1-5  cd /path/to/lake && asl run daily >> logs/daily.log 2>&1
+30 16 * * 1-5  cd /path/to/lake && cne run daily >> logs/daily.log 2>&1
 ```
 
 ```bash
-asl status          # per-dataset freshness: FRESH / STALE / EMPTY
-asl serve           # http://127.0.0.1:8787 — coverage, size, tiers
-asl sources         # health of the 14 upstream hosts
-asl retry <run_id>  # re-run only the failed batches
+cne status          # per-dataset freshness: FRESH / STALE / EMPTY
+cne serve           # http://127.0.0.1:8787 — coverage, size, tiers
+cne sources         # health of the 14 upstream hosts
+cne retry <run_id>  # re-run only the failed batches
 ```
 
 A step that fails does not take the run with it: it is recorded as a failed
-batch, everything else still lands, and `asl retry` picks up just those.
+batch, everything else still lands, and `cne retry` picks up just those.
 
 ```python
-from ashare_lake.query import load
+from cnequity.query import load
 
 bars = load("daily_bars", start="2020-01-01", end="2025-12-31", adjust="hfq", universe="all_a")
 roe = load("financial_statement_items", items=["roe"], as_of="2024-04-30")
 ```
 
-The demo root (`data/ashare-lake-demo/`) and the daily lake do not overwrite each
+The demo root (`data/cnequity-demo/`) and the daily lake do not overwrite each
 other. Install and scheduling:
 [installation](docs/getting-started/installation.md) ·
 [runbook](docs/operations/runbook.md).
 
 ## Serve it to an AI agent
 
-`asl mcp` exposes the lake to a model (read-only; ingestion stays on the CLI).
+`cne mcp` exposes the lake to a model (read-only; ingestion stays on the CLI).
 
 ```bash
 # You have a lake — full contract
-claude mcp add ashare-lake -- asl mcp --config /abs/path/to/ashare-lake.toml
+claude mcp add cnequity -- cne mcp --config /abs/path/to/cnequity.toml
 
-# No lake yet — run asl demo first, then point at the demo config
+# No lake yet — run cne demo first, then point at the demo config
 # No lake at all — add --live (no adjust / universe / PIT; responses say so)
 ```
 
@@ -225,12 +227,12 @@ per dataset); the contract travels in the responses. Details:
 
 ## Glance at the lake
 
-Once the lake is up, `asl serve` shows coverage, freshness, and bytes by tier
+Once the lake is up, `cne serve` shows coverage, freshness, and bytes by tier
 (read-only — it never writes the lake):
 
 ```bash
-asl serve     # http://127.0.0.1:8787
-asl sources   # health of 14 upstream hosts (probe on CLI, display on serve)
+cne serve     # http://127.0.0.1:8787
+cne sources   # health of 14 upstream hosts (probe on CLI, display on serve)
 ```
 
 Details: [serve](docs/modules/serve.md) ·
@@ -238,7 +240,7 @@ Details: [serve](docs/modules/serve.md) ·
 
 ## FAQ
 
-**Q: How long does `asl init` take, and how much disk?**
+**Q: How long does `cne init` take, and how much disk?**
 The default (last 3 years, whole market) is about an hour and GBs.
 `--profile full` starts at **2016** and measured roughly 3x that. Both fetch the
 *full* cross-section — filtering symbols instead builds survivorship bias into
@@ -250,8 +252,8 @@ For daily bars back to 2001 — TDX does serve them, but no profile defaults
 there:
 
 ```bash
-asl init --since 2001-01-01                    # deep on the first run
-asl backfill daily_bars --start 2001-01-01     # or deepen afterwards
+cne init --since 2001-01-01                    # deep on the first run
+cne backfill daily_bars --start 2001-01-01     # or deepen afterwards
 ```
 
 **Q: Why store only back-adjusted factors?**
@@ -260,7 +262,7 @@ in `load(adjust="qfq")`
 ([ADR-0004](docs/adr/0004-store-hfq-derive-qfq-at-query.md)).
 
 **Q: EastMoney 403 / connection reset?**
-Run `asl sources --only eastmoney_push2,eastmoney_push2his` first. Daily-path
+Run `cne sources --only eastmoney_push2,eastmoney_push2his` first. Daily-path
 bars come from TDX, outside that WAF blast radius.
 
 **Q: Why can't I get minute bars from two years ago?**

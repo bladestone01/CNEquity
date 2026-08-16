@@ -5,15 +5,16 @@ from datetime import date
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.domain.schemas import DAILY_BARS_SCHEMA
-from ashare_lake.steps.delisted import (
+from cnequity.config import Config
+from cnequity.domain.schemas import DAILY_BARS_SCHEMA, with_provenance
+from cnequity.orchestrator.engine import JobEngine
+from cnequity.steps.delisted import (
     _ingested_symbols,
     backfill_delisted_bars,
     catalog_path,
     delisted_symbols_in_window,
 )
-from ashare_lake.storage.parquet import StagingWriter
+from cnequity.storage.parquet import StagingWriter
 
 _START = date(2016, 1, 1)
 _BAR_COLS = [c for c in DAILY_BARS_SCHEMA if c not in ("source", "data_version", "fetched_at")]
@@ -43,7 +44,7 @@ def _cfg(tmp_path, catalog: dict[str, str], live=("600519.SH",)):
     path.write_text(json.dumps({"delisted": catalog, "never_issued": []}))
     inst = cfg.curated_root / "instruments"
     inst.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(
+    frame = pl.DataFrame(
         {
             "symbol": list(live),
             "name": ["live"] * len(live),
@@ -53,7 +54,10 @@ def _cfg(tmp_path, catalog: dict[str, str], live=("600519.SH",)):
             "delist_date": pl.Series([None] * len(live), dtype=pl.Date),
             "prev_symbol": [None] * len(live),
         }
-    ).write_parquet(inst / "part-merged.parquet")
+    )
+    with_provenance(frame, source="test_seed", data_version="v1").write_parquet(
+        inst / "part-merged.parquet"
+    )
     return cfg
 
 
@@ -147,17 +151,17 @@ def test_rerun_is_a_noop_once_everything_is_ingested(tmp_path):
     backfill_delisted_bars(
         cfg, "run-1", _START, fetch=lambda s, c: _bars(s, date(2016, 3, 1), date(2025, 4, 10))
     )
+    JobEngine(cfg).run_step("compact", date(2025, 4, 10), "run-1")
 
     def must_not_be_called(symbol, client):
         raise AssertionError(f"refetched {symbol}")
 
     result = backfill_delisted_bars(cfg, "run-2", _START, fetch=must_not_be_called)
     assert result["rows_written"] == 0
-    assert "no catalogued delistings" in result["note"]
+    assert result["coverage_pending_compact"] is True
 
 
-def test_a_symbol_with_no_bars_is_marked_done_but_adds_no_instrument(tmp_path):
-    """Catalogued but empty: do not retry forever, and do not invent a listing."""
+def test_empty_fetch_without_terminal_evidence_stays_retryable(tmp_path):
     cfg = _cfg(tmp_path, {"600070.SH": "2025-04-10"})
 
     result = backfill_delisted_bars(
@@ -165,8 +169,27 @@ def test_a_symbol_with_no_bars_is_marked_done_but_adds_no_instrument(tmp_path):
         "run-1",
         _START,
         fetch=lambda s, c: pl.DataFrame(schema={c: DAILY_BARS_SCHEMA[c] for c in _BAR_COLS}),
+        probe_last=lambda s, c: None,
     )
 
     assert result["recovered"] == 0
-    assert "600070.SH" in _ingested_symbols(cfg)
+    assert result["status"] == "warning"
+    assert result["unresolved_symbols"] == 1
+    assert "600070.SH" not in _ingested_symbols(cfg)
     assert _staged(cfg, "instruments", "run-1").is_empty()
+
+
+def test_empty_fetch_with_pre_window_terminal_is_expected_no_data(tmp_path):
+    cfg = _cfg(tmp_path, {"600070.SH": "2025-04-10"})
+
+    result = backfill_delisted_bars(
+        cfg,
+        "run-1",
+        _START,
+        fetch=lambda s, c: pl.DataFrame(schema={c: DAILY_BARS_SCHEMA[c] for c in _BAR_COLS}),
+        probe_last=lambda s, c: date(2009, 12, 15),
+    )
+
+    assert result["expected_no_data"] == 1
+    assert result["coverage_pending_compact"] is True
+    assert "600070.SH" not in _ingested_symbols(cfg)

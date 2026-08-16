@@ -7,8 +7,9 @@ from datetime import datetime, timezone
 import polars as pl
 import pytest
 
-from ashare_lake.file_lock import exclusive_lock
-from ashare_lake.storage.stats import (
+from cnequity.file_lock import exclusive_lock
+from cnequity.storage import stats as stats_module
+from cnequity.storage.stats import (
     load_partition_stats,
     load_provenance_stats,
     load_summary,
@@ -76,6 +77,64 @@ def test_row_counts_split_by_source_within_one_partition(config):
     assert provenance["source"].to_list() == ["sina", "tdx_protocol"]
     assert provenance["row_count"].to_list() == [1, 2]
     assert provenance["row_count"].sum() == partitions["row_count"].item()
+
+
+def test_provenance_rollup_is_preserved_across_bounded_batches(config, monkeypatch):
+    """Batching is an execution detail; identical provenance still rolls up."""
+    monkeypatch.setattr(stats_module, "PROVENANCE_SCAN_BATCH_ROWS", 2)
+    calls = 0
+    original = stats_module._scan_provenance_batch
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stats_module, "_scan_provenance_batch", counted)
+    root = config.curated_root / "daily_bars"
+    _write(root, "trade_date=2026-07-31", [_bar("600519.SH"), _bar("000001.SZ")])
+    _write(
+        root,
+        "trade_date=2026-07-31",
+        [_bar("000002.SZ"), _bar("000003.SZ", source="sina")],
+        name="part-1",
+    )
+
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    assert calls == 2
+    assert load_partition_stats(config)["row_count"].item() == 4
+    provenance = load_provenance_stats(config).sort("source")
+    assert provenance["source"].to_list() == ["sina", "tdx_protocol"]
+    assert provenance["row_count"].to_list() == [1, 3]
+
+
+def test_footer_counts_dataset_without_provenance_columns(config):
+    """Row counts do not depend on scanning or having attribution columns."""
+    root = config.curated_root / "daily_bars"
+    _write(root, "trade_date=2026-07-31", [{"symbol": "600519.SH"}, {"symbol": "000001.SZ"}])
+
+    result = rebuild_stats(config, datasets=["daily_bars"])
+
+    assert result.rows == 2
+    assert load_partition_stats(config)["row_count"].item() == 2
+    assert load_provenance_stats(config).is_empty()
+
+
+def test_provenance_without_fetched_at_gets_null_time_span(config):
+    root = config.curated_root / "daily_bars"
+    _write(
+        root,
+        "trade_date=2026-07-31",
+        [{"symbol": "600519.SH", "source": "tdx_protocol", "data_version": "v2"}],
+    )
+
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    row = load_provenance_stats(config).row(0, named=True)
+    assert row["row_count"] == 1
+    assert row["fetched_at_min"] is None
+    assert row["fetched_at_max"] is None
 
 
 @pytest.mark.parametrize(
@@ -198,7 +257,7 @@ def test_missing_stats_load_as_empty_frames_not_errors(config):
 
 
 def _start_run(config) -> str:
-    from ashare_lake.orchestrator.manifest import Manifest
+    from cnequity.orchestrator.manifest import Manifest
 
     return Manifest(config.manifest_path).start_run("daily")
 
@@ -289,7 +348,7 @@ def test_refresh_yields_to_a_rebuild_already_running(config):
 def test_period_elapsed_fraction_tracks_the_calendar():
     from datetime import date
 
-    from ashare_lake.quality.dataset_checks import period_elapsed_fraction as frac
+    from cnequity.quality.dataset_checks import period_elapsed_fraction as frac
 
     assert frac("2026-08", "month", date(2026, 8, 8)) == 8 / 31
     assert frac("2026-08", "month", date(2026, 8, 31)) == 1.0
@@ -300,7 +359,7 @@ def test_period_elapsed_fraction_tracks_the_calendar():
 
 
 def test_partial_month_is_not_flagged_as_a_shrink():
-    from ashare_lake.quality.dataset_checks import check_partition_row_mutation
+    from cnequity.quality.dataset_checks import check_partition_row_mutation
 
     # Real numbers from the audit that surfaced this: sector_bars, 8 days in.
     finding = check_partition_row_mutation(
@@ -322,7 +381,7 @@ def test_symbol_counts_are_prorated_too():
     names accumulate over the month exactly like rows, so an 8-day partition
     holds ~26% of them and tripped the threshold on the symbol ratio alone.
     """
-    from ashare_lake.quality.dataset_checks import check_partition_row_mutation
+    from cnequity.quality.dataset_checks import check_partition_row_mutation
 
     for dataset, cur_rows, prev_rows, cur_syms, prev_syms in [
         ("dragon_tiger", 355, 1977, 235, 900),
@@ -342,7 +401,7 @@ def test_symbol_counts_are_prorated_too():
 
 
 def test_a_real_shrink_still_fires_mid_period():
-    from ashare_lake.quality.dataset_checks import check_partition_row_mutation
+    from cnequity.quality.dataset_checks import check_partition_row_mutation
 
     finding = check_partition_row_mutation(
         "sector_bars",

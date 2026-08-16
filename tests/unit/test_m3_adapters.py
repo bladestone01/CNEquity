@@ -1,6 +1,6 @@
 from datetime import date
 
-from ashare_lake.adapters.eastmoney.capital import fetch_fund_flow
+from cnequity.adapters.eastmoney.capital import fetch_fund_flow
 
 
 class FakeClient:

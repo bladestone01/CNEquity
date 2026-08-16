@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ashare_lake.adapters.tdx_protocol import quotes as q
+from cnequity.adapters.tdx_protocol import quotes as q
 
 
 class _FakeWire:

@@ -4,10 +4,10 @@ from datetime import date
 
 import pytest
 
-from ashare_lake.adapters.cninfo import announcements as cninfo_announcements
-from ashare_lake.adapters.cninfo.regulatory import fetch_regulatory_events
-from ashare_lake.adapters.eastmoney import clist
-from ashare_lake.adapters.eastmoney.clist import fetch_clist_pages
+from cnequity.adapters.cninfo import announcements as cninfo_announcements
+from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
+from cnequity.adapters.eastmoney import clist
+from cnequity.adapters.eastmoney.clist import fetch_clist_pages
 
 
 class _Resp:
@@ -66,6 +66,54 @@ def test_regulatory_raises_on_page_failure(monkeypatch):
 
     with pytest.raises(RuntimeError, match="regulatory pagination failed"):
         fetch_regulatory_events(date(2024, 6, 28), client=FailPost())
+
+
+class _Response:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _OverrunClient:
+    """Measured live against production cninfo: request a page past the
+    server's own reported ``totalpages`` and it keeps re-serving page 1's
+    rows with ``hasMore`` still true — forever. Hit in production:
+    announcement_index (same endpoint, same shape) ran 9.6h reaching page
+    18977 on one day before an unrelated DNS blip finally stopped it.
+    ``totalpages`` itself stays correct even on the overshot pages, so it has
+    to be the actual stop condition, not ``hasMore``."""
+
+    def __init__(self, total_pages: int):
+        self.total_pages = total_pages
+        self.calls = 0
+
+    def post(self, url, **kwargs):
+        self.calls += 1
+        data = kwargs["data"]
+        if data["column"] == "sse":
+            return _Response({"announcements": [], "hasMore": False, "totalpages": 0})
+        item = {
+            "secCode": "000001",
+            "announcementId": f"P{data['pageNum']}",
+            "announcementTitle": "行政处罚决定",
+            "adjunctUrl": "/x.pdf",
+        }
+        return _Response({"announcements": [item], "hasMore": True, "totalpages": self.total_pages})
+
+    def close(self):
+        return None
+
+
+def test_regulatory_stops_at_totalpages_even_when_hasmore_lies():
+    client = _OverrunClient(total_pages=3)
+    df = fetch_regulatory_events(date(2024, 1, 31), client=client)
+    assert client.calls == 4  # szse pages 1..3, then sse's single (empty) page
+    assert df.height == 3
 
 
 def test_regulatory_survives_one_transient_error(monkeypatch):

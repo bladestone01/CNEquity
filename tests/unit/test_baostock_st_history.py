@@ -6,8 +6,8 @@ from datetime import date
 
 import pytest
 
-from ashare_lake.adapters.baostock.st_history import fetch_st_history
-from ashare_lake.domain.schemas import PRIMARY_KEYS, TRADING_STATUS_SCHEMA
+from cnequity.adapters.baostock.st_history import fetch_st_history
+from cnequity.domain.schemas import PRIMARY_KEYS, TRADING_STATUS_SCHEMA
 
 
 class _FakeResultSet:
@@ -51,7 +51,7 @@ def _rows(code, days):
     return [[d, code, ts, st] for d, ts, st in days]
 
 
-def test_emits_only_traded_st_days():
+def test_emits_traded_st_and_normal_evidence():
     bs = _FakeBaostock(
         {
             "sz.000017": _rows(
@@ -71,9 +71,8 @@ def test_emits_only_traded_st_days():
 
     assert bs.logged_out is True
     assert failed == []
-    assert df.height == 2
-    assert df["trade_date"].sort().to_list() == [date(2020, 4, 29), date(2020, 5, 6)]
-    assert df["status"].unique().to_list() == ["st"]
+    assert df.height == 3
+    assert df.sort("trade_date")["status"].to_list() == ["normal", "st", "st"]
     assert df["is_trading"].unique().to_list() == [True]
     # columns are the curated trading_status contract minus provenance
     assert set(df.columns) == set(TRADING_STATUS_SCHEMA) - {"source", "data_version", "fetched_at"}
@@ -82,13 +81,23 @@ def test_emits_only_traded_st_days():
     assert df.unique(subset=pk).height == df.height
 
 
-def test_never_st_symbol_is_legit_empty_not_failure():
+def test_never_st_symbol_emits_negative_evidence():
     bs = _FakeBaostock({"sz.000001": _rows("sz.000001", [("2020-01-02", "1", "0")])})
     df, failed = fetch_st_history(
         ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
     )
     assert failed == []
+    assert df.height == 1
+    assert df["status"].to_list() == ["normal"]
+
+
+def test_unknown_is_st_value_fails_symbol_closed():
+    bs = _FakeBaostock({"sz.000001": _rows("sz.000001", [("2020-01-02", "1", "")])})
+    df, failed = fetch_st_history(
+        ["000001.SZ"], date(2020, 1, 1), date(2020, 12, 31), bs=bs, sleep=lambda _: None
+    )
     assert df.is_empty()
+    assert failed == ["000001.SZ"]
 
 
 def test_reports_failed_symbols_fail_loud():

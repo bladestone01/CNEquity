@@ -1,9 +1,9 @@
 from datetime import date
 
-from ashare_lake.adapters.eastmoney.stock_news import fetch_stock_news
-from ashare_lake.config import Config
-from ashare_lake.domain.sentiment import aggregate_scores, keyword_score, score_text
-from ashare_lake.query.on_demand import OnDemandService
+from cnequity.adapters.eastmoney.stock_news import fetch_stock_news
+from cnequity.config import Config
+from cnequity.domain.sentiment import aggregate_scores, keyword_score, score_text
+from cnequity.query.on_demand import OnDemandService
 
 
 class FakeNewsClient:

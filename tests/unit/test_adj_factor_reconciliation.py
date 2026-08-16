@@ -8,9 +8,9 @@ from datetime import date
 
 import polars as pl
 
-from ashare_lake.config import Config
-from ashare_lake.quality import cross_checks
-from ashare_lake.quality.cross_checks import adj_factor_reconciliation_findings
+from cnequity.config import Config
+from cnequity.quality import cross_checks
+from cnequity.quality.cross_checks import adj_factor_reconciliation_findings
 
 
 def _write_bars(root, rows):

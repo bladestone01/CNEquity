@@ -6,8 +6,8 @@ from datetime import date
 
 import pytest
 
-from ashare_lake.adapters.ths import boards as ths
-from ashare_lake.config import Config
+from cnequity.adapters.ths import boards as ths
+from cnequity.config import Config
 
 
 def test_get_fails_fast_on_404_without_retrying(monkeypatch):

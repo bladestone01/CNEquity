@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 
-from ashare_lake.adapters.eastmoney.commodity_bars import (
+from cnequity.adapters.eastmoney.commodity_bars import (
     CONTINUOUS_CONTRACTS,
     fetch_commodity_bars_range,
 )
-from ashare_lake.domain.datasets import DATASETS, get_dataset
-from ashare_lake.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS, validate_dataframe
+from cnequity.domain.datasets import DATASETS, get_dataset
+from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS, validate_dataframe
 
 
 def test_commodity_bars_registered():
@@ -59,11 +59,11 @@ def test_fetch_commodity_bars_parses_kline():
     only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
     with (
         patch(
-            "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
+            "cnequity.adapters.eastmoney.commodity_bars.EastMoneyClient",
             return_value=fake_client,
         ),
         patch(
-            "ashare_lake.adapters.sina.global_futures.fetch_offshore_commodity_bars_range",
+            "cnequity.adapters.sina.global_futures.fetch_offshore_commodity_bars_range",
             return_value=pl.DataFrame(),
         ),
     ):
@@ -72,12 +72,13 @@ def test_fetch_commodity_bars_parses_kline():
             date(2026, 7, 21),
             contracts=only,
             include_offshore=True,
+            config=_EastMoneyOnly(),
         )
 
     assert df.height == 2
     assert set(df["symbol"].to_list()) == {"AU0.SHF"}
     assert df.filter(pl.col("trade_date") == date(2026, 7, 21))["close"][0] == 892.4
-    from ashare_lake.domain.schemas import with_provenance
+    from cnequity.domain.schemas import with_provenance
 
     validated = validate_dataframe(
         with_provenance(df, source="eastmoney", data_version="v1"),
@@ -114,11 +115,11 @@ def test_fetch_commodity_bars_empty_on_failure():
     only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
     with (
         patch(
-            "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
+            "cnequity.adapters.eastmoney.commodity_bars.EastMoneyClient",
             return_value=fake_client,
         ),
         patch(
-            "ashare_lake.adapters.sina.global_futures.fetch_offshore_commodity_bars_range",
+            "cnequity.adapters.sina.global_futures.fetch_offshore_commodity_bars_range",
             return_value=pl.DataFrame(),
         ),
     ):
@@ -149,10 +150,10 @@ def test_transport_failures_are_not_retried():
     only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
     with (
         patch(
-            "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
+            "cnequity.adapters.eastmoney.commodity_bars.EastMoneyClient",
             return_value=fake_client,
         ),
-        patch("ashare_lake.adapters.eastmoney.commodity_bars.time.sleep") as slept,
+        patch("cnequity.adapters.eastmoney.commodity_bars.time.sleep") as slept,
     ):
         df = fetch_commodity_bars_range(
             date(2026, 7, 21),
@@ -179,10 +180,10 @@ def test_transient_failures_still_retry():
     only = (("AU0.SHF", "113.AUM", "沪金主连", "SHF"),)
     with (
         patch(
-            "ashare_lake.adapters.eastmoney.commodity_bars.EastMoneyClient",
+            "cnequity.adapters.eastmoney.commodity_bars.EastMoneyClient",
             return_value=fake_client,
         ),
-        patch("ashare_lake.adapters.eastmoney.commodity_bars.time.sleep"),
+        patch("cnequity.adapters.eastmoney.commodity_bars.time.sleep"),
     ):
         df = fetch_commodity_bars_range(
             date(2026, 7, 21),
@@ -211,7 +212,7 @@ def test_domestic_defaults_to_sina_not_push2his(monkeypatch):
     only daily consumer — spending every run failing 15 contracts to write the
     one offshore row.
     """
-    from ashare_lake.adapters.eastmoney import commodity_bars as cb
+    from cnequity.adapters.eastmoney import commodity_bars as cb
 
     def _boom(*a, **k):
         raise AssertionError("EastMoney must not be called by default")
@@ -241,7 +242,7 @@ def test_domestic_defaults_to_sina_not_push2his(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "ashare_lake.adapters.sina.domestic_futures.fetch_domestic_commodity_bars_range",
+        "cnequity.adapters.sina.domestic_futures.fetch_domestic_commodity_bars_range",
         _fake_sina,
     )
     df = cb.fetch_commodity_bars_range(
@@ -257,11 +258,11 @@ def test_domestic_defaults_to_sina_not_push2his(monkeypatch):
 
 
 def test_sina_contract_mapping_covers_every_contract():
-    from ashare_lake.adapters.eastmoney.commodity_bars import (
+    from cnequity.adapters.eastmoney.commodity_bars import (
         CONTINUOUS_CONTRACTS,
         _sina_contracts,
     )
-    from ashare_lake.adapters.sina.domestic_futures import DOMESTIC_CONTRACTS
+    from cnequity.adapters.sina.domestic_futures import DOMESTIC_CONTRACTS
 
     derived = _sina_contracts(CONTINUOUS_CONTRACTS)
     assert len(derived) == len(CONTINUOUS_CONTRACTS)

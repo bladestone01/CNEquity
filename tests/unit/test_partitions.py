@@ -5,21 +5,21 @@ from datetime import date
 import polars as pl
 import pytest
 
-from ashare_lake.config import Config
-from ashare_lake.domain.partitions import (
+from cnequity.config import Config
+from cnequity.domain.partitions import (
     granularity_of,
     parse_partition,
     partition_value,
     previous_partition,
     uses_hive,
 )
-from ashare_lake.query.parquet_scan import (
+from cnequity.query.parquet_scan import (
     collect_parquet_root,
     list_partitions,
     partition_files_in_range,
 )
-from ashare_lake.storage.parquet import StagingWriter, compact_dataset
-from ashare_lake.storage.repartition import (
+from cnequity.storage.parquet import StagingWriter, compact_dataset
+from cnequity.storage.repartition import (
     RepartitionError,
     repartition_candidates,
     repartition_dataset,

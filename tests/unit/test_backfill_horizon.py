@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from ashare_lake.cli import main as cli_main
-from ashare_lake.domain.datasets import DatasetSpec, get_dataset
+from cnequity.cli import main as cli_main
+from cnequity.domain.datasets import DatasetSpec, get_dataset
 
 
 def test_horizon_guard_refuses_a_window_the_source_cannot_serve():
@@ -121,7 +121,25 @@ def test_chunked_backfill_stops_at_a_failed_slice_and_reports_where_to_resume(
     # The first slice stays in curated; the caller resumes from the one that broke.
     assert result["resume_from"] == date(2026, 7, 11)
     assert len(result["slices"]) == 2
-    assert FailingSecond.instances[0].compacted == ["run-1"]
+    # The failed slice is compacted too — whatever it staged before failing
+    # must not be stranded (see test_finish_backfill_run_compacts_on_failure).
+    assert FailingSecond.instances[0].compacted == ["run-1", "run-2"]
+
+
+def test_finish_backfill_run_compacts_on_failure():
+    """A single (unchunked) backfill call that raises partway through — e.g.
+    announcement_index, which is not date-chunked — must not strand whatever
+    walk_day_backfill already flushed to staging just because the overall
+    call's status is "failed". Measured in production: a run that flushed 21
+    clean days before an exception on day 22 kept those 21 days sitting in
+    staging, invisible to `load()`, until this was fixed."""
+    engine = FakeEngine(cfg=None)
+    result = {"run_id": "run-x", "status": "failed", "rows_read": 5, "rows_written": 5}
+
+    out = cli_main._finish_backfill_run(engine, result)
+
+    assert out["compact"] == {"rows_written": 10}
+    assert engine.compacted == ["run-x"]
 
 
 def test_minute_bars_declares_symbol_chunking_not_date_chunking():
@@ -137,7 +155,7 @@ def test_minute_bars_declares_symbol_chunking_not_date_chunking():
 def test_symbol_chunked_backfill_walks_full_window_per_symbol_batch(monkeypatch):
     monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
     symbols = [f"{i:06d}.SH" for i in range(250)]
-    monkeypatch.setattr("ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols)
+    monkeypatch.setattr("cnequity.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = type(
         "Cfg",
         (),
@@ -174,7 +192,7 @@ def test_symbol_chunked_backfill_stops_and_reports_resume_symbol(monkeypatch):
 
     monkeypatch.setattr(cli_main, "JobEngine", FailingSecond)
     symbols = [f"{i:06d}.SH" for i in range(250)]
-    monkeypatch.setattr("ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols)
+    monkeypatch.setattr("cnequity.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = type(
         "Cfg",
         (),
@@ -188,7 +206,8 @@ def test_symbol_chunked_backfill_stops_and_reports_resume_symbol(monkeypatch):
     assert result["status"] == "failed"
     assert result["resume_from_symbol"] == "000200.SH"
     assert len(result["chunks"]) == 2
-    assert FailingSecond.instances[0].compacted == ["run-1"]
+    # The failed chunk is compacted too — see test_finish_backfill_run_compacts_on_failure.
+    assert FailingSecond.instances[0].compacted == ["run-1", "run-2"]
 
 
 def _backfill_argv(dataset: str, *extra: str) -> list[str]:
@@ -248,7 +267,7 @@ def test_symbols_flag_points_each_dataset_at_its_own_config_block():
     `--symbols` tick pull silently scoped the wrong dataset and then fetched
     nothing.
     """
-    from ashare_lake.config import Config
+    from cnequity.config import Config
 
     cfg = Config(data_root=Path("/tmp/lake"))
     cli_main._override_scope(cfg, "trade_ticks", ["600519.SH", "000001.SZ"])
@@ -265,7 +284,7 @@ def test_symbols_flag_points_each_dataset_at_its_own_config_block():
 
 def test_symbols_flag_lifts_the_tick_ceiling_for_a_hand_typed_list():
     """The ceiling stops an unnoticed sweep, not a list the user just typed."""
-    from ashare_lake.config import Config
+    from cnequity.config import Config
 
     cfg = Config(data_root=Path("/tmp/lake"))
     cfg.trade_ticks_max_symbols = 2
@@ -299,7 +318,7 @@ def test_top_holders_floor_is_the_pit_boundary_not_the_data_boundary():
     ~112k rows across 1999-2002 and writes none of them. Refusing the window is
     the difference between a clear message and four wasted hours.
     """
-    from ashare_lake.domain.datasets import get_dataset
+    from cnequity.domain.datasets import get_dataset
 
     assert get_dataset("top_holders").history_floor_date == date(2003, 1, 1)
     with pytest.raises(cli_main.click.ClickException) as excinfo:
@@ -334,7 +353,7 @@ def test_cli_backfill_takes_the_symbol_chunked_path_when_both_dates_given(monkey
 
     monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
     symbols = [f"{i:06d}.SH" for i in range(250)]
-    monkeypatch.setattr("ashare_lake.steps.intraday.resolve_scope", lambda _cfg: symbols)
+    monkeypatch.setattr("cnequity.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = types.SimpleNamespace(
         minute_bars_scope="index:000300.SH",
         minute_bars_symbols=[],
@@ -366,7 +385,7 @@ def test_cli_backfill_exits_nonzero_when_the_result_is_not_success(monkeypatch):
             return "failed"
 
     monkeypatch.setattr(cli_main, "JobEngine", AllFail)
-    monkeypatch.setattr("ashare_lake.steps.intraday.resolve_scope", lambda _cfg: ["600519.SH"])
+    monkeypatch.setattr("cnequity.steps.intraday.resolve_scope", lambda _cfg: ["600519.SH"])
     cfg = types.SimpleNamespace(
         minute_bars_scope="watchlist",
         minute_bars_symbols=["600519.SH"],

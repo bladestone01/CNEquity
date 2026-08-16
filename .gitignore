@@ -25,8 +25,8 @@ env/
 # Secrets & local config
 .env
 configs/*.local.toml
-configs/ashare-lake.toml
-configs/ashare-lake.demo.toml
+configs/cnequity.toml
+configs/cnequity.demo.toml
 
 # Data lake artifacts (never commit generated data)
 data/
