@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,11 +11,14 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 
-from cnequity.cli.main import cli
+from cnequity.cli.main import _recover_compactable_backfill_staging, cli
+from cnequity.config import Config
 from cnequity.config.bootstrap import path_for_toml
 from cnequity.derive.adj_factors import AdjFactorsResult
 from cnequity.orchestrator.engine import JobEngine
+from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.run_lock import RunLockError
+from cnequity.storage import StagingWriter
 from cnequity.storage.source_snapshots import SnapshotCleanupResult
 from cnequity.storage.staging_cleanup import StagingCleanupResult
 
@@ -71,6 +74,53 @@ workers = 0
     result = CliRunner().invoke(cli, ["config", "validate", "--config", str(cfg_path)])
     assert result.exit_code == 1
     assert "ERROR:" in result.output
+
+
+def test_backfill_recovers_terminal_staging_before_new_run(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("backfill")
+    batch_id = "st-failed"
+    manifest.start_batch(
+        run_id,
+        batch_id,
+        task_id="trading_status",
+        dataset="trading_status",
+        blocks_compaction=False,
+    )
+    manifest.finish_batch(run_id, batch_id, "failed", error_message="interrupted")
+    manifest.finish_run(run_id, "failed", error_message="interrupted")
+    StagingWriter(cfg.staging_root).write_batch(
+        "trading_status",
+        run_id,
+        "batch-00000",
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2024, 6, 28)],
+                "is_trading": [True],
+                "status": ["normal"],
+                "source": ["baostock"],
+                "data_version": ["v1"],
+                "fetched_at": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    class FakeEngine:
+        def __init__(self):
+            self.config = cfg
+            self.manifest = manifest
+            self.calls = []
+
+        def run_step(self, name, trade_date, recovered_run_id):
+            self.calls.append((name, trade_date, recovered_run_id))
+            return {"status": "success"}
+
+    engine = FakeEngine()
+    assert _recover_compactable_backfill_staging(engine, "trading_status") == [run_id]
+    assert engine.calls[0][0] == "compact"
+    assert engine.calls[0][2] == run_id
 
 
 def test_run_daily_failure_exits_nonzero(cfg_path, monkeypatch):
@@ -149,6 +199,29 @@ def test_status_datasets_all_fresh(cfg_path, monkeypatch):
     result = CliRunner().invoke(cli, ["status", "--datasets", "--config", cfg_path])
     assert result.exit_code == 0, result.output
     assert "last trading day: 2024-06-28" in result.output
+
+
+def test_status_datasets_ignores_disabled_optional_capture(cfg_path, monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.cli.main._last_trading_day",
+        lambda cfg, today: date(2024, 6, 28),
+    )
+    monkeypatch.setattr(
+        "cnequity.query.reader.list_datasets",
+        lambda config=None: pl.DataFrame(
+            {
+                "dataset": ["trade_ticks"],
+                "has_data": [True],
+                "watermarked": [True],
+                "watermark": [date(2024, 6, 1)],
+                "coverage_end": [date(2024, 6, 1)],
+            }
+        ),
+    )
+    result = CliRunner().invoke(cli, ["status", "--datasets", "--config", cfg_path])
+    assert result.exit_code == 0, result.output
+    assert "n/a" in result.output
+    assert "STALE datasets" not in result.output
 
 
 def test_retry_unknown_run(cfg_path, monkeypatch):
@@ -689,11 +762,13 @@ def test_delisted_repair_surfaces_incomplete_bars(cfg_path, monkeypatch):
 
 def test_delisted_backfill(cfg_path, monkeypatch):
     class FakeManifest:
+        finish_kwargs = None
+
         def start_run(self, *a, **k):
             return "bf-1"
 
         def finish_run(self, *a, **k):
-            return None
+            self.finish_kwargs = k
 
     class FakeEngine:
         def __init__(self, cfg):
@@ -705,7 +780,7 @@ def test_delisted_backfill(cfg_path, monkeypatch):
     monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
     monkeypatch.setattr(
         "cnequity.steps.delisted.backfill_delisted_bars",
-        lambda cfg, run_id, since: {"rows_written": 8, "symbols": 2},
+        lambda cfg, run_id, since: {"rows_read": 8, "rows_written": 8, "symbols": 2},
     )
     result = CliRunner().invoke(
         cli, ["delisted", "backfill", "--config", cfg_path, "--since", "2020-01-01"]
@@ -718,6 +793,37 @@ def test_backfill_snapshot_dataset_rejected(cfg_path):
     result = CliRunner().invoke(cli, ["backfill", "fund_flow", "--config", cfg_path])
     assert result.exit_code != 0
     assert "snapshot" in result.output.lower() or "not supported" in result.output.lower()
+
+
+def test_backfill_trading_status_uses_dedicated_history_path(cfg_path, monkeypatch):
+    finished = {}
+
+    class FakeManifest:
+        def finish_run(self, run_id, status, **kwargs):
+            finished["status"] = status
+
+    class FakeEngine:
+        def __init__(self, cfg):
+            self.manifest = FakeManifest()
+
+        def run_job(self, *args, **kwargs):
+            return {
+                "run_id": "status-bf",
+                "status": "success",
+                "rows_read": 1,
+                "rows_written": 1,
+            }
+
+        def run_step(self, name, trade_date, run_id):
+            assert name == "compact"
+            return {"rows_written": 1}
+
+    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    result = CliRunner().invoke(cli, ["backfill", "trading_status", "--config", cfg_path])
+
+    assert result.exit_code == 0, result.output
+    assert finished["status"] == "success"
+    assert "status-bf" in result.output
 
 
 def test_backfill_sector_bars_force_and_retry_mutex(cfg_path):

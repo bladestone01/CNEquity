@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -14,12 +15,13 @@ from cnequity.domain.datasets import (
     fetch_semantics,
     get_dataset,
 )
-from cnequity.domain.market_time import shanghai_today
+from cnequity.domain.market_time import is_session_final, shanghai_today
 from cnequity.orchestrator.engine import JobEngine
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.run_lock import RunLockError
 from cnequity.quality.audit import run_audit
 from cnequity.query.on_demand import OnDemandService
+from cnequity.query.parquet_scan import scan_parquet_files
 from cnequity.query.views import ensure_duckdb_views
 from cnequity.steps.common import BACKFILL_START
 from cnequity.storage.atomic import write_json_atomic
@@ -387,7 +389,7 @@ def stale_fetch_steps(cfg, anchor: date) -> list[str]:
     registered step are excluded because there is nothing to run.
     """
     # Steps are registered by the module-level `import cnequity.steps`.
-    from cnequity.domain.datasets import DATASETS, is_stale
+    from cnequity.domain.datasets import DATASETS, is_dataset_enabled, is_stale
     from cnequity.orchestrator.registry import STEP_REGISTRY
     from cnequity.query.reader import list_datasets
 
@@ -396,6 +398,8 @@ def stale_fetch_steps(cfg, anchor: date) -> list[str]:
         name = row["dataset"]
         spec = DATASETS[name]
         if spec.layer == "derived" or name not in STEP_REGISTRY:
+            continue
+        if not is_dataset_enabled(name, cfg):
             continue
         if not row["has_data"] or not row["watermarked"]:
             continue
@@ -908,6 +912,44 @@ def _finish_backfill_run(engine, result: dict) -> dict:
     return result
 
 
+def _recover_compactable_backfill_staging(engine: JobEngine, dataset: str) -> list[str]:
+    """Compact staged rows left by an interrupted terminal backfill run.
+
+    A process killed after a step flushed a batch has no chance to execute the
+    normal ``_finish_backfill_run`` path. The next invocation used to start a
+    fresh run while leaving those rows invisible in staging, so checkpointed
+    positive facts were fetched again and the old run became a permanent
+    staging leak. Terminal runs with staged files are safe to compact here: the
+    regular compact gate still protects incomplete worker batches, and coverage
+    receipts remain gated by their versioned checkpoint.
+    """
+    from cnequity.storage import StagingWriter
+
+    config = getattr(engine, "config", None)
+    if config is None:  # lightweight engine doubles in CLI/unit tests
+        return []
+    writer = StagingWriter(config.staging_root)
+    recovered: list[str] = []
+    for run in engine.manifest.list_runs("backfill"):
+        run_id = str(run["run_id"])
+        if run["status"] not in ("success", "warning", "failed"):
+            continue
+        batches = engine.manifest.get_batches_for_run(run_id)
+        if any(batch["dataset"] == "compact" and batch["status"] == "success" for batch in batches):
+            continue
+        if not writer.list_run_files(dataset, run_id):
+            continue
+        result = engine.run_step("compact", shanghai_today(), run_id)
+        if result.get("status") == "success":
+            recovered.append(run_id)
+            logging.getLogger(__name__).info(
+                "Recovered staged %s from interrupted backfill run %s before retry",
+                dataset,
+                run_id,
+            )
+    return recovered
+
+
 def _run_backfill(cfg, dataset: str, start: date | None, end: date | None) -> dict:
     """Backfill one window, dispatching exactly as `cne backfill` does.
 
@@ -929,6 +971,7 @@ def _run_backfill(cfg, dataset: str, start: date | None, end: date | None) -> di
 
 def _backfill_once(cfg, dataset: str) -> dict:
     engine = JobEngine(cfg)
+    _recover_compactable_backfill_staging(engine, dataset)
     # Do not finish_run until after compact — otherwise a kill between the two
     # leaves status=success with no compact batch, and `cne clean` cannot reclaim
     # staging that never reached curated (same ordering as delisted CLI).
@@ -954,6 +997,7 @@ def _backfill_symbol_chunked(cfg, dataset: str, start: date, end: date, chunk_sy
         )
 
     engine = JobEngine(cfg)
+    _recover_compactable_backfill_staging(engine, dataset)
     chunks: list[dict] = []
     status = "success"
     rows_read = rows_written = 0
@@ -1019,6 +1063,7 @@ def _backfill_chunked(cfg, dataset: str, start: date, end: date, chunk_days: int
     ``_backfill_symbol_chunked``.
     """
     engine = JobEngine(cfg)
+    _recover_compactable_backfill_staging(engine, dataset)
     slices: list[dict] = []
     status = "success"
     rows_read = rows_written = 0
@@ -1281,7 +1326,7 @@ def _last_trading_day(cfg, today: date) -> date:
 
     from cnequity.steps.common import is_trading_day
 
-    d = today
+    d = today if is_session_final(today) else today - timedelta(days=1)
     for _ in range(15):
         if is_trading_day(cfg, d):
             return d
@@ -1416,7 +1461,7 @@ def status(config_path: str, show_datasets: bool):
     if show_datasets:
         import polars as pl_mod
 
-        from cnequity.domain.datasets import is_stale
+        from cnequity.domain.datasets import is_dataset_enabled, is_stale
         from cnequity.query.reader import list_datasets
 
         anchor = _last_trading_day(cfg, shanghai_today())
@@ -1425,6 +1470,8 @@ def status(config_path: str, show_datasets: bool):
         def _freshness(row: dict) -> str:
             if not row["has_data"]:
                 return "empty"
+            if not is_dataset_enabled(row["dataset"], cfg):
+                return "n/a"
             # Datasets keyed by report_period (no daily watermark) are not
             # judged on a daily cadence.
             if not row["watermarked"]:
@@ -1601,7 +1648,7 @@ def catalog(config_path: str):
                 # lazy count(*) resolves from parquet metadata without
                 # decoding data pages — cheap even on a 10-year lake.
                 rows = (
-                    int(pl.scan_parquet([str(f) for f in files]).select(pl.len()).collect().item())
+                    int(scan_parquet_files(files).select(pl.len()).collect().item())
                     if files
                     else 0
                 )
@@ -2116,6 +2163,7 @@ def delisted_repair(config_path: str, since: str | None):
     engine.manifest.finish_run(
         run_id,
         run_status,
+        rows_read=result.get("rows_read", 0),
         rows_written=result.get("rows_written", 0),
         error_message=None if run_status == "success" else "delisted repair is incomplete",
     )
@@ -2156,6 +2204,7 @@ def delisted_backfill(config_path: str, since: str):
     engine.manifest.finish_run(
         run_id,
         run_status,
+        rows_read=result.get("rows_read", 0),
         rows_written=result.get("rows_written", 0),
         error_message=error_message,
     )
