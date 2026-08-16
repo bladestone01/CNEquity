@@ -13,6 +13,7 @@ from cnequity.domain.datasets import (
     fetch_semantics,
     get_dataset,
     history_mode,
+    is_dataset_enabled,
     pit_dataset_names,
 )
 from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
@@ -56,14 +57,20 @@ def test_legacy_tables_match_registry():
         "financial_statement_items",
         "institutional_holdings",
         "earnings_disclosure_schedule",
+        # The rolling calendar contains future event dates, so event_date is
+        # not a valid freshness watermark.
+        "economic_calendar",
         # Fetched per report period, not per date — a watermark over trade dates
         # would advance daily and mean nothing.
         "share_structure",
         "shareholder_counts",
         "top_holders",
+        "share_unlock_schedule",
     }
     assert set(FETCH_SEMANTICS) == {
+        "trading_status",
         "fund_flow",
+        "share_unlock_schedule",
         "valuation_metrics",
         "sector_members",
         "index_constituents",
@@ -77,9 +84,12 @@ def test_legacy_tables_match_registry():
         "economic_calendar",
     }
     assert fetch_semantics("fund_flow") == "snapshot"
+    assert fetch_semantics("trading_status") == "snapshot"
     assert fetch_semantics("daily_bars") == "by_date"
     assert history_mode("daily_bars") == "by_date"
     assert history_mode("fund_flow") == "snapshot_only"
+    assert history_mode("trading_status") == "snapshot_with_backfill"
+    assert history_mode("share_unlock_schedule") == "snapshot_with_backfill"
     assert history_mode("valuation_metrics") == "snapshot_with_backfill"
 
 
@@ -151,6 +161,25 @@ def test_is_stale_respects_per_dataset_tolerance():
     # None / unknown handled
     assert is_stale("daily_bars", None, anchor) is False
     assert is_stale("nope", date(2026, 7, 1), anchor) is True  # default tol=1
+
+
+def test_optional_capture_freshness_follows_config_switches(tmp_path):
+    from cnequity.config import Config
+
+    cfg = Config(data_root=tmp_path / "data")
+    assert is_dataset_enabled("trade_ticks", cfg) is False
+    assert is_dataset_enabled("minute_bars", cfg) is False
+    assert is_dataset_enabled("minute_bars_5m", cfg) is False
+
+    cfg.trade_ticks_enabled = True
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_frequencies = ["1m"]
+    assert is_dataset_enabled("trade_ticks", cfg) is True
+    assert is_dataset_enabled("minute_bars", cfg) is True
+    assert is_dataset_enabled("minute_bars_5m", cfg) is False
+
+    cfg.minute_bars_frequencies = ["1m", "5m"]
+    assert is_dataset_enabled("minute_bars_5m", cfg) is True
 
 
 def test_row_grain_agrees_with_intraday_frequency_wherever_both_are_set():

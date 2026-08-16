@@ -156,6 +156,23 @@ def test_health_separates_optional_and_required_empties(client):
     assert not set(body["empty_optional"]) & set(body["empty_required"])
 
 
+def test_disabled_optional_historical_capture_is_not_stale(lake):
+    part = lake.curated_root / "trade_ticks" / "trade_date=2026-07-01"
+    part.mkdir(parents=True, exist_ok=True)
+    _write(
+        lake.curated_root / "trade_ticks",
+        "trade_date=2026-07-01",
+        [_full_row("trade_ticks", symbol="600519.SH", trade_date=date(2026, 7, 1))],
+    )
+    rebuild_stats(lake, datasets=["trade_ticks"])
+
+    app_client = TestClient(create_app(lake))
+    body = app_client.get("/api/health").json()
+    assert "trade_ticks" not in body["stale_datasets"]
+    row = next(r for r in app_client.get("/api/datasets").json() if r["dataset"] == "trade_ticks")
+    assert row["freshness"] == "n/a"
+
+
 def test_tiers_partition_the_datasets(client):
     tiers = client.get("/api/tiers").json()
     datasets = client.get("/api/datasets").json()

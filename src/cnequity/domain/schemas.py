@@ -807,13 +807,23 @@ def _validate_bar_semantics(df: pl.DataFrame, dataset: str) -> None:
         checks.append(pl.col("amount").is_not_null() & (pl.col("amount") < 0))
 
     if all(col in df.columns for col in ("open", "high", "low", "close")):
+        # Intraday sources emit zero-volume carried-forward placeholders for
+        # suspended names. Their OHLC fields can legitimately straddle the
+        # stale close, so only enforce the candle envelope on rows that carry
+        # an actual print. Positive-price and non-negative-volume checks above
+        # still apply to every row.
+        ohlc_row = (
+            pl.col("volume").is_null() | (pl.col("volume") > 0)
+            if "volume" in df.columns
+            else pl.lit(True)
+        )
         checks.extend(
             [
-                pl.col("high") < pl.col("open"),
-                pl.col("high") < pl.col("close"),
-                pl.col("low") > pl.col("open"),
-                pl.col("low") > pl.col("close"),
-                pl.col("low") > pl.col("high"),
+                ohlc_row & (pl.col("high") < pl.col("open")),
+                ohlc_row & (pl.col("high") < pl.col("close")),
+                ohlc_row & (pl.col("low") > pl.col("open")),
+                ohlc_row & (pl.col("low") > pl.col("close")),
+                ohlc_row & (pl.col("low") > pl.col("high")),
             ]
         )
 

@@ -271,6 +271,12 @@ _SPECS = [
         tier="L0",
         partition_col="trade_date",
         partition_granularity="month",
+        # EastMoney's daily ST board is a live current-state snapshot; the
+        # dedicated backfill path uses baostock history.  Marking the daily
+        # contract as by_date would replay today's labels into missed past
+        # sessions when the watermark falls behind.
+        fetch_semantics="snapshot",
+        backfill_source="baostock",
     ),
     # L1 bars
     DatasetSpec(
@@ -671,6 +677,10 @@ _SPECS = [
         partition_col="event_date",
         partition_granularity="year",
         fetch_semantics="snapshot",
+        # The adapter returns a rolling [today-2, today+14] window. Its
+        # partition/date column is the event date, so future scheduled events
+        # must not advance a freshness watermark beyond the run day.
+        watermark=False,
         required=False,
     ),
     # L8 risk
@@ -680,6 +690,12 @@ _SPECS = [
         tier="L8",
         partition_col="unlock_date",
         partition_granularity="year",
+        # The endpoint returns a rolling future window, not historical values
+        # for the requested day. A raw max(unlock_date) would therefore push
+        # the watermark into the future (the lake once reached 2027-02-04).
+        fetch_semantics="snapshot",
+        watermark=False,
+        backfill_source="eastmoney",
     ),
     DatasetSpec(
         "regulatory_events",
@@ -827,6 +843,30 @@ def is_stale(dataset: str, mark, anchor) -> bool:
             return False
     tolerance = spec.max_staleness_days if spec else 1
     return (anchor - mark).days > tolerance
+
+
+def is_dataset_enabled(dataset: str, config) -> bool:
+    """Whether an optional capture is enabled in *config*.
+
+    Optional datasets can outlive the configuration that produced them. A
+    disabled tick or minute-bar capture may therefore still have historical
+    Parquet on disk, but its old tip is not an ingestion failure and must not
+    be reported as stale. Keep this mapping next to the registry so status,
+    verify, and the dashboard share the same opt-in semantics.
+    """
+    if dataset == "trade_ticks":
+        return bool(getattr(config, "trade_ticks_enabled", False))
+    if dataset == "minute_bars":
+        return bool(
+            getattr(config, "minute_bars_enabled", False)
+            and "1m" in getattr(config, "minute_bars_frequencies", ())
+        )
+    if dataset == "minute_bars_5m":
+        return bool(
+            getattr(config, "minute_bars_enabled", False)
+            and "5m" in getattr(config, "minute_bars_frequencies", ())
+        )
+    return True
 
 
 # ---------------------------------------------------------------------------

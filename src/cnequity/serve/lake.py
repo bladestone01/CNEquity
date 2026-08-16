@@ -37,9 +37,10 @@ from cnequity.domain.datasets import (
     TIER_LABELS,
     TIERS,
     history_mode_for,
+    is_dataset_enabled,
     is_stale,
 )
-from cnequity.domain.market_time import shanghai_today
+from cnequity.domain.market_time import is_session_final, shanghai_today
 from cnequity.domain.partitions import parse_partition
 from cnequity.storage.stats import (
     load_partition_stats,
@@ -187,7 +188,8 @@ class LakeView:
         def _build() -> date:
             from cnequity.steps.common import is_trading_day
 
-            day = shanghai_today()
+            today = shanghai_today()
+            day = today if is_session_final(today) else today - timedelta(days=1)
             for _ in range(15):
                 if is_trading_day(self.config, day):
                     return day
@@ -238,6 +240,8 @@ class LakeView:
         """fresh / STALE / empty / n/a, on the same rules as ``cne status``."""
         if not row["has_data"]:
             return "empty"
+        if not is_dataset_enabled(row["dataset"], self.config):
+            return "n/a"
         if not row["watermarked"]:
             return "n/a"
         mark = row["watermark"] or row["coverage_end"]

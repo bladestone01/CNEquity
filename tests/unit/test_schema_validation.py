@@ -87,6 +87,30 @@ def test_validate_rejects_impossible_ohlc():
         validate_dataframe(raw, "daily_bars")
 
 
+def test_validate_allows_zero_volume_carried_forward_ohlc():
+    raw = pl.DataFrame(
+        {
+            "symbol": ["519116.SH"],
+            "trade_date": [date(2026, 3, 12)],
+            "bar_time": [datetime(2026, 3, 12, 15, 0)],
+            "frequency": ["1m"],
+            "open": [140.61],
+            "high": [140.61],
+            "low": [140.61],
+            "close": [141.19],
+            "volume": [0],
+            "amount": [0.0],
+            "source": ["tdx_protocol"],
+            "data_version": ["v1"],
+            "fetched_at": [datetime(2026, 3, 12, tzinfo=timezone.utc)],
+        }
+    )
+
+    out = validate_dataframe(raw, "minute_bars")
+
+    assert out.height == 1
+
+
 def test_validate_rejects_non_finite_optional_numeric_values():
     raw = pl.DataFrame(
         {
