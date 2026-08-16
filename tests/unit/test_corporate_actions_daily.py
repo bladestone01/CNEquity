@@ -2,6 +2,7 @@ from datetime import date
 from unittest.mock import patch
 
 import polars as pl
+import pytest
 
 import cnequity.steps  # noqa: F401
 from cnequity.config import Config
@@ -24,7 +25,7 @@ def test_corporate_actions_daily_uses_eastmoney(tmp_path):
     )
     with patch(
         "cnequity.steps.events.fetch_corporate_actions_eastmoney",
-        return_value=em_df,
+        side_effect=lambda d, **_kwargs: em_df.with_columns(pl.lit(d).alias("ex_date")),
     ):
         result = step_corporate_actions(cfg, date(2024, 6, 28), "run-1", {})
 
@@ -45,6 +46,58 @@ def test_corporate_actions_daily_empty_is_ok(tmp_path):
 
     assert result["context_updates"]["symbols_to_rebackfill"] == []
     assert result["rows_written"] == 0
+
+
+def test_corporate_actions_daily_preserves_incremental_findings(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": True})
+    row = pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "ex_date": [date(2024, 6, 28)],
+            "action_type": ["cash_dividend"],
+            "cash_dividend": [1.0],
+            "bonus_ratio": [0.0],
+            "transfer_ratio": [0.0],
+            "allotment_ratio": [None],
+            "allotment_price": [None],
+        }
+    )
+    finding = {"dataset": "corporate_actions", "check": "coverage_gap"}
+    monkeypatch.setattr(
+        "cnequity.steps.events.fetch_incremental_daily",
+        lambda *args, **kwargs: (row, [finding]),
+    )
+
+    result = step_corporate_actions(cfg, date(2024, 6, 28), "run-1", {})
+
+    assert result["context_updates"]["audit_findings"] == [finding]
+
+
+def test_corporate_actions_backfill_rejects_source_rows_outside_requested_window(
+    tmp_path, monkeypatch
+):
+    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": True})
+    cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 6, 30)
+    rows = pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH", "600519.SH"],
+            "ex_date": [date(2023, 12, 31), date(2024, 6, 30), date(2024, 7, 1)],
+            "action_type": ["cash_dividend"] * 3,
+            "cash_dividend": [1.0] * 3,
+            "bonus_ratio": [0.0] * 3,
+            "transfer_ratio": [0.0] * 3,
+            "allotment_ratio": [None] * 3,
+            "allotment_price": [None] * 3,
+        },
+        schema_overrides={"allotment_ratio": pl.Float64, "allotment_price": pl.Float64},
+    )
+    monkeypatch.setattr("cnequity.steps.events.load_symbols", lambda _config: ["600519.SH"])
+    monkeypatch.setattr("cnequity.steps.events.fetch_corporate_actions", lambda *a, **k: rows)
+    with pytest.raises(RuntimeError, match="outside requested window"):
+        step_corporate_actions(cfg, date(2024, 6, 30), "run-bounded", {})
+    assert not list((cfg.staging_root / "corporate_actions").glob("**/*.parquet"))
 
 
 def test_parse_row_maps_current_eastmoney_columns():

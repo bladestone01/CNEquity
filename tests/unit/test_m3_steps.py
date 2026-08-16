@@ -76,6 +76,129 @@ def test_step_fund_flow_writes_staging(cfg, monkeypatch):
     assert len(staged) == 1
 
 
+@pytest.mark.parametrize(
+    ("dataset", "step_name", "fetch_name"),
+    [
+        ("fund_flow", "step_fund_flow", "fetch_fund_flow"),
+        ("margin_trading", "step_margin_trading", "fetch_margin_trading"),
+    ],
+)
+def test_capital_steps_reject_empty_canonical_feeds(
+    cfg, monkeypatch, dataset, step_name, fetch_name
+):
+    from cnequity.steps import capital as cap
+    from cnequity.storage.state import StateStore
+
+    StateStore(cfg.meta_root).set_date(dataset, date(2024, 6, 27))
+    monkeypatch.setattr(cap, fetch_name, lambda *_args, **_kwargs: pl.DataFrame())
+    with pytest.raises(RuntimeError, match=f"{dataset}: no rows returned"):
+          getattr(cap, step_name)(cfg, date(2024, 6, 28), "run-empty", {})
+
+
+def test_northbound_holdings_rejects_empty_daily_feed(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+
+    monkeypatch.setattr(
+        cap,
+        "fetch_northbound_holdings",
+        lambda *_args, **_kwargs: pl.DataFrame(),
+    )
+    with pytest.raises(RuntimeError, match="northbound_holdings: no rows returned"):
+        cap.step_northbound_holdings(cfg, date(2024, 6, 28), "run-empty", {})
+
+
+def test_northbound_holdings_backfill_surfaces_missing_quarters(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+
+    cfg._backfill = True
+    cfg._backfill_start = date(2020, 1, 1)
+    cfg._backfill_end = date(2020, 6, 30)
+    monkeypatch.setattr(cap, "fetch_northbound_holdings", lambda *_args, **_kwargs: pl.DataFrame())
+
+    result = cap.step_northbound_holdings(cfg, date(2026, 6, 30), "run-backfill", {})
+
+    assert result["status"] == "warning"
+    assert result["missing_periods"] == 2
+    assert result["context_updates"]["audit_findings"][0]["check"] == (
+        "backfill_missing_quarters"
+    )
+
+
+def test_northbound_flows_skips_retired_window_without_source_request(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+
+    cfg._backfill = True
+    cfg._backfill_start = date(2025, 1, 1)
+    cfg._backfill_end = date(2026, 1, 1)
+
+    def unexpected_fetch(*args, **kwargs):
+        raise AssertionError("retired northbound window should not hit EastMoney")
+
+    monkeypatch.setattr(cap, "fetch_northbound_flows_range", unexpected_fetch)
+
+    result = cap.step_northbound_flows(cfg, date(2026, 8, 16), "run-retired", {})
+
+    assert result["rows_written"] == 0
+    assert "outside northbound flow publication range" in result["note"]
+
+
+def test_northbound_flows_clips_backfill_to_published_range(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+
+    cfg._backfill = True
+    cfg._backfill_start = date(2010, 1, 1)
+    cfg._backfill_end = date(2026, 1, 1)
+    seen = {}
+
+    def fake_fetch(start, end, **kwargs):
+        seen["window"] = (start, end)
+        return pl.DataFrame()
+
+    monkeypatch.setattr(cap, "fetch_northbound_flows_range", fake_fetch)
+
+    result = cap.step_northbound_flows(cfg, date(2026, 8, 16), "run-clipped", {})
+
+    assert result == {"rows_read": 0, "rows_written": 0}
+    assert seen["window"] == (date(2014, 11, 17), date(2024, 8, 16))
+
+
+def test_trading_status_rejects_empty_feed(cfg, monkeypatch):
+    from cnequity.steps import reference
+
+    monkeypatch.setattr(reference, "load_symbols", lambda _cfg: ["600519.SH"])
+    monkeypatch.setattr(
+        reference,
+        "fetch_trading_status",
+        lambda *_args, **_kwargs: pl.DataFrame(),
+    )
+    with pytest.raises(RuntimeError, match="trading_status: no rows returned"):
+        reference.step_trading_status(cfg, date(2024, 6, 28), "run-empty", {})
+
+
+def test_trading_status_preserves_incremental_findings(cfg, monkeypatch):
+    from cnequity.steps import reference
+
+    row = pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "is_trading": [True],
+            "status": ["N"],
+        }
+    )
+    finding = {"dataset": "trading_status", "check": "coverage_gap"}
+    monkeypatch.setattr(reference, "load_symbols", lambda _cfg: ["600519.SH"])
+    monkeypatch.setattr(
+        reference,
+        "fetch_incremental_daily",
+        lambda *args, **kwargs: (row, [finding]),
+    )
+
+    result = reference.step_trading_status(cfg, date(2024, 6, 28), "run-1", {})
+
+    assert result["context_updates"]["audit_findings"] == [finding]
+
+
 def test_valuation_snapshot_filters_to_bar_universe(cfg, monkeypatch):
     """The EastMoney clist returns delisted names with no bar; the daily snapshot
     must drop them so valuation stays in lock-step with daily_bars (audit:

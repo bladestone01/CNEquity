@@ -36,13 +36,59 @@ logger = logging.getLogger(__name__)
 _BATCH_SYMBOLS = 200
 
 
+def _validate_minute_batch(
+    df: pl.DataFrame,
+    symbols: list[str],
+    start: date,
+    end: date,
+    frequency: str,
+) -> pl.DataFrame:
+    """Reject a vendor frame that escapes its symbol/date/frequency scope."""
+    required = ("symbol", "trade_date", "frequency")
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        raise RuntimeError(f"{frequency}: minute response is missing {missing}")
+    normalized = df.with_columns(
+        pl.col("symbol").cast(pl.Utf8, strict=False),
+        pl.col("trade_date").cast(pl.Date, strict=False),
+        pl.col("frequency").cast(pl.Utf8, strict=False),
+    )
+    returned_symbols = normalized.get_column("symbol")
+    if returned_symbols.null_count():
+        raise RuntimeError(f"{frequency}: minute response returned a null symbol")
+    unexpected = sorted(set(returned_symbols.to_list()) - set(symbols))
+    if unexpected:
+        raise RuntimeError(
+            f"{frequency}: minute response returned unexpected symbol(s): "
+            + ", ".join(unexpected[:5])
+        )
+    dates = normalized.get_column("trade_date")
+    invalid_dates = (
+        dates.is_null()
+        | (dates < start).fill_null(False)
+        | (dates > end).fill_null(False)
+    )
+    if normalized.filter(invalid_dates).height:
+        raise RuntimeError(
+            f"{frequency}: minute response returned row(s) outside "
+            f"requested window {start.isoformat()}..{end.isoformat()}"
+        )
+    returned_frequencies = set(normalized.get_column("frequency").drop_nulls().to_list())
+    if returned_frequencies != {frequency}:
+        raise RuntimeError(
+            f"{frequency}: minute response returned unexpected frequency values "
+            f"{sorted(returned_frequencies)}"
+        )
+    return normalized
+
+
 class MinuteBarsScopeError(RuntimeError):
     """Raised when the configured scope cannot be resolved to symbols."""
 
 
 def _index_members(config: Config, index_symbol: str) -> list[str]:
     """Latest known constituents of *index_symbol* from ``index_constituents``."""
-    from cnequity.query.parquet_scan import dataset_has_parquet, parquet_glob
+    from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
     root = config.curated_root / "index_constituents"
     if not dataset_has_parquet(root):
@@ -52,7 +98,7 @@ def _index_members(config: Config, index_symbol: str) -> list[str]:
             "index_constituents`) first, or set [minute_bars].scope = 'watchlist'"
         )
     df = (
-        pl.scan_parquet(parquet_glob(root))
+        scan_parquet_root(root, partition_col="as_of_date", hive=False)
         .filter(pl.col("index_symbol") == index_symbol)
         .select("symbol", "as_of_date")
         .collect()
@@ -207,6 +253,7 @@ def capture_intraday_bars(
                 backfill=getattr(config, "_backfill", False),
                 config=config,
                 max_pages=max_pages,
+                require_complete=True,
                 workers=config.minute_bars_fetch_workers,
             )
         except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
@@ -229,6 +276,7 @@ def capture_intraday_bars(
         failed.extend(chunk_failed)
         if df.is_empty():
             continue
+        df = _validate_minute_batch(df, chunk, start, end, frequency)
         with_rows.update(df["symbol"].unique().to_list())
         df = normalize_with_source(df, dataset=dataset)
         writer.write_batch(dataset, run_id, f"intraday-{index // _BATCH_SYMBOLS:04d}", df)
@@ -314,10 +362,7 @@ _register_intraday_steps()
 
 
 def _approx_trading_days(config: Config, start: date, end: date) -> int:
-    """Trading days in [start, end] from the calendar, or a 5/7 estimate."""
-    from cnequity.steps.common import _load_trading_calendar_df
+    """Trading days in [start, end] from the authoritative calendar."""
+    from cnequity.steps.common import list_trading_dates
 
-    cal = _load_trading_calendar_df(config, start=start, end=end)
-    if cal is not None and not cal.is_empty() and "is_trading" in cal.columns:
-        return int(cal.filter(pl.col("is_trading")).height)
-    return max(1, round((end - start).days * 5 / 7) + 1)
+    return max(1, len(list_trading_dates(config, start, end)))

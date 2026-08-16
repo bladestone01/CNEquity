@@ -11,9 +11,10 @@ against whatever DATASET_SCHEMAS says.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.steps.common import walk_day_backfill
@@ -130,6 +131,53 @@ def test_empty_days_reported_not_fatal(tmp_path):
     assert out["days_empty"] == 1
     assert out["days_fetched"] == 1
     assert out["rows_written"] == 1
+    finding = out["context_updates"]["audit_findings"][0]
+    assert finding["check"] == "backfill_empty_days"
+    assert finding["severity"] == "warning"
+    assert finding["sample_dates"] == ["2026-06-01"]
+
+
+def test_rejects_rows_from_a_different_requested_date(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill_start = date(2026, 6, 1)
+    cfg._backfill_end = date(2026, 6, 2)
+
+    def fetch_one(d: date) -> pl.DataFrame:
+        return pl.DataFrame([_fake_row(d if d == date(2026, 6, 1) else d + timedelta(days=1), "trade_date")])
+
+    with pytest.raises(RuntimeError, match="different or invalid trade_date"):
+        walk_day_backfill(
+            cfg,
+            date(2026, 7, 1),
+            "run-1",
+            "market_breadth",
+            fetch_one,
+            source="derived",
+        )
+
+    staged = list((cfg.staging_root / "market_breadth").glob("**/*.parquet"))
+    assert len(staged) == 1
+    assert pl.read_parquet(staged[0])["trade_date"].to_list() == [date(2026, 6, 1)]
+
+
+def test_rejects_rows_without_the_configured_date_column(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill_start = date(2026, 6, 1)
+    cfg._backfill_end = date(2026, 6, 1)
+
+    def fetch_one(d: date) -> pl.DataFrame:
+        return pl.DataFrame([_fake_row(d, "trade_date")])
+
+    with pytest.raises(RuntimeError, match="configured date column 'event_date'"):
+        walk_day_backfill(
+            cfg,
+            date(2026, 7, 1),
+            "run-1",
+            "regulatory_events",
+            fetch_one,
+            source="cninfo",
+            date_col="event_date",
+        )
 
 
 def test_end_clamped_to_trade_date(tmp_path):

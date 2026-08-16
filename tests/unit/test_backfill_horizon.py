@@ -9,11 +9,13 @@ import pytest
 
 from cnequity.cli import main as cli_main
 from cnequity.domain.datasets import DatasetSpec, get_dataset
+from cnequity.domain.market_time import shanghai_today
 
 
 def test_horizon_guard_refuses_a_window_the_source_cannot_serve():
     spec = get_dataset("minute_bars")
-    too_old = spec.earliest_available(date.today()) - timedelta(days=1)
+    today = shanghai_today()
+    too_old = spec.earliest_available(today) - timedelta(days=1)
     with pytest.raises(cli_main.click.ClickException) as excinfo:
         cli_main._guard_history_horizon("minute_bars", too_old)
     message = str(excinfo.value)
@@ -21,11 +23,11 @@ def test_horizon_guard_refuses_a_window_the_source_cannot_serve():
     # otherwise it reads as a lake bug rather than a vendor limit.
     assert "older than the source horizon" in message
     assert str(spec.history_horizon_days) in message
-    assert str(spec.earliest_available(date.today())) in message
+    assert str(spec.earliest_available(today)) in message
 
 
 def test_horizon_guard_allows_a_window_inside_the_horizon():
-    inside = get_dataset("minute_bars").earliest_available(date.today()) + timedelta(days=1)
+    inside = get_dataset("minute_bars").earliest_available(shanghai_today()) + timedelta(days=1)
     cli_main._guard_history_horizon("minute_bars", inside)
 
 
@@ -140,6 +142,21 @@ def test_finish_backfill_run_compacts_on_failure():
 
     assert out["compact"] == {"rows_written": 10}
     assert engine.compacted == ["run-x"]
+
+
+def test_finish_backfill_run_surfaces_compact_warning():
+    class WarningCompact(FakeEngine):
+        def run_step(self, step, trade_date, run_id):
+            self.compacted.append(run_id)
+            return {"rows_written": 10, "status": "warning"}
+
+    engine = WarningCompact(cfg=None)
+    result = {"run_id": "run-warning", "status": "success", "rows_written": 5}
+
+    out = cli_main._finish_backfill_run(engine, result)
+
+    assert out["status"] == "warning"
+    assert engine.compacted == ["run-warning"]
 
 
 def test_minute_bars_declares_symbol_chunking_not_date_chunking():
@@ -327,6 +344,17 @@ def test_top_holders_floor_is_the_pit_boundary_not_the_data_boundary():
     assert "history floor" in message
     assert "2003-01-01" in message
     assert "narrow" not in message, "a fixed floor has no narrower scope that helps"
+
+
+def test_northbound_flows_declares_the_exchange_opening_floor():
+    spec = get_dataset("northbound_flows")
+    assert spec.history_floor_date == date(2014, 11, 17)
+    with pytest.raises(cli_main.click.ClickException) as excinfo:
+        cli_main._guard_history_horizon("northbound_flows", date(2014, 11, 16))
+    message = str(excinfo.value)
+    assert "history floor" in message
+    assert "2014-11-17" in message
+    assert "narrow" not in message
 
 
 def test_chunked_backfill_keeps_a_warning_status_across_later_successes(monkeypatch):

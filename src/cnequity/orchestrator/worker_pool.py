@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+import polars as pl
 
 from cnequity.adapters.tdx_protocol.client import fetch_daily_bars, normalize_with_source
 from cnequity.config import Config, load_config
@@ -79,6 +81,47 @@ def _empty_pool_result() -> dict[str, Any]:
     }
 
 
+def _require_daily_bar_symbol_coverage(df, symbols: list[str]) -> None:
+    """Reject a partial TDX symbol batch before staging any rows.
+
+    ``daily_bars`` is session-dense.  A TDX call can still return a non-empty
+    frame when one symbol silently has no rows, which used to mark the whole
+    batch successful and advance the run without giving the existing failover
+    path a chance to recover that symbol.
+    """
+    if not symbols:
+        return
+    observed = set(df.get_column("symbol").unique().to_list()) if df.height else set()
+    missing = sorted(set(symbols) - observed)
+    if missing:
+        preview = ", ".join(missing[:8])
+        suffix = "..." if len(missing) > 8 else ""
+        raise RuntimeError(
+            f"daily_bars: TDX returned no rows for {len(missing)} requested symbol(s): "
+            f"{preview}{suffix}"
+        )
+
+
+def _require_daily_bar_date_coverage(df, start: date, end: date) -> None:
+    """Reject rows outside the requested window before staging a batch."""
+    if df.is_empty():
+        return
+    if "trade_date" not in df.columns:
+        raise RuntimeError("daily_bars: TDX response is missing the trade_date column")
+    dates = df.get_column("trade_date").cast(pl.Date, strict=False)
+    invalid = (
+        dates.is_null()
+        | (dates < start).fill_null(False)
+        | (dates > end).fill_null(False)
+    )
+    count = int(invalid.sum())
+    if count:
+        raise RuntimeError(
+            f"daily_bars: TDX returned {count} row(s) outside requested window "
+            f"{start.isoformat()}..{end.isoformat()}"
+        )
+
+
 def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
     (
         symbols,
@@ -133,6 +176,8 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             on_heartbeat=_heartbeat,
         )
         df = normalize_with_source(df, dataset=dataset)
+        _require_daily_bar_symbol_coverage(df, symbols)
+        _require_daily_bar_date_coverage(df, start, end)
         writer = StagingWriter(staging_root)
         writer.write_batch(dataset, run_id, batch_id, df)
         if manifest:
@@ -159,7 +204,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             from cnequity.domain.schemas import data_version_for, with_provenance
             from cnequity.storage.source_snapshots import SnapshotStore
 
-            backup_df = fetch_em_bars(symbols, start, end)
+            backup_df = fetch_em_bars(symbols, start, end, config=tdx_cfg)
             if backup_df.height:
                 version = data_version_for(dataset)
                 backup_df = with_provenance(backup_df, source="eastmoney", data_version=version)
@@ -212,7 +257,6 @@ def fetch_daily_bars_parallel(
     failed_symbols: list[str] = []
     rl = config.tdx_rate_limit_spec()
     rate_limit_tuple = (rl.state_dir, rl.source, rl.min_interval) if rl else None
-    stale_seconds = config.batch_stale_seconds
 
     def _run_batch(
         batch_id: str,
@@ -247,6 +291,8 @@ def fetch_daily_bars_parallel(
                 on_heartbeat=_heartbeat,
             )
             df = normalize_with_source(df, dataset=dataset)
+            _require_daily_bar_symbol_coverage(df, batch_symbols)
+            _require_daily_bar_date_coverage(df, batch_start, batch_end)
             writer = StagingWriter(staging_root)
             writer.write_batch(dataset, run_id, batch_id, df)
             manifest.finish_batch(
@@ -354,26 +400,17 @@ def fetch_daily_bars_parallel(
             for fut in as_completed(futures):
                 batch_id = futures[fut]
                 try:
-                    result = fut.result(timeout=stale_seconds)
+                    # ``as_completed`` only yields futures that are already
+                    # done, so passing a timeout to ``result`` can never
+                    # enforce a wall-clock limit. Liveness is tracked by the
+                    # manifest heartbeat and reconciled by the engine/retry
+                    # path; keeping a fake timeout here made the failure mode
+                    # look protected when a worker was actually hung.
+                    result = fut.result()
                     total_read += result["rows_read"]
                     total_written += result["rows_written"]
                     batch = pending.pop(batch_id, None)
                     _progress(batch[1] if batch else [])
-                except TimeoutError:
-                    had_error = True
-                    batch = pending.pop(batch_id, None)
-                    if batch is not None:
-                        failed_symbols.extend(batch[1])
-                    manifest.mark_batch_stale(
-                        run_id, batch_id, f"worker result timeout after {stale_seconds}s"
-                    )
-                    _progress(batch[1] if batch else [], failed=True)
-                    logger.warning(
-                        "%s batch %s timed out after %ss; marked stale",
-                        dataset,
-                        batch_id,
-                        stale_seconds,
-                    )
                 except BrokenProcessPool:
                     # This one poisoned the pool. Leave it (and everything still
                     # pending) for the serial retry below rather than recording it

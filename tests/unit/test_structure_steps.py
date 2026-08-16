@@ -48,6 +48,43 @@ def test_existing_as_of_dates_empty_and_populated(cfg):
     assert st._existing_as_of_dates(cfg, "index_constituents") == {date(2024, 6, 28)}
 
 
+def test_existing_cni_as_of_date_requires_every_backfill_index(cfg):
+    part = cfg.curated_root / "index_constituents" / "as_of_date=2024-06"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "index_symbol": ["399001.SZ"],
+            "symbol": ["000001.SZ"],
+            "as_of_date": [date(2024, 6, 28)],
+        }
+    ).write_parquet(part / "part-000.parquet")
+    required = ("399001.SZ", "399006.SZ")
+    assert (
+        st._existing_as_of_dates(
+            cfg,
+            "index_constituents",
+            required_index_symbols=required,
+        )
+        == set()
+    )
+
+    pl.DataFrame(
+        {
+            "index_symbol": ["399006.SZ"],
+            "symbol": ["300001.SZ"],
+            "as_of_date": [date(2024, 6, 28)],
+        }
+    ).write_parquet(part / "part-001.parquet")
+    assert (
+        st._existing_as_of_dates(
+            cfg,
+            "index_constituents",
+            required_index_symbols=required,
+        )
+        == {date(2024, 6, 28)}
+    )
+
+
 def test_sector_members_disabled_source(cfg):
     cfg.sources["eastmoney"] = False
     with pytest.raises(RuntimeError, match="eastmoney source disabled"):
@@ -129,6 +166,7 @@ def test_index_constituents_backfill_writes_cni(cfg, monkeypatch):
     monkeypatch.setattr(st, "expand_cni_constituents_as_of", lambda a, days: expanded)
     result = st.step_index_constituents(cfg, date(2024, 1, 31), "run-cni", {})
     assert result["rows_written"] == 1
+    assert result["status"] == "warning"
     assert result["as_of_dates"] == 1
     findings = result["context_updates"]["audit_findings"]
     assert findings[0]["code"] == "cni_index_backfill_incomplete"
@@ -190,6 +228,7 @@ def test_industry_members_backfill_thin_month_warning(cfg, monkeypatch):
     monkeypatch.setattr(st, "expand_sw_industry_as_of", lambda intervals, todo: thin)
     result = st.step_industry_members(cfg, date(2024, 1, 31), "run-thin", {})
     assert result["rows_written"] == 5
+    assert result["status"] == "warning"
     assert result["context_updates"]["audit_findings"][0]["code"] == "sw_industry_thin_months"
 
 
@@ -209,3 +248,26 @@ def test_existing_sw_as_of_dates_filters_source(cfg):
         }
     ).write_parquet(part / "part-000.parquet")
     assert st._existing_sw_as_of_dates(cfg) == {date(2024, 6, 28)}
+    assert st._existing_sw_as_of_dates(cfg, min_rows=2) == set()
+    assert st._existing_sw_as_of_dates(cfg, min_rows=1) == {date(2024, 6, 28)}
+
+
+def test_existing_sw_as_of_dates_does_not_count_duplicate_members(cfg):
+    part = cfg.curated_root / "industry_members" / "as_of_date=2024-06"
+    part.mkdir(parents=True)
+    unique = [f"{i:06d}.SH" for i in range(999)]
+    symbols = unique + [unique[0]]
+    pl.DataFrame(
+        {
+            "symbol": symbols,
+            "classification_system": ["sw"] * len(symbols),
+            "industry_code": ["240301"] * len(symbols),
+            "industry_name": ["铝"] * len(symbols),
+            "as_of_date": [date(2024, 6, 28)] * len(symbols),
+            "source": ["sw"] * len(symbols),
+            "data_version": ["v1"] * len(symbols),
+            "fetched_at": ["2024-06-28T00:00:00+00:00"] * len(symbols),
+        }
+    ).write_parquet(part / "part-000.parquet")
+
+    assert st._existing_sw_as_of_dates(cfg, min_rows=1000) == set()

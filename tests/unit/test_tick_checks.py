@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -154,8 +154,44 @@ def _lake_with_daily(tmp_path, tick_rows: list[dict], daily: list[dict]) -> Conf
     config = Config(data_root=tmp_path)
     root = config.curated_root / "daily_bars" / f"trade_date={DAY}"
     root.mkdir(parents=True)
-    pl.DataFrame(daily).write_parquet(root / "part-0.parquet")
+    pl.DataFrame(daily).with_columns(
+        pl.lit(datetime(2026, 7, 31, tzinfo=timezone.utc)).alias("fetched_at")
+    ).write_parquet(root / "part-0.parquet")
     return config
+
+
+def test_reconciliation_uses_one_canonical_daily_row(tmp_path):
+    ticks: list[dict] = []
+    daily: list[dict] = []
+    for i in range(25):
+        symbol = f"6000{i:02d}.SH"
+        ticks.extend(_rows(symbol=symbol, count=2))
+        daily.append(
+            {
+                "symbol": symbol,
+                "trade_date": DAY,
+                "volume": 200,
+                "amount": 20_000.0,
+                "data_version": "v2",
+            }
+        )
+    config = _lake_with_daily(tmp_path, ticks, daily)
+    stale = pl.DataFrame(
+        [
+            {
+                **row,
+                "volume": row["volume"] // 2,
+                "amount": row["amount"] / 2,
+                "fetched_at": datetime(2020, 1, 1, tzinfo=timezone.utc),
+            }
+            for row in daily
+        ]
+    )
+    stale.write_parquet(
+        config.curated_root / "daily_bars" / f"trade_date={DAY}" / "part-stale.parquet"
+    )
+
+    assert daily_reconciliation_findings(config, _frame(ticks), START, END) == []
 
 
 def test_reconciliation_excludes_after_hours_rows(tmp_path):

@@ -100,6 +100,7 @@ def test_repair_marks_catalogued_symbols_with_bars_as_ingested(tmp_path):
     assert "600071.SH" not in _ingested_symbols(cfg)
     assert delisted_symbols_in_window(cfg, date(2016, 1, 1)) == ["600071.SH"]
     assert result["still_need_bars"] == ["600071.SH"]
+    assert result["status"] == "warning"
 
 
 def test_repair_purges_subscription_placeholders(tmp_path):

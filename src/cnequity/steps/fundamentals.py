@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from datetime import date
 
+import polars as pl
+
 from cnequity.adapters.eastmoney.fundamentals import fetch_financial_statement_items
 from cnequity.adapters.eastmoney.shareholders import CHANGE_DATE, NOTICE_DATE
 from cnequity.adapters.eastmoney.valuation import fetch_valuation_metrics
 from cnequity.config import Config
 from cnequity.domain.symbols import is_all_a_symbol, parse_symbol
 from cnequity.orchestrator.registry import register_step
-from cnequity.steps.common import load_bar_universe, load_symbols
+from cnequity.query.canonical import dedupe_lazy_by_primary_key
+from cnequity.steps.common import instrument_metadata, load_bar_universe, load_symbols
 from cnequity.steps.http_common import run_incremental_fetched, write_fetched
 
 # EastMoney's valuation clist is a live snapshot only; history comes from baostock.
@@ -18,6 +21,48 @@ _VALUATION_BACKFILL_START = date(2016, 1, 1)
 # Checkpoint every N symbols so a mid-sweep kill still keeps prior chunks in
 # curated (resume via ``_symbols_needing_backfill`` / float_mv fill ratio).
 _VALUATION_BACKFILL_CHUNK = 50
+
+
+def _validate_valuation_history_batch(
+    df: pl.DataFrame,
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> pl.DataFrame:
+    """Reject history rows outside the request before they reach staging."""
+    if df.is_empty():
+        return df
+    missing = [column for column in ("symbol", "trade_date") if column not in df.columns]
+    if missing:
+        raise RuntimeError(
+            f"valuation_metrics: baostock history response is missing {missing}"
+        )
+
+    normalized = df.with_columns(
+        pl.col("trade_date").cast(pl.Date, strict=False),
+        pl.col("symbol").cast(pl.Utf8, strict=False),
+    )
+    dates = normalized.get_column("trade_date")
+    invalid_dates = (
+        dates.is_null()
+        | (dates < start).fill_null(False)
+        | (dates > end).fill_null(False)
+    )
+    if normalized.filter(invalid_dates).height:
+        raise RuntimeError(
+            f"valuation_metrics: baostock history returned row(s) outside "
+            f"requested window {start.isoformat()}..{end.isoformat()}"
+        )
+    returned_symbols = normalized.get_column("symbol")
+    if returned_symbols.null_count():
+        raise RuntimeError("valuation_metrics: baostock history returned null symbol")
+    unexpected = sorted(set(returned_symbols.to_list()) - set(symbols))
+    if unexpected:
+        raise RuntimeError(
+            "valuation_metrics: baostock history returned unexpected symbol(s): "
+            + ", ".join(unexpected[:5])
+        )
+    return normalized
 
 
 @register_step("valuation_metrics", group="capital", depends_on=["instruments"])
@@ -37,7 +82,7 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
         "valuation_metrics",
         lambda d: fetch_valuation_metrics(d, config=config),
         source="eastmoney",
-        allow_empty=True,
+        allow_empty=False,
         universe=load_bar_universe(config),
     )
 
@@ -86,6 +131,7 @@ def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -
             return _backfill_valuation_metrics_locked(config, trade_date, run_id)
     except RunLockError as exc:
         return {
+            "status": "warning",
             "rows_read": 0,
             "rows_written": 0,
             "note": "baostock lock held by another process; retry later",
@@ -117,7 +163,6 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
     bar_universe = load_bar_universe(config)
     if bar_universe:
         universe = [s for s in universe if s in bar_universe]
-    todo = _symbols_needing_backfill(config, universe)
     history_end = _valuation_history_end(config, trade_date)
     if history_end < _VALUATION_BACKFILL_START:
         return {
@@ -127,6 +172,7 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
             "history_end": history_end.isoformat(),
             "orphan_purge": purge_summary,
         }
+    todo = _symbols_needing_backfill(config, universe, end=history_end)
     if not todo:
         return {
             "rows_read": 0,
@@ -154,6 +200,9 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
             break
         all_failed.extend(failed)
         if not df.is_empty():
+            df = _validate_valuation_history_batch(
+                df, batch, _VALUATION_BACKFILL_START, history_end
+            )
             # Unique part name per chunk — write_simple's default batch-0 would
             # overwrite prior chunks in the same run_id before compact.
             chunk = write_fetched(
@@ -198,34 +247,87 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
 _MV_FILL_DONE_RATIO = 0.80
 
 
-def _symbols_needing_backfill(config: Config, universe: list[str]) -> list[str]:
-    """Symbols missing baostock history, or with sparse market-cap fill."""
+def _symbols_needing_backfill(
+    config: Config,
+    universe: list[str],
+    *,
+    end: date | None = None,
+) -> list[str]:
+    """Symbols missing baostock history, or with sparse market-cap fill.
+
+    When ``end`` is supplied, a dense partial history is not considered done
+    until its latest stored day reaches the requested window. Known listing
+    spans shorten or eliminate the expected window for names that were not yet
+    listed or had already delisted.
+    """
     import polars as pl
+
+    expected_end: dict[str, date | None] | None = None
+    if end is not None:
+        expected_end = {symbol: end for symbol in universe}
+        metadata = instrument_metadata(config)
+        if not metadata.is_empty() and "symbol" in metadata.columns:
+            for row in metadata.iter_rows(named=True):
+                symbol = row.get("symbol")
+                if symbol not in expected_end:
+                    continue
+                list_date = row.get("list_date")
+                delist_date = row.get("delist_date")
+                if list_date is not None and list_date > end:
+                    expected_end[symbol] = None
+                elif (
+                    delist_date is not None
+                    and delist_date < _VALUATION_BACKFILL_START
+                ):
+                    expected_end[symbol] = None
+                elif delist_date is not None and delist_date < end:
+                    expected_end[symbol] = delist_date
 
     part = config.curated_root / "valuation_metrics"
     files = list(part.glob("**/*.parquet")) if part.exists() else []
     if not files:
-        return universe
+        return [
+            symbol
+            for symbol in universe
+            if expected_end is None or expected_end[symbol] is not None
+        ]
     stats = (
-        pl.scan_parquet(files)
-        .filter(pl.col("source") == "baostock")
+        dedupe_lazy_by_primary_key(
+            pl.scan_parquet(files).filter(pl.col("source") == "baostock"),
+            "valuation_metrics",
+        )
         .group_by("symbol")
         .agg(
             pl.len().alias("n"),
             pl.col("float_mv").null_count().alias("float_nulls"),
+            pl.col("total_mv").null_count().alias("total_nulls"),
+            pl.col("trade_date").cast(pl.Date, strict=False).max().alias("latest_date"),
         )
         .collect()
     )
-    # Done when ≥80% of baostock rows have float_mv (MV fill landed densely).
-    done = set(
-        stats.filter(
-            (pl.col("n") > 0)
-            & ((pl.col("n") - pl.col("float_nulls")) / pl.col("n") >= _MV_FILL_DONE_RATIO)
-        )
-        .get_column("symbol")
-        .to_list()
+    # Done only when both market-cap fields are dense. K-data can succeed while
+    # the separate Q4 total-share query fails; gating on float_mv alone would
+    # then park total_mv nulls forever because the symbol would never resume.
+    dense = stats.filter(
+        (pl.col("n") > 0)
+        & ((pl.col("n") - pl.col("float_nulls")) / pl.col("n") >= _MV_FILL_DONE_RATIO)
+        & ((pl.col("n") - pl.col("total_nulls")) / pl.col("n") >= _MV_FILL_DONE_RATIO)
     )
-    return [s for s in universe if s not in done]
+    if expected_end is None:
+        done = set(dense.get_column("symbol").to_list())
+    else:
+        done = {
+            row["symbol"]
+            for row in dense.iter_rows(named=True)
+            if expected_end.get(row["symbol"]) is not None
+            and row["latest_date"] is not None
+            and row["latest_date"] >= expected_end[row["symbol"]]
+        }
+    return [
+        symbol
+        for symbol in universe
+        if (expected_end is None or expected_end[symbol] is not None) and symbol not in done
+    ]
 
 
 def _is_all_a(symbol: str) -> bool:
@@ -234,6 +336,18 @@ def _is_all_a(symbol: str) -> bool:
     except ValueError:
         return False
     return is_all_a_symbol(info.code, info.exchange)
+
+
+def _expected_financial_periods(config: Config, trade_date: date) -> set[str]:
+    from cnequity.adapters.eastmoney.fundamentals import _report_period_dates
+
+    return set(
+        _report_period_dates(
+            trade_date,
+            start=getattr(config, "_backfill_start", None),
+            end=getattr(config, "_backfill_end", None),
+        )
+    )
 
 
 @register_step("financial_statement_items", group="fundamentals", depends_on=["instruments"])
@@ -247,6 +361,40 @@ def step_financial_statement_items(
     # NOTICE_DATE incremental cannot reach history).
     backfill = getattr(config, "_backfill", False)
     df = fetch_financial_statement_items(trade_date, backfill=backfill, config=config)
+    missing_periods: set[str] = set()
+    if backfill:
+        expected = _expected_financial_periods(config, trade_date)
+        observed = (
+            set(df.get_column("report_period").drop_nulls().to_list())
+            if not df.is_empty() and "report_period" in df.columns
+            else set()
+        )
+        missing_periods = expected - observed
+    if backfill and missing_periods:
+        result: dict
+        if df.is_empty():
+            result = {"rows_read": 0, "rows_written": 0}
+        else:
+            result = write_fetched(
+                config, run_id, "financial_statement_items", df, source="eastmoney"
+            )
+        result["status"] = "warning"
+        result["missing_periods"] = len(missing_periods)
+        result["context_updates"] = {
+            "audit_findings": [
+                {
+                    "dataset": "financial_statement_items",
+                    "severity": "warning",
+                    "check": "backfill_missing_report_periods",
+                    "message": (
+                        f"financial statement items missing {len(missing_periods)} "
+                        f"requested report period(s): {', '.join(sorted(missing_periods)[:8])}"
+                    ),
+                    "missing_periods": sorted(missing_periods),
+                }
+            ]
+        }
+        return result
     if df.is_empty():
         return {"rows_read": 0, "rows_written": 0}
     return write_fetched(config, run_id, "financial_statement_items", df, source="eastmoney")
@@ -317,6 +465,7 @@ def _run_shareholder_step(
 
     rows_read = 0
     rows_written = 0
+    empty_windows: list[tuple[date, date]] = []
     for win_start, win_end in windows:
         # Write per window rather than concatenating the walk: a full
         # top_holders backfill is ~110k rows a quarter across ~25 years, and
@@ -325,6 +474,8 @@ def _run_shareholder_step(
         # would overwrite the window before it.
         part = fetch_fn(win_start, win_end, by=by, config=config)
         if part.is_empty():
+            if getattr(config, "_backfill", False):
+                empty_windows.append((win_start, win_end))
             continue
         chunk = write_fetched(
             config,
@@ -336,7 +487,28 @@ def _run_shareholder_step(
         )
         rows_read += int(chunk.get("rows_read", 0))
         rows_written += int(chunk.get("rows_written", 0))
-    return {"rows_read": rows_read, "rows_written": rows_written, "windows": len(windows)}
+    result: dict = {"rows_read": rows_read, "rows_written": rows_written, "windows": len(windows)}
+    if empty_windows:
+        result["status"] = "warning"
+        result["empty_windows"] = len(empty_windows)
+        result["context_updates"] = {
+            "audit_findings": [
+                {
+                    "dataset": dataset,
+                    "severity": "warning",
+                    "check": "backfill_empty_windows",
+                    "message": (
+                        f"{dataset}: {len(empty_windows)} requested backfill window(s) "
+                        "returned no rows"
+                    ),
+                    "empty_windows": [
+                        {"start": start.isoformat(), "end": end.isoformat()}
+                        for start, end in empty_windows
+                    ],
+                }
+            ]
+        }
+    return result
 
 
 @register_step("share_structure", group="fundamentals", depends_on=["instruments"])

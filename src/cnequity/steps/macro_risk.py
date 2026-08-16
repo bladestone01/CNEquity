@@ -17,6 +17,8 @@ from cnequity.steps.http_common import run_incremental_fetched
 
 @register_step("macro_indicators", group="macro_risk")
 def step_macro_indicators(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    if not config.sources.get("eastmoney", True):
+        raise RuntimeError("macro_indicators: eastmoney source disabled in config")
     # Revisions have to be detected here, between fetch and write: compact keeps
     # only the newest row per (indicator_id, obs_date), so once the write lands
     # the previous published value is gone. The overwrite itself is deliberate —
@@ -39,7 +41,7 @@ def step_macro_indicators(config: Config, trade_date: date, run_id: str, context
         # this dataset), and with_provenance keeps a pre-set column. This value
         # only applies to the empty-frame case.
         source="eastmoney",
-        allow_empty=True,
+        allow_empty=False,
     )
     if revisions:
         updates = result.setdefault("context_updates", {})
@@ -87,7 +89,7 @@ def step_share_unlock_schedule(
         trade_date,
         run_id,
         "share_unlock_schedule",
-        fetch_share_unlock_schedule,
+        lambda d: fetch_share_unlock_schedule(d, config=config),
         source="eastmoney",
         allow_empty=True,
     )
@@ -151,15 +153,32 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
     writer = StagingWriter(config.staging_root)
     rows_written = 0
     n_parts = 0
+    seen_unlocks: set[tuple[object, object]] = set()
     for cursor in cursors:
-        config.rate_limit("eastmoney")
+        horizon_days = min(_UNLOCK_HORIZON_DAYS, (end - cursor).days)
         df = fetch_share_unlock_schedule(
             cursor,
-            horizon_days=_UNLOCK_HORIZON_DAYS,
+            horizon_days=horizon_days,
+            config=config,
             max_retries=_UNLOCK_SWEEP_RETRIES,
             retry_backoff_seconds=_UNLOCK_SWEEP_BACKOFF_SECONDS,
         )
         if not df.is_empty():
+            # Adjacent strides intentionally overlap by 30 days. Keep the
+            # first (newest-stride) copy so the overlap does not create
+            # duplicate staged rows or make compaction do avoidable work.
+            keep_indices: list[int] = []
+            for index, (symbol, unlock_date) in enumerate(
+                df.select(["symbol", "unlock_date"]).iter_rows()
+            ):
+                key = (symbol, unlock_date)
+                if key in seen_unlocks:
+                    continue
+                seen_unlocks.add(key)
+                keep_indices.append(index)
+            if not keep_indices:
+                continue
+            df = df[keep_indices]
             part = with_provenance(
                 df, source="eastmoney", data_version=data_version_for("share_unlock_schedule")
             )
@@ -194,4 +213,5 @@ def step_regulatory_events(config: Config, trade_date: date, run_id: str, contex
         lambda d: fetch_regulatory_events(d, config=config),
         source="cninfo",
         allow_empty=True,
+        date_col="event_date",
     )

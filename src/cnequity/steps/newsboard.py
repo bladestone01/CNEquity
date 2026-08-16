@@ -17,14 +17,19 @@ def step_flash_news_wire(config: Config, trade_date: date, run_id: str, context:
         raise RuntimeError("flash_news_wire: eastmoney source disabled in config")
     # Fail-loud on empty: an empty success left the dataset unregistered in curated
     # and permanently failed lake_health (exists error) while the step looked green.
+
+    def _fetch(d: date):
+        return fetch_flash_news_wire(d, config=config)
+
     return run_incremental_fetched(
         config,
         trade_date,
         run_id,
         "flash_news_wire",
-        fetch_flash_news_wire,
+        _fetch,
         source="eastmoney",
         allow_empty=False,
+        date_col="publish_date",
     )
 
 
@@ -32,6 +37,6 @@ def step_flash_news_wire(config: Config, trade_date: date, run_id: str, context:
 def step_economic_calendar(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("economic_calendar: eastmoney source disabled in config")
-    df = fetch_economic_calendar(trade_date)
+    df = fetch_economic_calendar(trade_date, config=config)
     empty_ok(df, "economic_calendar", trade_date)
     return write_fetched(config, run_id, "economic_calendar", df, source="eastmoney")

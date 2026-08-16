@@ -192,3 +192,48 @@ def test_broken_pool_skips_batches_already_success(worker_config, monkeypatch):
     assert fetched == ["000001.SZ"]
     assert manifest.get_batch(run_id, done_id)["status"] == "success"
     assert result["rows_written"] == 7 + 1
+
+
+def test_completed_future_does_not_receive_fake_stale_timeout(worker_config, monkeypatch):
+    init_data_layout(worker_config)
+    run_id = Manifest(worker_config.manifest_path).start_run("test")
+    observed_timeouts: list[object] = []
+
+    class _CompletedPool:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def submit(self, fn, task):
+            class _F:
+                def result(self, timeout=None):
+                    observed_timeouts.append(timeout)
+                    return {"rows_read": 1, "rows_written": 1}
+
+            return _F()
+
+    monkeypatch.setattr(
+        "cnequity.orchestrator.worker_pool.ProcessPoolExecutor",
+        lambda *a, **k: _CompletedPool(),
+    )
+    monkeypatch.setattr(
+        "cnequity.orchestrator.worker_pool.as_completed", lambda futures: list(futures)
+    )
+
+    result = fetch_daily_bars_parallel(
+        worker_config,
+        ["600519.SH", "000001.SZ"],
+        date(2024, 6, 27),
+        date(2024, 6, 27),
+        run_id,
+        "daily_bars",
+    )
+
+    assert observed_timeouts == [None, None]
+    assert result["had_error"] is False
+    assert result["rows_written"] == 2

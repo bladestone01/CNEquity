@@ -30,24 +30,33 @@ def _run_rotation_step(
     dataset: str,
     fetch_fn,
     *,
-    allow_empty: bool = True,
+    allow_empty: bool = False,
+    date_col: str | None = None,
 ) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
+
+    def _bound(d: date):
+        return fetch_fn(d, config=config)
+
     return run_incremental_fetched(
         config,
         trade_date,
         run_id,
         dataset,
-        fetch_fn,
+        _bound,
         source="eastmoney",
         allow_empty=allow_empty,
+        date_col=date_col,
     )
 
 
 @register_step("hot_rank", group="research", depends_on=["instruments"])
 def step_hot_rank(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    return _run_rotation_step(config, trade_date, run_id, "hot_rank", fetch_hot_rank)
+    def _fetch(d: date, *, config: Config):
+        return fetch_hot_rank(d, config=config, require_top_n=True)
+
+    return _run_rotation_step(config, trade_date, run_id, "hot_rank", _fetch)
 
 
 # Daily still walks a window rather than a single day: `last.js` carries ~140
@@ -64,6 +73,13 @@ def step_sector_bars(config: Config, trade_date: date, run_id: str, context: dic
     ``sector_code`` put two different index bases in one series, so the splice
     date showed a fake +79% median jump across 439 boards.
     """
+    # 同花顺's rolling ``last`` endpoint includes the current intraday board
+    # value. Keep sector daily bars under the same final-session contract as
+    # stock and index bars, otherwise a pre-close run publishes partial OHLC.
+    from cnequity.steps.bars import _reject_unfinished_daily_bar_window
+
+    endpoint = getattr(config, "_backfill_end", None) or trade_date
+    _reject_unfinished_daily_bar_window(config, endpoint)
     if not config.sources.get("ths", True):
         raise RuntimeError("sector_bars: ths source disabled in config")
     if getattr(config, "_backfill", False):
@@ -256,5 +272,11 @@ def step_sector_fund_flow(config: Config, trade_date: date, run_id: str, context
 @register_step("news_headlines", group="research")
 def step_news_headlines(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     return _run_rotation_step(
-        config, trade_date, run_id, "news_headlines", fetch_news_headlines, allow_empty=True
+        config,
+        trade_date,
+        run_id,
+        "news_headlines",
+        fetch_news_headlines,
+        allow_empty=True,
+        date_col="publish_date",
     )

@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 import pytest
@@ -160,6 +160,46 @@ def test_reconciliation_passes_when_minute_volume_matches_the_day(cfg):
     )
     checks = {f["check"] for f in minute_bars_findings(cfg, TRADE_DATE)}
     assert "minute_bars_daily_reconciliation" not in checks
+
+
+def test_reconciliation_uses_one_canonical_daily_row(cfg):
+    symbols = [f"60000{i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
+    _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=100))
+    daily_rows = [
+        {
+            "symbol": s,
+            "trade_date": TRADE_DATE,
+            "open": 10.0,
+            "high": 10.0,
+            "low": 10.0,
+            "close": 10.0,
+            "volume": 240 * 100,
+            "amount": 240 * 1000.0,
+        }
+        for s in symbols
+    ]
+    _write_daily_bars(cfg, daily_rows)
+    stale = with_provenance(
+        pl.DataFrame(
+            [
+                {**row, "volume": row["volume"] // 2, "amount": row["amount"] / 2}
+                for row in daily_rows
+            ]
+        ),
+        source="tdx_protocol",
+        data_version="v2",
+    ).with_columns(
+        pl.lit(datetime(2020, 1, 1, tzinfo=timezone.utc)).alias("fetched_at")
+    )
+    part = cfg.curated_root / "daily_bars" / f"trade_date={TRADE_DATE.isoformat()}"
+    stale.write_parquet(part / "part-stale.parquet")
+
+    findings = [
+        finding
+        for finding in minute_bars_findings(cfg, TRADE_DATE)
+        if finding["check"] == "minute_bars_daily_reconciliation"
+    ]
+    assert findings == []
 
 
 def test_reconciliation_flags_a_volume_mismatch(cfg):

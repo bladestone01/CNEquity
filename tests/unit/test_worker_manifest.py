@@ -133,6 +133,98 @@ def test_symbol_batch_ids_unique_per_window(worker_config, monkeypatch):
     assert len({b["batch_id"] for b in batches}) == 2
 
 
+def test_partial_tdx_symbol_batch_is_not_staged_as_success(worker_config, monkeypatch):
+    import polars as pl
+
+    from cnequity.domain.schemas import with_provenance
+
+    worker_config.failover_enabled = False
+    worker_config.batch_size = 2
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("test")
+
+    def _partial_fetch(symbols, start, end, **kwargs):
+        return with_provenance(
+            pl.DataFrame(
+                {
+                    "symbol": [symbols[0]],
+                    "trade_date": [end],
+                    "open": [1.0],
+                    "high": [1.0],
+                    "low": [1.0],
+                    "close": [1.0],
+                    "volume": [100],
+                    "amount": [100.0],
+                }
+            ),
+            source="tdx_protocol",
+            data_version="v2",
+        )
+
+    monkeypatch.setattr("cnequity.orchestrator.worker_pool.fetch_daily_bars", _partial_fetch)
+    result = fetch_daily_bars_parallel(
+        worker_config,
+        ["600519.SH", "000001.SZ"],
+        date(2024, 6, 27),
+        date(2024, 6, 28),
+        run_id,
+        "daily_bars",
+    )
+
+    assert result["had_error"] is True
+    assert result["failed_symbols"] == ["600519.SH", "000001.SZ"]
+    assert result["rows_written"] == 0
+    batch = manifest.get_batches_for_run(run_id)[0]
+    assert batch["status"] == "failed"
+    assert not list(worker_config.staging_root.glob("daily_bars/**/*.parquet"))
+
+
+def test_wrong_date_tdx_batch_is_not_staged_as_success(worker_config, monkeypatch):
+    import polars as pl
+
+    from cnequity.domain.schemas import with_provenance
+
+    worker_config.failover_enabled = False
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("test")
+
+    def _wrong_date_fetch(symbols, start, end, **kwargs):
+        return with_provenance(
+            pl.DataFrame(
+                {
+                    "symbol": list(symbols),
+                    "trade_date": [end + timedelta(days=1)] * len(symbols),
+                    "open": [1.0] * len(symbols),
+                    "high": [1.0] * len(symbols),
+                    "low": [1.0] * len(symbols),
+                    "close": [1.0] * len(symbols),
+                    "volume": [100] * len(symbols),
+                    "amount": [100.0] * len(symbols),
+                }
+            ),
+            source="tdx_protocol",
+            data_version="v2",
+        )
+
+    monkeypatch.setattr("cnequity.orchestrator.worker_pool.fetch_daily_bars", _wrong_date_fetch)
+    result = fetch_daily_bars_parallel(
+        worker_config,
+        ["600519.SH", "000001.SZ"],
+        date(2024, 6, 27),
+        date(2024, 6, 28),
+        run_id,
+        "daily_bars",
+    )
+
+    assert result["had_error"] is True
+    assert result["rows_written"] == 0
+    batch = manifest.get_batches_for_run(run_id)[0]
+    assert batch["status"] == "failed"
+    assert not list(worker_config.staging_root.glob("daily_bars/**/*.parquet"))
+
+
 def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
     from cnequity.adapters.tdx_protocol import client as tdx
     from cnequity.derive.adj_factors import AdjFactorsResult

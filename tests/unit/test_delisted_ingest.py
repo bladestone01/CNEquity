@@ -193,3 +193,37 @@ def test_empty_fetch_with_pre_window_terminal_is_expected_no_data(tmp_path):
     assert result["expected_no_data"] == 1
     assert result["coverage_pending_compact"] is True
     assert "600070.SH" not in _ingested_symbols(cfg)
+
+
+def test_pre_window_no_data_evidence_is_reused_on_rerun(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, {"600070.SH": "2025-04-10"})
+
+    def empty(symbol, client):
+        return pl.DataFrame(schema={c: DAILY_BARS_SCHEMA[c] for c in _BAR_COLS})
+
+    monkeypatch.setattr(
+        "cnequity.steps.delisted.load_delisted_catalog",
+        lambda _config: {"600070.SH": date(2025, 4, 10)},
+    )
+
+    backfill_delisted_bars(
+        cfg,
+        "run-1",
+        _START,
+        fetch=empty,
+        probe_last=lambda s, c: date(2009, 12, 15),
+    )
+
+    def must_not_be_called(symbol, client):
+        raise AssertionError(f"refetched {symbol}")
+
+    result = backfill_delisted_bars(
+        cfg,
+        "run-2",
+        _START,
+        fetch=must_not_be_called,
+        probe_last=must_not_be_called,
+    )
+    assert result["rows_written"] == 0
+    assert result["expected_no_data"] == 1
+    assert result["coverage_pending_compact"] is True

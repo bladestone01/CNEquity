@@ -38,7 +38,13 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.symbols import issued_code_space
-from cnequity.steps.common import instrument_metadata, is_trading_day, load_symbols
+from cnequity.query.universe import coverage_end_date
+from cnequity.steps.common import (
+    instrument_metadata,
+    is_trading_day,
+    load_curated_instruments,
+    load_symbols,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,10 +132,9 @@ LIVE_RECENCY_DAYS = 30
 
 def _reference_date(config: Config) -> date:
     """The market's latest session, as the lake sees it."""
-    from cnequity.query.parquet_scan import list_partitions
+    from cnequity.domain.market_time import shanghai_today
 
-    parts = list_partitions(config.curated_root / "daily_bars", "trade_date")
-    return parts[-1].end if parts else date.today()
+    return coverage_end_date(config, "daily_bars") or shanghai_today()
 
 
 def classify_catalog(config: Config) -> tuple[dict[str, date], dict[str, date]]:
@@ -566,10 +571,10 @@ def _instruments_rows(config: Config, spans: dict[str, tuple[date | None, date]]
         return pl.DataFrame()
 
     recovered = pl.DataFrame(rows, schema={c: INSTRUMENTS_SCHEMA[c] for c in cols})
-    live_path = config.curated_root / "instruments" / "part-merged.parquet"
-    if not live_path.exists():
+    live = load_curated_instruments(config)
+    if live is None:
         return recovered
-    live = pl.read_parquet(live_path).drop(["source", "data_version", "fetched_at"], strict=False)
+    live = live.drop(["source", "data_version", "fetched_at"], strict=False)
     live = _strip_subscription_placeholders(live)
     # Fill null list/delist dates on live rows from the recovery spans before
     # the unique — otherwise a prior repair that wrote delist_date with a null
@@ -613,9 +618,11 @@ def _bar_spans(
     root = config.curated_root / "daily_bars"
     if not root.exists() or not any(root.rglob("*.parquet")):
         return {}
-    from cnequity.query.parquet_scan import parquet_glob
+    from cnequity.query.parquet_scan import scan_parquet_root
 
-    bars = pl.scan_parquet(parquet_glob(root)).filter(pl.col("symbol").is_in(symbols))
+    bars = scan_parquet_root(root, partition_col="trade_date", hive=False).filter(
+        pl.col("symbol").is_in(symbols)
+    )
     if positive_volume_only and "volume" in bars.collect_schema().names():
         bars = bars.filter(pl.col("volume") > 0)
     frame = (
@@ -691,9 +698,9 @@ def delisted_coverage_report(
         spans = {r["symbol"]: (r["first"], r["last"]) for r in frame.iter_rows(named=True)}
 
     instrument_dates: dict[str, date | None] = {}
-    instruments_path = config.curated_root / "instruments" / "part-merged.parquet"
-    if instruments_path.exists():
-        instruments = pl.read_parquet(instruments_path, columns=["symbol", "delist_date"])
+    instruments = load_curated_instruments(config)
+    if instruments is not None:
+        instruments = instruments.select(["symbol", "delist_date"])
         instrument_dates = {
             row["symbol"]: row["delist_date"] for row in instruments.iter_rows(named=True)
         }
@@ -870,9 +877,9 @@ def delisted_catalog_reconciliation_report(config: Config, *, sample: int = 15) 
     spans = _bar_spans(config, symbols, positive_volume_only=True)
 
     instrument_dates: dict[str, date | None] = {}
-    instruments_path = config.curated_root / "instruments" / "part-merged.parquet"
-    if instruments_path.exists():
-        instruments = pl.read_parquet(instruments_path, columns=["symbol", "delist_date"])
+    instruments = load_curated_instruments(config)
+    if instruments is not None:
+        instruments = instruments.select(["symbol", "delist_date"])
         instrument_dates = {
             row["symbol"]: row["delist_date"] for row in instruments.iter_rows(named=True)
         }
@@ -1012,14 +1019,17 @@ def purge_subscription_placeholders(config: Config) -> int:
     """Remove ``认购款`` stubs from curated instruments. Returns rows dropped."""
     from cnequity.storage.atomic import write_parquet_atomic
 
-    path = config.curated_root / "instruments" / "part-merged.parquet"
-    if not path.exists():
+    existing = load_curated_instruments(config)
+    if existing is None:
         return 0
-    existing = pl.read_parquet(path)
+    path = config.curated_root / "instruments" / "part-merged.parquet"
     cleaned = _strip_subscription_placeholders(existing)
     dropped = existing.height - cleaned.height
     if dropped:
         write_parquet_atomic(path, cleaned, compression="zstd")
+        for stale in path.parent.rglob("*.parquet"):
+            if stale != path:
+                stale.unlink()
         logger.info("purged %d subscription-placeholder instrument row(s)", dropped)
     return dropped
 
@@ -1041,7 +1051,6 @@ def repair_delisted_instruments(
     ``cne delisted backfill`` only fetches the true gaps.
     """
     from cnequity.quality.cross_checks import RETIRED_GAP_DAYS
-    from cnequity.query.parquet_scan import list_partitions
     from cnequity.steps.http_common import write_fetched
 
     catalog = load_delisted_catalog(config)
@@ -1053,23 +1062,21 @@ def repair_delisted_instruments(
     # tell the survivorship audit uses.
     retired_orphans: list[str] = []
     bars_root = config.curated_root / "daily_bars"
-    parts = list_partitions(bars_root, "trade_date") if bars_root.exists() else []
-    if parts:
-        lake_last = parts[-1].end
+    lake_last = coverage_end_date(config, "daily_bars") if bars_root.exists() else None
+    if lake_last is not None:
         cutoff = lake_last - timedelta(days=RETIRED_GAP_DAYS)
-        from cnequity.query.parquet_scan import parquet_glob
+        from cnequity.query.parquet_scan import scan_parquet_root
 
         last_bars = (
-            pl.scan_parquet(parquet_glob(bars_root))
+            scan_parquet_root(bars_root, partition_col="trade_date", hive=False)
             .group_by("symbol")
             .agg(pl.col("trade_date").max().alias("last_bar"))
             .filter(pl.col("last_bar") < cutoff)
             .collect()
         )
-        inst_path = config.curated_root / "instruments" / "part-merged.parquet"
         marked: set[str] = set()
-        if inst_path.exists():
-            inst = pl.read_parquet(inst_path)
+        inst = load_curated_instruments(config)
+        if inst is not None:
             marked = set(inst.filter(pl.col("delist_date").is_not_null())["symbol"].to_list())
         retired_orphans = [s for s in last_bars["symbol"].to_list() if s not in marked]
 
@@ -1105,7 +1112,8 @@ def repair_delisted_instruments(
 
     purged = purge_subscription_placeholders(config)
 
-    return {
+    still_need_bars = sorted(s for s in catalog if s not in spans)
+    result = {
         "rows_read": rows_written,
         "rows_written": rows_written,
         "targets": len(targets),
@@ -1115,8 +1123,11 @@ def repair_delisted_instruments(
         "instruments_spans": len(instrument_spans),
         "marked_ingested": len(already_haved),
         "purged_placeholders": purged,
-        "still_need_bars": sorted(s for s in catalog if s not in spans),
+        "still_need_bars": still_need_bars,
     }
+    if still_need_bars:
+        result["status"] = "warning"
+    return result
 
 
 def backfill_delisted_bars(
@@ -1163,7 +1174,9 @@ def backfill_delisted_bars(
     dedicated = {
         symbol for symbol, evidence in targets.items() if evidence["ownership"] == "dedicated_fetch"
     }
-    todo = sorted(dedicated - set(recovered_spans))
+    # A pre-window terminal probe is terminal evidence too: retrying it on
+    # every run defeats the scoped checkpoint and wastes a provider request.
+    todo = sorted(dedicated - set(recovered_spans) - expected_no_data)
     if not targets:
         checkpoint["status"] = "complete"
         checkpoint["completion_run_id"] = run_id
@@ -1420,16 +1433,20 @@ def write_delisting_events(config: Config, events: list[dict]) -> int:
         source="sina",
         data_version="v1",
     )
-    out_path = config.derived_root / "delisting_events" / "part-merged.parquet"
+    out_dir = config.derived_root / "delisting_events"
+    out_path = out_dir / "part-merged.parquet"
     frames = [incoming]
-    if out_path.exists():
-        frames.append(pl.read_parquet(out_path))
+    if out_dir.exists():
+        frames.extend(pl.read_parquet(path) for path in sorted(out_dir.rglob("*.parquet")))
     merged = (
         pl.concat(frames, how="diagonal_relaxed")
         .sort("fetched_at")
         .unique(subset=["symbol"], keep="last")
         .sort("last_trade_date", descending=True)
     )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     write_parquet_atomic(out_path, merged, compression="zstd")
+    for stale in out_dir.rglob("*.parquet"):
+        if stale != out_path:
+            stale.unlink()
     return merged.height

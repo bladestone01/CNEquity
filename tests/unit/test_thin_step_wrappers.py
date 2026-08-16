@@ -9,7 +9,7 @@ import pytest
 
 import cnequity.steps  # noqa: F401
 from cnequity.config import Config
-from cnequity.steps import commodity, macro_risk, newsboard, research
+from cnequity.steps import commodity, macro_risk, newsboard, research, rotation
 from cnequity.storage.state import StateStore
 
 
@@ -38,10 +38,10 @@ def test_research_disabled_and_empty(cfg, monkeypatch):
         "fetch_analyst_consensus",
         lambda *a, **k: pl.DataFrame(),
     )
-    assert (
-        research.step_institutional_holdings(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 0
-    )
-    assert research.step_analyst_consensus(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 0
+    with pytest.raises(RuntimeError, match="institutional_holdings: no rows returned"):
+        research.step_institutional_holdings(cfg, date(2024, 6, 28), "r", {})
+    with pytest.raises(RuntimeError, match="analyst_consensus: no rows returned"):
+        research.step_analyst_consensus(cfg, date(2024, 6, 28), "r", {})
 
 
 def test_research_writes(cfg, monkeypatch):
@@ -81,6 +81,25 @@ def test_research_writes(cfg, monkeypatch):
     assert research.step_analyst_consensus(cfg, date(2024, 6, 28), "r2", {})["rows_written"] == 1
 
 
+def test_institutional_backfill_surfaces_missing_quarters(cfg, monkeypatch):
+    cfg._backfill = True
+    cfg._backfill_start = date(2020, 1, 1)
+    cfg._backfill_end = date(2020, 6, 30)
+    monkeypatch.setattr(
+        research,
+        "fetch_institutional_holdings",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
+
+    result = research.step_institutional_holdings(cfg, date(2026, 6, 30), "r-gap", {})
+
+    assert result["status"] == "warning"
+    assert result["missing_periods"] == 2
+    assert result["context_updates"]["audit_findings"][0]["check"] == (
+        "backfill_missing_quarters"
+    )
+
+
 def test_macro_risk_guards_and_writes(cfg, monkeypatch):
     cfg.sources["eastmoney"] = False
     with pytest.raises(RuntimeError, match="disabled"):
@@ -98,7 +117,7 @@ def test_macro_risk_guards_and_writes(cfg, monkeypatch):
     monkeypatch.setattr(
         macro_risk,
         "fetch_macro_indicators",
-        lambda d, config=None: pl.DataFrame(
+        lambda d, config=None, strict=False: pl.DataFrame(
             {
                 "indicator_id": ["gdp"],
                 "obs_date": [d],
@@ -110,7 +129,7 @@ def test_macro_risk_guards_and_writes(cfg, monkeypatch):
     monkeypatch.setattr(
         macro_risk,
         "fetch_share_unlock_schedule",
-        lambda d: pl.DataFrame(
+        lambda d, config=None: pl.DataFrame(
             {
                 "symbol": ["600519.SH"],
                 "unlock_date": [d],
@@ -146,6 +165,41 @@ def test_newsboard_and_commodity(cfg, monkeypatch):
         newsboard.step_flash_news_wire(cfg, date(2024, 6, 28), "r", {})
     with pytest.raises(RuntimeError, match="disabled"):
         newsboard.step_economic_calendar(cfg, date(2024, 6, 28), "r", {})
+
+
+def test_flash_news_wire_passes_config_to_fetcher(cfg, monkeypatch):
+    seen = {}
+
+    def fake_fetch(trade_date, config=None):
+        seen["trade_date"] = trade_date
+        seen["config"] = config
+        return pl.DataFrame({"value": [1]})
+
+    def fake_run(config, trade_date, run_id, dataset, fetch_fn, **kwargs):
+        assert config is cfg
+        assert trade_date == date(2024, 6, 28)
+        assert run_id == "r"
+        assert dataset == "flash_news_wire"
+        assert kwargs["source"] == "eastmoney"
+        assert kwargs["allow_empty"] is False
+        frame = fetch_fn(trade_date)
+        return {"rows_written": frame.height}
+
+    monkeypatch.setattr(newsboard, "fetch_flash_news_wire", fake_fetch)
+    monkeypatch.setattr(newsboard, "run_incremental_fetched", fake_run)
+
+    assert newsboard.step_flash_news_wire(cfg, date(2024, 6, 28), "r", {}) == {"rows_written": 1}
+    assert seen == {"trade_date": date(2024, 6, 28), "config": cfg}
+
+
+def test_rotation_snapshot_steps_reject_empty_feeds(cfg, monkeypatch):
+    monkeypatch.setattr(rotation, "fetch_hot_rank", lambda *a, **k: pl.DataFrame())
+    monkeypatch.setattr(rotation, "fetch_sector_fund_flow", lambda *a, **k: pl.DataFrame())
+
+    with pytest.raises(RuntimeError, match="hot_rank: no rows returned"):
+        rotation.step_hot_rank(cfg, date(2024, 6, 28), "r-hot-empty", {})
+    with pytest.raises(RuntimeError, match="sector_fund_flow: no rows returned"):
+        rotation.step_sector_fund_flow(cfg, date(2024, 6, 28), "r-flow-empty", {})
     cfg.sources["eastmoney"] = True
     cfg.sources["sina"] = False
     # eastmoney still on → commodity ok path
@@ -153,7 +207,7 @@ def test_newsboard_and_commodity(cfg, monkeypatch):
     monkeypatch.setattr(
         commodity,
         "fetch_commodity_bars",
-        lambda d, config=None: pl.DataFrame(
+        lambda d, config=None, strict=False: pl.DataFrame(
             {
                 "symbol": ["AU0.SHF"],
                 "name": ["黄金主连"],
@@ -171,6 +225,10 @@ def test_newsboard_and_commodity(cfg, monkeypatch):
     )
     assert commodity.step_commodity_bars(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 1
 
+    monkeypatch.setattr(commodity, "fetch_commodity_bars", lambda *a, **k: pl.DataFrame())
+    with pytest.raises(RuntimeError, match="commodity_bars: no rows returned"):
+        commodity.step_commodity_bars(cfg, date(2024, 6, 28), "r-empty", {})
+
     cfg.sources["eastmoney"] = False
     with pytest.raises(RuntimeError, match="both eastmoney and sina"):
         commodity.step_commodity_bars(cfg, date(2024, 6, 28), "r", {})
@@ -179,7 +237,7 @@ def test_newsboard_and_commodity(cfg, monkeypatch):
     monkeypatch.setattr(
         newsboard,
         "fetch_economic_calendar",
-        lambda d: pl.DataFrame(
+        lambda d, config=None: pl.DataFrame(
             {
                 "event_id": ["e1"],
                 "event_date": [d],
@@ -197,5 +255,7 @@ def test_newsboard_and_commodity(cfg, monkeypatch):
     assert newsboard.step_economic_calendar(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 1
 
     with pytest.raises(RuntimeError, match="no rows"):
-        monkeypatch.setattr(newsboard, "fetch_economic_calendar", lambda d: pl.DataFrame())
+        monkeypatch.setattr(
+            newsboard, "fetch_economic_calendar", lambda d, config=None: pl.DataFrame()
+        )
         newsboard.step_economic_calendar(cfg, date(2024, 6, 28), "r", {})

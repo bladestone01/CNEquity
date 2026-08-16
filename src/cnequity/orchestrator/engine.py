@@ -35,13 +35,19 @@ logger = logging.getLogger(__name__)
 
 
 def _has_partial_failures(result: dict[str, Any]) -> bool:
-    """Return whether a step reported a non-empty failed-* scope.
+    """Return whether a step reported an incomplete or failed scope.
 
     A few source steps report ``failed_symbols`` while intraday/tick steps use
     ``failed_symbol_days``.  Treating either as a warning keeps a step from
-    being recorded as successful merely because it staged some rows.
+    being recorded as successful merely because it staged some rows.  Some
+    resumable sweeps instead expose an explicit ``complete`` flag, so a false
+    completion flag must use the same warning path.
     """
     for key, value in result.items():
+        if key in {"complete", "coverage_complete"}:
+            if value is False:
+                return True
+            continue
         if not (key.startswith("failed") or key in {"aborted", "empty_days", "days_empty"}):
             continue
         if isinstance(value, bool):

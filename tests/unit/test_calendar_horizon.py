@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.quality.cross_checks import trading_calendar_horizon_findings
@@ -69,8 +70,8 @@ def test_holidays_past_the_table_really_are_marked_as_sessions():
 
     spring_festival = date(2028, 1, 26)
     assert spring_festival > date.fromisoformat(max(CLOSED_DATES))
-    cal = build_trading_calendar(spring_festival, spring_festival, seed_path=ensure_seed_csv())
-    assert bool(cal["is_trading"][0]) is True
+    with pytest.raises(RuntimeError, match="holiday seed ends"):
+        build_trading_calendar(spring_festival, spring_festival, seed_path=ensure_seed_csv())
 
 
 def test_earliest_bar_date_considers_index_bars_too(tmp_path):

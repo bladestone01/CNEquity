@@ -5,6 +5,7 @@ import pytest
 
 import cnequity.steps  # noqa: F401
 from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
+from cnequity.adapters.eastmoney.datacenter import EastMoneyDatacenterError
 from cnequity.adapters.eastmoney.share_unlock import fetch_share_unlock_schedule
 from cnequity.adapters.macro.indicators import fetch_macro_indicators
 from cnequity.config import Config
@@ -17,6 +18,7 @@ from cnequity.query import load
 class FakeDatacenterClient:
     def __init__(self, batches: dict[str, list[dict]]):
         self.batches = batches
+        self.closed = False
 
     def get(self, url, **kwargs):
         class Resp:
@@ -35,7 +37,7 @@ class FakeDatacenterClient:
         return Resp([])
 
     def close(self):
-        return None
+        self.closed = True
 
 
 class FakeCninfoClient:
@@ -102,6 +104,80 @@ def test_macro_indicators_parses_treasury_and_shibor(monkeypatch):
         "macro_indicators",
     )
     assert out["obs_date"][0] == date(2024, 6, 28)
+
+
+def test_macro_indicators_skips_nonfinite_source_values(monkeypatch):
+    _no_social_financing(monkeypatch)
+    client = FakeDatacenterClient(
+        {
+            "RPTA_WEB_TREASURYYIELD": [
+                {"SOLAR_DATE": "2024-06-28", "EMM00166466": "nan"},
+                {"SOLAR_DATE": "2024-06-28", "EMM00166466": 2.25},
+                {"SOLAR_DATE": None, "EMM00166466": 2.5},
+                {"SOLAR_DATE": "2024-06-27", "EMM00166466": 2.75},
+            ],
+            "RPT_IMP_INTRESTRATEN": [{"REPORT_DATE": "2024-06-28", "IR_RATE": "inf"}],
+            "RPTA_WEB_RATE": [{"TRADE_DATE": "2024-06-28", "LPR1Y": "-inf"}],
+        }
+    )
+    df = fetch_macro_indicators(date(2024, 6, 28), client=client)  # type: ignore[arg-type]
+    assert df.filter(pl.col("indicator_id") == "cnbond_yield_10y").height == 1
+    assert df.filter(pl.col("indicator_id") == "shibor_3m").is_empty()
+    assert df.filter(pl.col("indicator_id") == "lpr_1y").is_empty()
+
+
+def test_macro_indicators_rejects_empty_fetch(monkeypatch, tmp_path):
+    from cnequity.steps import macro_risk
+    from cnequity.storage.state import StateStore
+
+    cfg = Config(data_root=tmp_path / "data")
+    cfg.staging_root.mkdir(parents=True)
+    StateStore(cfg.meta_root).set_date("macro_indicators", date(2024, 6, 27))
+    monkeypatch.setattr(
+        macro_risk,
+        "fetch_macro_indicators",
+        lambda *_args, **_kwargs: pl.DataFrame(),
+    )
+    with pytest.raises(RuntimeError, match="macro_indicators: no rows returned"):
+        macro_risk.step_macro_indicators(cfg, date(2024, 6, 28), "run-empty", {})
+
+
+def test_macro_indicators_honours_eastmoney_source_switch(tmp_path):
+    from cnequity.steps import macro_risk
+
+    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": False})
+    with pytest.raises(RuntimeError, match="eastmoney source disabled"):
+        macro_risk.step_macro_indicators(cfg, date(2024, 6, 28), "run-disabled", {})
+
+
+def test_macro_indicators_fails_loud_on_daily_source_error(monkeypatch):
+    _no_social_financing(monkeypatch)
+
+    def _boom(*_args, **_kwargs):
+        raise EastMoneyDatacenterError("treasury schema changed")
+
+    monkeypatch.setattr("cnequity.adapters.macro.indicators.fetch_datacenter", _boom)
+    with pytest.raises(EastMoneyDatacenterError, match="treasury schema changed"):
+        fetch_macro_indicators(date(2024, 6, 28), client=FakeDatacenterClient({}))  # type: ignore[arg-type]
+
+
+def test_macro_indicators_closes_owned_client_on_source_error(monkeypatch):
+    _no_social_financing(monkeypatch)
+    created: list[FakeDatacenterClient] = []
+
+    def _factory(**_kwargs):
+        client = FakeDatacenterClient({})
+        created.append(client)
+        return client
+
+    def _boom(*_args, **_kwargs):
+        raise EastMoneyDatacenterError("source unavailable")
+
+    monkeypatch.setattr("cnequity.adapters.macro.indicators.EastMoneyClient", _factory)
+    monkeypatch.setattr("cnequity.adapters.macro.indicators.fetch_datacenter", _boom)
+    with pytest.raises(EastMoneyDatacenterError, match="source unavailable"):
+        fetch_macro_indicators(date(2024, 6, 28))
+    assert created[0].closed is True
 
 
 _EM_MONTHLY_BATCHES = {
@@ -197,6 +273,22 @@ def test_social_financing_comes_from_pboc(monkeypatch):
     assert row["source"][0] == "pboc"
 
 
+def test_canonical_social_financing_fetch_is_strict(monkeypatch):
+    from cnequity.adapters.macro import indicators as macro_indicators
+    from cnequity.adapters.pboc import social_financing
+
+    seen: dict[str, bool] = {}
+
+    def _fail(*, config=None, start_year=2015, strict=False):
+        seen["strict"] = strict
+        raise RuntimeError("partial PBOC series")
+
+    monkeypatch.setattr(social_financing, "fetch_social_financing", _fail)
+    with pytest.raises(RuntimeError, match="partial PBOC series"):
+        macro_indicators._social_financing_rows(date(2024, 6, 28))
+    assert seen == {"strict": True}
+
+
 @pytest.mark.parametrize("enabled", [False])
 def test_social_financing_honours_sources_pboc(tmp_path, enabled):
     from cnequity.adapters.macro.indicators import _social_financing_rows
@@ -224,6 +316,26 @@ def test_share_unlock_schedule_parses():
     assert df.height == 1
     assert df["symbol"][0] == "600519.SH"
     assert df["unlock_date"][0] == date(2024, 8, 1)
+
+
+def test_share_unlock_missing_numeric_fields_remain_null():
+    client = FakeDatacenterClient(
+        {
+            "RPT_LIFT_STAGE": [
+                {
+                    "SECURITY_CODE": "600519",
+                    "FREE_DATE": "2024-08-01",
+                    "ABLE_FREE_SHARES": "",
+                    "CURRENT_FREE_SHARES": None,
+                    "FREE_RATIO": "bad",
+                    "FREE_SHARES_TYPE": "首发原股东",
+                }
+            ]
+        }
+    )
+    df = fetch_share_unlock_schedule(date(2024, 6, 28), client=client)  # type: ignore[arg-type]
+    assert df["unlock_shares"][0] is None
+    assert df["unlock_ratio"][0] is None
 
 
 def test_regulatory_events_filters_titles():
@@ -286,6 +398,23 @@ def breadth_lake(tmp_path):
             }
         ).write_parquet(part / "part-0.parquet")
 
+    duplicate_part = curated / "daily_bars" / "trade_date=2024-06-28"
+    pl.DataFrame(
+        {
+            "symbol": ["A.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "open": [11.0],
+            "high": [11.0],
+            "low": [11.0],
+            "close": [11.0],
+            "volume": [100],
+            "amount": [1000.0],
+            "source": ["tdx"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-28T00:00:01+00:00"],
+        }
+    ).write_parquet(duplicate_part / "part-duplicate.parquet")
+
     return Config(data_root=root)
 
 
@@ -297,6 +426,62 @@ def test_market_breadth_computed_from_daily_bars(breadth_lake):
     assert metrics["decline_count"] == 1.0
     assert metrics["flat_count"] == 1.0
     assert metrics["total_count"] == 3.0
+
+
+def test_market_breadth_uses_board_and_st_specific_limit_thresholds(tmp_path):
+    root = tmp_path / "data"
+    curated = root / "curated"
+    calendar = curated / "trading_calendar" / "trade_date=2024-06-27"
+    calendar.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2024, 6, 27)],
+            "is_trading": [True],
+            "source": ["seed"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-27T00:00:00+00:00"],
+        }
+    ).write_parquet(calendar / "part-0.parquet")
+
+    symbols = ["600001.SH", "300001.SZ", "688001.SH", "920001.BJ"]
+    for trade_date, closes in (
+        (date(2024, 6, 27), [10.0] * 4),
+        (date(2024, 6, 28), [10.5, 12.0, 12.0, 13.0]),
+    ):
+        part = curated / "daily_bars" / f"trade_date={trade_date.isoformat()}"
+        part.mkdir(parents=True)
+        pl.DataFrame(
+            {
+                "symbol": symbols,
+                "trade_date": [trade_date] * len(symbols),
+                "open": closes,
+                "high": closes,
+                "low": closes,
+                "close": closes,
+                "volume": [100] * len(symbols),
+                "amount": [1000.0] * len(symbols),
+                "source": ["tdx"] * len(symbols),
+                "data_version": ["v1"] * len(symbols),
+                "fetched_at": [f"{trade_date}T00:00:00+00:00"] * len(symbols),
+            }
+        ).write_parquet(part / "part-0.parquet")
+
+    status = curated / "trading_status" / "trade_date=2024-06"
+    status.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": symbols,
+            "trade_date": [date(2024, 6, 28)] * len(symbols),
+            "status": ["st", "normal", "normal", "normal"],
+            "source": ["eastmoney"] * len(symbols),
+            "data_version": ["v1"] * len(symbols),
+            "fetched_at": ["2024-06-28T00:00:00+00:00"] * len(symbols),
+        }
+    ).write_parquet(status / "part-0.parquet")
+
+    df = compute_market_breadth(Config(data_root=root), date(2024, 6, 28))
+    metrics = dict(zip(df["metric_id"].to_list(), df["value"].to_list(), strict=True))
+    assert metrics["limit_up_count"] == 4.0
 
 
 def test_load_macro_indicators_by_date_range(tmp_path):

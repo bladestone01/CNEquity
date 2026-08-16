@@ -39,6 +39,36 @@ DATASET = "trade_ticks"
 _BATCH_SYMBOLS = 50
 
 
+def _validate_tick_batch(
+    df: pl.DataFrame, symbols: list[str], sessions: list[date]
+) -> pl.DataFrame:
+    """Reject tick rows outside the requested symbol/session scope."""
+    required = ("symbol", "trade_date")
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        raise RuntimeError(f"{DATASET}: tick response is missing {missing}")
+    normalized = df.with_columns(
+        pl.col("symbol").cast(pl.Utf8, strict=False),
+        pl.col("trade_date").cast(pl.Date, strict=False),
+    )
+    returned_symbols = normalized.get_column("symbol")
+    if returned_symbols.null_count():
+        raise RuntimeError(f"{DATASET}: tick response returned a null symbol")
+    unexpected = sorted(set(returned_symbols.to_list()) - set(symbols))
+    if unexpected:
+        raise RuntimeError(
+            f"{DATASET}: tick response returned unexpected symbol(s): "
+            + ", ".join(unexpected[:5])
+        )
+    dates = normalized.get_column("trade_date")
+    invalid_dates = dates.is_null() | ~dates.is_in(sessions).fill_null(False)
+    if normalized.filter(invalid_dates).height:
+        raise RuntimeError(
+            f"{DATASET}: tick response returned row(s) outside requested sessions"
+        )
+    return normalized
+
+
 class TradeTicksScopeError(RuntimeError):
     """Raised when the configured scope cannot be resolved to symbols."""
 
@@ -113,18 +143,12 @@ def _sessions(config: Config, trade_date: date) -> list[date]:
     if start > end:
         return []
 
-    from cnequity.steps.common import _load_trading_calendar_df
+    # Use the same seed/bar-backed calendar as every other date-driven step.
+    # A weekday fallback would request public holidays and, more seriously,
+    # turn an unknown calendar horizon into an apparently valid session list.
+    from cnequity.steps.common import list_trading_dates
 
-    calendar = _load_trading_calendar_df(config, start=start, end=end)
-    if calendar is not None and not calendar.is_empty() and "is_trading" in calendar.columns:
-        return sorted(calendar.filter(pl.col("is_trading"))["trade_date"].to_list())
-    # No calendar yet (a lake seeded out of order). Weekdays over-count by the
-    # public holidays, and each extra day costs one request that comes back
-    # empty — wasteful, not wrong.
-    logger.warning("%s: no trading calendar available; falling back to weekdays", DATASET)
-    span = (end - start).days
-    days = [start + timedelta(days=offset) for offset in range(span + 1)]
-    return [d for d in days if d.weekday() < 5]
+    return list_trading_dates(config, start, end)
 
 
 def capture_trade_ticks(config: Config, trade_date: date, run_id: str) -> dict:
@@ -183,6 +207,7 @@ def capture_trade_ticks(config: Config, trade_date: date, run_id: str) -> dict:
         failed.extend(chunk_failed)
         if df.is_empty():
             continue
+        df = _validate_tick_batch(df, chunk, sessions)
         with_rows.update(df["symbol"].unique().to_list())
         df = normalize_with_source(df, dataset=DATASET)
         writer.write_batch(DATASET, run_id, f"ticks-{index // _BATCH_SYMBOLS:04d}", df)

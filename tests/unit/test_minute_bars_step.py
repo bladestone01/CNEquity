@@ -49,6 +49,27 @@ def test_scope_index_uses_latest_as_of(cfg):
     assert resolve_scope(cfg) == ["300750.SZ", "600519.SH"]
 
 
+def test_scope_index_ignores_invalid_partition_backup_dir(cfg):
+    _write_constituents(cfg, "000300.SH", ["600519.SH"], date(2026, 7, 31))
+    backup = cfg.curated_root / "index_constituents" / "as_of_date=backup-copy"
+    backup.mkdir(parents=True)
+    _write = with_provenance(
+        pl.DataFrame(
+            {
+                "index_symbol": ["000300.SH"],
+                "symbol": ["000003.SZ"],
+                "as_of_date": [date(2099, 1, 1)],
+                "weight": [1.0],
+            }
+        ),
+        source="test",
+        data_version="v1",
+    )
+    _write.write_parquet(backup / "part-backup.parquet")
+
+    assert resolve_scope(cfg) == ["600519.SH"]
+
+
 def test_scope_index_ignores_other_indices(cfg):
     _write_constituents(cfg, "000300.SH", ["600519.SH"], date(2026, 7, 31))
     _write_constituents(cfg, "000905.SH", ["603005.SH"], date(2026, 7, 31))
@@ -197,6 +218,30 @@ def test_step_reports_failed_symbols_as_a_finding(cfg, monkeypatch):
     findings = result["context_updates"]["audit_findings"]
     assert findings[0]["check"] == "minute_bars_symbol_fetch"
     assert "000001.SZ" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("field", ["symbol", "trade_date", "frequency"])
+def test_step_rejects_minute_rows_outside_batch_contract(cfg, monkeypatch, field):
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_scope = "watchlist"
+    cfg.minute_bars_symbols = ["600519.SH"]
+
+    def wrong_fetch(symbols, start, end, *, frequency, **kwargs):
+        df, failed = _fake_fetch()(symbols, start, end, frequency=frequency, **kwargs)
+        if field == "symbol":
+            df = df.with_columns(pl.lit("000001.SZ").alias("symbol"))
+        elif field == "trade_date":
+            df = df.with_columns(pl.lit(date(2020, 1, 1)).alias("trade_date"))
+        else:
+            df = df.with_columns(pl.lit("5m").alias("frequency"))
+        return df, failed
+
+    monkeypatch.setattr(intraday, "fetch_minute_bars", wrong_fetch)
+    with pytest.raises(RuntimeError):
+        capture_intraday_bars(
+            cfg, date(2026, 7, 31), "run-invalid", dataset="minute_bars", frequency="1m"
+        )
+    assert not StagingWriter(cfg.staging_root).list_run_files("minute_bars", "run-invalid")
 
 
 def test_step_fails_when_nothing_at_all_came_back(cfg, monkeypatch):

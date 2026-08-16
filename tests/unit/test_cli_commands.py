@@ -648,6 +648,47 @@ def test_delisted_repair(cfg_path, monkeypatch):
     assert "repair-1" in result.output
 
 
+def test_delisted_repair_surfaces_incomplete_bars(cfg_path, monkeypatch):
+    class FakeManifest:
+        def __init__(self):
+            self.finished = None
+
+        def start_run(self, *a, **k):
+            return "repair-warning"
+
+        def finish_run(self, *args, **kwargs):
+            self.finished = (args, kwargs)
+
+    manifest = FakeManifest()
+
+    class FakeEngine:
+        def __init__(self, cfg):
+            self.manifest = manifest
+
+        def run_step(self, name, trade_date, run_id):
+            return {"rows_written": 1, "status": "success"}
+
+    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr(
+        "cnequity.steps.delisted.repair_delisted_instruments",
+        lambda cfg, run_id, start=None: {
+            "rows_written": 1,
+            "still_need_bars": ["600071.SH"],
+            "status": "warning",
+        },
+    )
+    monkeypatch.setattr(
+        "cnequity.steps.delisted.purge_subscription_placeholders", lambda cfg: 0
+    )
+    monkeypatch.setattr("cnequity.cli.main.ensure_duckdb_views", lambda cfg: Path("/tmp/x"))
+
+    result = CliRunner().invoke(cli, ["delisted", "repair", "--config", cfg_path])
+
+    assert result.exit_code != 0, result.output
+    assert '"status": "warning"' in result.output
+    assert manifest.finished[0][1] == "warning"
+
+
 def test_delisted_backfill(cfg_path, monkeypatch):
     class FakeManifest:
         def start_run(self, *a, **k):

@@ -91,6 +91,18 @@ def test_sessions_clamp_to_the_history_floor(tmp_path, caplog):
     assert "clamping" in caplog.text
 
 
+def test_sessions_use_seed_calendar_when_curated_calendar_is_missing(tmp_path):
+    config = _config(tmp_path)
+    config._backfill = True
+    config._backfill_start = date(2024, 2, 8)
+    config._backfill_end = date(2024, 2, 19)
+
+    assert _sessions(config, date(2024, 2, 19)) == [
+        date(2024, 2, 8),
+        date(2024, 2, 19),
+    ]
+
+
 def test_sessions_are_empty_when_the_window_inverts(tmp_path):
     config = _config(tmp_path)
     config._backfill = True
@@ -128,7 +140,7 @@ def test_failed_symbol_days_become_an_audit_finding(tmp_path, monkeypatch):
             "symbol": "600519.SH",
             "trade_date": date(2026, 7, 30),
             "tick_seq": 0,
-            "trade_time": None,
+            "trade_time": "2026-07-30T09:25:00",
             "price": 1.0,
             "volume": 100,
             "direction": "buy",
@@ -145,6 +157,30 @@ def test_failed_symbol_days_become_an_audit_finding(tmp_path, monkeypatch):
     assert finding["dataset"] == DATASET
     assert finding["check"] == "trade_ticks_symbol_day_fetch"
     assert "000001.SZ@2026-07-30" in finding["message"]
+
+
+def test_out_of_scope_tick_rows_are_rejected_before_staging(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    config._backfill = True
+    config._backfill_start = date(2026, 7, 30)
+    config._backfill_end = date(2026, 7, 31)
+    _write_calendar(config, [date(2026, 7, 30), date(2026, 7, 31)])
+    row = {
+        "symbol": "600519.SH",
+        "trade_date": date(2020, 1, 1),
+        "tick_seq": 0,
+        "trade_time": None,
+        "price": 1.0,
+        "volume": 100,
+        "direction": "buy",
+    }
+    monkeypatch.setattr(
+        "cnequity.steps.ticks.fetch_trade_ticks_batch",
+        lambda symbols, sessions, **kwargs: (pl.DataFrame([row]), []),
+    )
+
+    with pytest.raises(RuntimeError, match="outside requested sessions"):
+        capture_trade_ticks(config, date(2026, 7, 31), "run-invalid")
 
 
 def test_a_sweep_that_returns_nothing_at_all_raises(tmp_path, monkeypatch):

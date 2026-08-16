@@ -22,6 +22,7 @@ from cnequity.quality.audit import run_audit
 from cnequity.query.on_demand import OnDemandService
 from cnequity.query.views import ensure_duckdb_views
 from cnequity.steps.common import BACKFILL_START
+from cnequity.storage.atomic import write_json_atomic
 from cnequity.storage.layout import init_data_layout
 from cnequity.storage.source_snapshots import (
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
@@ -852,7 +853,7 @@ def _guard_history_horizon(dataset: str, start: date | None) -> None:
     lake rather than a limit of the vendor.
     """
     spec = get_dataset(dataset)
-    earliest = spec.earliest_available(date.today())
+    earliest = spec.earliest_available(shanghai_today())
     if earliest is None or start is None or start >= earliest:
         return
     if spec.history_floor_date is not None:
@@ -891,7 +892,12 @@ def _finish_backfill_run(engine, result: dict) -> dict:
     # under this run_id), so there is no cost to always trying.
     # Through the engine, not step_compact directly: the recorded compact
     # batch is what later lets `cne clean` release this run's staging.
-    result["compact"] = engine.run_step("compact", date.today(), run_id)
+    result["compact"] = engine.run_step("compact", shanghai_today(), run_id)
+    compact_status = result["compact"].get("status", "success")
+    if compact_status == "failed" or result["status"] == "failed":
+        result["status"] = "failed"
+    elif compact_status == "warning" or result["status"] == "warning":
+        result["status"] = "warning"
     engine.manifest.finish_run(
         run_id,
         result["status"],
@@ -1064,7 +1070,7 @@ def compact(config_path: str, run_id: str | None):
             raise click.ClickException("No runs found")
         run_id = latest["run_id"]
 
-    out = JobEngine(cfg).run_step("compact", date.today(), run_id)
+    out = JobEngine(cfg).run_step("compact", shanghai_today(), run_id)
     click.echo(
         json.dumps(
             {"run_id": run_id, "rows_written": out.get("rows_written", 0), **out},
@@ -1231,7 +1237,7 @@ def audit(
             raise click.ClickException("--research-start must be on or before --research-end")
         health = lake_health(
             cfg,
-            date.today(),
+            shanghai_today(),
             research_start=start_date,
             research_end=end_date,
         )
@@ -1266,7 +1272,7 @@ def audit(
     latest = manifest.latest_run() if not run_id else None
     rid = run_id or (latest["run_id"] if latest else "manual")
 
-    n = run_audit(cfg, rid, date.today())
+    n = run_audit(cfg, rid, shanghai_today())
     click.echo(f"Audit complete: {n} findings written")
 
 
@@ -1326,7 +1332,7 @@ def verify(config_path: str, only: str | None, repair: bool, kinds: str | None):
     from cnequity.quality.verify import verify_lake
 
     cfg = _cfg(config_path)
-    anchor = _last_trading_day(cfg, date.today())
+    anchor = _last_trading_day(cfg, shanghai_today())
     names = [s.strip() for s in only.split(",") if s.strip()] if only else None
     wanted = {s.strip() for s in kinds.split(",") if s.strip()} if kinds else None
 
@@ -1413,7 +1419,7 @@ def status(config_path: str, show_datasets: bool):
         from cnequity.domain.datasets import is_stale
         from cnequity.query.reader import list_datasets
 
-        anchor = _last_trading_day(cfg, date.today())
+        anchor = _last_trading_day(cfg, shanghai_today())
         df = list_datasets(config=cfg)
 
         def _freshness(row: dict) -> str:
@@ -1897,9 +1903,11 @@ def sources(config_path: str, vantage: str, only: str | None, out: str | None):
         click.echo(f"{result.status:<8}{label:<5}{latency}  {result.key:<22}{result.detail}")
 
     path = Path(out) if out else cfg.meta_root / "source_health" / f"{vantage}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(report.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    write_json_atomic(
+        path,
+        report.to_dict(),
+        indent=2,
+        ensure_ascii=False,
     )
     click.echo(f"\nWrote {path}")
     click.echo("View it with: cne serve  \u2192  http://127.0.0.1:8787/source-health")
@@ -2091,17 +2099,36 @@ def delisted_repair(config_path: str, since: str | None):
     meta = {"since": since} if since else {}
     run_id = engine.manifest.start_run("delisted_repair", meta)
     result = repair_delisted_instruments(cfg, run_id, start=start)
-    compact_out = engine.run_step("compact", date.today(), run_id)
+    compact_out = engine.run_step("compact", shanghai_today(), run_id)
     # Compact can re-introduce nothing for placeholders; purge once more after
     # the merge in case an older curated copy still carried them.
     from cnequity.steps.delisted import purge_subscription_placeholders
 
     result["purged_placeholders_after_compact"] = purge_subscription_placeholders(cfg)
-    engine.manifest.finish_run(run_id, "success", rows_written=result.get("rows_written", 0))
+    source_status = result.get("status", "success")
+    compact_status = compact_out.get("status", "success")
+    if "failed" in (source_status, compact_status):
+        run_status = "failed"
+    elif "warning" in (source_status, compact_status):
+        run_status = "warning"
+    else:
+        run_status = "success"
+    engine.manifest.finish_run(
+        run_id,
+        run_status,
+        rows_written=result.get("rows_written", 0),
+        error_message=None if run_status == "success" else "delisted repair is incomplete",
+    )
     ensure_duckdb_views(cfg)
     click.echo(
-        json.dumps({"run_id": run_id, **result, "compact": compact_out}, indent=2, default=str)
+        json.dumps(
+            {"run_id": run_id, **result, "status": run_status, "compact": compact_out},
+            indent=2,
+            default=str,
+        )
     )
+    if run_status != "success":
+        raise click.ClickException("delisted repair is incomplete; retry the missing scope")
 
 
 @delisted_grp.command("backfill")
@@ -2119,7 +2146,7 @@ def delisted_backfill(config_path: str, since: str):
     engine = JobEngine(cfg)
     run_id = engine.manifest.start_run("delisted_backfill", {"since": since})
     result = backfill_delisted_bars(cfg, run_id, date.fromisoformat(since))
-    compact_out = engine.run_step("compact", date.today(), run_id)
+    compact_out = engine.run_step("compact", shanghai_today(), run_id)
     complete = (
         result.get("status", "success") == "success"
         and compact_out.get("status", "success") == "success"

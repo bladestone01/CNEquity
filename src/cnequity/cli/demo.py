@@ -17,6 +17,7 @@ import click
 import polars as pl
 
 from cnequity.config import Config, WaveConfig
+from cnequity.domain.market_time import shanghai_today
 from cnequity.domain.schemas import validate_dataframe, with_provenance
 from cnequity.orchestrator.engine import JobEngine
 from cnequity.storage.atomic import write_parquet_atomic
@@ -394,7 +395,7 @@ def run_demo(
 
     _banner(f"4/{steps}", "Trading calendar")
     engine = JobEngine(cfg)
-    as_of = trade_date or date.today()
+    as_of = trade_date or shanghai_today()
     # Seed calendar covers a wide range; backfill window is cheap (CSV/seed).
     cfg._backfill = True
     cfg._backfill_start = date(2020, 1, 1)

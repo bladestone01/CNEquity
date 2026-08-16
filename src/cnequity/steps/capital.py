@@ -9,6 +9,8 @@ import polars as pl
 
 from cnequity.adapters.eastmoney.capital import (
     NORTHBOUND_HISTORY_START,
+    NORTHBOUND_LAST_PUBLISHED,
+    _quarter_end_dates,
     fetch_block_trades,
     fetch_dragon_tiger,
     fetch_fund_flow,
@@ -57,7 +59,9 @@ def _run_capital_step(
 
 @register_step("fund_flow", group="capital", depends_on=["instruments"])
 def step_fund_flow(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    return _run_capital_step(config, trade_date, run_id, "fund_flow", fetch_fund_flow)
+    return _run_capital_step(
+        config, trade_date, run_id, "fund_flow", fetch_fund_flow, allow_empty=False
+    )
 
 
 @register_step("northbound_holdings", group="capital", depends_on=["instruments"])
@@ -72,9 +76,46 @@ def step_northbound_holdings(config: Config, trade_date: date, run_id: str, cont
 
     backfill = getattr(config, "_backfill", False)
     df = fetch_northbound_holdings(trade_date, backfill=backfill, config=config)
+    missing_periods: list[str] = []
+    if backfill:
+        expected = set(
+            _quarter_end_dates(
+                trade_date,
+                start=getattr(config, "_backfill_start", None),
+                end=getattr(config, "_backfill_end", None),
+            )
+        )
+        observed = {
+            value.isoformat()
+            for value in df.get_column("trade_date").drop_nulls().to_list()
+        } if not df.is_empty() and "trade_date" in df.columns else set()
+        missing_periods = sorted(expected - observed)
     if df.is_empty():
-        return {"rows_read": 0, "rows_written": 0}
-    return write_fetched(config, run_id, "northbound_holdings", df, source="eastmoney")
+        if not backfill:
+            raise RuntimeError(
+                f"northbound_holdings: no rows returned for {trade_date.isoformat()}"
+            )
+        result: dict = {"rows_read": 0, "rows_written": 0}
+    else:
+        result = write_fetched(config, run_id, "northbound_holdings", df, source="eastmoney")
+    if missing_periods:
+        result["status"] = "warning"
+        result["missing_periods"] = len(missing_periods)
+        result["context_updates"] = {
+            "audit_findings": [
+                {
+                    "dataset": "northbound_holdings",
+                    "severity": "warning",
+                    "check": "backfill_missing_quarters",
+                    "message": (
+                        f"northbound holdings missing {len(missing_periods)} requested "
+                        f"quarter(s): {', '.join(missing_periods[:8])}"
+                    ),
+                    "missing_periods": missing_periods,
+                }
+            ]
+        }
+    return result
 
 
 @register_step("northbound_flows", group="capital")
@@ -98,6 +139,27 @@ def step_northbound_flows(config: Config, trade_date: date, run_id: str, context
         if not dates:
             return {"rows_read": 0, "rows_written": 0}
         start, end = dates[0], dates[-1]
+
+    # The report has both a fixed lower bound and a retirement date. Clamp the
+    # request before touching the network: otherwise a retired feed is queried
+    # in full on every daily run after its watermark freezes, and an explicit
+    # pre-2014 backfill spends a request proving that the channel did not exist.
+    start = max(start, NORTHBOUND_HISTORY_START)
+    end = min(end, NORTHBOUND_LAST_PUBLISHED)
+    if start > end:
+        logger.info(
+            "northbound_flows: requested window %s..%s is outside the published range "
+            "%s..%s; skipping source request",
+            start.isoformat(),
+            end.isoformat(),
+            NORTHBOUND_HISTORY_START.isoformat(),
+            NORTHBOUND_LAST_PUBLISHED.isoformat(),
+        )
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "note": "source window is outside northbound flow publication range",
+        }
 
     df = fetch_northbound_flows_range(start, end, config=config)
     if df.is_empty():
@@ -134,6 +196,7 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
 
     from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
     from cnequity.domain.schemas import with_provenance
+    from cnequity.steps.common import _backfill_empty_day_finding
     from cnequity.storage import StagingWriter
 
     start = getattr(config, "_backfill_start", None) or BACKFILL_START
@@ -191,6 +254,24 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
                     if df.is_empty():
                         empty_days.append(d)
                     else:
+                        if "trade_date" not in df.columns:
+                            raise RuntimeError(
+                                f"margin_trading: fetch for {d.isoformat()} did not return "
+                                "the configured trade_date column"
+                            )
+                        parsed_dates = df.get_column("trade_date").cast(
+                            pl.Date, strict=False
+                        )
+                        invalid = (
+                            parsed_dates.is_null()
+                            | (parsed_dates != d).fill_null(True)
+                        )
+                        invalid_count = int(invalid.sum())
+                        if invalid_count:
+                            raise RuntimeError(
+                                f"margin_trading: fetch for {d.isoformat()} returned "
+                                f"{invalid_count} row(s) with a different or invalid trade_date"
+                            )
                         frames.append(df)
                 done += len(chunk)
                 flush()
@@ -201,6 +282,12 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
                     chunk[-1].isoformat(),
                     total_rows,
                 )
+    except Exception:
+        # Preserve successful rows from the current concurrent chunk when a
+        # later fetch or response validation fails; the next run can then
+        # resume instead of replaying the whole chunk.
+        flush()
+        raise
     finally:
         for client in clients:
             client.close()
@@ -212,20 +299,27 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
             len(empty_days),
             empty_days[0].isoformat(),
         )
-    return {
+    result = {
         "rows_read": total_rows,
         "rows_written": total_rows,
         "days_fetched": len(todo) - len(empty_days),
         "days_skipped": len(days) - len(todo),
         "days_empty": len(empty_days),
     }
+    if empty_days:
+        result["context_updates"] = {
+            "audit_findings": [_backfill_empty_day_finding("margin_trading", empty_days)]
+        }
+    return result
 
 
 @register_step("margin_trading", group="capital", depends_on=["instruments"])
 def step_margin_trading(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_backfill", False):
         return _backfill_margin_trading(config, trade_date, run_id)
-    return _run_capital_step(config, trade_date, run_id, "margin_trading", fetch_margin_trading)
+    return _run_capital_step(
+        config, trade_date, run_id, "margin_trading", fetch_margin_trading, allow_empty=False
+    )
 
 
 def _backfill_daily_report(

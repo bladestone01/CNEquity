@@ -242,7 +242,7 @@ class Manifest:
                         WHEN ? IN ('warning', 'failed', 'stale') THEN 1
                         ELSE blocks_compaction
                     END
-                WHERE run_id = ? AND batch_id = ?
+                WHERE run_id = ? AND batch_id = ? AND status = 'running'
                 """,
                 (
                     status,

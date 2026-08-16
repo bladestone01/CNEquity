@@ -11,7 +11,7 @@ import polars as pl
 
 from cnequity.adapters.tdx_protocol.client import fetch_instruments
 from cnequity.config import Config
-from cnequity.domain.datasets import fetch_semantics
+from cnequity.domain.datasets import DATASETS, fetch_semantics
 from cnequity.domain.schemas import data_version_for, with_provenance
 from cnequity.storage import StagingWriter
 from cnequity.storage.state import StateStore
@@ -57,10 +57,15 @@ def _load_trading_calendar_df(
     """Load trading_calendar, preferring a lazy hive scan with optional date prune."""
     curated = config.curated_root / "trading_calendar"
     if curated.exists() and any(curated.rglob("*.parquet")):
+        from cnequity.query.canonical import dedupe_by_primary_key
+
         try:
             from cnequity.query.parquet_scan import collect_parquet_root
 
-            return collect_parquet_root(curated, partition_col="trade_date", start=start, end=end)
+            return dedupe_by_primary_key(
+                collect_parquet_root(curated, partition_col="trade_date", start=start, end=end),
+                "trading_calendar",
+            )
         except FileNotFoundError:
             pass
         files = list(curated.glob("**/*.parquet"))
@@ -70,11 +75,15 @@ def _load_trading_calendar_df(
                 lf = lf.filter(pl.col("trade_date") >= start)
             if end is not None:
                 lf = lf.filter(pl.col("trade_date") <= end)
-            return lf.collect()
-    staging = list(config.staging_root.glob("trading_calendar/**/*.parquet"))
+            return dedupe_by_primary_key(lf.collect(), "trading_calendar")
+    staging_root = config.staging_root / "trading_calendar"
+    staging = sorted(staging_root.rglob("*.parquet")) if staging_root.exists() else []
     if staging:
-        latest = max(staging, key=lambda p: p.stat().st_mtime)
-        df = pl.read_parquet(latest)
+        df = pl.concat([pl.read_parquet(path) for path in staging], how="diagonal_relaxed")
+        if "trade_date" in df.columns:
+            if "fetched_at" in df.columns:
+                df = df.sort("fetched_at")
+            df = df.unique(subset=["trade_date"], keep="last", maintain_order=True)
         if start is not None:
             df = df.filter(pl.col("trade_date") >= start)
         if end is not None:
@@ -83,22 +92,73 @@ def _load_trading_calendar_df(
     return None
 
 
+def load_curated_instruments(config: Config) -> pl.DataFrame | None:
+    """Read the merge-style instrument catalog across all surviving shards."""
+    root = config.curated_root / "instruments"
+    if not root.exists() or not any(root.rglob("*.parquet")):
+        return None
+    from cnequity.query.canonical import dedupe_by_primary_key
+    from cnequity.query.parquet_scan import collect_parquet_root
+
+    try:
+        frame = collect_parquet_root(root, hive=False)
+    except FileNotFoundError:
+        return None
+    return dedupe_by_primary_key(frame, "instruments")
+
+
+def _load_staged_instruments(config: Config) -> pl.DataFrame | None:
+    """Read all recoverable instrument fragments when curated data is absent."""
+    root = config.staging_root / "instruments"
+    files = sorted(root.rglob("*.parquet")) if root.exists() else []
+    if not files:
+        return None
+    from cnequity.query.canonical import dedupe_by_primary_key
+
+    frame = pl.concat([pl.read_parquet(path) for path in files], how="diagonal_relaxed")
+    return dedupe_by_primary_key(frame, "instruments")
+
+
 def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
-    """Trading days in [start, end] from curated/staging calendar, else Mon–Fri."""
+    """Trading days in [start, end] from curated data or the bundled calendar.
+
+    Never fall back to plain weekdays for the CN market: that would classify
+    Spring Festival and National Day as sessions when the lake has not yet
+    materialized ``trading_calendar``.
+    """
     if start > end:
         return []
     cal = _load_trading_calendar_df(config, start=start, end=end)
     if cal is not None and not cal.is_empty() and "trade_date" in cal.columns:
-        out = cal.filter(pl.col("is_trading"))["trade_date"].sort().to_list()
-        if out:
-            return out
-    dates: list[date] = []
-    d = start
-    while d <= end:
-        if d.weekday() < 5:
-            dates.append(d)
-        d += timedelta(days=1)
-    return dates
+        covered = set(cal.get_column("trade_date").drop_nulls().to_list())
+        expected_days = (end - start).days + 1
+        if len(covered) == expected_days:
+            out = cal.filter(pl.col("is_trading"))["trade_date"].sort().to_list()
+            if out:
+                return out
+        else:
+            logger.warning(
+                "trading_calendar only covers %d/%d calendar day(s) in %s..%s; "
+                "rebuilding from the seed and bar evidence",
+                len(covered),
+                expected_days,
+                start.isoformat(),
+                end.isoformat(),
+            )
+    from cnequity.adapters.calendar.exchange_calendar import (
+        build_trading_calendar,
+        ensure_seed_csv,
+    )
+
+    seed_path = config.meta_root / "seeds" / "trading_calendar.csv"
+    effective_seed = seed_path if seed_path.exists() else ensure_seed_csv()
+    calendar = build_trading_calendar(
+        start,
+        end,
+        seed_path=effective_seed,
+        curated_root=config.curated_root if config.curated_root.exists() else None,
+    )
+    return calendar.filter(pl.col("is_trading"))["trade_date"].sort().to_list()
 
 
 def incremental_trade_dates(config: Config, dataset: str, trade_date: date) -> list[date]:
@@ -128,9 +188,12 @@ def is_trading_day(config: Config, trade_date: date) -> bool:
         seed_path=effective_seed,
         curated_root=config.curated_root if config.curated_root.exists() else None,
     )
-    if not day_cal.is_empty():
-        return bool(day_cal["is_trading"][0])
-    return trade_date.weekday() < 5
+    if day_cal.is_empty():
+        raise RuntimeError(
+            f"trading calendar returned no row for {trade_date.isoformat()}; "
+            "refusing to classify it by weekday"
+        )
+    return bool(day_cal["is_trading"][0])
 
 
 def _coverage_gap_findings(dataset: str, gap_dates: list[date]) -> list[dict]:
@@ -151,6 +214,74 @@ def _coverage_gap_findings(dataset: str, gap_dates: list[date]) -> list[dict]:
     ]
 
 
+def _backfill_empty_day_finding(dataset: str, empty_days: list[date]) -> dict:
+    """Describe dates that were retried but returned no rows.
+
+    Empty responses are non-fatal because some sources legitimately publish no
+    rows on a session.  They must still be visible to the run audit; otherwise
+    a backfill can report success while leaving permanent coverage holes.
+    """
+    return {
+        "dataset": dataset,
+        "severity": "warning",
+        "check": "backfill_empty_days",
+        "message": (
+            f"{dataset}: {len(empty_days)} trading day(s) returned no rows; "
+            "they remain absent and will be retried on the next backfill"
+        ),
+        "days_empty": len(empty_days),
+        "sample_dates": [d.isoformat() for d in empty_days[:8]],
+    }
+
+
+def _dense_empty_day_finding(dataset: str, empty_days: list[date]) -> dict:
+    """Keep an allowed empty response visible for a dense daily dataset."""
+    return {
+        "dataset": dataset,
+        "severity": "warning",
+        "check": "session_dense_empty_days",
+        "message": (
+            f"{dataset}: {len(empty_days)} trading day(s) returned no rows; "
+            "the dense coverage watermark must not pass these sessions"
+        ),
+        "days_empty": len(empty_days),
+        "sample_dates": [d.isoformat() for d in empty_days[:8]],
+    }
+
+
+def _validate_trade_date(
+    df: pl.DataFrame,
+    dataset: str,
+    trade_date: date,
+    *,
+    date_col: str | None = None,
+) -> None:
+    """Reject a response whose date column names another day.
+
+    The historical default checks ``trade_date`` only when present because a
+    few period/snapshot datasets have another date key. Callers that fetch an
+    exact day under a different key must pass it explicitly; then a missing
+    date column is itself a malformed response.
+    """
+    column = date_col or "trade_date"
+    if df.is_empty():
+        return
+    if column not in df.columns:
+        if date_col is not None:
+            raise RuntimeError(
+                f"{dataset}: fetch for {trade_date.isoformat()} did not return "
+                f"the configured date column {date_col!r}"
+            )
+        return
+    parsed_dates = df.get_column(column).cast(pl.Date, strict=False)
+    mismatched = int((parsed_dates.is_null() | (parsed_dates != trade_date).fill_null(True)).sum())
+    if mismatched:
+        raise RuntimeError(
+            f"{dataset}: fetch for {trade_date.isoformat()} returned "
+            f"{mismatched} row(s) with a different or invalid {column}"
+        )
+
+
 def fetch_incremental_daily(
     config: Config,
     dataset: str,
@@ -158,6 +289,7 @@ def fetch_incremental_daily(
     fetch_fn: Callable[[date], pl.DataFrame],
     *,
     allow_empty: bool = False,
+    date_col: str | None = None,
 ) -> tuple[pl.DataFrame, list[dict]]:
     """Fetch one or more trading days from watermark+1 through *trade_date*.
 
@@ -171,7 +303,11 @@ def fetch_incremental_daily(
                 f"{dataset}: backfill not supported — fetch semantics are snapshot "
                 "(live page stamped with trade_date; historical values unavailable)"
             )
-        return fetch_fn(trade_date), []
+        frame = fetch_fn(trade_date)
+        if frame.is_empty() and not allow_empty:
+            raise RuntimeError(f"{dataset}: no rows returned for {trade_date.isoformat()}")
+        _validate_trade_date(frame, dataset, trade_date, date_col=date_col)
+        return frame, []
 
     dates = incremental_trade_dates(config, dataset, trade_date)
     if not dates:
@@ -186,13 +322,24 @@ def fetch_incremental_daily(
         findings = []
 
     frames: list[pl.DataFrame] = []
+    empty_days: list[date] = []
     for d in fetch_dates:
         part = fetch_fn(d)
         if part.is_empty():
             if not allow_empty:
                 raise RuntimeError(f"{dataset}: no rows returned for {d.isoformat()}")
+            spec = DATASETS.get(dataset)
+            if spec is not None and spec.coverage_mode == "session_dense":
+                empty_days.append(d)
             continue
+        # A by-date adapter must not let a vendor page leak rows from a
+        # neighbouring session into the requested partition. Validate here
+        # before diagonal concatenation; once several days are merged the
+        # offending response can no longer be attributed to one request.
+        _validate_trade_date(part, dataset, d, date_col=date_col)
         frames.append(part)
+    if empty_days:
+        findings.append(_dense_empty_day_finding(dataset, empty_days))
     if not frames:
         return pl.DataFrame(), findings
     return pl.concat(frames, how="diagonal_relaxed"), findings
@@ -200,13 +347,12 @@ def fetch_incremental_daily(
 
 def load_symbols(config: Config) -> list[str]:
     """Universe symbols: curated instruments first, then staging, then source."""
-    curated = config.curated_root / "instruments" / "part-merged.parquet"
-    staging_glob = list(config.staging_root.glob("instruments/run_id=*/part-*.parquet"))
-    if curated.exists():
-        return pl.read_parquet(curated)["symbol"].to_list()
-    if staging_glob:
-        latest = max(staging_glob, key=lambda p: p.stat().st_mtime)
-        return pl.read_parquet(latest)["symbol"].to_list()
+    curated_frame = load_curated_instruments(config)
+    staged_frame = _load_staged_instruments(config)
+    if curated_frame is not None:
+        return curated_frame["symbol"].drop_nulls().to_list()
+    if staged_frame is not None:
+        return staged_frame["symbol"].drop_nulls().to_list()
     df = fetch_instruments(
         rate_limit=config.tdx_rate_limit_spec(),
         allow_mock=config.tdx_allow_mock,
@@ -217,12 +363,12 @@ def load_symbols(config: Config) -> list[str]:
 
 def instrument_metadata(config: Config) -> pl.DataFrame:
     """Disk-only symbol/listing spans used for deterministic routing."""
-    curated = config.curated_root / "instruments" / "part-merged.parquet"
-    staged = list(config.staging_root.glob("instruments/run_id=*/part-*.parquet"))
-    if curated.exists():
-        frame = pl.read_parquet(curated)
-    elif staged:
-        frame = pl.read_parquet(max(staged, key=lambda path: path.stat().st_mtime))
+    curated_frame = load_curated_instruments(config)
+    staged_frame = _load_staged_instruments(config)
+    if curated_frame is not None:
+        frame = curated_frame
+    elif staged_frame is not None:
+        frame = staged_frame
     else:
         return pl.DataFrame(
             schema={"symbol": pl.Utf8, "list_date": pl.Date, "delist_date": pl.Date}
@@ -357,17 +503,32 @@ def walk_day_backfill(
     for i, d in enumerate(todo, 1):
         try:
             df = fetch_one(d)
+            if df.is_empty():
+                empty_days.append(d)
+            else:
+                if date_col not in df.columns:
+                    raise RuntimeError(
+                        f"{dataset}: fetch for {d.isoformat()} did not return the "
+                        f"configured date column {date_col!r}"
+                    )
+                parsed_dates = df.get_column(date_col).cast(pl.Date, strict=False)
+                mismatched = int(
+                    (parsed_dates.is_null() | (parsed_dates != d).fill_null(True)).sum()
+                )
+                if mismatched:
+                    raise RuntimeError(
+                        f"{dataset}: fetch for {d.isoformat()} returned {mismatched} row(s) "
+                        f"with a different or invalid {date_col}"
+                    )
+                frames.append(df)
         except Exception:
             # The docstring's "a kill costs only the unflushed chunk" promise
             # is empty if a raise skips this flush — measured in production:
             # announcement_index ran 9.6h and landed zero new days because the
             # failure hit mid-window, taking every already-fetched day with it.
+            # Response validation errors must preserve the same checkpoint.
             flush()
             raise
-        if df.is_empty():
-            empty_days.append(d)
-        else:
-            frames.append(df)
         if i % flush_days == 0:
             flush()
             logger.info(
@@ -388,10 +549,15 @@ def walk_day_backfill(
             len(empty_days),
             empty_days[0].isoformat(),
         )
-    return {
+    result = {
         "rows_read": rows_written,
         "rows_written": rows_written,
         "days_fetched": len(todo) - len(empty_days),
         "days_skipped": len(days) - len(todo),
         "days_empty": len(empty_days),
     }
+    if empty_days:
+        result["context_updates"] = {
+            "audit_findings": [_backfill_empty_day_finding(dataset, empty_days)]
+        }
+    return result

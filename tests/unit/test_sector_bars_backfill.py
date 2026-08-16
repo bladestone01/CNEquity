@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.steps import rotation as rot
@@ -12,6 +13,7 @@ from cnequity.steps.rotation import (
     _backfill_sector_bars,
     _sector_bars_completed,
     clear_sector_bars_backfill_state,
+    step_sector_bars,
 )
 
 
@@ -179,3 +181,25 @@ def test_narrow_gap_fill_does_not_satisfy_the_full_window(tmp_path, monkeypatch)
     cfg._backfill_end = None
     _backfill_sector_bars(cfg, date(2026, 7, 21), "run2")
     assert captured["skip"] == set()
+
+
+def test_step_sector_bars_applies_finality_guard_before_sweep(config, monkeypatch):
+    events: list[str] = []
+
+    def stop_before_sweep(*args, **kwargs):
+        events.append("guard")
+        raise RuntimeError("stop before sweep")
+
+    monkeypatch.setattr(
+        "cnequity.steps.bars._reject_unfinished_daily_bar_window",
+        stop_before_sweep,
+    )
+    monkeypatch.setattr(
+        "cnequity.steps.rotation._sweep_sector_bars",
+        lambda *args, **kwargs: events.append("sweep"),
+    )
+
+    with pytest.raises(RuntimeError, match="stop before sweep"):
+        step_sector_bars(config, date(2026, 8, 10), "run-sector-guard", {})
+
+    assert events == ["guard"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.steps.capital import _backfill_margin_trading
@@ -91,6 +92,29 @@ def test_empty_days_reported_not_fatal(tmp_path, monkeypatch):
     assert out["days_empty"] == 1
     assert out["days_fetched"] == 1
     assert out["rows_written"] == 1
+    finding = out["context_updates"]["audit_findings"][0]
+    assert finding["check"] == "backfill_empty_days"
+    assert finding["severity"] == "warning"
+    assert finding["sample_dates"] == ["2026-06-01"]
+
+
+def test_rejects_rows_from_a_different_requested_date(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill_start = date(2026, 6, 1)
+    cfg._backfill_end = date(2026, 6, 2)
+    _setup(monkeypatch, cfg)
+
+    def wrong_date_fetch(d: date, *, client=None) -> pl.DataFrame:
+        return pl.DataFrame([_fake_row(d if d == date(2026, 6, 1) else d.replace(day=d.day + 1))])
+
+    monkeypatch.setattr("cnequity.steps.capital.fetch_margin_trading", wrong_date_fetch)
+
+    with pytest.raises(RuntimeError, match="different or invalid trade_date"):
+        _backfill_margin_trading(cfg, date(2026, 7, 1), "run-wrong-date")
+
+    staged = list(cfg.staging_root.glob("margin_trading/**/*.parquet"))
+    assert len(staged) == 1
+    assert pl.read_parquet(staged[0])["trade_date"].to_list() == [date(2026, 6, 1)]
 
 
 def test_end_clamped_to_trade_date(tmp_path, monkeypatch):

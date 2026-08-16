@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from cnequity.cli.main import QUICK_PROFILE_YEARS, _init_history_start, cli
 from cnequity.config import Config
 from cnequity.config.bootstrap import path_for_toml
+from cnequity.domain.market_time import shanghai_today
 from cnequity.orchestrator.engine import JobEngine
 from cnequity.orchestrator.worker_pool import _window_backfill
 from cnequity.steps.common import BACKFILL_START
@@ -92,7 +93,9 @@ def test_default_init_is_the_shallow_window(tmp_path, monkeypatch):
     # Derived, not hardcoded: a bare `cne init` anchors on today, so a literal
     # date here passes only on the day it was written and fails at the next
     # midnight for reasons that have nothing to do with the behaviour under test.
-    today = date.today()
+    # The CLI anchors market windows on the exchange-local date, not the host
+    # machine's date. Around UTC/local midnight those can differ by one day.
+    today = shanghai_today()
     try:
         expected = today.replace(year=today.year - QUICK_PROFILE_YEARS)
     except ValueError:  # Feb 29 — same fallback the CLI uses

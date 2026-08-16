@@ -251,6 +251,7 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
             day,
             rate_limit=rl,
             allow_mock=config.tdx_allow_mock,
+            config=config,
         )
 
     df, _findings = fetch_incremental_daily(
@@ -258,15 +259,21 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
         "trading_status",
         trade_date,
         _fetch,
-        allow_empty=True,
+        allow_empty=False,
     )
     if df.is_empty():
-        return {"rows_read": 0, "rows_written": 0}
+        result = {"rows_read": 0, "rows_written": 0}
+        if _findings:
+            result["context_updates"] = {"audit_findings": _findings}
+        return result
     # This adapter is an EastMoney current-state snapshot even though it is
     # exposed through the TDX facade. Preserve the actual evidence owner so
     # downstream PIT precedence never mistakes it for exchange history.
     df = with_provenance(df.drop("source", strict=False), source="eastmoney", data_version="v1")
-    return write_simple(config, run_id, "trading_status", df)
+    result = write_simple(config, run_id, "trading_status", df)
+    if _findings:
+        result["context_updates"] = {"audit_findings": _findings}
+    return result
 
 
 def _is_all_a(symbol: str) -> bool:

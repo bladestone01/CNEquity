@@ -21,9 +21,9 @@ def step_commodity_bars(config: Config, trade_date: date, run_id: str, context: 
         trade_date,
         run_id,
         "commodity_bars",
-        lambda d: fetch_commodity_bars(d, config=config),
+        lambda d: fetch_commodity_bars(d, config=config, strict=True),
         # Row-level ``source`` is set by adapters (eastmoney / sina); this is
         # only the fallback stamp when a frame lacks the column.
         source="eastmoney",
-        allow_empty=True,
+        allow_empty=False,
     )

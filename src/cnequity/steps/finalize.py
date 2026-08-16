@@ -32,10 +32,13 @@ def _max_partition_date(config: Config, dataset: str, partition_col: str) -> dat
         return None
 
     parts = list_partitions(root, partition_col)
+    files = list(root.glob("*.parquet"))
     if parts:
         # Newest period only — earlier ones cannot hold a later date.
-        files = sorted(partition_dir(root, partition_col, parts[-1].value).glob("**/*.parquet"))
-    else:
+        files.extend(
+            sorted(partition_dir(root, partition_col, parts[-1].value).glob("**/*.parquet"))
+        )
+    elif not files:
         files = list(root.glob("**/*.parquet"))
     if not files:
         return None
@@ -58,6 +61,9 @@ def _watermark_date_for(config: Config, dataset: str, partition_col: str) -> dat
 
     For ``valuation_metrics`` a sparse tip (partial baostock refill at 20% of
     bars) must not advance the watermark — walk back to the last dense day.
+    For session-dense datasets, also stop before the first interior trading-day
+    hole so the next incremental window retries the missing session instead of
+    starting after the raw maximum.
     """
     if dataset == "valuation_metrics":
         from cnequity.quality.cross_checks import last_dense_valuation_date
@@ -65,8 +71,23 @@ def _watermark_date_for(config: Config, dataset: str, partition_col: str) -> dat
         dense = last_dense_valuation_date(config)
         if dense is not None:
             return dense
+        # Once daily bars exist, an undense valuation tip is not a safe
+        # watermark. Falling back to its raw maximum would let a partial
+        # snapshot make the next incremental run start after an unobserved
+        # valuation day. A bars-less first run has no independent universe to
+        # reconcile against, so it may still establish an initial watermark.
+        from cnequity.query.parquet_scan import dataset_has_parquet
+
+        if dataset_has_parquet(config.curated_root / "daily_bars"):
+            return None
         # No dense day yet — fall through to raw max so a brand-new lake can
         # still establish a watermark from its first complete EM snapshot.
+    from cnequity.domain.datasets import DATASETS
+    from cnequity.quality.verify import last_contiguous_dense_date
+
+    spec = DATASETS.get(dataset)
+    if spec is not None and spec.coverage_mode == "session_dense":
+        return last_contiguous_dense_date(config, spec)
     return _max_partition_date(config, dataset, partition_col)
 
 
@@ -106,12 +127,43 @@ def _reconcile_watermarks(config: Config) -> list[dict]:
     corrects downward, so it cannot mask a real advance.
     """
     state = StateStore(config.meta_root)
+    from cnequity.query.parquet_scan import dataset_has_parquet
+
     findings: list[dict] = []
     for dataset, pcol in _watermarked_datasets():
         current = state.get_date(dataset)
         if current is None:
             continue
         max_dt = _watermark_date_for(config, dataset, pcol)
+        if (
+            max_dt is None
+            and dataset == "valuation_metrics"
+            and dataset_has_parquet(config.curated_root / "daily_bars")
+        ):
+            # A pre-existing watermark can itself have been written by the old
+            # raw-max fallback. Once daily bars are available and no valuation
+            # day clears the coverage gate, remove that unsafe claim so the
+            # next run cannot skip the missing snapshot window.
+            state.clear_date(dataset)
+            findings.append(
+                {
+                    "dataset": dataset,
+                    "severity": "warning",
+                    "check": "valuation_watermark_coverage_gate",
+                    "message": (
+                        f"valuation watermark {current.isoformat()} was cleared: no day "
+                        "reaches the 70% coverage gate against daily_bars"
+                    ),
+                    "claimed": current.isoformat(),
+                    "actual": None,
+                }
+            )
+            logger.warning(
+                "%s: watermark %s cleared because no dense valuation day exists",
+                dataset,
+                current.isoformat(),
+            )
+            continue
         if max_dt is None or current <= max_dt:
             continue
         claimed = current
@@ -199,7 +251,7 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
             total += rows
             if inst_findings:
                 audit_findings.extend(inst_findings)
-        elif pcol:
+        else:
             rows = compact_dataset(
                 config.staging_root,
                 config.curated_root,
@@ -235,6 +287,11 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
         )
 
     result: dict = {"rows_read": total, "rows_written": total}
+    if skipped:
+        # Skipping is an intentional integrity gate, but it is not a
+        # successful compact: callers must surface the run as retryable and
+        # must not report that every staged dataset reached curated storage.
+        result["status"] = "warning"
     if coverage_receipts:
         result["coverage_receipts"] = coverage_receipts
     context_updates: dict = {}

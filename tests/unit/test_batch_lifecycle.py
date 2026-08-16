@@ -61,6 +61,19 @@ def test_running_to_stale_to_failed_lifecycle(tmp_path):
     assert batch["finished_at"] is not None
 
 
+def test_late_batch_completion_cannot_resurrect_stale_batch(tmp_path):
+    manifest = Manifest(Config(data_root=tmp_path / "data").manifest_path)
+    run_id = "run-late-completion"
+    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars", symbols=["600519.SH"])
+    manifest.mark_batch_stale(run_id, "batch-0", "heartbeat expired")
+
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
+
+    batch = manifest.get_batches_for_run(run_id)[0]
+    assert batch["status"] == "stale"
+    assert batch["rows_written"] == 0
+
+
 def test_compact_promotes_stale_running_batch(tmp_path):
     cfg = Config(data_root=tmp_path / "data", batch_stale_seconds=60)
     run_id = "run-compact-stale"

@@ -8,6 +8,7 @@ import logging
 from datetime import date, datetime, time
 
 from cnequity.adapters.tdx_protocol.client import (
+    INDEX_SYMBOLS,
     fetch_index_bars,
     normalize_with_source,
 )
@@ -23,6 +24,8 @@ from cnequity.steps.common import (
     incremental_window,
     instrument_metadata,
     is_trading_day,
+    list_trading_dates,
+    load_curated_instruments,
     load_symbols,
 )
 
@@ -296,6 +299,7 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         start=start,
         end=end,
         expected_tdx_symbols=tdx_symbols,
+        expected_fallback_symbols=fallback_symbols,
         tdx_result=result,
         sina_result=sina_result,
     )
@@ -310,6 +314,7 @@ def _finish_daily_bars(
     start: date,
     end: date,
     expected_tdx_symbols: list[str],
+    expected_fallback_symbols: list[str] | None = None,
     tdx_result: dict,
     sina_result: dict | None,
 ) -> dict:
@@ -323,6 +328,8 @@ def _finish_daily_bars(
     if sina_result:
         rows_read += int(sina_result.get("rows_read", 0))
         rows_written += int(sina_result.get("rows_written", 0))
+        if int(sina_result.get("failed_symbols", 0)):
+            had_error = True
         sina_findings = (sina_result.get("context_updates") or {}).get("audit_findings") or []
         findings.extend(sina_findings)
 
@@ -334,26 +341,55 @@ def _finish_daily_bars(
         rows_read += int(gap.get("rows_read", 0))
         rows_written += int(gap.get("rows_written", 0))
         findings.extend(gap.get("audit_findings") or [])
-    elif failed_symbols:
-        gap = _gapfill_multiday_via_kline(
-            config, run_id, symbols=failed_symbols, start=start, end=end
+    elif failed_symbols or expected_tdx_symbols or expected_fallback_symbols:
+        all_expected_symbols = list(
+            dict.fromkeys((expected_tdx_symbols or []) + (expected_fallback_symbols or []))
         )
-        rows_read += int(gap.get("rows_read", 0))
-        rows_written += int(gap.get("rows_written", 0))
-        findings.extend(gap.get("audit_findings") or [])
-        if gap.get("filled"):
-            had_error = False
+        partial_symbols = _staged_daily_bar_partial_symbols(
+            config, run_id, all_expected_symbols, start, end
+        )
+        failed_set = set(failed_symbols)
+        if failed_set:
+            gap = _gapfill_multiday_via_kline(
+                config,
+                run_id,
+                symbols=sorted(failed_set),
+                start=start,
+                end=end,
+            )
+            rows_read += int(gap.get("rows_read", 0))
+            rows_written += int(gap.get("rows_written", 0))
+            findings.extend(gap.get("audit_findings") or [])
+            if gap.get("filled") and gap.get("complete", False):
+                had_error = False
+
+        partial_only = sorted(partial_symbols - failed_set)
+        if partial_only:
+            gap = _gapfill_multiday_via_kline(
+                config,
+                run_id,
+                symbols=partial_only,
+                start=start,
+                end=end,
+                require_complete=False,
+            )
+            rows_read += int(gap.get("rows_read", 0))
+            rows_written += int(gap.get("rows_written", 0))
+            findings.extend(gap.get("audit_findings") or [])
 
     _reject_preopen_placeholder(config, run_id, trade_date)
 
     if tip:
         staged = _staged_daily_bar_symbols(config, run_id, trade_date)
-        if expected_tdx_symbols and not staged:
+        expected_symbols = set(expected_tdx_symbols) | set(expected_fallback_symbols or [])
+        missing_staged = expected_symbols - staged
+        if missing_staged:
             raise RuntimeError(
-                f"daily_bars {trade_date}: TDX failed and EastMoney clist gap-fill "
-                "produced no staged tip rows"
+                f"daily_bars {trade_date}: {len(missing_staged)} expected tip key(s) "
+                "remain missing after TDX and EastMoney clist gap-fill"
             )
-        # Tip with any staged rows is usable; leftover holes stay as findings.
+        # A tip is usable only after every expected TDX key is staged. Partial
+        # clist recovery must keep the step failed so the next run retries it.
         had_error = False
     elif had_error:
         raise RuntimeError("daily_bars: one or more symbol batches failed")
@@ -376,6 +412,64 @@ def _staged_daily_bar_symbols(config: Config, run_id: str, trade_date: date | No
     if trade_date is not None:
         lf = lf.filter(pl.col("trade_date") == trade_date)
     return set(lf.select("symbol").unique().collect()["symbol"].to_list())
+
+
+def _staged_daily_bar_partial_symbols(
+    config: Config,
+    run_id: str,
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> set[str]:
+    """Find symbols with an interior session gap in a staged multi-day window.
+
+    A symbol can legitimately have no rows before listing, after delisting, or
+    during a suspension. Comparing only the interval between its first and
+    last staged bars avoids those edge gaps while still catching a partial
+    vendor response inside the symbol's observed history.
+    """
+    if start >= end or not symbols:
+        return set()
+    import polars as pl
+
+    from cnequity.storage import StagingWriter
+
+    files = StagingWriter(config.staging_root).list_run_files("daily_bars", run_id)
+    if not files:
+        return set()
+    staged = (
+        pl.scan_parquet([str(f) for f in files])
+        .filter(
+            (pl.col("trade_date") >= start)
+            & (pl.col("trade_date") <= end)
+            & pl.col("symbol").is_in(symbols)
+        )
+        .select("symbol", "trade_date")
+        .unique()
+        .collect()
+    )
+    if staged.is_empty():
+        return set()
+
+    sessions = list_trading_dates(config, start, end)
+    partial: set[str] = set()
+    spans = (
+        staged.group_by("symbol")
+        .agg(
+            pl.col("trade_date").min().alias("first_date"),
+            pl.col("trade_date").max().alias("last_date"),
+            pl.col("trade_date").n_unique().alias("observed_days"),
+        )
+    )
+    for row in spans.iter_rows(named=True):
+        expected = [
+            session
+            for session in sessions
+            if row["first_date"] <= session <= row["last_date"]
+        ]
+        if row["observed_days"] < len(expected):
+            partial.add(row["symbol"])
+    return partial
 
 
 def _gapfill_tip_via_clist(
@@ -420,7 +514,6 @@ def _gapfill_tip_via_clist(
             ],
         }
 
-    config.rate_limit(spec.backup)
     # One full clist pull, then keep only missing keys so compact cannot
     # overwrite successful TDX rows for the same PK (keep=last by fetched_at).
     full = fetch_daily_bars_clist(trade_date, config=config)
@@ -501,6 +594,7 @@ def _gapfill_tip_via_clist(
         "rows_read": gap_df.height,
         "rows_written": gap_df.height,
         "filled": True,
+        "complete": len(filled_syms) == len(missing),
         "audit_findings": [
             {
                 "dataset": "daily_bars",
@@ -512,6 +606,7 @@ def _gapfill_tip_via_clist(
                 ),
                 "missing_requested": len(missing),
                 "rows_written": gap_df.height,
+                "complete": len(filled_syms) == len(missing),
             }
         ],
     }
@@ -524,8 +619,9 @@ def _gapfill_multiday_via_kline(
     symbols: list[str],
     start: date,
     end: date,
+    require_complete: bool = True,
 ) -> dict:
-    """Stage EastMoney kline for symbols whose TDX multi-day batches failed."""
+    """Stage EastMoney kline for failed or partially covered symbols."""
     import polars as pl
 
     from cnequity.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_kline
@@ -538,25 +634,29 @@ def _gapfill_multiday_via_kline(
     if spec is None or not config.sources.get(spec.backup, True) or not symbols:
         return {"rows_read": 0, "rows_written": 0, "filled": False}
 
-    config.rate_limit(spec.backup)
-    df = fetch_em_kline(symbols, start, end)
+    df = fetch_em_kline(symbols, start, end, config=config)
     if df.is_empty():
         return {
             "rows_read": 0,
             "rows_written": 0,
             "filled": False,
+            "complete": False,
             "audit_findings": [
                 {
                     "dataset": "daily_bars",
                     "severity": "warning",
                     "check": "daily_bars_kline_gapfill",
                     "message": (
-                        f"TDX failed for {len(symbols)} symbol(s) over "
+                        f"TDX coverage was incomplete for {len(symbols)} symbol(s) over "
                         f"{start}..{end}; EastMoney kline returned no rows"
                     ),
                 }
             ],
         }
+
+    expected_dates = list_trading_dates(config, start, end)
+    expected_keys = {(symbol, day) for symbol in symbols for day in expected_dates}
+    actual_keys = set(zip(df["symbol"].to_list(), df["trade_date"].to_list(), strict=True))
 
     # Drop symbol×date pairs already staged so we never overwrite TDX rows.
     files = StagingWriter(config.staging_root).list_run_files("daily_bars", run_id)
@@ -571,8 +671,37 @@ def _gapfill_multiday_via_kline(
     else:
         gap_df = df
 
+    existing_keys = (
+        set(zip(existing["symbol"].to_list(), existing["trade_date"].to_list(), strict=True))
+        if files
+        else set()
+    )
+    missing_keys = expected_keys - (actual_keys | existing_keys)
+
     if gap_df.is_empty():
-        return {"rows_read": df.height, "rows_written": 0, "filled": True}
+        audit_findings = []
+        if missing_keys:
+            audit_findings.append(
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_kline_gapfill",
+                    "message": (
+                        f"EastMoney kline added no new rows for {len(symbols)} symbol(s) over "
+                        f"{start}..{end}; {len(missing_keys)} key(s) remain absent "
+                        "(may be suspended)"
+                    ),
+                    "missing_keys": len(missing_keys),
+                    "complete": False,
+                }
+            )
+        return {
+            "rows_read": df.height,
+            "rows_written": 0,
+            "filled": True,
+            "complete": not missing_keys,
+            "audit_findings": audit_findings,
+        }
 
     gap_df = with_provenance(
         gap_df, source=spec.backup, data_version=data_version_for("daily_bars")
@@ -605,10 +734,11 @@ def _gapfill_multiday_via_kline(
         rows_read=gap_df.height,
         rows_written=gap_df.height,
     )
-    return {
+    result = {
         "rows_read": gap_df.height,
         "rows_written": gap_df.height,
         "filled": True,
+        "complete": not missing_keys,
         "audit_findings": [
             {
                 "dataset": "daily_bars",
@@ -616,11 +746,16 @@ def _gapfill_multiday_via_kline(
                 "check": "daily_bars_kline_gapfill",
                 "message": (
                     f"routed {gap_df.height} row(s) through EastMoney kline for "
-                    f"{len(symbols)} TDX-failed symbol(s) ({start}..{end})"
+                    f"{len(symbols)} partially covered symbol(s) ({start}..{end})"
                 ),
+                "missing_keys": len(missing_keys),
+                "complete": not missing_keys,
             }
         ],
     }
+    if not require_complete and missing_keys:
+        result["audit_findings"][0]["message"] += "; unresolved keys may be suspended"
+    return result
 
 
 # A bar captured before the session opens is the previous close stamped on every
@@ -696,6 +831,7 @@ def fetch_bars_via_sina(
     )
     frames: list[pl.DataFrame] = []
     failed: list[str] = []
+    covered_dates: dict[str, set[date]] = {}
     with httpx.Client(timeout=30.0) as client:
         for symbol in symbols:
             config.rate_limit("sina")
@@ -705,8 +841,18 @@ def fetch_bars_via_sina(
                 logger.warning("sina bars failed for %s: %s", symbol, exc)
                 failed.append(symbol)
                 continue
-            if not bars.is_empty():
-                frames.append(bars)
+            if bars.is_empty():
+                failed.append(symbol)
+                continue
+            covered_dates[symbol] = set(bars["trade_date"].to_list())
+            frames.append(bars)
+
+    expected_dates = set(list_trading_dates(config, start, end))
+    for symbol in symbols:
+        if symbol in failed:
+            continue
+        if expected_dates - covered_dates.get(symbol, set()):
+            failed.append(symbol)
 
     rows = 0
     if frames:
@@ -736,6 +882,39 @@ def fetch_bars_via_sina(
     return result
 
 
+def _validate_index_bar_coverage(
+    config: Config,
+    df,
+    start: date,
+    end: date,
+) -> None:
+    """Reject an index window with an interior symbol×session hole."""
+    if df.is_empty():
+        raise RuntimeError(f"index_bars: no rows returned for {start}..{end}")
+    expected_symbols = {f"{code}.{exchange}" for code, exchange in INDEX_SYMBOLS}
+    observed_symbols = set(df["symbol"].unique().to_list())
+    missing_symbols = sorted(expected_symbols - observed_symbols)
+    if missing_symbols:
+        raise RuntimeError(
+            "index_bars: missing complete series for " + ", ".join(missing_symbols)
+        )
+
+    sessions = list_trading_dates(config, start, end)
+    if not sessions:
+        return
+    observed = df.select("symbol", "trade_date").unique()
+    missing: list[tuple[str, date]] = []
+    for symbol in sorted(expected_symbols):
+        have = set(observed.filter(observed["symbol"] == symbol)["trade_date"].to_list())
+        missing.extend((symbol, session) for session in sessions if session not in have)
+    if missing:
+        sample = ", ".join(f"{symbol}@{session.isoformat()}" for symbol, session in missing[:8])
+        raise RuntimeError(
+            f"index_bars: {len(missing)} symbol×trading-session key(s) missing "
+            f"in {start}..{end} (e.g. {sample})"
+        )
+
+
 @register_step("index_bars", group="core", depends_on=["instruments"])
 def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_backfill", False):
@@ -743,6 +922,10 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
     else:
         start = incremental_window(config, "index_bars", trade_date)
         end = trade_date
+    # Index daily bars have the same current-session semantics as stock daily
+    # bars. Without this guard a pre-close run can stage a plausible but
+    # incomplete index bar and advance the index coverage watermark.
+    _reject_unfinished_daily_bar_window(config, end)
     rl = config.tdx_rate_limit_spec()
     df = fetch_index_bars(
         start,
@@ -753,6 +936,7 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
         config=config,
     )
     df = normalize_with_source(df)
+    _validate_index_bar_coverage(config, df, start, end)
     from cnequity.steps.common import write_simple
 
     return write_simple(config, run_id, "index_bars", df)
@@ -762,6 +946,37 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
 # listing. Deep history is a separate step, not a wider window on the daily one:
 # it uses a different source, runs for hours, and must never be on the daily path.
 HISTORY_BACKFILL_START = date(2001, 1, 1)
+
+
+def _validate_planned_stock_bars(
+    rows: list[dict], symbol: str, start: date, end: date
+) -> list[dict]:
+    """Normalize and validate one THS response before adding it to a batch."""
+    normalized: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("symbol") != symbol:
+            raise RuntimeError(f"THS history returned a row for an unexpected symbol: {symbol}")
+        raw_date = row.get("trade_date")
+        if isinstance(raw_date, datetime):
+            trade_date = raw_date.date()
+        elif isinstance(raw_date, date):
+            trade_date = raw_date
+        elif isinstance(raw_date, str):
+            try:
+                trade_date = date.fromisoformat(raw_date)
+            except ValueError as exc:
+                raise RuntimeError(f"THS history returned an invalid trade_date for {symbol}") from exc
+        else:
+            raise RuntimeError(f"THS history returned an invalid trade_date for {symbol}")
+        if not start <= trade_date <= end:
+            raise RuntimeError(
+                f"THS history returned {symbol} row outside requested window "
+                f"{start.isoformat()}..{end.isoformat()}: {trade_date.isoformat()}"
+            )
+        normalized_row = dict(row)
+        normalized_row["trade_date"] = trade_date
+        normalized.append(normalized_row)
+    return normalized
 
 
 @register_step(
@@ -841,15 +1056,17 @@ def _history_plan(config: Config, start: date, end: date) -> list[tuple[str, dat
       asking for it is ~2600 symbols' worth of empty year files.
     * The rest start at their listing year rather than at ``start``.
     """
-    import polars as pl
-
-    symbols = [s for s in load_symbols(config) if not s.startswith("92")]
-    files = sorted((config.curated_root / "instruments").rglob("*.parquet"))
-    if not files:
+    # The factor pipeline has no Beijing coverage.  Filtering only 92xxxx
+    # misses legacy BSE/NEEQ codes (43/83/87xxxx), which are also represented as
+    # ``.BJ`` in the instrument lake and must not enter this THS-only history
+    # path.
+    symbols = [s for s in load_symbols(config) if not s.upper().endswith(".BJ")]
+    inst = load_curated_instruments(config)
+    if inst is None:
         # No instruments to plan against: fall back to the full window rather
         # than silently fetching nothing.
         return [(s, start) for s in symbols]
-    inst = pl.read_parquet(files).select("symbol", "list_date", "asset_type")
+    inst = inst.select("symbol", "list_date", "asset_type")
     meta = {r["symbol"]: r for r in inst.to_dicts()}
 
     plan: list[tuple[str, date]] = []
@@ -885,7 +1102,17 @@ def sweep_stock_bars_planned(
     streak = 0
     for i, (symbol, sym_start) in enumerate(plan, start=1):
         try:
-            rows.extend(fetch_stock_bars(symbol, sym_start, end, config=config))
+            got = fetch_stock_bars(symbol, sym_start, end, config=config)
+            if not got:
+                # A missing pre-IPO year is normal inside fetch_stock_bars, but
+                # an entire planned window with no usable rows is not a success:
+                # this symbol was eligible for the history sweep and would
+                # otherwise disappear from the quality signal and retry scope.
+                raise RuntimeError(
+                    f"THS history returned no usable bars for {symbol} in "
+                    f"{sym_start.isoformat()}..{end.isoformat()}"
+                )
+            rows.extend(_validate_planned_stock_bars(got, symbol, sym_start, end))
             batch.append(symbol)
             streak = 0
         except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
@@ -916,15 +1143,13 @@ def _delisted_universe(config: Config, start: date, end: date) -> list[str]:
     snapshot lost — the survivorship gap, 16.8% of the cross-section on
     2016-06-30 and still 6.0% on 2020-06-30.
     """
-    import polars as pl
-
     from cnequity.adapters.baostock._session import _login, import_baostock
     from cnequity.adapters.baostock.delisted_bars import roster_on
-    from cnequity.query.parquet_scan import parquet_glob
+    from cnequity.query.parquet_scan import scan_parquet_root
 
     bars_root = config.curated_root / "daily_bars"
     have = set(
-        pl.scan_parquet(parquet_glob(bars_root))
+        scan_parquet_root(bars_root, partition_col="trade_date", hive=False)
         .select("symbol")
         .unique()
         .collect()["symbol"]

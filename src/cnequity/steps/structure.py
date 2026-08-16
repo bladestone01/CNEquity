@@ -21,6 +21,7 @@ from cnequity.adapters.sw.industry_history import (
 )
 from cnequity.config import Config
 from cnequity.orchestrator.registry import register_step
+from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.steps.common import BACKFILL_START, list_trading_dates
 from cnequity.steps.http_common import run_incremental_fetched, write_fetched
 
@@ -40,11 +41,28 @@ def _month_end_trading_days(config: Config, start: date, end: date) -> list[date
     return [by_month[k] for k in sorted(by_month)]
 
 
-def _existing_as_of_dates(config: Config, dataset: str) -> set[date]:
+def _existing_as_of_dates(
+    config: Config,
+    dataset: str,
+    *,
+    required_index_symbols: tuple[str, ...] | None = None,
+) -> set[date]:
     root = config.curated_root / dataset
     files = list(root.glob("**/*.parquet")) if root.exists() else []
     if not files:
         return set()
+    if required_index_symbols is not None:
+        return set(
+            pl.scan_parquet(files)
+            .filter(pl.col("index_symbol").is_in(list(required_index_symbols)))
+            .group_by("as_of_date")
+            .agg(pl.col("index_symbol").n_unique().alias("_index_count"))
+            .filter(pl.col("_index_count") >= len(required_index_symbols))
+            .select("as_of_date")
+            .collect()
+            .get_column("as_of_date")
+            .to_list()
+        )
     return set(
         pl.scan_parquet(files).select("as_of_date").unique().collect()["as_of_date"].to_list()
     )
@@ -59,7 +77,7 @@ def step_sector_members(config: Config, trade_date: date, run_id: str, context: 
         trade_date,
         run_id,
         "sector_members",
-        fetch_sector_members,
+        lambda d: fetch_sector_members(d, config=config),
         source="eastmoney",
     )
 
@@ -75,7 +93,7 @@ def step_index_constituents(config: Config, trade_date: date, run_id: str, conte
         trade_date,
         run_id,
         "index_constituents",
-        fetch_index_constituents,
+        lambda d: fetch_index_constituents(d, config=config),
         source="eastmoney",
     )
 
@@ -84,7 +102,11 @@ def _backfill_index_constituents(config: Config, trade_date: date, run_id: str) 
     """CNI adjustment history → as_of snapshots for 399001/399006 (C2)."""
     start = getattr(config, "_backfill_start", None) or date(2021, 12, 1)
     end = getattr(config, "_backfill_end", None) or trade_date
-    have = _existing_as_of_dates(config, "index_constituents")
+    have = _existing_as_of_dates(
+        config,
+        "index_constituents",
+        required_index_symbols=CNI_BACKFILL_INDICES,
+    )
     # Prefer rebalance-month ends so as_of aligns with CNI spell boundaries.
     todo = [
         d for d in _month_end_trading_days(config, start, min(end, trade_date)) if d not in have
@@ -112,6 +134,7 @@ def _backfill_index_constituents(config: Config, trade_date: date, run_id: str) 
 
     result = write_fetched(config, run_id, "index_constituents", df, source="cni")
     if failed_indices:
+        result["status"] = "warning"
         result.setdefault("context_updates", {})["audit_findings"] = [
             {
                 "dataset": "index_constituents",
@@ -139,7 +162,7 @@ def step_industry_members(config: Config, trade_date: date, run_id: str, context
         trade_date,
         run_id,
         "industry_members",
-        fetch_industry_members,
+        lambda d: fetch_industry_members(d, config=config),
         source="eastmoney",
     )
 
@@ -152,7 +175,10 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
     # Skip eastmoney daily snapshots already in lake when choosing SW months —
     # SW rows use classification_system=sw and share as_of_date partitions, so
     # only skip dates that already contain sw rows.
-    sw_have = _existing_sw_as_of_dates(config)
+    # Thin snapshots are written for evidence, but are deliberately not
+    # considered complete; the next backfill must retry them instead of
+    # permanently parking a partial month behind a warning.
+    sw_have = _existing_sw_as_of_dates(config, min_rows=1000)
     todo = [
         d for d in _month_end_trading_days(config, start, min(end, trade_date)) if d not in sw_have
     ]
@@ -170,11 +196,17 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
         raise RuntimeError("industry_members backfill: Shenwan expansion produced 0 rows")
     # Soft coverage floor — a month with far fewer names than typical means the
     # XLS window does not reach that as_of (fail-loud rather than ship a hole).
-    counts = df.group_by("as_of_date").len().sort("as_of_date")
+    counts = (
+        df.unique(subset=["symbol", "classification_system", "as_of_date"], keep="last")
+        .group_by("as_of_date")
+        .len()
+        .sort("as_of_date")
+    )
     thin = counts.filter(pl.col("len") < 1000)
     result = write_fetched(config, run_id, "industry_members", df, source="sw")
     result["as_of_dates"] = todo.__len__()
     if thin.height:
+        result["status"] = "warning"
         result.setdefault("context_updates", {})["audit_findings"] = [
             {
                 "dataset": "industry_members",
@@ -189,16 +221,23 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
     return result
 
 
-def _existing_sw_as_of_dates(config: Config) -> set[date]:
+def _existing_sw_as_of_dates(config: Config, *, min_rows: int | None = None) -> set[date]:
     root = config.curated_root / "industry_members"
     files = list(root.glob("**/*.parquet")) if root.exists() else []
     if not files:
         return set()
-    return set(
-        pl.scan_parquet(files)
-        .filter(pl.col("classification_system") == "sw")
-        .select("as_of_date")
-        .unique()
-        .collect()["as_of_date"]
-        .to_list()
+    scan = dedupe_lazy_by_primary_key(
+        pl.scan_parquet(files).filter(pl.col("classification_system") == "sw"),
+        "industry_members",
     )
+    if min_rows is not None:
+        return set(
+            scan.group_by("as_of_date")
+            .len()
+            .filter(pl.col("len") >= min_rows)
+            .select("as_of_date")
+            .collect()
+            .get_column("as_of_date")
+            .to_list()
+        )
+    return set(scan.select("as_of_date").unique().collect().get_column("as_of_date").to_list())

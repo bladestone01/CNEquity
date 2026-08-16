@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from cnequity.config import Config
 from cnequity.orchestrator.engine import JobEngine
 from cnequity.orchestrator.manifest import Manifest
@@ -58,6 +60,27 @@ def test_partial_failure_fields_are_promoted_to_warning(tmp_path, monkeypatch):
 
     assert result["status"] == "warning"
     assert engine.manifest.incomplete_batch_counts_by_dataset(run_id) == {"trade_ticks": 1}
+
+
+@pytest.mark.parametrize("field", ["complete", "coverage_complete"])
+def test_incomplete_completion_flags_are_promoted_to_warning(tmp_path, monkeypatch, field):
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    run_id = engine.manifest.start_run("backfill")
+    monkeypatch.setattr(
+        "cnequity.orchestrator.engine.get_step",
+        lambda name: StepEntry(
+            fn=lambda *args: {"rows_read": 10, "rows_written": 8, field: False},
+            group="test",
+            requires_workers=False,
+        ),
+    )
+
+    result = engine._run_step("trading_status", date(2024, 6, 28), run_id, {})
+
+    assert result["status"] == "warning"
+    assert engine.manifest.incomplete_batch_counts_by_dataset(run_id) == {"trading_status": 1}
 
 
 def test_one_successful_retry_supersedes_all_prior_attempts(tmp_path, monkeypatch):
