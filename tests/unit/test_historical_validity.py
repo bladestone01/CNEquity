@@ -11,6 +11,7 @@ from cnequity.quality.st_coverage import (
     publish_st_coverage_receipt,
     write_st_checkpoint,
 )
+from cnequity.query.universe import coverage_end_date, coverage_start_date
 
 
 def _partition(cfg: Config, dataset: str, day: date, frame: pl.DataFrame) -> None:
@@ -107,3 +108,42 @@ def test_manifest_explains_each_blocking_boundary(tmp_path, monkeypatch):
         "delisted_universe_unverified",
     }
     assert all(blocker["remediation"] for blocker in report["blockers"])
+
+
+def test_coarse_partition_bounds_use_real_rows_for_history_window(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "lake")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH"]}).write_parquet(instruments / "part-merged.parquet")
+
+    bars = cfg.curated_root / "daily_bars" / "trade_date=2024-01"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["600519.SH", "600519.SH"], "trade_date": [date(2024, 1, 15), date(2024, 1, 20)]}
+    ).write_parquet(bars / "part-0.parquet")
+
+    scope = build_st_scope(["600519.SH"], date(2024, 1, 1), date(2024, 1, 31), universe="all_a")
+    checkpoint = {
+        "schema_version": 1,
+        "claim": "historical_st_evidence",
+        "scope": scope,
+        "status": "complete",
+        "completed_symbols": ["600519.SH"],
+        "evidence_rows_by_symbol": {"600519.SH": 0},
+        "unresolved_symbols": [],
+    }
+    write_st_checkpoint(cfg, checkpoint)
+    publish_st_coverage_receipt(cfg, checkpoint)
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.delisted_coverage_report",
+        lambda *args, **kwargs: _survivorship(verified=True),
+    )
+
+    assert coverage_start_date(cfg, "daily_bars") == date(2024, 1, 15)
+    assert coverage_end_date(cfg, "daily_bars") == date(2024, 1, 20)
+    report = historical_universe_validity(cfg, date(2024, 1, 1), date(2024, 1, 31))
+
+    assert report["universe_ready"] is False
+    assert {blocker["code"] for blocker in report["blockers"]} == {
+        "daily_bars_window_incomplete",
+    }

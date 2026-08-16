@@ -49,6 +49,18 @@ def test_snownlp_score_returns_none_on_scoring_exception(monkeypatch):
     assert snownlp_score("公司业绩增长") is None
 
 
+def test_snownlp_score_returns_none_for_nonfinite_probability(monkeypatch):
+    fake = types.ModuleType("snownlp")
+
+    class _Fake:
+        def __init__(self, text):
+            self.sentiments = float("nan")
+
+    fake.SnowNLP = _Fake
+    monkeypatch.setitem(sys.modules, "snownlp", fake)
+    assert snownlp_score("公司业绩增长") is None
+
+
 def test_snownlp_score_maps_probability_to_signed_range(monkeypatch):
     fake = types.ModuleType("snownlp")
 
@@ -111,3 +123,7 @@ def test_aggregate_scores_empty_is_zero():
 
 def test_aggregate_scores_averages():
     assert aggregate_scores([0.5, -0.5, 1.0]) == (0.5 - 0.5 + 1.0) / 3
+
+
+def test_aggregate_scores_ignores_nonfinite_values():
+    assert aggregate_scores([0.5, float("nan"), float("inf")]) == 0.5

@@ -1,6 +1,6 @@
 """Delisted-symbol recovery: baostock basics adapter + instruments merge."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -72,6 +72,12 @@ def test_fetch_basics_maps_symbols_dates_and_asset_types():
     assert by_symbol["600519.SH"]["list_date"] == date(2001, 8, 27)
 
 
+def test_fetch_basics_skips_non_six_digit_codes():
+    rows = [("sh.1", "坏代码", "2020-01-01", "", "1", "1")]
+    df = fetch_instrument_basics(bs=_FakeBaostock(rows), sleep=lambda _s: None)
+    assert df.is_empty()
+
+
 def test_fetch_basics_sets_delist_date_only_for_delisted_rows():
     df = fetch_instrument_basics(bs=_FakeBaostock(_ROWS), sleep=lambda _s: None)
 
@@ -103,7 +109,7 @@ def _live_snapshot(symbols, list_dates=None):
             "prev_symbol": [None] * len(symbols),
             "source": ["tdx_protocol"] * len(symbols),
             "data_version": ["v1"] * len(symbols),
-            "fetched_at": [None] * len(symbols),
+            "fetched_at": [datetime(2024, 6, 28, tzinfo=timezone.utc)] * len(symbols),
         }
     )
 

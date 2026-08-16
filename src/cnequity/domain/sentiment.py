@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 _POSITIVE_WEIGHTS: dict[str, float] = {
     "增长": 1.0,
     "盈利": 1.2,
@@ -62,6 +64,8 @@ def snownlp_score(text: str) -> float | None:
         prob = float(SnowNLP(text).sentiments)
     except Exception:
         return None
+    if not math.isfinite(prob):
+        return None
     return prob * 2.0 - 1.0
 
 
@@ -79,6 +83,7 @@ def score_text(text: str, *, use_snownlp: bool = True) -> tuple[float, str]:
 
 
 def aggregate_scores(scores: list[float]) -> float:
-    if not scores:
+    finite = [score for score in scores if math.isfinite(score)]
+    if not finite:
         return 0.0
-    return sum(scores) / len(scores)
+    return sum(finite) / len(finite)

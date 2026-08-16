@@ -50,6 +50,8 @@ UNIT_CHECK_MIN_ROWS = 200
 UNIT_CHECK_RATIO_LOW = 0.8
 UNIT_CHECK_RATIO_HIGH = 1.25
 
+AMOUNT_COMPLETENESS_MIN_ROWS = 20
+
 
 def _describe(ratio: float) -> str:
     """Name the likely mistake behind an off-band ratio."""
@@ -121,6 +123,69 @@ def daily_bars_volume_unit_findings(
                 "source": row["source"],
                 "median_ratio": ratio,
                 "rows": rows,
+                "window_start": start.isoformat(),
+                "window_end": trade_date.isoformat(),
+            }
+        )
+    return findings
+
+
+def daily_bars_amount_completeness_findings(
+    config: Config,
+    trade_date: date,
+    *,
+    lookback_days: int = UNIT_CHECK_LOOKBACK_DAYS,
+) -> list[dict]:
+    """Report turnover coverage by source instead of treating null as zero.
+
+    Sina intentionally has no amount field, but consumers still need to know
+    that liquidity features are incomplete for those rows. Other sources with
+    unexpected null turnover are surfaced by the same check.
+    """
+    findings: list[dict] = []
+    root = config.curated_root / "daily_bars"
+    if not dataset_has_parquet(root):
+        return findings
+
+    start = trade_date - timedelta(days=lookback_days)
+    lf = scan_parquet_root(root, partition_col="trade_date", start=start, end=trade_date)
+    cols = lf.collect_schema().names()
+    if not {"amount", "source"}.issubset(cols):
+        return findings
+
+    stats = (
+        lf.group_by("source")
+        .agg(
+            pl.len().alias("rows"),
+            pl.col("amount").is_null().sum().alias("missing_amount"),
+        )
+        .collect()
+    )
+    for row in stats.sort("source").iter_rows(named=True):
+        rows = int(row["rows"])
+        missing = int(row["missing_amount"])
+        if rows < AMOUNT_COMPLETENESS_MIN_ROWS or not missing:
+            continue
+        ratio = missing / rows
+        source = str(row["source"])
+        expected = (
+            "expected for Sina (source does not publish turnover)"
+            if source == "sina"
+            else ("unexpected for this source")
+        )
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "warning",
+                "check": "daily_bars_amount_completeness",
+                "message": (
+                    f"source={source}: {missing}/{rows} row(s) have null amount "
+                    f"({ratio:.1%}) over {start.isoformat()}..{trade_date.isoformat()}; {expected}"
+                ),
+                "source": source,
+                "rows": rows,
+                "missing_amount": missing,
+                "missing_ratio": ratio,
                 "window_start": start.isoformat(),
                 "window_end": trade_date.isoformat(),
             }

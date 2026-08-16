@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import date
 
 import polars as pl
@@ -33,13 +32,17 @@ from cnequity.quality.macro_checks import macro_staleness_findings
 from cnequity.quality.source_diff import run_source_diffs
 from cnequity.quality.st_coverage import st_evidence_coverage_report
 from cnequity.quality.tick_checks import trade_ticks_findings
-from cnequity.quality.unit_checks import daily_bars_volume_unit_findings
+from cnequity.quality.unit_checks import (
+    daily_bars_amount_completeness_findings,
+    daily_bars_volume_unit_findings,
+)
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.query.universe import (
     coverage_start_date,
     st_coverage_start,
     trading_status_coverage_start,
 )
+from cnequity.storage.atomic import write_json_atomic
 
 # Sample missing/orphan dates surfaced in a coverage finding.
 _INDEX_COVERAGE_SAMPLE = 8
@@ -143,9 +146,18 @@ def _unregistered_curated_dirs(config: Config) -> list[dict]:
 
 
 def _collect_lake_findings(
-    config: Config, trade_date: date, context: dict | None = None
+    config: Config,
+    trade_date: date,
+    context: dict | None = None,
+    *,
+    full: bool = False,
 ) -> list[dict]:
-    """All quality findings for the current curated lake (run-independent)."""
+    """All quality findings for the current curated lake (run-independent).
+
+    ``full`` is reserved for the explicit lake-health path. It makes the
+    per-dataset structural/schema checks cover every historical Parquet file;
+    ordinary run findings continue to inspect only the active partition.
+    """
     findings: list[dict] = []
     context = context or {}
 
@@ -223,6 +235,7 @@ def _collect_lake_findings(
     findings.extend(daily_bars_calendar_findings(config, trade_date))
     findings.extend(trading_calendar_horizon_findings(config, trade_date))
     findings.extend(daily_bars_volume_unit_findings(config, trade_date))
+    findings.extend(daily_bars_amount_completeness_findings(config, trade_date))
     # No-ops on a lake that never enabled intraday capture.
     findings.extend(minute_bars_findings(config, trade_date))
     findings.extend(trade_ticks_findings(config, trade_date))
@@ -246,7 +259,7 @@ def _collect_lake_findings(
 
     for ds, pcol in PARTITION_COLS.items():
         root = config.curated_root / ds
-        findings.extend(audit_curated_dataset(ds, pcol, root, trade_date))
+        findings.extend(audit_curated_dataset(ds, pcol, root, trade_date, full=full))
         mixed = check_mixed_partition_granularity(ds, pcol, root)
         if mixed is not None:
             findings.append(mixed)
@@ -258,21 +271,24 @@ def _collect_lake_findings(
 
 def run_audit(config: Config, run_id: str, trade_date: date, context: dict | None = None) -> int:
     findings = _collect_lake_findings(config, trade_date, context)
+    # Keep the dedicated source-diff artifact, but also include its findings in
+    # the per-run audit file. Otherwise callers reading one run's findings (and
+    # not the second directory) can mistake "audit completed" for "sources
+    # agreed".
+    findings.extend(run_source_diffs(config, run_id, trade_date))
 
     out_dir = config.meta_root / "quality" / "findings"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{run_id}.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {"run_id": run_id, "trade_date": trade_date.isoformat(), "findings": findings},
-            f,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        )
+    write_json_atomic(
+        out_path,
+        {"run_id": run_id, "trade_date": trade_date.isoformat(), "findings": findings},
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
 
-    diffs = run_source_diffs(config, run_id, trade_date)
-    return len(findings) + len(diffs)
+    return len(findings)
 
 
 def lake_health(
@@ -287,7 +303,11 @@ def lake_health(
     from cnequity.quality.historical_validity import historical_universe_validity
     from cnequity.query.reader import list_datasets
 
-    findings = _collect_lake_findings(config, trade_date, None)
+    findings = _collect_lake_findings(config, trade_date, None, full=True)
+    # source_diff is local-only: it compares curated rows with the latest
+    # already-captured backup snapshot. Running it here makes an explicit
+    # health check authoritative even when no ingestion run happened today.
+    findings.extend(run_source_diffs(config, f"health-{trade_date.isoformat()}", trade_date))
     by_severity: dict[str, int] = {}
     for f in findings:
         sev = f.get("severity", "info")
@@ -329,10 +349,20 @@ def lake_health(
 
     out_dir = config.meta_root / "quality"
     out_dir.mkdir(parents=True, exist_ok=True)
-    with open(out_dir / "health-latest.json", "w", encoding="utf-8") as f:
-        json.dump(health, f, ensure_ascii=False, indent=2, default=str)
-    with open(out_dir / "historical-validity-latest.json", "w", encoding="utf-8") as f:
-        json.dump(historical_validity, f, ensure_ascii=False, indent=2, default=str)
+    write_json_atomic(
+        out_dir / "health-latest.json",
+        health,
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+    write_json_atomic(
+        out_dir / "historical-validity-latest.json",
+        historical_validity,
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
     return health
 
 

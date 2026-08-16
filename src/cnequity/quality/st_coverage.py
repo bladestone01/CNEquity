@@ -21,6 +21,8 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.symbols import is_all_a_symbol, parse_symbol
+from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
+from cnequity.query.parquet_scan import collect_parquet_root
 
 ST_EVIDENCE_VERSION = 2
 ST_COVERAGE_CLAIM = "historical_st_evidence"
@@ -56,10 +58,16 @@ def current_st_universe(config: Config) -> list[str]:
     This is deliberately disk-only.  A coverage check must never make a
     provider call merely to decide whether an existing receipt is trustworthy.
     """
-    path = config.curated_root / "instruments" / "part-merged.parquet"
-    if not path.exists():
+    root = config.curated_root / "instruments"
+    if not root.exists():
         return []
-    frame = pl.read_parquet(path, columns=["symbol"])
+    try:
+        frame = collect_parquet_root(root, hive=False)
+    except FileNotFoundError:
+        return []
+    frame = dedupe_by_primary_key(frame, "instruments")
+    if "symbol" not in frame.columns:
+        return []
     symbols: list[str] = []
     for raw in frame["symbol"].to_list():
         try:
@@ -183,6 +191,10 @@ def _st_row_counts(
     )
     if "source" in schema:
         frame = frame.filter(pl.col("source") == "baostock")
+    # Count only distinct Baostock facts. Filter the evidence owner first: a
+    # same-PK EastMoney snapshot must not erase the Baostock row from this
+    # source-specific coverage claim before canonicalization.
+    frame = dedupe_lazy_by_primary_key(frame, "trading_status")
     counts = frame.group_by("symbol").len().collect()
     return {row["symbol"]: int(row["len"]) for row in counts.iter_rows(named=True)}
 

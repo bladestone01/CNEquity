@@ -45,3 +45,145 @@ def test_validate_missing_column_raises():
     df = pl.DataFrame({"symbol": ["600519.SH"]})
     with pytest.raises(SchemaValidationError, match="missing columns"):
         validate_dataframe(df, "daily_bars")
+
+
+def test_validate_rejects_unparseable_required_market_value():
+    raw = pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": ["2024-06-28"],
+            "open": ["bad"],
+            "high": [11.0],
+            "low": [9.0],
+            "close": [10.5],
+            "volume": [1000],
+            "amount": [10500.0],
+            "source": ["eastmoney"],
+            "data_version": ["v2"],
+            "fetched_at": ["2024-06-28T00:00:00+00:00"],
+        }
+    )
+    with pytest.raises(SchemaValidationError, match="required columns.*open"):
+        validate_dataframe(raw, "daily_bars")
+
+
+def test_validate_rejects_impossible_ohlc():
+    raw = pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "open": [10.0],
+            "high": [9.0],
+            "low": [8.0],
+            "close": [8.5],
+            "volume": [1000],
+            "amount": [8500.0],
+            "source": ["eastmoney"],
+            "data_version": ["v2"],
+            "fetched_at": [datetime(2024, 6, 28, tzinfo=timezone.utc)],
+        }
+    )
+    with pytest.raises(SchemaValidationError, match="numeric market-data invariants"):
+        validate_dataframe(raw, "daily_bars")
+
+
+def test_validate_rejects_non_finite_optional_numeric_values():
+    raw = pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "main_net_inflow": [float("nan")],
+            "super_large_net_inflow": [None],
+            "large_net_inflow": [None],
+            "medium_net_inflow": [None],
+            "small_net_inflow": [None],
+            "source": ["eastmoney"],
+            "data_version": ["v1"],
+            "fetched_at": [datetime(2024, 6, 28, tzinfo=timezone.utc)],
+        }
+    )
+    with pytest.raises(SchemaValidationError, match="non-finite"):
+        validate_dataframe(raw, "fund_flow")
+
+
+def test_validate_rejects_blank_required_provenance():
+    raw = pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "main_net_inflow": [1.0],
+            "super_large_net_inflow": [0.0],
+            "large_net_inflow": [0.0],
+            "medium_net_inflow": [0.0],
+            "small_net_inflow": [0.0],
+            "source": ["  "],
+            "data_version": ["v1"],
+            "fetched_at": [datetime(2024, 6, 28, tzinfo=timezone.utc)],
+        }
+    )
+    with pytest.raises(SchemaValidationError, match="required string columns.*source"):
+        validate_dataframe(raw, "fund_flow")
+
+
+@pytest.mark.parametrize(
+    ("dataset", "row", "missing"),
+    [
+        (
+            "trading_calendar",
+            {
+                "trade_date": date(2024, 6, 28),
+                "is_trading": None,
+                "source": "seed",
+                "data_version": "v1",
+                "fetched_at": datetime(2024, 6, 28, tzinfo=timezone.utc),
+            },
+            "is_trading",
+        ),
+        (
+            "trading_status",
+            {
+                "symbol": "600519.SH",
+                "trade_date": date(2024, 6, 28),
+                "is_trading": True,
+                "status": None,
+                "source": "eastmoney",
+                "data_version": "v1",
+                "fetched_at": datetime(2024, 6, 28, tzinfo=timezone.utc),
+            },
+            "status",
+        ),
+    ],
+)
+def test_validate_rejects_null_core_semantic_fields(dataset, row, missing):
+    with pytest.raises(SchemaValidationError, match=f"required columns contain null.*{missing}"):
+        validate_dataframe(pl.DataFrame([row]), dataset)
+
+
+def test_validate_requires_trade_tick_time_and_direction():
+    row = {
+        "symbol": "600519.SH",
+        "trade_date": date(2024, 6, 28),
+        "tick_seq": 0,
+        "trade_time": None,
+        "price": 100.0,
+        "volume": 100,
+        "direction": None,
+        "source": "tdx_protocol",
+        "data_version": "v1",
+        "fetched_at": datetime(2024, 6, 28, tzinfo=timezone.utc),
+    }
+    with pytest.raises(SchemaValidationError, match="required columns contain null"):
+        validate_dataframe(pl.DataFrame([row]), "trade_ticks")
+
+
+def test_validate_wraps_engine_error_for_invalid_boolean_cast():
+    row = {
+        "trade_date": date(2024, 6, 28),
+        "is_trading": "unknown",
+        "source": "seed",
+        "data_version": "v1",
+        "fetched_at": datetime(2024, 6, 28, tzinfo=timezone.utc),
+    }
+    with pytest.raises(SchemaValidationError, match="values cannot be cast") as exc_info:
+        validate_dataframe(pl.DataFrame([row]), "trading_calendar")
+    assert "is_trading" in str(exc_info.value)

@@ -71,7 +71,6 @@ def snapshot_daily_bars_clist(
     if spec is None or not config.sources.get(spec.backup, True):
         return pl.DataFrame() if df is None else df
     if df is None:
-        config.rate_limit(spec.backup)
         df = fetch_daily_bars_clist(trade_date, symbols=symbols, config=config)
     if df.is_empty():
         return df
@@ -104,8 +103,7 @@ def snapshot_daily_bars_backup(
     # Tip windows use clist once at the step level; avoid N×kline here.
     if start == end:
         return
-    config.rate_limit(spec.backup)
-    df = fetch_em_daily_bars(symbols, start, end)
+    df = fetch_em_daily_bars(symbols, start, end, config=config)
     if df.is_empty():
         return
     df = with_provenance(df, source=spec.backup, data_version=data_version_for("daily_bars"))
@@ -133,7 +131,6 @@ def snapshot_corporate_actions_backup(
     spec = failover_spec(config, "corporate_actions")
     if spec is None or not config.sources.get(spec.backup, True):
         return
-    config.rate_limit(spec.backup)
     df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill, config=config)
     if df.is_empty():
         return

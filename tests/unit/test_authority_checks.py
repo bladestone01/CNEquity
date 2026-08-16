@@ -125,7 +125,11 @@ def test_pmi_check_is_off_without_the_source_flag(monkeypatch, tmp_path):
 def _exchange(monkeypatch, names: dict[str, str]):
     import cnequity.adapters.exchange.st_lists as ex
 
-    monkeypatch.setattr(ex, "fetch_exchange_names", lambda **_kw: names)
+    monkeypatch.setattr(
+        ex,
+        "fetch_exchange_names_with_status",
+        lambda **_kw: ex.ExchangeNamesResult(names=names, failures={}),
+    )
 
 
 def _universe(n: int, *, st_designated: int):
@@ -138,6 +142,13 @@ def test_agreeing_labels_are_silent(monkeypatch, tmp_path):
     syms, names = _universe(50, st_designated=10)
     _exchange(monkeypatch, names)
     status = {s: ("st" if i < 10 else "normal") for i, s in enumerate(syms)}
+    assert ac.st_labels_vs_exchange(_lake(tmp_path, status=status), TD) == []
+
+
+def test_star_st_statuses_are_counted_as_labels(monkeypatch, tmp_path):
+    syms, names = _universe(50, st_designated=10)
+    _exchange(monkeypatch, names)
+    status = {s: ("*st" if i < 10 else "normal") for i, s in enumerate(syms)}
     assert ac.st_labels_vs_exchange(_lake(tmp_path, status=status), TD) == []
 
 
@@ -184,8 +195,27 @@ def test_small_disagreement_is_tolerated_as_naming_lag(monkeypatch, tmp_path):
 
 
 def test_unreachable_exchanges_are_silent(monkeypatch, tmp_path):
-    _exchange(monkeypatch, {})
+    import cnequity.adapters.exchange.st_lists as ex
+
+    monkeypatch.setattr(
+        ex,
+        "fetch_exchange_names_with_status",
+        lambda **_kw: ex.ExchangeNamesResult(names={}, failures={"sse": "down", "szse": "down"}),
+    )
     syms, _ = _universe(20, st_designated=0)
+    status = {s: "normal" for s in syms}
+    assert ac.st_labels_vs_exchange(_lake(tmp_path, status=status), TD) == []
+
+
+def test_partial_exchange_snapshot_is_not_reported_as_agreed(monkeypatch, tmp_path):
+    syms, names = _universe(50, st_designated=10)
+    import cnequity.adapters.exchange.st_lists as ex
+
+    monkeypatch.setattr(
+        ex,
+        "fetch_exchange_names_with_status",
+        lambda **_kw: ex.ExchangeNamesResult(names=names, failures={"szse": "down"}),
+    )
     status = {s: "normal" for s in syms}
     assert ac.st_labels_vs_exchange(_lake(tmp_path, status=status), TD) == []
 

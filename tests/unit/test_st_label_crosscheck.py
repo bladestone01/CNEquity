@@ -22,7 +22,9 @@ from cnequity.quality.cross_checks import (
 TD = date(2026, 8, 1)
 
 
-def _lake(tmp_path, *, names: dict[str, str], st_labeled: list[str]) -> Config:
+def _lake(
+    tmp_path, *, names: dict[str, str], st_labeled: list[str], st_status: str = "st"
+) -> Config:
     root = tmp_path / "data"
 
     inst = root / "curated" / "instruments"
@@ -46,7 +48,7 @@ def _lake(tmp_path, *, names: dict[str, str], st_labeled: list[str]) -> Config:
             "symbol": list(names),
             "trade_date": [TD] * len(names),
             "is_trading": [True] * len(names),
-            "status": ["st" if s in st_labeled else "normal" for s in names],
+            "status": [st_status if s in st_labeled else "normal" for s in names],
             "source": ["eastmoney"] * len(names),
             "data_version": ["v1"] * len(names),
             "fetched_at": [datetime.now(timezone.utc)] * len(names),
@@ -65,6 +67,16 @@ def _universe(n: int, *, st_named: int, st_labeled: int):
 def test_agreeing_feeds_produce_no_finding(tmp_path):
     names, labeled = _universe(50, st_named=10, st_labeled=10)
     assert st_label_crosscheck_findings(_lake(tmp_path, names=names, st_labeled=labeled), TD) == []
+
+
+def test_star_st_statuses_are_counted_as_st_labels(tmp_path):
+    names, labeled = _universe(20, st_named=5, st_labeled=5)
+    assert (
+        st_label_crosscheck_findings(
+            _lake(tmp_path, names=names, st_labeled=labeled, st_status="*st"), TD
+        )
+        == []
+    )
 
 
 def test_star_st_names_count_as_st(tmp_path):

@@ -6,7 +6,7 @@ import polars as pl
 
 import cnequity.steps  # noqa: F401 — register steps
 from cnequity.config import Config
-from cnequity.steps.finalize import _reconcile_watermarks, _update_watermarks
+from cnequity.steps.finalize import _max_partition_date, _reconcile_watermarks, _update_watermarks
 from cnequity.storage.state import StateStore
 
 _VAL_SCHEMA_ROWS = ("pe_ttm", "pb", "ps_ttm", "total_mv", "float_mv")
@@ -91,6 +91,54 @@ def test_reconcile_ignores_a_dataset_with_no_watermark_yet(tmp_path):
     assert _reconcile_watermarks(cfg) == []
 
 
+def test_valuation_watermark_does_not_cross_a_sparse_tip(tmp_path):
+    """A low-coverage valuation tip must not become an incremental boundary."""
+    cfg = Config(data_root=tmp_path / "data")
+    calendar = cfg.curated_root / "trading_calendar" / "trade_date=2026"
+    calendar.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2026, 7, 20)],
+            "is_trading": [True],
+        }
+    ).write_parquet(calendar / "part-0.parquet")
+
+    bars = cfg.curated_root / "daily_bars" / "trade_date=2026-07-20"
+    bars.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "600001.SH", "600002.SH"],
+            "trade_date": [date(2026, 7, 20)] * 3,
+        }
+    ).write_parquet(bars / "part-0.parquet")
+    _write_valuation(cfg, date(2026, 7, 20), symbols=1)
+
+    _update_watermarks(cfg, frozenset({"valuation_metrics"}), date(2026, 7, 20))
+
+    assert StateStore(cfg.meta_root).get_date("valuation_metrics") is None
+
+
+def test_reconcile_clears_old_sparse_valuation_watermark(tmp_path):
+    """A watermark created before the coverage gate must be removed safely."""
+    cfg = Config(data_root=tmp_path / "data")
+    state = StateStore(cfg.meta_root)
+    state.set_date("valuation_metrics", date(2026, 7, 20))
+    bars = cfg.curated_root / "daily_bars" / "trade_date=2026-07-20"
+    bars.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "600001.SH", "600002.SH"],
+            "trade_date": [date(2026, 7, 20)] * 3,
+        }
+    ).write_parquet(bars / "part-0.parquet")
+    _write_valuation(cfg, date(2026, 7, 20), symbols=1)
+
+    findings = _reconcile_watermarks(cfg)
+
+    assert state.get_date("valuation_metrics") is None
+    assert findings[0]["check"] == "valuation_watermark_coverage_gate"
+
+
 def test_reconcile_ignores_a_dataset_with_no_data_at_all(tmp_path):
     """An empty dataset is reported by the existence check, not by rewinding."""
     cfg = Config(data_root=tmp_path / "data")
@@ -128,3 +176,50 @@ def test_an_outage_accumulates_staleness_instead_of_being_masked(tmp_path):
     assert lags == [1, 2, 3, 5], "lag must grow with the outage"
     assert is_stale("valuation_metrics", last_good, date(2026, 7, 21)) is False
     assert is_stale("valuation_metrics", last_good, date(2026, 7, 23)) is True
+
+
+def test_dense_watermark_stops_before_an_interior_trading_day_gap(tmp_path):
+    """A later row must not make an earlier missing session unreachable."""
+    cfg = Config(data_root=tmp_path / "data")
+    calendar = cfg.curated_root / "trading_calendar" / "trade_date=2026"
+    calendar.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2026, 7, 20), date(2026, 7, 21), date(2026, 7, 22)],
+            "is_trading": [True, True, True],
+        }
+    ).write_parquet(calendar / "part-0.parquet")
+
+    for day in (date(2026, 7, 20), date(2026, 7, 22)):
+        part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [day],
+                "open": [10.0],
+                "high": [11.0],
+                "low": [9.0],
+                "close": [10.5],
+                "volume": [1000],
+                "amount": [10_500.0],
+                "source": ["tdx_protocol"],
+                "data_version": ["v1"],
+                "fetched_at": [f"{day.isoformat()}T00:00:00+00:00"],
+            }
+        ).write_parquet(part / "part-merged.parquet")
+
+    _update_watermarks(cfg, frozenset({"daily_bars"}), date(2026, 7, 22))
+
+    assert StateStore(cfg.meta_root).get_date("daily_bars") == date(2026, 7, 20)
+
+
+def test_max_partition_date_keeps_root_legacy_files_in_mixed_layout(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    root = cfg.curated_root / "valuation_metrics"
+    part = root / "trade_date=2026-07-20"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"trade_date": [date(2026, 7, 20)]}).write_parquet(part / "part-0.parquet")
+    pl.DataFrame({"trade_date": [date(2026, 7, 21)]}).write_parquet(root / "part-legacy.parquet")
+
+    assert _max_partition_date(cfg, "valuation_metrics", "trade_date") == date(2026, 7, 21)

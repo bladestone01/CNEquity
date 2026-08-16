@@ -115,7 +115,24 @@ def format_symbol(code: str, exchange: str) -> str:
     return f"{code}.{exchange.upper()}"
 
 
+def infer_exchange_from_code(code: str) -> str:
+    """Infer an exchange from a six-digit equity code when the feed omits it.
+
+    Legacy Beijing/NEEQ codes remain valid universe members, so recognizing
+    only today's ``92xxxx`` BSE range silently drops or mislabels ``43/83/87``
+    codes in source adapters that do not provide a market field.
+    """
+    normalized = str(code).strip().zfill(6)
+    if normalized.startswith(("60", "68")):
+        return "SH"
+    if normalized.startswith(PREFIX_WHITELIST["BJ"]):
+        return "BJ"
+    return "SZ"
+
+
 def is_all_a_symbol(code: str, exchange: str) -> bool:
+    if not isinstance(code, str) or len(code) != 6 or not code.isdigit():
+        return False
     exchange = exchange.upper()
     # 81–89 is a SH/SZ reservation (bonds etc.); BJ's legacy 83xxxx NEEQ
     # band must not be caught by the same digit check.
@@ -127,11 +144,15 @@ def is_all_a_symbol(code: str, exchange: str) -> bool:
 
 def is_cdr_symbol(code: str, exchange: str) -> bool:
     """Whether *code* is a CDR (Chinese Depositary Receipt, SH 689xxx segment)."""
+    if not isinstance(code, str) or len(code) != 6 or not code.isdigit():
+        return False
     return exchange.upper() == "SH" and any(code.startswith(p) for p in CDR_PREFIXES)
 
 
 def is_etf_symbol(code: str, exchange: str) -> bool:
     """Whether *code* is an exchange-traded fund / LOF on SH/SZ."""
+    if not isinstance(code, str) or len(code) != 6 or not code.isdigit():
+        return False
     prefixes = ETF_PREFIXES.get(exchange.upper(), ())
     return any(code.startswith(p) for p in prefixes)
 

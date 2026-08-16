@@ -14,13 +14,14 @@ holes or propose repairs that can never work.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
-from cnequity.quality.verify import verify_dataset, verify_lake
+from cnequity.quality.verify import last_contiguous_dense_date, verify_dataset, verify_lake
 
 ANCHOR = date(2026, 8, 7)
 
@@ -80,6 +81,105 @@ def test_interior_hole_in_a_daily_by_date_dataset_is_a_fault(tmp_path):
     assert gap.sample == (date(2026, 8, 5),)
     assert gap.start == gap.end == date(2026, 8, 5)
     assert gap.repairable is True
+
+
+def test_market_breadth_interior_hole_is_a_fault(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+    _calendar(cfg, sessions)
+    _write_days(
+        cfg,
+        "market_breadth",
+        [sessions[0], sessions[-1]],
+    )
+
+    gaps = verify_dataset(
+        cfg,
+        DATASETS["market_breadth"],
+        anchor=sessions[-1],
+        watermark=sessions[-1],
+    )
+
+    interior = [gap for gap in gaps if gap.kind == "interior"]
+    assert len(interior) == 1
+    assert interior[0].sample == (sessions[1],)
+
+
+def test_industry_index_interior_hole_is_a_fault(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+    _calendar(cfg, sessions)
+    _write_days(
+        cfg,
+        "industry_index",
+        [sessions[0], sessions[-1]],
+        layer="derived",
+    )
+
+    gaps = verify_dataset(
+        cfg,
+        DATASETS["industry_index"],
+        anchor=sessions[-1],
+        watermark=sessions[-1],
+    )
+
+    interior = [gap for gap in gaps if gap.kind == "interior"]
+    assert len(interior) == 1
+    assert interior[0].sample == (sessions[1],)
+
+
+def test_sparse_by_date_feed_is_not_treated_as_session_dense(tmp_path):
+    """By-date querying is not a promise that an event exists every session."""
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5), date(2026, 8, 6)]
+    _calendar(cfg, sessions)
+    sparse = replace(
+        DATASETS["daily_bars"],
+        name="sparse_events",
+        coverage_mode="sparse",
+    )
+    _write_days(cfg, sparse.name, [sessions[0], sessions[-1]])
+
+    gaps = verify_dataset(cfg, sparse, anchor=sessions[-1], watermark=sessions[-1])
+
+    assert [gap for gap in gaps if gap.kind == "interior"] == []
+
+
+def test_dense_coarse_partition_scans_date_column_for_interior_holes(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5), date(2026, 8, 6)]
+    _calendar(cfg, sessions)
+    part = cfg.curated_root / "index_bars" / "trade_date=2026"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["000300.SH"] * 3,
+            "trade_date": [sessions[0], sessions[1], sessions[-1]],
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+    gaps = verify_dataset(
+        cfg,
+        DATASETS["index_bars"],
+        anchor=sessions[-1],
+        watermark=sessions[-1],
+    )
+
+    interior = [gap for gap in gaps if gap.kind == "interior"]
+    assert len(interior) == 1
+    assert interior[0].sample == (date(2026, 8, 5),)
+
+
+def test_dense_day_partitions_include_root_legacy_files_in_mixed_layout(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4)]
+    _calendar(cfg, sessions)
+    _write_days(cfg, "daily_bars", [sessions[0]])
+    pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [sessions[1]]}).write_parquet(
+        cfg.curated_root / "daily_bars" / "part-legacy.parquet"
+    )
+
+    assert last_contiguous_dense_date(cfg, DATASETS["daily_bars"]) == sessions[-1]
 
 
 def test_snapshot_only_dataset_is_never_told_to_backfill(tmp_path):

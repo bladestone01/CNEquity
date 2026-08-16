@@ -98,6 +98,11 @@ def test_layer_partitions():
     assert get_dataset("daily_bars").partition_col == "trade_date"
 
 
+def test_market_breadth_is_session_dense():
+    assert get_dataset("market_breadth").coverage_mode == "session_dense"
+    assert get_dataset("industry_index").coverage_mode == "session_dense"
+
+
 def test_every_dataset_lands_in_exactly_one_tier():
     grouped = datasets_by_tier()
     assert set(grouped) == set(TIERS)

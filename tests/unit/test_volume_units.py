@@ -16,6 +16,7 @@ from cnequity.domain.schemas import data_version_for
 from cnequity.domain.units import SHARES_PER_LOT, lots_to_shares
 from cnequity.quality.unit_checks import (
     UNIT_CHECK_MIN_ROWS,
+    daily_bars_amount_completeness_findings,
     daily_bars_volume_unit_findings,
 )
 
@@ -276,6 +277,20 @@ def test_thin_sources_are_not_judged(config):
         _rows("eastmoney", volume=LOTS, n=UNIT_CHECK_MIN_ROWS - 1, anchor=anchor),
     )
     assert daily_bars_volume_unit_findings(config, anchor) == []
+
+
+def test_amount_completeness_surfaces_sina_null_turnover(config):
+    anchor = date(2024, 6, 28)
+    rows = _rows("sina", volume=SHARES, n=UNIT_CHECK_MIN_ROWS, anchor=anchor)
+    for row in rows:
+        row["amount"] = None
+    _write_bars(config, rows)
+
+    findings = daily_bars_amount_completeness_findings(config, anchor)
+    assert len(findings) == 1
+    assert findings[0]["check"] == "daily_bars_amount_completeness"
+    assert findings[0]["source"] == "sina"
+    assert findings[0]["missing_amount"] == UNIT_CHECK_MIN_ROWS
 
 
 def test_rows_without_amount_are_skipped_not_flagged(config):

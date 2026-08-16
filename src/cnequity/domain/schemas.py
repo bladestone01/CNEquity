@@ -746,8 +746,121 @@ class SchemaValidationError(ValueError):
     """Raised when a DataFrame does not match the dataset contract."""
 
 
-def validate_dataframe(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
-    """Cast and validate *df* against the curated schema for *dataset*."""
+_CORE_BAR_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "daily_bars": ("open", "high", "low", "close", "volume"),
+    "index_bars": ("open", "high", "low", "close", "volume"),
+    "minute_bars": ("open", "high", "low", "close", "volume"),
+    "minute_bars_5m": ("open", "high", "low", "close", "volume"),
+    "commodity_bars": ("open", "high", "low", "close", "volume"),
+    "sector_bars": ("open", "high", "low", "close", "volume"),
+    "trade_ticks": ("price", "volume"),
+}
+
+# These fields are not part of a bar's numeric shape, but a null value is still
+# semantically unusable.  In particular, Polars casts an invalid boolean to
+# null; allowing that through would make calendar consumers treat an unknown
+# session as non-trading and would make status history silently incomplete.
+_CORE_SEMANTIC_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "trading_calendar": ("is_trading",),
+    "trading_status": ("is_trading", "status"),
+    "trade_ticks": ("trade_time", "direction"),
+}
+
+
+def required_columns_for_dataset(dataset: str, schema: dict[str, pl.DataType]) -> list[str]:
+    """Return columns that must be present and non-null for a stored row.
+
+    Most fundamental fields are legitimately nullable (for example PE for a
+    loss-making company, or Sina's unavailable turnover). Primary keys and
+    provenance are never nullable, while market-bar price/volume fields are
+    required because a null there means the source row was malformed.
+    """
+    required = list(PRIMARY_KEYS.get(dataset, []))
+    required.extend(col for col in PROVENANCE if col in schema and col not in required)
+    required.extend(col for col in _CORE_BAR_REQUIRED_COLUMNS.get(dataset, ()) if col in schema)
+    required.extend(
+        col
+        for col in _CORE_SEMANTIC_REQUIRED_COLUMNS.get(dataset, ())
+        if col in schema
+    )
+    return list(dict.fromkeys(required))
+
+
+def _validate_bar_semantics(df: pl.DataFrame, dataset: str) -> None:
+    """Reject impossible numeric market rows before they reach Parquet."""
+    bar_datasets = {
+        "daily_bars",
+        "index_bars",
+        "minute_bars",
+        "minute_bars_5m",
+        "commodity_bars",
+        "sector_bars",
+        "trade_ticks",
+    }
+    if dataset not in bar_datasets or df.is_empty():
+        return
+
+    checks: list[pl.Expr] = []
+    price_cols = [col for col in ("open", "high", "low", "close", "price") if col in df.columns]
+    checks.extend(pl.col(col) <= 0 for col in price_cols)
+    if "volume" in df.columns:
+        checks.append(pl.col("volume") < 0)
+    if "amount" in df.columns:
+        checks.append(pl.col("amount").is_not_null() & (pl.col("amount") < 0))
+
+    if all(col in df.columns for col in ("open", "high", "low", "close")):
+        checks.extend(
+            [
+                pl.col("high") < pl.col("open"),
+                pl.col("high") < pl.col("close"),
+                pl.col("low") > pl.col("open"),
+                pl.col("low") > pl.col("close"),
+                pl.col("low") > pl.col("high"),
+            ]
+        )
+
+    if not checks:
+        return
+    bad = df.filter(pl.any_horizontal(checks)).height
+    if bad:
+        raise SchemaValidationError(
+            f"dataset '{dataset}': {bad} row(s) violate numeric market-data invariants"
+        )
+
+
+def _validate_finite_values(df: pl.DataFrame, dataset: str) -> None:
+    """Reject NaN/Inf in any optional numeric field as well as required ones."""
+    float_columns = [col for col, dtype in df.schema.items() if dtype in (pl.Float32, pl.Float64)]
+    if not float_columns or df.is_empty():
+        return
+    bad_counts = df.select(
+        [
+            (pl.col(col).is_not_null() & ~pl.col(col).is_finite()).sum().alias(col)
+            for col in float_columns
+        ]
+    ).row(0, named=True)
+    invalid = {col: int(count) for col, count in bad_counts.items() if count}
+    if invalid:
+        detail = ", ".join(f"{col}={count}" for col, count in invalid.items())
+        raise SchemaValidationError(
+            f"dataset '{dataset}': non-finite numeric values are not allowed: {detail}"
+        )
+
+
+def validate_dataframe(
+    df: pl.DataFrame,
+    dataset: str,
+    *,
+    allow_missing_optional: bool = False,
+) -> pl.DataFrame:
+    """Cast and validate *df* against the curated schema for *dataset*.
+
+    Writers use the strict default: every registered column must be present.
+    Historical audits may set ``allow_missing_optional`` because old Parquet
+    files can legitimately predate a nullable column that was added to the
+    schema. Primary keys, provenance, and core bar fields remain mandatory in
+    that mode; a file that lacks one of those is still invalid.
+    """
     schema = DATASET_SCHEMAS.get(dataset)
     if schema is None:
         return df
@@ -756,11 +869,22 @@ def validate_dataframe(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
         return pl.DataFrame(schema=schema)
 
     missing = [col for col in schema if col not in df.columns]
-    if missing:
+    if allow_missing_optional:
+        required = required_columns_for_dataset(dataset, schema)
+        missing_required = [col for col in required if col not in df.columns]
+        if missing_required:
+            raise SchemaValidationError(
+                f"dataset '{dataset}': missing required columns {missing_required}"
+            )
+        columns = [col for col in schema if col in df.columns]
+    else:
+        columns = list(schema)
+    if missing and not allow_missing_optional:
         raise SchemaValidationError(f"dataset '{dataset}': missing columns {missing}")
 
     casts = []
-    for col, dtype in schema.items():
+    for col in columns:
+        dtype = schema[col]
         if isinstance(dtype, pl.Datetime) and df.schema[col] == pl.Utf8:
             casts.append(
                 pl.col(col)
@@ -771,7 +895,45 @@ def validate_dataframe(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
             casts.append(pl.col(col).str.to_date(strict=False).alias(col))
         else:
             casts.append(pl.col(col).cast(dtype, strict=False))
-    return df.with_columns(casts).select(list(schema.keys()))
+    try:
+        normalized = df.with_columns(casts).select(columns)
+    except pl.exceptions.PolarsError as exc:
+        # ``strict=False`` turns many bad scalar casts into nulls, but Polars
+        # still raises for some Utf8 -> Boolean conversions. Keep all schema
+        # failures on the domain error boundary so writers and audits report a
+        # consistent contract violation instead of leaking an engine-specific
+        # exception.
+        raise SchemaValidationError(
+            f"dataset '{dataset}': values cannot be cast to the registered schema: {exc}"
+        ) from exc
+
+    required = [col for col in required_columns_for_dataset(dataset, schema) if col in columns]
+    if required:
+        null_counts = normalized.select(
+            [pl.col(col).null_count().alias(col) for col in required]
+        ).row(0, named=True)
+        missing_values = {col: int(count) for col, count in null_counts.items() if count}
+        if missing_values:
+            detail = ", ".join(f"{col}={count}" for col, count in missing_values.items())
+            raise SchemaValidationError(
+                f"dataset '{dataset}': required columns contain null or unparseable values: {detail}"
+            )
+
+        string_required = [col for col in required if normalized.schema[col] == pl.Utf8]
+        if string_required:
+            blank_counts = normalized.select(
+                [pl.col(col).str.strip_chars().eq("").sum().alias(col) for col in string_required]
+            ).row(0, named=True)
+            blank_values = {col: int(count) for col, count in blank_counts.items() if count}
+            if blank_values:
+                detail = ", ".join(f"{col}={count}" for col, count in blank_values.items())
+                raise SchemaValidationError(
+                    f"dataset '{dataset}': required string columns cannot be blank: {detail}"
+                )
+
+    _validate_finite_values(normalized, dataset)
+    _validate_bar_semantics(normalized, dataset)
+    return normalized
 
 
 def utc_now_iso() -> str:

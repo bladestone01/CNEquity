@@ -36,6 +36,7 @@ from cnequity.domain.datasets import DATASETS, DatasetSpec, is_stale
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
     list_hive_partition_dates,
+    scan_parquet_root,
     uses_hive_partitions,
 )
 
@@ -73,10 +74,12 @@ class Gap:
 def _is_daily_by_date(spec: DatasetSpec) -> bool:
     """Whether a missing session on this dataset is honestly a fault.
 
-    Mirrors ``serve.lake._gap_meaning``. Kept as one predicate so the dashboard
-    grid and this command cannot disagree about what red means.
+    ``fetch_semantics="by_date"`` only says that a request is keyed by date;
+    announcements, corporate actions, and other event feeds are still sparse.
+    The registry's explicit coverage mode prevents those datasets from being
+    reported as missing on every quiet trading day.
     """
-    return spec.fetch_semantics == "by_date" and spec.max_staleness_days <= 1
+    return spec.coverage_mode == "session_dense"
 
 
 def _backfillable(spec: DatasetSpec) -> bool:
@@ -107,19 +110,30 @@ def _dataset_root(config: Config, spec: DatasetSpec):
 
 
 def _covered_days(config: Config, spec: DatasetSpec) -> list[date]:
-    """Day-partition dates present on disk, or [] when not day-partitioned.
+    """Session dates present on disk for a dense dataset.
 
     Read from directory names rather than by scanning rows: an interior-gap
     check that had to open 6,000 parquet files to answer would not be run.
-    Only day granularity can be answered this way, which is also the only
-    granularity where "this session is missing" is a well-posed question.
+    Coarser dense layouts (for example yearly ``index_bars``) fall back to a
+    date-column-only scan; sparse datasets intentionally return no dates here.
     """
-    if spec.partition_col is None or spec.partition_granularity != "day":
+    if spec.partition_col is None or not _is_daily_by_date(spec):
         return []
     root = _dataset_root(config, spec)
-    if not uses_hive_partitions(root, spec.partition_col):
+    if (
+        spec.partition_granularity == "day"
+        and uses_hive_partitions(root, spec.partition_col)
+        and not list(root.glob("*.parquet"))
+    ):
+        return list_hive_partition_dates(root, spec.partition_col)
+    if not dataset_has_parquet(root):
         return []
-    return list_hive_partition_dates(root, spec.partition_col)
+    lf = scan_parquet_root(root, partition_col=spec.partition_col, hive=False)
+    if spec.partition_col not in lf.collect_schema().names():
+        return []
+    return sorted(
+        lf.select(spec.partition_col).drop_nulls().unique().collect()[spec.partition_col].to_list()
+    )
 
 
 def _trading_days(config: Config, start: date, end: date) -> list[date]:
@@ -128,6 +142,28 @@ def _trading_days(config: Config, start: date, end: date) -> list[date]:
     if start > end:
         return []
     return list_trading_dates(config, start, end)
+
+
+def last_contiguous_dense_date(config: Config, spec: DatasetSpec) -> date | None:
+    """Newest session before the first hole in a dense dataset's span.
+
+    A raw maximum is not a safe incremental watermark: if a fetch lands on
+    Monday and Wednesday but misses Tuesday, starting the next fetch after
+    Wednesday makes Tuesday permanently invisible. Return the last session in
+    the continuous prefix instead. Sparse datasets deliberately return
+    ``None`` because a missing session is not evidence of a defect there.
+    """
+    if not _is_daily_by_date(spec):
+        return None
+    days = _covered_days(config, spec)
+    if not days:
+        return None
+    expected = _trading_days(config, min(days), max(days))
+    present = set(days)
+    for index, session in enumerate(expected):
+        if session not in present:
+            return expected[index - 1] if index else None
+    return expected[-1] if expected else None
 
 
 def verify_dataset(

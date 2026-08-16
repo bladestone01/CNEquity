@@ -35,6 +35,7 @@ import polars as pl
 
 from cnequity.adapters.tdx_protocol.trade_ticks import AFTER_HOURS, SESSIONS, UNKNOWN_DIRECTION
 from cnequity.config import Config
+from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
 DATASET = "trade_ticks"
@@ -280,8 +281,12 @@ def daily_reconciliation_findings(
     if not dataset_has_parquet(daily_root):
         return []
 
+    daily_lf = dedupe_lazy_by_primary_key(
+        scan_parquet_root(daily_root, partition_col="trade_date", start=start, end=end),
+        "daily_bars",
+    )
     daily = (
-        scan_parquet_root(daily_root, partition_col="trade_date", start=start, end=end)
+        daily_lf
         .filter((pl.col("data_version") == DAILY_BARS_SHARES_VERSION) & (pl.col("volume") > 0))
         .select(
             "symbol",

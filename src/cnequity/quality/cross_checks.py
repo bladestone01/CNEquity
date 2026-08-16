@@ -19,6 +19,7 @@ from datetime import date
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
 _SAMPLE = 8
@@ -66,7 +67,10 @@ def _trading_days(config: Config, trade_date: date) -> set[date]:
     if not dataset_has_parquet(cal_root):
         return set()
     cal = (
-        scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date),
+            "trading_calendar",
+        )
         .filter(pl.col("is_trading"))
         .select("trade_date")
         .unique()
@@ -154,7 +158,7 @@ def trading_calendar_horizon_findings(config: Config, trade_date: date) -> list[
     table_end = date.fromisoformat(max(CLOSED_DATES))
 
     written = (
-        scan_parquet_root(cal_root)
+        dedupe_lazy_by_primary_key(scan_parquet_root(cal_root), "trading_calendar")
         .filter(pl.col("is_trading"))
         .select(pl.col("trade_date").max().alias("last"))
         .collect()
@@ -224,21 +228,31 @@ def last_dense_valuation_date(
     if not dataset_has_parquet(val_root):
         return None
     parts = list_partitions(val_root, "trade_date")
-    for part in reversed(parts):
-        # Day partitions: value is the date. Coarser periods: probe the max date
-        # inside the period via coverage on that day only after we know it.
-        if part.start == part.end:
-            candidates = [part.start]
-        else:
-            ratio_end = valuation_day_coverage_ratio(config, part.end)
-            if ratio_end is not None and ratio_end >= min_ratio:
-                return part.end
-            # Fall through: sample the period end only; full scan is for day layout.
-            candidates = [part.end]
-        for d in candidates:
-            ratio = valuation_day_coverage_ratio(config, d)
-            if ratio is not None and ratio >= min_ratio:
-                return d
+    # A partially migrated valuation root can still contain loose legacy
+    # parquet beside partition directories. The normal reader includes those
+    # rows, so the dense-tip gate must include their dates too; otherwise a
+    # complete legacy tip is mistaken for an older watermark.
+    root_files = sorted(val_root.glob("*.parquet"))
+    candidate_dates: set[date] = set()
+    if parts and all(part.start == part.end for part in parts) and not root_files:
+        candidate_dates = {part.end for part in parts}
+    else:
+        # Coarse or mixed layouts cannot use directory ends: a current month
+        # may contain rows only through its middle, and the directory's last
+        # calendar day has no valuation rows to measure.
+        candidate_dates.update(
+            scan_parquet_root(val_root, partition_col="trade_date")
+            .select("trade_date")
+            .drop_nulls()
+            .unique()
+            .collect()
+            .get_column("trade_date")
+            .to_list()
+        )
+    for d in sorted(candidate_dates, reverse=True):
+        ratio = valuation_day_coverage_ratio(config, d)
+        if ratio is not None and ratio >= min_ratio:
+            return d
     return None
 
 
@@ -391,12 +405,18 @@ def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
         return None
 
     bars = (
-        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date),
+            "daily_bars",
+        )
         .select("symbol", "trade_date", "close")
         .collect()
     )
     factors = (
-        scan_parquet_root(af_root, partition_col="trade_date", end=trade_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(af_root, partition_col="trade_date", end=trade_date),
+            "adj_factors",
+        )
         .filter(pl.col("adjust_type") == "hfq")
         .select("symbol", "trade_date", "factor")
         .collect()
@@ -457,7 +477,10 @@ def _trading_day_successors(config: Config, trade_date: date) -> pl.DataFrame | 
     if not dataset_has_parquet(cal_root):
         return None
     cal = (
-        scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date),
+            "trading_calendar",
+        )
         .filter(pl.col("is_trading"))
         .select("trade_date")
         .unique()
@@ -490,7 +513,9 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     if not dataset_has_parquet(inst_root):
         return []
 
-    instruments = scan_parquet_root(inst_root).collect()
+    instruments = dedupe_lazy_by_primary_key(
+        scan_parquet_root(inst_root), "instruments"
+    ).collect()
     if "asset_type" not in instruments.columns:
         return []
     stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
@@ -849,7 +874,10 @@ def _liquid_symbols_on(config: Config, trade_date: date, limit: int) -> list[str
     root = config.curated_root / "daily_bars"
     if not dataset_has_parquet(root):
         return []
-    lf = scan_parquet_root(root, partition_col="trade_date", start=trade_date, end=trade_date)
+    lf = dedupe_lazy_by_primary_key(
+        scan_parquet_root(root, partition_col="trade_date", start=trade_date, end=trade_date),
+        "daily_bars",
+    )
     cols = lf.collect_schema().names()
     rank_col = "amount" if "amount" in cols else "volume"
     df = (
@@ -865,7 +893,10 @@ def _liquid_symbols_on(config: Config, trade_date: date, limit: int) -> list[str
 def _curated_closes(config: Config, trade_date: date, symbols: list[str]) -> dict[str, float]:
     root = config.curated_root / "daily_bars"
     df = (
-        scan_parquet_root(root, partition_col="trade_date", start=trade_date, end=trade_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(root, partition_col="trade_date", start=trade_date, end=trade_date),
+            "daily_bars",
+        )
         .filter(pl.col("symbol").is_in(symbols))
         .select("symbol", "close")
         .collect()
@@ -1029,7 +1060,7 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
     labeled = (
         scan_parquet_root(status_root, partition_col="trade_date", end=trade_date)
         .filter(pl.col("trade_date") == pl.lit(trade_date))
-        .filter(pl.col("status") == "st")
+        .filter(pl.col("status").is_in(["st", "*st"]))
         .select("symbol")
         .unique()
         .collect()

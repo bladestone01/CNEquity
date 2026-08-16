@@ -16,8 +16,18 @@ from cnequity.steps.fundamentals import _valuation_history_end
 from cnequity.storage.state import StateStore
 
 
-def _write_day(root, dataset, d: date, symbols: list[str], *, source: str, schema: dict):
-    part = root / dataset / f"trade_date={d.isoformat()}"
+def _write_day(
+    root,
+    dataset,
+    d: date,
+    symbols: list[str],
+    *,
+    source: str,
+    schema: dict,
+    partition_value: str | None = None,
+    file_name: str = "part-merged.parquet",
+):
+    part = root / dataset / f"trade_date={partition_value or d.isoformat()}"
     part.mkdir(parents=True, exist_ok=True)
     n = len(symbols)
     cols = {
@@ -52,7 +62,7 @@ def _write_day(root, dataset, d: date, symbols: list[str], *, source: str, schem
     (
         pl.DataFrame({c: cols[c] for c in keep})
         .with_columns(pl.col("fetched_at").str.to_datetime(time_unit="us", time_zone="UTC"))
-        .write_parquet(part / "part-merged.parquet")
+        .write_parquet(part / file_name)
     )
 
 
@@ -91,6 +101,76 @@ def test_coverage_ratio_and_dense_tip(tmp_path):
     assert valuation_day_coverage_ratio(cfg, sparse) == 0.2
     assert last_dense_valuation_date(cfg) == dense
     assert last_complete_em_valuation_tip(cfg) == dense
+
+
+def test_dense_tip_includes_root_legacy_files_in_mixed_layout(tmp_path):
+    cfg = _lake(tmp_path)
+    old = date(2026, 7, 16)
+    latest = date(2026, 7, 22)
+    bars = [f"{i:06d}.SH" for i in range(600000, 600005)]
+    _write_day(cfg.curated_root, "daily_bars", old, bars, source="tdx", schema=DAILY_BARS_SCHEMA)
+    _write_day(
+        cfg.curated_root,
+        "valuation_metrics",
+        old,
+        bars,
+        source="eastmoney",
+        schema=VALUATION_METRICS_SCHEMA,
+    )
+    _write_day(
+        cfg.curated_root,
+        "daily_bars",
+        latest,
+        bars,
+        source="tdx",
+        schema=DAILY_BARS_SCHEMA,
+    )
+    _write_day(
+        cfg.curated_root,
+        "valuation_metrics",
+        latest,
+        bars,
+        source="eastmoney",
+        schema=VALUATION_METRICS_SCHEMA,
+    )
+    latest_dir = cfg.curated_root / "valuation_metrics" / f"trade_date={latest.isoformat()}"
+    legacy_path = cfg.curated_root / "valuation_metrics" / "part-legacy.parquet"
+    pl.read_parquet(latest_dir / "part-merged.parquet").write_parquet(legacy_path)
+    (latest_dir / "part-merged.parquet").unlink()
+    latest_dir.rmdir()
+
+    assert last_dense_valuation_date(cfg) == latest
+
+
+def test_dense_tip_reads_real_dates_from_coarse_partitions(tmp_path):
+    cfg = _lake(tmp_path)
+    dense = date(2026, 7, 16)
+    sparse = date(2026, 7, 22)
+    bars = [f"{i:06d}.SH" for i in range(600000, 600005)]
+    for d in (dense, sparse):
+        _write_day(cfg.curated_root, "daily_bars", d, bars, source="tdx", schema=DAILY_BARS_SCHEMA)
+    _write_day(
+        cfg.curated_root,
+        "valuation_metrics",
+        dense,
+        bars,
+        source="eastmoney",
+        schema=VALUATION_METRICS_SCHEMA,
+        partition_value="2026-07",
+        file_name="dense.parquet",
+    )
+    _write_day(
+        cfg.curated_root,
+        "valuation_metrics",
+        sparse,
+        bars[:1],
+        source="baostock",
+        schema=VALUATION_METRICS_SCHEMA,
+        partition_value="2026-07",
+        file_name="sparse.parquet",
+    )
+
+    assert last_dense_valuation_date(cfg) == dense
 
 
 def test_history_end_caps_at_complete_em_tip(tmp_path):
@@ -150,6 +230,7 @@ def test_baostock_single_flight_refuses_overlap(tmp_path):
     cfg = _lake(tmp_path)
     with run_lock(cfg.meta_root, "baostock"):
         out = _backfill_valuation_metrics(cfg, date(2026, 7, 24), "run-1")
+    assert out["status"] == "warning"
     assert out["rows_written"] == 0
     assert "baostock lock" in out["note"]
     assert out["context_updates"]["audit_findings"][0]["check"] == "baostock_single_flight"

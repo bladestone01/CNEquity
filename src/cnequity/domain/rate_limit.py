@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,7 +51,23 @@ class RateLimiter:
                 time.sleep(self.min_interval - elapsed)
                 now = time.time()
 
-            state_path.write_text(json.dumps({"last": now}), encoding="utf-8")
+            fd, tmp_name = tempfile.mkstemp(
+                dir=state_path.parent,
+                prefix=f".{state_path.stem}-",
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump({"last": now}, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_name, state_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
 
 
 def wait_source(state_dir: Path | str, source: str, min_interval: float) -> None:

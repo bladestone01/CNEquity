@@ -6,14 +6,12 @@ from datetime import date
 
 from cnequity.config import Config
 from cnequity.quality.st_coverage import st_evidence_coverage_report
-from cnequity.query.parquet_scan import list_partitions
-from cnequity.query.universe import coverage_start_date, st_coverage_start
+from cnequity.query.universe import coverage_end_date, coverage_start_date, st_coverage_start
 from cnequity.steps.delisted import delisted_coverage_report
 
 
 def _bars_end(config: Config) -> date | None:
-    parts = list_partitions(config.curated_root / "daily_bars", "trade_date")
-    return parts[-1].end if parts else None
+    return coverage_end_date(config, "daily_bars")
 
 
 def historical_universe_validity(

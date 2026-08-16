@@ -27,7 +27,6 @@ resident check waits for the PBOC to publish the rate itself.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from datetime import date
@@ -35,7 +34,9 @@ from datetime import date
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+from cnequity.storage.atomic import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,10 @@ def _curated_value(config: Config, indicator_id: str, obs_date: date) -> float |
     if not dataset_has_parquet(root):
         return None
     out = (
-        scan_parquet_root(root, partition_col="obs_date", start=obs_date, end=obs_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(root, partition_col="obs_date", start=obs_date, end=obs_date),
+            "macro_indicators",
+        )
         .filter(pl.col("indicator_id") == indicator_id)
         .select("value")
         .collect()
@@ -128,7 +132,10 @@ def _curated_status(config: Config, trade_date: date) -> tuple[set[str], set[str
     if not dataset_has_parquet(root):
         return None
     out = (
-        scan_parquet_root(root, partition_col="trade_date", end=trade_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(root, partition_col="trade_date", end=trade_date),
+            "trading_status",
+        )
         .filter(pl.col("trade_date") == pl.lit(trade_date))
         .select("symbol", "status")
         .unique()
@@ -137,7 +144,9 @@ def _curated_status(config: Config, trade_date: date) -> tuple[set[str], set[str
     if out.is_empty():
         return None
     covered = set(out.get_column("symbol").to_list())
-    labeled = set(out.filter(pl.col("status") == "st").get_column("symbol").to_list())
+    labeled = set(
+        out.filter(pl.col("status").is_in(["st", "*st"])).get_column("symbol").to_list()
+    )
     return covered, labeled
 
 
@@ -157,9 +166,20 @@ def _st_labels_vs_exchange_outcome(config: Config, trade_date: date) -> Authorit
         return AuthorityCheckOutcome("skipped_no_curated", [])
     covered, labeled = status
 
-    from cnequity.adapters.exchange.st_lists import fetch_exchange_names, is_st_name
+    from cnequity.adapters.exchange.st_lists import (
+        fetch_exchange_names_with_status,
+        is_st_name,
+    )
 
-    names = fetch_exchange_names(config=config)
+    exchange_result = fetch_exchange_names_with_status(config=config)
+    if exchange_result.failures:
+        # A comparison over one exchange cannot establish that the other
+        # exchange agrees. Persist the status, but do not turn a publisher
+        # outage into a data disagreement finding.
+        if not exchange_result.names:
+            return AuthorityCheckOutcome("unavailable", [])
+        return AuthorityCheckOutcome("skipped_partial", [])
+    names = exchange_result.names
     if not names:
         return AuthorityCheckOutcome("unavailable", [])
 
@@ -239,8 +259,7 @@ def run_authority_checks(config: Config, trade_date: date) -> list[dict]:
             "findings": findings,
         }
         path = out_dir / f"authority-{trade_date.isoformat()}.json"
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, default=str)
+        write_json_atomic(path, payload, ensure_ascii=False, indent=2, default=str)
     except OSError as exc:
         logger.warning("could not persist authority cross-check: %s", exc)
     return findings

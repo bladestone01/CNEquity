@@ -1,11 +1,13 @@
 from datetime import date
 
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.quality.audit import run_audit
 from cnequity.quality.st_coverage import (
     build_st_scope,
+    current_st_universe,
     publish_st_coverage_receipt,
     write_st_checkpoint,
 )
@@ -79,6 +81,85 @@ def test_trading_status_coverage_start_from_partitions(tmp_path):
     _write_status_partition(cfg, date(2024, 6, 28))
     assert trading_status_coverage_start(cfg) == date(2024, 6, 27)
     assert coverage_start_date(cfg, "daily_bars") is None
+
+
+def test_current_st_universe_reads_nested_instrument_fragments(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    root = cfg.curated_root / "instruments"
+    root.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH"]}).write_parquet(root / "part-merged.parquet")
+    nested = root / ".old-fragments"
+    nested.mkdir()
+    pl.DataFrame({"symbol": ["000001.SZ"]}).write_parquet(nested / "part-old.parquet")
+
+    assert current_st_universe(cfg) == ["000001.SZ", "600519.SH"]
+
+
+def test_st_receipt_rejects_duplicate_primary_rows(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    day = date(2024, 6, 27)
+    path = cfg.curated_root / "trading_status" / f"trade_date={day.isoformat()}"
+    path.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "trade_date": [day, day],
+            "is_trading": [True, True],
+            "status": ["st", "st"],
+            "source": ["baostock", "baostock"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [
+                "2024-06-27T00:00:00+00:00",
+                "2024-06-27T01:00:00+00:00",
+            ],
+        }
+    ).write_parquet(path / "part-0.parquet")
+    scope = build_st_scope(["600519.SH"], day, day, universe="all_a")
+    checkpoint = {
+        "schema_version": 1,
+        "claim": "historical_st_evidence",
+        "scope": scope,
+        "status": "complete",
+        "completed_symbols": ["600519.SH"],
+        "evidence_rows_by_symbol": {"600519.SH": 2},
+        "unresolved_symbols": [],
+    }
+
+    with pytest.raises(ValueError, match="reach curated storage"):
+        publish_st_coverage_receipt(cfg, checkpoint)
+
+
+def test_st_receipt_counts_baostock_before_cross_source_dedupe(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    day = date(2024, 6, 27)
+    path = cfg.curated_root / "trading_status" / f"trade_date={day.isoformat()}"
+    path.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "trade_date": [day, day],
+            "is_trading": [True, True],
+            "status": ["st", "normal"],
+            "source": ["baostock", "eastmoney"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [
+                "2024-06-27T00:00:00+00:00",
+                "2024-06-27T01:00:00+00:00",
+            ],
+        }
+    ).write_parquet(path / "part-0.parquet")
+    scope = build_st_scope(["600519.SH"], day, day, universe="all_a")
+    checkpoint = {
+        "schema_version": 1,
+        "claim": "historical_st_evidence",
+        "scope": scope,
+        "status": "complete",
+        "completed_symbols": ["600519.SH"],
+        "evidence_rows_by_symbol": {"600519.SH": 1},
+        "unresolved_symbols": [],
+    }
+
+    assert publish_st_coverage_receipt(cfg, checkpoint).exists()
 
 
 def test_audit_warns_when_st_labels_lag_bars(tmp_path):

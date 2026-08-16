@@ -209,6 +209,10 @@ class DatasetSpec:
     #
     # Where both are set they must agree; `test_dataset_registry` enforces it.
     row_grain: str | None = None
+    # Whether the dataset promises at least one row on every exchange session
+    # in its covered span. `fetch_semantics="by_date"` only describes how the
+    # source is queried; event and announcement feeds are still sparse.
+    coverage_mode: Literal["sparse", "session_dense"] = "sparse"
 
     @property
     def query_date_col(self) -> str | None:
@@ -275,6 +279,7 @@ _SPECS = [
         backup_source="eastmoney",
         tier="L1",
         partition_col="trade_date",
+        coverage_mode="session_dense",
     ),
     DatasetSpec(
         "index_bars",
@@ -283,6 +288,7 @@ _SPECS = [
         tier="L1",
         partition_col="trade_date",
         partition_granularity="year",
+        coverage_mode="session_dense",
     ),
     # 1-minute bars. Day partitions: ~240 bars × the configured scope, which is
     # 1.3M rows a day at full market — the top of the ≥1000 rows/day band, and
@@ -300,6 +306,7 @@ _SPECS = [
         partition_granularity="day",
         fetch_semantics="by_date",
         required=False,
+        coverage_mode="session_dense",
         # Measured 2026-08-01 against 120.76.1.198:7709 — 22,800 bars for every
         # symbol probed, across both exchanges and every liquidity band, so it
         # is a server retention window rather than a per-symbol artefact.
@@ -330,6 +337,7 @@ _SPECS = [
         partition_granularity="day",
         fetch_semantics="by_date",
         required=False,
+        coverage_mode="session_dense",
         # Measured 2026-08-01: 23,568 bars = 491 trading days, back to
         # 2024-07-23. 15m/30m/60m share exactly that window (7,856 / 3,928 /
         # 1,964 bars), which is what says it is a time-based retention policy
@@ -359,6 +367,7 @@ _SPECS = [
         partition_granularity="day",
         fetch_semantics="by_date",
         required=False,
+        coverage_mode="session_dense",
         # A *date*, not a rolling count — see DatasetSpec.history_floor_date.
         # Measured 2026-08-02: every symbol probed serves back to exactly
         # 2024-01-02 and no further, which is ~624 trading days and growing.
@@ -521,6 +530,9 @@ _SPECS = [
         partition_col="trade_date",
         partition_granularity="year",
         max_staleness_days=2,
+        # The northbound channel opened on 2014-11-17. Earlier dates are not
+        # missing lake rows: the source had not published this feed yet.
+        history_floor_date=date(2014, 11, 17),
         # The exchanges stopped publishing daily northbound net flow after this
         # session; every row from 2024-08-19 on carries a null amount, and those
         # are dropped rather than zero-filled. The lake holds everything that
@@ -592,6 +604,10 @@ _SPECS = [
         tier="L6",
         partition_col="trade_date",
         partition_granularity="year",
+        # Derived from daily_bars and emits one metric set for every session
+        # with a current and prior bar; a missing interior session is a
+        # derivation gap, not the natural sparsity of an event feed.
+        coverage_mode="session_dense",
     ),
     # L7 sentiment / rotation
     DatasetSpec(
@@ -675,7 +691,12 @@ _SPECS = [
     # derived — ``layer`` is where the parquet lives, ``tier`` what the data is
     # for, so these carry the tier of the question they answer, not "derived".
     DatasetSpec(
-        "adj_factors", primary_source="sina", tier="L1", layer="derived", partition_col="trade_date"
+        "adj_factors",
+        primary_source="sina",
+        tier="L1",
+        layer="derived",
+        partition_col="trade_date",
+        coverage_mode="session_dense",
     ),
     # Industry returns computed from 申万 membership × hfq bars rather than
     # fetched, so index and constituents cannot disagree. Yearly partitions:
@@ -690,6 +711,9 @@ _SPECS = [
         layer="derived",
         partition_col="trade_date",
         partition_granularity="year",
+        # Computed from daily bars for every available session; a missing
+        # session is a derivation hole rather than sparse event-feed behavior.
+        coverage_mode="session_dense",
     ),
     # How each recovered delisting's price series ends — see
     # DELISTING_EVENTS_SCHEMA. Merge-style: one row per symbol, a few hundred

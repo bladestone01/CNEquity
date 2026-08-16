@@ -1,3 +1,4 @@
+import json
 import time
 from concurrent.futures import ProcessPoolExecutor
 
@@ -40,3 +41,16 @@ def test_rate_limiter_serializes_cross_process_requests(tmp_path):
     # One of the two must have waited: whichever lost the lock race sees the
     # other's timestamp already written.
     assert max(durations) >= MIN_OBSERVED
+
+
+def test_corrupt_rate_state_is_replaced_atomically(tmp_path):
+    state_dir = tmp_path / "rate_limits"
+    state_dir.mkdir()
+    state_path = state_dir / "test.json"
+    state_path.write_text("{truncated", encoding="utf-8")
+
+    RateLimiter("test", 0.01, state_dir).wait()
+
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["last"] > 0
+    assert not list(state_dir.glob(".*.tmp"))
