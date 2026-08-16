@@ -60,6 +60,19 @@ def test_corrupt_rate_state_is_replaced_atomically(tmp_path):
     assert not list(state_dir.glob(".*.tmp"))
 
 
+@pytest.mark.parametrize("payload", [{"last": "nan"}, {"next_allowed_at": "inf"}])
+def test_non_finite_rate_state_does_not_poison_future_slots(tmp_path, payload):
+    state_dir = tmp_path / "rate_limits"
+    state_dir.mkdir()
+    (state_dir / "test.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    RateLimiter("test", 0.01, state_dir).wait()
+
+    state = json.loads((state_dir / "test.json").read_text(encoding="utf-8"))
+    assert state["last"] > 0
+    assert state["next_allowed_at"] > state["last"]
+
+
 def test_rate_limiter_propagates_lock_timeout_instead_of_bypassing(monkeypatch, tmp_path):
     seen = {}
 
@@ -75,3 +88,22 @@ def test_rate_limiter_propagates_lock_timeout_instead_of_bypassing(monkeypatch, 
         RateLimiter("test", INTERVAL, tmp_path / "rate_limits").wait()
 
     assert seen["timeout"] == 15.0
+
+
+def test_wait_spec_propagates_custom_lock_timeout(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_wait_source(state_dir, source, min_interval, lock_timeout):
+        seen.update(
+            state_dir=state_dir,
+            source=source,
+            min_interval=min_interval,
+            lock_timeout=lock_timeout,
+        )
+
+    monkeypatch.setattr("cnequity.domain.rate_limit.wait_source", fake_wait_source)
+    from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
+
+    wait_spec(RateLimitSpec(str(tmp_path), "tdx_protocol", 0.1, lock_timeout=3.5))
+
+    assert seen["lock_timeout"] == 3.5

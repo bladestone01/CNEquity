@@ -841,6 +841,8 @@ def fetch_corporate_actions(
     primary_only: bool = False,
     config: Config | None = None,
     on_progress=None,
+    fail_loud: bool = False,
+    allow_empty: bool = False,
 ) -> pl.DataFrame:
     empty = pl.DataFrame(
         schema={
@@ -871,8 +873,12 @@ def fetch_corporate_actions(
             if tdx_df.height:
                 frames.append(tdx_df.with_columns(pl.lit("tdx_protocol").alias("source")))
     except ImportError:
+        if fail_loud:
+            raise
         logger.debug("TDX wire client unavailable for corporate_actions")
     except Exception as exc:
+        if fail_loud:
+            raise
         logger.warning("TDX corporate_actions failed: %s", exc)
 
     try:
@@ -906,12 +912,9 @@ def fetch_corporate_actions(
             )
         return out.unique(subset=["symbol", "ex_date", "action_type"], keep="last")
 
-    return _fail_or_mock(
-        "corporate_actions",
-        "no corporate actions from TDX or EastMoney",
-        allow_mock,
-        empty,
-    )
+    if allow_empty:
+        return empty
+    return _fail_or_mock("corporate_actions", "no corporate actions from TDX or EastMoney", allow_mock, empty)
 
 
 def fetch_trading_status(

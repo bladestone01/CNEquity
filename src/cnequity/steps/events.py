@@ -3,6 +3,7 @@ earnings_disclosure_schedule."""
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 
@@ -34,6 +35,7 @@ from cnequity.steps.http_common import run_incremental_fetched, write_fetched
 # TDX xdxr is per-symbol (backfill); EastMoney datacenter supports ex-date filter (daily).
 _CANONICAL_BACKFILL = "tdx_protocol"
 _CANONICAL_DAILY = "eastmoney"
+_CORPORATE_ACTIONS_CHUNK_TASK = "corporate_actions_chunk"
 
 
 logger = logging.getLogger(__name__)
@@ -44,11 +46,23 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     rl = config.tdx_rate_limit_spec()
     backfill = getattr(config, "_backfill", False)
     findings: list[dict] = []
+    failed_symbols: list[str] = []
 
     if backfill:
-        symbols = load_symbols(config)
+        symbols = list(context.get("_retry_symbols") or load_symbols(config))
         batch_id = context.get("_batch_id")
         manifest = Manifest(config.manifest_path) if batch_id else None
+
+        if manifest is not None:
+            manifest.set_batch_symbols(run_id, batch_id, symbols)
+
+        completed_symbols: set[str] = set()
+        if manifest is not None and context.get("_retry_symbols"):
+            for row in manifest.get_batches_for_run(run_id):
+                if row["task_id"] != _CORPORATE_ACTIONS_CHUNK_TASK or row["status"] != "success":
+                    continue
+                completed_symbols.update(json.loads(row["symbols_json"] or "[]"))
+        remaining_symbols = [symbol for symbol in symbols if symbol not in completed_symbols]
 
         def on_progress(done: int, total: int) -> None:
             if manifest is not None and (done % 50 == 0 or done == total):
@@ -79,16 +93,91 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                     type(exc).__name__,
                     exc,
                 )
-        df = fetch_corporate_actions(
-            trade_date,
-            symbols=symbols,
-            backfill=True,
-            rate_limit=rl,
-            allow_mock=config.tdx_allow_mock,
-            primary_only=True,
-            config=config,
-            on_progress=on_progress,
-        )
+        frames: list[pl.DataFrame] = []
+        failed_symbols: list[str] = []
+        batch_size = max(1, config.batch_size)
+        for chunk_index in range(0, len(remaining_symbols), batch_size):
+            chunk = remaining_symbols[chunk_index : chunk_index + batch_size]
+            chunk_number = chunk_index // batch_size
+            chunk_batch_id = f"{batch_id or 'batch-0'}-chunk-{chunk_number:04d}"
+            try:
+                df_chunk = fetch_corporate_actions(
+                    trade_date,
+                    symbols=chunk,
+                    backfill=True,
+                    rate_limit=rl,
+                    allow_mock=config.tdx_allow_mock,
+                    primary_only=True,
+                    config=config,
+                    on_progress=lambda done, total, offset=chunk_index: on_progress(
+                        offset + done, len(remaining_symbols)
+                    ),
+                    fail_loud=True,
+                    allow_empty=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — preserve completed chunks for retry
+                failed_symbols.extend(chunk)
+                logger.warning(
+                    "corporate_actions chunk %d failed for %d symbols: %s",
+                    chunk_number,
+                    len(chunk),
+                    exc,
+                )
+                continue
+
+            if not df_chunk.is_empty():
+                frames.append(df_chunk)
+            if manifest is not None:
+                # The fetch and staging happen before this success receipt. If
+                # the process dies earlier, the parent batch remains retryable;
+                # an unreceipted chunk is safely fetched again.
+                staged_chunk = with_provenance(
+                    df_chunk,
+                    source=_CANONICAL_BACKFILL,
+                    data_version="v1",
+                )
+                write_simple(
+                    config,
+                    run_id,
+                    "corporate_actions",
+                    staged_chunk,
+                    batch_id=chunk_batch_id,
+                )
+                manifest.start_batch(
+                    run_id,
+                    chunk_batch_id,
+                    task_id=_CORPORATE_ACTIONS_CHUNK_TASK,
+                    dataset="corporate_actions",
+                    symbols=chunk,
+                    window_start=getattr(config, "_backfill_start", None).isoformat()
+                    if getattr(config, "_backfill_start", None)
+                    else None,
+                    window_end=getattr(config, "_backfill_end", None).isoformat()
+                    if getattr(config, "_backfill_end", None)
+                    else trade_date.isoformat(),
+                    blocks_compaction=False,
+                )
+                manifest.finish_batch(
+                    run_id,
+                    chunk_batch_id,
+                    "success",
+                    rows_read=df_chunk.height,
+                    rows_written=df_chunk.height,
+                )
+
+        if frames:
+            df = pl.concat(frames, how="diagonal_relaxed")
+        else:
+            df = pl.DataFrame()
+        if failed_symbols:
+            failed_symbols = list(dict.fromkeys(failed_symbols))
+        if failed_symbols:
+            logger.warning(
+                "corporate_actions backfill incomplete: %d/%d symbols failed; "
+                "successful chunks are staged and will be skipped on retry",
+                len(failed_symbols),
+                len(symbols),
+            )
         canonical_source = _CANONICAL_BACKFILL
     else:
         if not config.sources.get("eastmoney", True):
@@ -135,7 +224,11 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     if findings:
         context_updates["audit_findings"] = findings
     if df.is_empty():
-        return {"rows_read": 0, "rows_written": 0, "context_updates": context_updates}
+        result = {"rows_read": 0, "rows_written": 0, "context_updates": context_updates}
+        if backfill and failed_symbols:
+            result["failed_symbols"] = failed_symbols
+            result["status"] = "failed"
+        return result
 
     df = with_provenance(df, source=canonical_source, data_version="v1")
 
@@ -146,7 +239,16 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             rebackfill = today["symbol"].unique().to_list()
 
     context_updates["symbols_to_rebackfill"] = rebackfill
-    result = write_simple(config, run_id, "corporate_actions", df)
+    if backfill and manifest is not None:
+        result = {
+            "rows_read": df.height,
+            "rows_written": df.height,
+        }
+    else:
+        result = write_simple(config, run_id, "corporate_actions", df)
+    if backfill and failed_symbols:
+        result["failed_symbols"] = failed_symbols
+        result["status"] = "failed"
     result["context_updates"] = context_updates
     return result
 

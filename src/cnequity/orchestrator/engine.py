@@ -578,6 +578,12 @@ class JobEngine:
             previous_backfill = self.config._backfill
             if init_phases:
                 self.config._backfill = step_backfill(dataset, init_phases)
+            if dataset == "corporate_actions":
+                retry_symbols: list[str] = []
+                for batch in batches:
+                    retry_symbols.extend(json.loads(batch["symbols_json"] or "[]"))
+                if retry_symbols:
+                    context["_retry_symbols"] = list(dict.fromkeys(retry_symbols))
             try:
                 results.append(
                     self._run_step(
@@ -590,6 +596,7 @@ class JobEngine:
                 )
             finally:
                 self.config._backfill = previous_backfill
+                context.pop("_retry_symbols", None)
 
         if missing_init:
             for step in missing_init:

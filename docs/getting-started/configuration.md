@@ -46,6 +46,7 @@ cne config validate --config configs/cnequity.toml
 |----|------|------|
 | `enabled` | true | 禁用后 TDX 相关 step 失败 |
 | `min_interval_ms` | 100 | 跨进程限速间隔（建议 ≥100，防多 job 打爆） |
+| `lock_timeout_sec` | 15.0 | 申请 TDX 限速锁的最大等待时间；超时显式失败，不绕过限速 |
 | `servers` | `"auto"` | `"auto"` 或 `"host:port"` 固定单服 |
 | `connect_timeout_sec` | 10 | 连接超时 |
 | `allow_mock` | false | **仅测试**：源不可用时返回 `source="mock"` 数据；生产必须 false |
@@ -65,7 +66,7 @@ cne config validate --config configs/cnequity.toml
 | 键 | 说明 |
 |----|------|
 | `enabled` | 是否启用该源；缺省（配置中没有该 `[sources.<name>]` 段落）时按**关闭**处理 |
-| `min_interval_seconds` | 跨进程文件锁限速（见 `domain/rate_limit.py`） |
+| `min_interval_seconds` | 跨进程文件槽位限速（见 `domain/rate_limit.py`）；锁内只预订时隙，等待发生在释放锁后 |
 | `proxy`（eastmoney） | 可选 HTTP(S) 代理 URL，对所有东财主机生效；**大陆网络不需要**，海外出口才配。未设时仍可用环境变量 `HTTPS_PROXY` |
 | `batch_size` / `batch_rest_seconds`（baostock） | 全市场回填批次冷却，防 IP 黑名单 |
 

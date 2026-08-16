@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import tempfile
 import time
@@ -10,6 +12,7 @@ from pathlib import Path
 from cnequity.file_lock import exclusive_lock
 
 DEFAULT_LOCK_TIMEOUT_SECONDS = 15.0
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -24,7 +27,12 @@ class RateLimitSpec:
 
 @dataclass
 class RateLimiter:
-    """Cross-process token bucket using a file lock and shared timestamp state."""
+    """Cross-process fixed-spacing limiter using reserved request time slots.
+
+    The file lock protects only the reservation transaction. Waiting for the
+    reserved slot happens after the lock is released, so one slow process does
+    not make every other process wait behind a sleeping lock holder.
+    """
 
     name: str
     min_interval: float
@@ -39,21 +47,34 @@ class RateLimiter:
         lock_path = self.state_dir / f"{self.name}.lock"
         state_path = self.state_dir / f"{self.name}.json"
 
+        lock_started = time.monotonic()
         with exclusive_lock(lock_path, timeout=self.lock_timeout):
-            last = 0.0
+            lock_wait = time.monotonic() - lock_started
+            previous_last = 0.0
+            next_allowed_at = 0.0
             if state_path.exists():
                 try:
-                    last = float(
-                        json.loads(state_path.read_text(encoding="utf-8")).get("last", 0.0)
-                    )
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    previous_last = float(state.get("last", 0.0))
+                    next_allowed_at = float(state.get("next_allowed_at", 0.0))
                 except (json.JSONDecodeError, TypeError, ValueError):
-                    last = 0.0
+                    previous_last = 0.0
+                    next_allowed_at = 0.0
+
+            if not math.isfinite(previous_last) or previous_last < 0.0:
+                previous_last = 0.0
+            if not math.isfinite(next_allowed_at) or next_allowed_at < 0.0:
+                next_allowed_at = 0.0
+
+            # Migrate the old state format, where `last` was the timestamp of
+            # the previous request start. A missing/corrupt state is safe to
+            # treat as empty; the first request then gets the current slot.
+            if next_allowed_at <= 0.0 and previous_last > 0.0:
+                next_allowed_at = previous_last + self.min_interval
 
             now = time.time()
-            elapsed = now - last
-            if elapsed < self.min_interval:
-                time.sleep(self.min_interval - elapsed)
-                now = time.time()
+            slot = max(now, next_allowed_at)
+            reserved_next = slot + self.min_interval
 
             fd, tmp_name = tempfile.mkstemp(
                 dir=state_path.parent,
@@ -62,7 +83,10 @@ class RateLimiter:
             )
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump({"last": now}, handle)
+                    json.dump(
+                        {"last": slot, "next_allowed_at": reserved_next},
+                        handle,
+                    )
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(tmp_name, state_path)
@@ -73,11 +97,31 @@ class RateLimiter:
                     pass
                 raise
 
+        sleep_for = max(0.0, slot - time.time())
+        if sleep_for:
+            time.sleep(sleep_for)
+        logger.debug(
+            "rate limit %s: lock_wait=%.3fs sleep=%.3fs",
+            self.name,
+            lock_wait,
+            sleep_for,
+        )
 
-def wait_source(state_dir: Path | str, source: str, min_interval: float) -> None:
-    RateLimiter(source, min_interval, Path(state_dir)).wait()
+
+def wait_source(
+    state_dir: Path | str,
+    source: str,
+    min_interval: float,
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+) -> None:
+    RateLimiter(source, min_interval, Path(state_dir), lock_timeout=lock_timeout).wait()
 
 
 def wait_spec(spec: RateLimitSpec | None) -> None:
     if spec is not None:
-        wait_source(spec.state_dir, spec.source, spec.min_interval)
+        wait_source(
+            spec.state_dir,
+            spec.source,
+            spec.min_interval,
+            lock_timeout=spec.lock_timeout,
+        )

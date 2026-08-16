@@ -222,6 +222,18 @@ class Manifest:
                 (dataset, run_id, batch_id),
             )
 
+    def set_batch_symbols(self, run_id: str, batch_id: str, symbols: list[str]) -> None:
+        """Persist the retry scope discovered by a non-worker step."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_batches
+                SET symbols_json = ?
+                WHERE run_id = ? AND batch_id = ?
+                """,
+                (json.dumps(symbols), run_id, batch_id),
+            )
+
     def finish_batch(
         self,
         run_id: str,

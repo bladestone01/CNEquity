@@ -13,7 +13,7 @@
 | `schemas.py` | Polars schema、`PRIMARY_KEYS`、`validate_dataframe()`、`with_provenance()` |
 | `datasets.py` | `DatasetSpec` 注册表 `DATASETS` |
 | `symbols.py` | `parse_symbol()`, `is_all_a_symbol()`, CDR/ETF 分类 |
-| `rate_limit.py` | 跨平台文件锁 + JSON 时间戳的跨进程 `RateLimiter` |
+| `rate_limit.py` | 跨平台文件锁 + JSON 时隙状态的跨进程 `RateLimiter` |
 | `sentiment.py` | 公告关键词 + 可选 SnowNLP 打分 |
 
 ---
@@ -112,7 +112,7 @@ Universe 过滤在 `query/universe.py` 使用本模块规则：`all_a` 排除 CD
 
 ## rate_limit.py
 
-跨进程限速：锁文件 + 上次请求时间 JSON。供 `adapters/throttle.py` 与 HTTP adapter 使用，防止多 worker 打爆源站。锁通过包根 `file_lock.exclusive_lock`（POSIX `flock` / Windows `msvcrt.locking`）取得。
+跨进程限速：共享 JSON 状态保存 `next_allowed_at`，进程先在短锁事务内预订自己的请求时隙，再释放锁并在锁外等待。这样多个 worker 仍共享同一源级请求间隔，但一个 worker 的 sleep 不会把其他 worker 堵在文件锁上。旧的仅含 `last` 的状态文件会自动迁移；锁等待超过 `lock_timeout_sec` 会显式失败，不会绕过限速。锁通过包根 `file_lock.exclusive_lock`（POSIX `flock` / Windows `msvcrt.locking`）取得。
 
 ---
 
