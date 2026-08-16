@@ -209,6 +209,8 @@ def _news_sentiment_symbols(config: Config, trade_date: date, limit: int) -> lis
             bars = pl.DataFrame()
         if "symbol" in bars.columns and "amount" in bars.columns:
             bars = dedupe_by_primary_key(bars, "daily_bars")
+            if "volume" in bars.columns:
+                bars = bars.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
             top = (
                 bars.sort("amount", descending=True)
                 .unique(subset=["symbol"], keep="first", maintain_order=True)

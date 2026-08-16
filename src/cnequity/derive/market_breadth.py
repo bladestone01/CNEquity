@@ -10,7 +10,7 @@ import polars as pl
 from cnequity.config import Config
 from cnequity.query.parquet_scan import collect_parquet_root
 
-_METRICS = (
+MARKET_BREADTH_METRICS = (
     "advance_count",
     "decline_count",
     "flat_count",
@@ -105,6 +105,19 @@ def _limit_threshold(symbol: str, status: str | None) -> float:
 def compute_market_breadth(config: Config, trade_date: date) -> pl.DataFrame:
     bars_root = config.curated_root / "daily_bars"
     today = _read_bars(bars_root, trade_date)
+    if today.is_empty():
+        return pl.DataFrame()
+
+    # A suspended security still has an OHLC placeholder in daily_bars, but
+    # the lake contract marks it with volume=0 and amount=0.  Counting that
+    # carried-forward close as flat would dilute every breadth ratio and make
+    # ``total_count`` depend on the day's suspension population.  Breadth is
+    # about names that actually traded, so remove no-trade rows before joining
+    # against the prior close.  Keep this volume-based guard independent of
+    # trading_status: historical status is intentionally sparse and may not
+    # exist yet for an otherwise valid daily-bars window.
+    if "volume" in today.columns:
+        today = today.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
     if today.is_empty():
         return pl.DataFrame()
 

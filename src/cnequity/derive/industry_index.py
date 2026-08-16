@@ -155,6 +155,16 @@ def _hfq_returns(config: Config, start: date, end: date, symbols: list[str]) -> 
             bars = bars.filter(pl.col("adj_is_exact"))
         if bars.is_empty():
             return bars
+    # A suspended security can still have a carried-forward close in
+    # daily_bars, but the row is explicitly marked volume=0. Without this
+    # guard its zero return enters the equal-weight industry mean and inflates
+    # n_priced, while only the amount-weighted branch notices the missing
+    # turnover later. Keep minimal historical/test frames without volume
+    # compatible; curated daily_bars always carries the column.
+    if "volume" in bars.columns:
+        bars = bars.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
+        if bars.is_empty():
+            return bars
     out = (
         bars.select("symbol", "trade_date", "close", "amount")
         .sort("symbol", "trade_date")
@@ -193,7 +203,11 @@ def _hfq_returns(config: Config, start: date, end: date, symbols: list[str]) -> 
     else:
         out = out.drop("_prev_trade_date")
 
-    out = out.drop_nulls("ret")
+    # A zero/invalid previous close can make pct_change() produce NaN rather
+    # than null.  Letting it through poisons both weighting branches and only
+    # surfaces much later in the derived-data audit; a non-finite return is no
+    # more usable than a missing one, so exclude it at the row boundary.
+    out = out.drop_nulls("ret").filter(pl.col("ret").is_finite())
 
     # Turnover is either real or absent — a suspended name reports 0, and a
     # broken feed can report values like 5.9e-39 that are positive but not
@@ -267,7 +281,7 @@ def compute_industry_index(
             .group_by("trade_date", "industry_code")
             .agg(pl.col("symbol").n_unique().alias("n_members"))
         )
-        agg = (
+        priced_agg = (
             priced_panel.with_columns(key)
             .group_by("trade_date", "industry_code")
             .agg(
@@ -281,9 +295,20 @@ def compute_industry_index(
                 pl.col("symbol").n_unique().alias("n_priced"),
                 pl.col("amount").sum().alias("amount"),
             )
-            .join(known, on=["trade_date", "industry_code"], how="left")
+        )
+        # Start from every membership group, not only groups with a priced
+        # return. Otherwise an industry whose entire basket lacks an exact
+        # adjustment factor disappears from the output and looks complete to
+        # consumers that only see the remaining groups.
+        agg = (
+            known.join(priced_agg, on=["trade_date", "industry_code"], how="left")
             .with_columns(
-                (pl.col("n_members") - pl.col("n_priced")).alias("n_excluded"),
+                pl.col("n_members").cast(pl.UInt32),
+                pl.col("n_priced").fill_null(0).cast(pl.UInt32),
+                pl.col("amount").fill_null(0.0),
+            )
+            .with_columns(
+                (pl.col("n_members") - pl.col("n_priced")).cast(pl.UInt32).alias("n_excluded"),
                 pl.lit(level).alias("level"),
             )
         )
@@ -360,7 +385,16 @@ def _derive_industry_index_locked(
 
     frame = compute_industry_index(config, start, end)
     if frame.is_empty():
-        return {"rows": 0, "note": f"no rows in [{start}, {end}]"}
+        # Keep the empty-result reason actionable for the orchestrator.  A
+        # daily-bars-only run legitimately has no 申万 input yet, whereas a
+        # configured membership universe that yields no priced returns is a
+        # retryable quality problem.
+        note = (
+            "no 申万 membership rows"
+            if _membership(config).is_empty()
+            else f"no rows in [{start}, {end}]"
+        )
+        return {"rows": 0, "note": note}
     frame = with_provenance(frame, source="derived", data_version="v1")
     frame = dedupe_by_primary_key(frame, "industry_index")
 
@@ -387,7 +421,15 @@ def _derive_industry_index_locked(
             )
             covered_dates = group.get_column("trade_date").unique().to_list()
             keep = existing.filter(~pl.col("trade_date").is_in(covered_dates))
-            group = pl.concat([keep, group.select(existing.columns)]).sort(
+            incoming = group.select(existing.columns)
+            casts = [
+                pl.col(name).cast(dtype).alias(name)
+                for name, dtype in existing.schema.items()
+                if name in incoming.columns and incoming.schema[name] != dtype
+            ]
+            if casts:
+                incoming = incoming.with_columns(casts)
+            group = pl.concat([keep, incoming]).sort(
                 "trade_date", "level", "weighting", "industry_code"
             )
         writer.write_partition("industry_index", "trade_date", str(year), group, "part-000.parquet")

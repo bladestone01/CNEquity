@@ -1,8 +1,10 @@
-"""Reconstruct historical suspension status from daily_bars gaps.
+"""Reconstruct historical suspension status from daily_bars trading gaps.
 
-Exchanges publish no daily bar for a suspended stock, so a listed symbol with
-no bar on a trading day was suspended that day. This is authoritative and
-covers the whole bar history — filling the trading_status gap that free ST
+For feeds that omit suspended rows, a listed symbol with no bar on a trading
+day was suspended that day. Some lake sources retain an OHLC placeholder on a
+suspended day, however; those rows carry ``volume=0``. A listed symbol with no
+*traded* bar is therefore the actual evidence used here. This is authoritative
+and covers the whole bar history — filling the trading_status gap that free ST
 feeds (EastMoney's current-snapshot ST board) cannot reach.
 
 Only sparse ``suspended`` rows are written; real daily rows (EastMoney) win on
@@ -95,9 +97,19 @@ def _suspended_pairs(
     ):
         return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 
-    # Lifetime bounds from the full bar history (cheap scan aggregate).
+    # Lifetime bounds may include zero-volume suspension placeholders, but a
+    # symbol represented only by placeholders must not get a synthetic active
+    # range and be reported as suspended on every calendar day. Keep the
+    # traded-only scan per file so legacy files without volume retain row-based
+    # semantics when they coexist with current files.
+    bars_all_lf = scan_parquet_root(bars_root, partition_col="trade_date")
+    traded_bars_lf = scan_parquet_root(
+        bars_root, partition_col="trade_date", traded_only=True
+    )
+    traded_symbols = traded_bars_lf.select("symbol").unique()
+    bars_lf = bars_all_lf.join(traded_symbols, on="symbol", how="semi")
     sym_range = (
-        scan_parquet_root(bars_root, partition_col="trade_date")
+        bars_lf
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("bmin"),
@@ -109,9 +121,10 @@ def _suspended_pairs(
         return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 
     # Anti-join only needs bars inside the derive window.
-    bars_lf = scan_parquet_root(bars_root, partition_col="trade_date").select(
-        ["symbol", "trade_date"]
-    )
+    # Suspended days may survive as an OHLC placeholder with volume=0. The
+    # traded-only scan already removed those rows while retaining legacy rows
+    # from files without volume.
+    bars_lf = traded_bars_lf.select(["symbol", "trade_date"])
     if start is not None:
         bars_lf = bars_lf.filter(pl.col("trade_date") >= start)
     if end is not None:

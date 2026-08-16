@@ -155,6 +155,140 @@ def test_derive_suspension_from_bar_gaps(tmp_path):
     assert susp["source"][0] == "derived_bar_gap"
 
 
+def test_derive_suspension_treats_zero_volume_placeholder_as_missing(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    days = [date(2024, 6, 27), date(2024, 6, 28)]
+    for d in days:
+        _write(
+            root,
+            "trading_calendar",
+            "trade_date",
+            d.isoformat(),
+            pl.DataFrame(
+                {
+                    "trade_date": [d],
+                    "is_trading": [True],
+                    "source": ["seed"],
+                    "data_version": ["v1"],
+                    "fetched_at": ["2024-06-28T00:00:00+00:00"],
+                }
+            ),
+        )
+
+    def bar(day: date, volume: int) -> dict:
+        return {
+            "symbol": "000001.SZ",
+            "trade_date": day,
+            "open": 10.0,
+            "high": 10.0,
+            "low": 10.0,
+            "close": 10.0,
+            "volume": volume,
+            "amount": float(volume) * 10.0,
+            "source": "tdx_protocol",
+            "data_version": "v1",
+            "fetched_at": "2024-06-28T00:00:00+00:00",
+        }
+
+    _write(
+        root,
+        "daily_bars",
+        "trade_date",
+        "2024-06-27",
+        pl.DataFrame([bar(days[0], 0)]),
+    )
+    _write(
+        root,
+        "daily_bars",
+        "trade_date",
+        "2024-06-28",
+        pl.DataFrame([bar(days[1], 100)]),
+    )
+    (root / "curated" / "instruments").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"],
+            "name": ["B"],
+            "exchange": ["SZ"],
+            "asset_type": ["stock"],
+            "list_date": [date(2010, 1, 1)],
+            "delist_date": [None],
+            "prev_symbol": [None],
+            "source": ["tdx"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-28T00:00:00+00:00"],
+        }
+    ).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
+
+    assert derive_suspension_history(cfg) == 1
+    status = pl.read_parquet(
+        root / "curated" / "trading_status" / "trade_date=2024-06" / "part-merged.parquet"
+    )
+    assert status.filter(pl.col("status") == "suspended")["trade_date"].to_list() == [
+        date(2024, 6, 27)
+    ]
+
+
+def test_derive_suspension_ignores_placeholder_only_symbol(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    days = [date(2024, 6, 27), date(2024, 6, 28)]
+    for d in days:
+        _write(
+            root,
+            "trading_calendar",
+            "trade_date",
+            d.isoformat(),
+            pl.DataFrame(
+                {
+                    "trade_date": [d],
+                    "is_trading": [True],
+                    "source": ["seed"],
+                    "data_version": ["v1"],
+                    "fetched_at": ["2024-06-28T00:00:00+00:00"],
+                }
+            ),
+        )
+
+    rows = []
+    for symbol, volume in (("600519.SH", 100), ("000001.SZ", 0)):
+        for d in days:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "trade_date": d,
+                    "open": 1.0,
+                    "high": 1.0,
+                    "low": 1.0,
+                    "close": 1.0,
+                    "volume": volume,
+                    "amount": float(volume),
+                    "source": "tdx_protocol",
+                    "data_version": "v1",
+                    "fetched_at": "2024-06-28T00:00:00+00:00",
+                }
+            )
+    _write(
+        root,
+        "daily_bars",
+        "trade_date",
+        "2024-06",
+        pl.DataFrame(rows),
+    )
+
+    (root / "curated" / "instruments").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "list_date": [date(2010, 1, 1), date(2010, 1, 1)],
+            "delist_date": [None, None],
+        }
+    ).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
+
+    assert derive_suspension_history(cfg) == 0
+
+
 def test_derive_suspension_empty_lake(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     assert derive_suspension_history(cfg) == 0

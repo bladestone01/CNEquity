@@ -122,6 +122,57 @@ def test_unrealistic_turnover_is_treated_as_missing(monkeypatch, tmp_path):
     assert row["amount"] is None, "sub-yuan turnover must not survive as a weight"
 
 
+def test_hfq_returns_drop_non_finite_pct_changes(monkeypatch):
+    """A zero previous close must not write NaN industry returns."""
+    bars = pl.DataFrame(
+        [
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 7, 21),
+                "close": 0.0,
+                "amount": 1.0e8,
+            },
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 7, 22),
+                "close": 10.0,
+                "amount": 1.0e8,
+            },
+        ]
+    )
+    monkeypatch.setattr("cnequity.query.reader.load", lambda *a, **k: bars)
+
+    out = _hfq_returns(object(), date(2026, 7, 21), date(2026, 7, 22), ["600000.SH"])
+
+    assert out.is_empty()
+
+
+def test_hfq_returns_exclude_no_trade_placeholders(monkeypatch):
+    bars = pl.DataFrame(
+        [
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 7, 21),
+                "close": 10.0,
+                "volume": 100,
+                "amount": 5.0e8,
+            },
+            {
+                "symbol": "600000.SH",
+                "trade_date": date(2026, 7, 22),
+                "close": 10.0,
+                "volume": 0,
+                "amount": 0.0,
+            },
+        ]
+    )
+    monkeypatch.setattr("cnequity.query.reader.load", lambda *a, **k: bars)
+
+    out = _hfq_returns(object(), date(2026, 7, 1), date(2026, 7, 22), ["600000.SH"])
+
+    assert out.is_empty(), "a suspended placeholder must not create a zero return"
+
+
 def test_hfq_returns_do_not_bridge_a_missing_trading_session(monkeypatch, tmp_path):
     """A two-session price move must not masquerade as one day's return."""
     cfg = Config(data_root=tmp_path / "data")
@@ -241,6 +292,57 @@ def test_compute_industry_index_aggregates_levels(tmp_path, monkeypatch):
     assert equal["n_excluded"] == 0
 
 
+def test_compute_industry_index_keeps_groups_with_no_priced_members(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    _seed_sw_membership(
+        cfg,
+        [
+            {
+                "symbol": "600000.SH",
+                "classification_system": "sw",
+                "industry_code": "240301",
+                "industry_name": "铝",
+                "as_of_date": date(2026, 5, 1),
+                "source": "sw",
+                "data_version": "v1",
+                "fetched_at": "2026-05-01T00:00:00+00:00",
+            },
+            {
+                "symbol": "600001.SH",
+                "classification_system": "sw",
+                "industry_code": "240302",
+                "industry_name": "铜",
+                "as_of_date": date(2026, 5, 1),
+                "source": "sw",
+                "data_version": "v1",
+                "fetched_at": "2026-05-01T00:00:00+00:00",
+            },
+        ],
+    )
+    _seed_adj_factor(cfg, ["600000.SH", "600001.SH"])
+    rets = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "trade_date": [date(2026, 5, 15)],
+            "ret": [0.10],
+            "amount": [1.0e8],
+        }
+    )
+    monkeypatch.setattr(
+        "cnequity.derive.industry_index._hfq_returns",
+        lambda *a, **k: rets,
+    )
+
+    frame = compute_industry_index(cfg, date(2026, 5, 15), date(2026, 5, 15), levels=("L3",))
+
+    copper = frame.filter(pl.col("industry_code") == "240302")
+    assert copper.height == 2  # equal + amount remain observable
+    assert copper["n_members"].to_list() == [1, 1]
+    assert copper["n_priced"].to_list() == [0, 0]
+    assert copper["n_excluded"].to_list() == [1, 1]
+    assert copper["ret"].null_count() == 2
+
+
 def test_compute_industry_index_empty_without_membership(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     (cfg.curated_root / "industry_members").mkdir(parents=True)
@@ -310,15 +412,20 @@ def test_derive_industry_index_watermark_stops_before_interior_gap(tmp_path, mon
     ).write_parquet(calendar / "part-000.parquet")
     frame = pl.DataFrame(
         {
-            "trade_date": [date(2026, 8, 3), date(2026, 8, 5)],
-            "industry_code": ["240301", "240301"],
-            "level": ["L3", "L3"],
-            "weighting": ["equal", "equal"],
-            "ret": [0.05, 0.06],
-            "n_members": [2, 2],
-            "n_priced": [2, 2],
-            "n_excluded": [0, 0],
-            "amount": [2.0e8, 2.0e8],
+            "trade_date": [
+                date(2026, 8, 3),
+                date(2026, 8, 3),
+                date(2026, 8, 5),
+                date(2026, 8, 5),
+            ],
+            "industry_code": ["240301"] * 4,
+            "level": ["L3"] * 4,
+            "weighting": ["equal", "amount", "equal", "amount"],
+            "ret": [0.05, 0.05, 0.06, 0.06],
+            "n_members": [2] * 4,
+            "n_priced": [2] * 4,
+            "n_excluded": [0] * 4,
+            "amount": [2.0e8] * 4,
         }
     )
     monkeypatch.setattr(
@@ -394,6 +501,54 @@ def test_derive_industry_index_cleans_duplicate_existing_rows(tmp_path, monkeypa
     assert written.filter(pl.col("trade_date") == date(2026, 5, 13))["ret"].to_list() == [0.01]
     assert written.filter(pl.col("trade_date") == date(2026, 5, 12))["ret"].to_list() == [0.005]
     assert [path.name for path in part.rglob("*.parquet")] == ["part-000.parquet"]
+
+
+def test_derive_industry_index_aligns_new_schema_with_existing_partition(
+    tmp_path, monkeypatch
+):
+    """A rerun must repair old UInt32 partitions after new-frame type changes."""
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.derived_root / "industry_index" / "trade_date=2026"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2026, 5, 14)],
+            "industry_code": ["240301"],
+            "level": ["L3"],
+            "weighting": ["equal"],
+            "ret": [0.01],
+            "n_members": pl.Series([2], dtype=pl.UInt32),
+            "n_priced": pl.Series([2], dtype=pl.UInt32),
+            "n_excluded": pl.Series([0], dtype=pl.UInt32),
+            "amount": [1.0e8],
+            "source": ["derived"],
+            "data_version": ["v1"],
+            "fetched_at": [datetime(2026, 5, 14, tzinfo=timezone.utc)],
+        }
+    ).write_parquet(part / "part-000.parquet")
+    incoming = pl.DataFrame(
+        {
+            "trade_date": [date(2026, 5, 15), date(2026, 5, 15)],
+            "industry_code": ["240301", "240301"],
+            "level": ["L3", "L3"],
+            "weighting": ["equal", "amount"],
+            "ret": [0.02, 0.02],
+            "n_members": pl.Series([2, 2], dtype=pl.Int64),
+            "n_priced": pl.Series([2, 2], dtype=pl.Int64),
+            "n_excluded": pl.Series([0, 0], dtype=pl.Int64),
+            "amount": [1.0e8, 1.0e8],
+        }
+    )
+    monkeypatch.setattr(
+        "cnequity.derive.industry_index.compute_industry_index",
+        lambda *a, **k: incoming,
+    )
+
+    derive_industry_index(cfg, start=date(2026, 5, 15), end=date(2026, 5, 15))
+
+    written = pl.read_parquet(part / "part-000.parquet")
+    assert written.schema["n_priced"] == pl.UInt32
+    assert written.height == 3
 
 
 def test_catchup_after_watermark_keeps_first_day(tmp_path, monkeypatch):

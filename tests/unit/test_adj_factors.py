@@ -14,6 +14,7 @@ from cnequity.config.bootstrap import path_for_toml
 from cnequity.derive.adj_factors import (
     _align_factors_to_bars,
     _cache_path,
+    _load_daily_bar_dates,
     _write_adj_partitions,
     compute_adj_factors,
 )
@@ -186,6 +187,33 @@ def test_align_factors_to_bars_leading_bar_before_any_event_defaults_one():
     factors = pl.DataFrame({"trade_date": [date(2024, 6, 27)], "factor": [0.5]})
     aligned = _align_factors_to_bars(bars, "600519.SH", factors, "hfq").sort("trade_date")
     assert aligned["factor"].to_list() == [1.0, 0.5]
+
+
+def test_adj_factor_dates_skip_placeholder_only_symbols(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    root_27 = cfg.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    root_27.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 27)],
+            "volume": [100],
+        }
+    ).write_parquet(root_27 / "part-0.parquet")
+    root_28 = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
+    root_28.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "trade_date": [date(2024, 6, 28)] * 2,
+            "volume": [0, 0],
+        }
+    ).write_parquet(root_28 / "part-0.parquet")
+
+    bars = _load_daily_bar_dates(cfg)
+
+    assert bars["symbol"].unique().to_list() == ["600519.SH"]
+    assert bars.height == 2
 
 
 def test_factor_continuity_findings_flags_break():
@@ -409,6 +437,32 @@ def test_compute_adj_factors_reuses_cache_on_non_event_day(adj_config, monkeypat
     out = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-29" / "part-0.parquet"
     df = pl.read_parquet(out)
     assert df["factor"][0] == 0.5
+
+
+def test_compute_adj_factors_event_refresh_uses_latest_traded_day(adj_config, monkeypatch):
+    placeholder_dir = adj_config.curated_root / "daily_bars" / "trade_date=2024-06-29"
+    placeholder_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 29)],
+            "open": [1.0],
+            "high": [1.0],
+            "low": [1.0],
+            "close": [1.0],
+            "volume": [0],
+            "amount": [0.0],
+        }
+    ).write_parquet(placeholder_dir / "part-0.parquet")
+    seen: list[date] = []
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors._event_refresh_symbols",
+        lambda config, trade_date: seen.append(trade_date) or set(),
+    )
+
+    compute_adj_factors(adj_config)
+
+    assert seen == [date(2024, 6, 28)]
 
 
 def test_compute_adj_factors_refreshes_corporate_action_symbol(adj_config, monkeypatch):

@@ -108,6 +108,7 @@ def test_news_sentiment_universe_reads_all_daily_bar_shards(tmp_path):
             "symbol": ["000001.SZ"],
             "trade_date": [date(2024, 6, 28)],
             "amount": [100.0],
+            "volume": [100],
         }
     ).write_parquet(part / "part-000.parquet")
     pl.DataFrame(
@@ -115,6 +116,7 @@ def test_news_sentiment_universe_reads_all_daily_bar_shards(tmp_path):
             "symbol": ["600519.SH", "600000.SH"],
             "trade_date": [date(2024, 6, 28)] * 2,
             "amount": [900.0, 800.0],
+            "volume": [100, 100],
         }
     ).write_parquet(part / "part-001.parquet")
 
@@ -162,10 +164,29 @@ def test_news_sentiment_universe_reads_daily_bars_inside_month_partition(tmp_pat
             "symbol": ["000001.SZ", "600519.SH"],
             "trade_date": [date(2024, 6, 28)] * 2,
             "amount": [100.0, 200.0],
+            "volume": [100, 100],
         }
     ).write_parquet(part / "part-000.parquet")
 
     assert _news_sentiment_symbols(Config(data_root=root), date(2024, 6, 28), 1) == ["600519.SH"]
+
+
+def test_news_sentiment_universe_ignores_zero_volume_amount_placeholder(tmp_path):
+    root = tmp_path / "data"
+    part = root / "curated" / "daily_bars" / "trade_date=2024-06-28"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "trade_date": [date(2024, 6, 28)] * 2,
+            "amount": [100.0, 9_999_999.0],
+            "volume": [100, 0],
+        }
+    ).write_parquet(part / "part-000.parquet")
+
+    assert _news_sentiment_symbols(Config(data_root=root), date(2024, 6, 28), 1) == [
+        "600519.SH"
+    ]
 
 
 def test_batch_sentiment_http_fallback_when_no_headlines(news_batch_lake):

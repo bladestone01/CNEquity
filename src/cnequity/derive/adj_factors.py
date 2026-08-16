@@ -144,6 +144,22 @@ def _load_daily_bar_dates(
         return _EMPTY_BAR_DATES.clone()
     if bars.is_empty() or not {"symbol", "trade_date"}.issubset(bars.columns):
         return _EMPTY_BAR_DATES.clone()
+    if "volume" in bars.columns:
+        # Keep all dates for a symbol that has traded at least once: suspended
+        # rows still need the carried-forward factor for adjusted queries. But
+        # a symbol represented only by zero-volume placeholders is not a real
+        # factor task and must not trigger a Sina request.
+        traded = collect_parquet_root(
+            bars_path,
+            partition_col="trade_date",
+            start=start,
+            symbols=symbols,
+            traded_only=True,
+        )
+        traded_symbols = set(traded.get_column("symbol").unique().to_list())
+        bars = bars.filter(pl.col("symbol").is_in(traded_symbols))
+        if bars.is_empty():
+            return _EMPTY_BAR_DATES.clone()
     return bars.select(["symbol", "trade_date"]).unique().sort(["symbol", "trade_date"])
 
 
@@ -279,8 +295,9 @@ def _uncovered_symbols(config: Config) -> set[str]:
     bars_root = config.curated_root / "daily_bars"
     if not dataset_has_parquet(bars_root):
         return set()
+    bars = scan_parquet_root(bars_root, traded_only=True)
     bar_span = (
-        scan_parquet_root(bars_root)
+        bars
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("bar_first"),
@@ -552,15 +569,12 @@ def _compute_adj_factors_locked(
     adjust_types = [STORED_ADJUST_TYPE]
 
     watermark = None if full else _adj_factors_watermark(config)
-    # Event refresh uses the latest bar date in the lake (not just this run's slice).
-    from cnequity.query.parquet_scan import list_hive_partition_dates
+    # Event refresh uses the latest traded bar date in the lake (not just this
+    # run's slice). A terminal zero-volume placeholder partition is not a
+    # market session and must not drive corporate-action/new-listing refresh.
+    from cnequity.query.universe import coverage_end_date
 
-    latest_bar_date = None
-    try:
-        all_dates = list_hive_partition_dates(config.curated_root / "daily_bars", "trade_date")
-        latest_bar_date = all_dates[-1] if all_dates else None
-    except OSError:
-        latest_bar_date = None
+    latest_bar_date = coverage_end_date(config, "daily_bars")
 
     retry_symbols = _retry_symbols(config)
     refresh_set = set(refresh_symbols or []) | retry_symbols

@@ -49,7 +49,7 @@
 
 `derive_suspension_history(cfg, *, start=None, end=None)` / `cne derive trading_status [--start] [--end]`：
 
-- 对比 `daily_bars` 有成交的日期与 `trading_calendar`
+- 对比 `daily_bars` 有成交（`volume > 0`）的日期与 `trading_calendar`；停牌 OHLC 占位行不算成交
 - 推断历史停牌区间
 - 按 `DATASETS["trading_status"].partition_for`（月分区 `trade_date=YYYY-MM`）合并写入 `trading_status`（`status="suspended"`）
 - `start` / `end` 限制日历窗口（按年分块重建，避免全历史 cross-join OOM）
@@ -64,6 +64,9 @@
 
 - 上涨/下跌家数
 - 涨跌停家数（按板块涨跌幅限制规则）
+
+仅统计当日有成交的股票（`volume > 0`）。停牌占位行虽然保留 OHLC，但
+按数据契约是 `volume=0`，不应被当作平盘股计入市场宽度分母。
 
 由 `steps/macro_risk.py` 在抓取宏观数据时调用。
 
