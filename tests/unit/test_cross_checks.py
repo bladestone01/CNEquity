@@ -19,7 +19,7 @@ def _write_calendar(root, rows):
         )
 
 
-def _write_daily(root, dataset, rows):
+def _write_daily(root, dataset, rows, *, volume_by_symbol=None):
     """rows: list of (symbol, date)."""
     base = root / "curated" / dataset
     by_day: dict[date, list[str]] = {}
@@ -28,9 +28,13 @@ def _write_daily(root, dataset, rows):
     for d, syms in by_day.items():
         part = base / f"trade_date={d.isoformat()}"
         part.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"symbol": syms, "trade_date": [d] * len(syms)}).write_parquet(
-            part / "part.parquet"
-        )
+        data = {"symbol": syms, "trade_date": [d] * len(syms)}
+        if dataset == "daily_bars":
+            data["volume"] = [
+                100 if volume_by_symbol is None else volume_by_symbol.get(sym, 100)
+                for sym in syms
+            ]
+        pl.DataFrame(data).write_parquet(part / "part.parquet")
 
 
 # --- daily_bars × calendar --------------------------------------------------
@@ -91,6 +95,44 @@ def test_daily_bars_suspension_gap_is_not_flagged(tmp_path):
     assert daily_bars_calendar_findings(cfg, date(2024, 6, 5)) == []
 
 
+def test_daily_bars_flags_placeholder_only_day_as_missing(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    days = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5)]
+    _write_calendar(cfg.data_root, [(d, True) for d in days])
+    _write_daily(cfg.data_root, "daily_bars", [("A", days[0]), ("A", days[2])])
+    _write_daily(
+        cfg.data_root,
+        "daily_bars",
+        [("A", days[1])],
+        volume_by_symbol={"A": 0},
+    )
+
+    findings = daily_bars_calendar_findings(cfg, date(2024, 6, 5))
+
+    assert len(findings) == 1
+    assert findings[0]["check"] == "daily_bars_calendar_missing_day"
+    assert findings[0]["missing_sample"] == ["2024-06-04"]
+
+
+def test_daily_bars_placeholder_only_tail_does_not_extend_coverage(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    days = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5)]
+    _write_calendar(cfg.data_root, [(d, True) for d in days])
+    _write_daily(
+        cfg.data_root,
+        "daily_bars",
+        [("A", days[0]), ("A", days[1])],
+    )
+    _write_daily(
+        cfg.data_root,
+        "daily_bars",
+        [("A", days[2])],
+        volume_by_symbol={"A": 0},
+    )
+
+    assert daily_bars_calendar_findings(cfg, date(2024, 6, 5)) == []
+
+
 def test_daily_bars_empty_lake_no_findings(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     assert daily_bars_calendar_findings(cfg, date(2024, 6, 5)) == []
@@ -137,6 +179,20 @@ def test_valuation_flags_low_coverage(tmp_path):
     assert low["covered_symbols"] == 3
     assert low["bars_symbols"] == 10
     assert low["coverage_ratio"] == 0.3
+
+
+def test_valuation_coverage_ignores_placeholder_only_bar(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    day = date(2024, 6, 5)
+    _write_daily(
+        cfg.data_root,
+        "daily_bars",
+        [("A", day), ("B", day)],
+        volume_by_symbol={"A": 0, "B": 100},
+    )
+    _write_daily(cfg.data_root, "valuation_metrics", [("B", day)])
+
+    assert valuation_bars_coverage_findings(cfg, day) == []
 
 
 def test_valuation_no_shared_date(tmp_path):

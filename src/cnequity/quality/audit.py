@@ -11,6 +11,7 @@ from cnequity.adapters.calendar.exchange_calendar import (
 )
 from cnequity.config import Config
 from cnequity.domain.datasets import PARTITION_COLS, curated_dataset_names
+from cnequity.domain.market_time import is_session_final
 from cnequity.quality.authority_checks import run_authority_checks
 from cnequity.quality.cross_checks import (
     adj_factor_coverage_findings,
@@ -27,8 +28,10 @@ from cnequity.quality.dataset_checks import (
     check_mixed_partition_granularity,
     check_partition_fragmentation,
 )
+from cnequity.quality.derived_checks import industry_index_findings, market_breadth_findings
 from cnequity.quality.intraday_checks import minute_bars_findings
 from cnequity.quality.macro_checks import macro_staleness_findings
+from cnequity.quality.pit_checks import pit_announce_date_findings
 from cnequity.quality.source_diff import run_source_diffs
 from cnequity.quality.st_coverage import st_evidence_coverage_report
 from cnequity.quality.tick_checks import trade_ticks_findings
@@ -182,6 +185,54 @@ def _collect_lake_findings(
     for extra in context.get("audit_findings") or []:
         findings.append(extra)
 
+    # Structural checks must run before any cross-dataset scan. A corrupt
+    # Parquet file otherwise fails during the first lazy collect and prevents
+    # the audit from identifying the file that caused the failure. Once a
+    # dataset has an unreadable file, skip scans that could consume it and say
+    # so explicitly in the report.
+    invalid_datasets: set[str] = set()
+    for ds, pcol in PARTITION_COLS.items():
+        root = config.curated_root / ds
+        dataset_findings = audit_curated_dataset(ds, pcol, root, trade_date, full=full)
+        findings.extend(dataset_findings)
+        if any(
+            f.get("check") == "schema_contract" and f.get("unreadable_files", 0) > 0
+            for f in dataset_findings
+        ):
+            invalid_datasets.add(ds)
+        else:
+            mixed = check_mixed_partition_granularity(ds, pcol, root)
+            if mixed is not None:
+                findings.append(mixed)
+            fragmented = check_partition_fragmentation(ds, pcol, root)
+            if fragmented is not None:
+                findings.append(fragmented)
+
+    findings.extend(_unregistered_curated_dirs(config))
+    # Derived checks are independent of the curated cross-dataset scans. Keep
+    # them visible even when a corrupt curated file forces those broader scans
+    # to stop early.
+    findings.extend(market_breadth_findings(config, trade_date, full=full))
+    findings.extend(industry_index_findings(config, trade_date, full=full))
+    if full:
+        findings.extend(pit_announce_date_findings(config))
+    if invalid_datasets:
+        names = ", ".join(sorted(invalid_datasets))
+        findings.append(
+            {
+                "dataset": "curated",
+                "severity": "warning",
+                "check": "quality_checks_skipped",
+                "message": (
+                    "Cross-dataset quality scans were skipped because these curated "
+                    f"datasets contain unreadable Parquet: {names}. "
+                    "Repair or remove the reported files, then rerun the audit."
+                ),
+                "datasets": sorted(invalid_datasets),
+            }
+        )
+        return findings
+
     seed_end = calendar_seed_end()
     forward_days = calendar_forward_coverage_days(trade_date)
     if forward_days < CALENDAR_FORWARD_COVERAGE_WARN_DAYS:
@@ -255,17 +306,6 @@ def _collect_lake_findings(
     # and [sources.exchange] so an offline lake (and every unit test) stays off
     # the network.
     findings.extend(run_authority_checks(config, trade_date))
-    findings.extend(_unregistered_curated_dirs(config))
-
-    for ds, pcol in PARTITION_COLS.items():
-        root = config.curated_root / ds
-        findings.extend(audit_curated_dataset(ds, pcol, root, trade_date, full=full))
-        mixed = check_mixed_partition_granularity(ds, pcol, root)
-        if mixed is not None:
-            findings.append(mixed)
-        fragmented = check_partition_fragmentation(ds, pcol, root)
-        if fragmented is not None:
-            findings.append(fragmented)
     return findings
 
 
@@ -299,7 +339,7 @@ def lake_health(
     research_end: date | None = None,
 ) -> dict:
     """Lake health: findings + freshness → ``meta/quality/health-latest.json``."""
-    from cnequity.domain.datasets import is_stale
+    from cnequity.domain.datasets import is_dataset_enabled, is_stale
     from cnequity.quality.historical_validity import historical_universe_validity
     from cnequity.query.reader import list_datasets
 
@@ -321,7 +361,7 @@ def lake_health(
         if not row["has_data"]:
             empty.append(row["dataset"])
             continue
-        if not row["watermarked"]:
+        if not row["watermarked"] or not is_dataset_enabled(row["dataset"], config):
             continue
         mark = row["watermark"] or row["coverage_end"]
         if is_stale(row["dataset"], mark, anchor):
@@ -371,7 +411,7 @@ def _last_trading_day(config: Config, trade_date: date) -> date:
 
     from cnequity.steps.common import is_trading_day
 
-    d = trade_date
+    d = trade_date if is_session_final(trade_date) else trade_date - timedelta(days=1)
     for _ in range(15):
         if is_trading_day(config, d):
             return d

@@ -13,7 +13,7 @@ from cnequity.quality import cross_checks
 from cnequity.quality.cross_checks import adj_factor_reconciliation_findings
 
 
-def _write_bars(root, rows):
+def _write_bars(root, rows, *, volume_by_key=None):
     """rows: list of (symbol, date, close)."""
     base = root / "curated" / "daily_bars"
     by_day: dict[date, list[tuple[str, float]]] = {}
@@ -27,6 +27,10 @@ def _write_bars(root, rows):
                 "symbol": [s for s, _ in entries],
                 "trade_date": [d] * len(entries),
                 "close": [c for _, c in entries],
+                "volume": [
+                    100 if volume_by_key is None else volume_by_key.get((s, d), 100)
+                    for s, _ in entries
+                ],
                 "fetched_at": [datetime(d.year, d.month, d.day, tzinfo=timezone.utc)]
                 * len(entries),
             }
@@ -68,6 +72,24 @@ def _write_corp_actions(root, rows):
                 "symbol": syms,
                 "ex_date": [d] * len(syms),
                 "action_type": ["dividend"] * len(syms),
+            }
+        ).write_parquet(part / "part.parquet")
+
+
+def _write_share_structure(root, rows):
+    """rows: list of (symbol, change_date, change_reason)."""
+    base = root / "curated" / "share_structure"
+    by_year: dict[int, list[tuple[str, date, str]]] = {}
+    for sym, change_date, reason in rows:
+        by_year.setdefault(change_date.year, []).append((sym, change_date, reason))
+    for year, entries in by_year.items():
+        part = base / f"change_date={year}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "symbol": [sym for sym, _, _ in entries],
+                "change_date": [change_date for _, change_date, _ in entries],
+                "change_reason": [reason for _, _, reason in entries],
             }
         ).write_parquet(part / "part.parquet")
 
@@ -205,6 +227,19 @@ def test_suspension_resume_reprice_is_not_a_break(tmp_path):
     assert adj_factor_reconciliation_findings(cfg, _D[-1]) == []
 
 
+def test_placeholder_between_trades_does_not_create_adj_break(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(
+        cfg.data_root,
+        [("A", d, 10.0) for d in _D],
+        volume_by_key={("A", _D[1]): 0},
+    )
+    _write_factors(cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 2.0), ("A", _D[2], 2.0)])
+    _write_calendar(cfg.data_root, _D)
+
+    assert adj_factor_reconciliation_findings(cfg, _D[-1]) == []
+
+
 def test_discontinuity_fail_loud_without_calendar(tmp_path):
     # Without a calendar, adjacency cannot be judged, so a discontinuity is still
     # reported (fail-loud) rather than silently dropped.
@@ -240,6 +275,87 @@ def test_missing_corp_action_is_warning(tmp_path):
     assert f["trade_date"] == "2024-06-05"
     assert f["adj_ret"] == 0.0
     assert f["raw_ret"] == -0.5
+
+
+def test_share_count_restructuring_explains_missing_corp_action(tmp_path):
+    # A capital reduction changes the reference price but is not represented by
+    # the corporate_actions schema.  share_structure is the authoritative local
+    # evidence and should prevent a false missing-dividend warning.
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 30.0), ("A", _D[3], 30.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 1 / 3), ("A", _D[3], 1 / 3)]
+    )
+    _write_corp_actions(cfg.data_root, _DECOY)
+    _write_share_structure(cfg.data_root, [("A", _D[2], "缩股")])
+
+    findings = adj_factor_reconciliation_findings(cfg, _D[-1])
+    assert {finding["check"] for finding in findings} == {
+        "adjustment_explained_by_share_structure"
+    }
+    assert findings[0]["severity"] == "info"
+
+
+def test_non_adjusting_share_change_does_not_explain_missing_corp_action(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    _write_bars(
+        cfg.data_root,
+        [("A", _D[0], 10.0), ("A", _D[1], 10.0), ("A", _D[2], 5.0), ("A", _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root, [("A", _D[0], 1.0), ("A", _D[1], 1.0), ("A", _D[2], 2.0), ("A", _D[3], 2.0)]
+    )
+    _write_corp_actions(cfg.data_root, _DECOY)
+    _write_share_structure(cfg.data_root, [("A", _D[2], "增发A股上市")])
+
+    findings = adj_factor_reconciliation_findings(cfg, _D[-1])
+    assert {finding["check"] for finding in findings} == {"missing_corporate_action"}
+
+
+def test_reconciliation_carries_previous_row_across_year_boundary(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    previous = date(2024, 12, 31)
+    current = date(2025, 1, 2)
+    _write_bars(cfg.data_root, [("A", previous, 10.0), ("A", current, 5.0)])
+    _write_factors(cfg.data_root, [("A", previous, 1.0), ("A", current, 2.0)])
+    _write_corp_actions(cfg.data_root, _DECOY)
+
+    findings = adj_factor_reconciliation_findings(cfg, current)
+    assert {finding["check"] for finding in findings} == {"missing_corporate_action"}
+    assert findings[0]["prev_trade_date"] == "2024-12-31"
+
+
+def test_reconciliation_carries_previous_row_across_a_fully_empty_year(tmp_path):
+    """A symbol absent for an entire intervening year-chunk must keep its carry.
+
+    _adjusted_returns processes one calendar year at a time to bound memory;
+    a symbol fully suspended for an entire year has zero rows in that
+    chunk and must not lose its carried last-known row at that boundary, or
+    a real discontinuity spanning the gap goes unchecked entirely. Symbol
+    "B" trades only in the intervening year so that year's chunk is not
+    itself empty (an empty chunk short-circuits before touching carry at
+    all, which would not exercise this bug).
+    """
+    cfg = Config(data_root=tmp_path / "data")
+    before = date(2023, 6, 1)
+    during = date(2024, 6, 3)
+    after = date(2025, 3, 3)
+    _write_bars(
+        cfg.data_root,
+        [("A", before, 10.0), ("A", after, 5.0), ("B", during, 20.0)],
+    )
+    _write_factors(
+        cfg.data_root,
+        [("A", before, 1.0), ("A", after, 2.0), ("B", during, 1.0)],
+    )
+    _write_corp_actions(cfg.data_root, _DECOY)
+
+    findings = adj_factor_reconciliation_findings(cfg, after)
+    assert {finding["check"] for finding in findings} == {"missing_corporate_action"}
+    assert findings[0]["prev_trade_date"] == "2023-06-01"
 
 
 def test_missing_corp_action_on_adjacent_days_with_calendar(tmp_path):

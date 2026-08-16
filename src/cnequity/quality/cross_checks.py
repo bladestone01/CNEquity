@@ -20,7 +20,11 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.query.canonical import dedupe_lazy_by_primary_key
-from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+from cnequity.query.parquet_scan import (
+    dataset_has_parquet,
+    list_partitions,
+    scan_parquet_root,
+)
 
 _SAMPLE = 8
 # Flag when valuation covers less than this share of symbols with bars that day.
@@ -32,9 +36,18 @@ _VALUATION_COVERAGE_WARN_RATIO = VALUATION_COVERAGE_WARN_RATIO
 # (beyond board limits; not a real ex-event).
 ADJ_DISCONTINUITY_RET = 0.35
 
-# Warning: adj continuous but raw diverges past board limit with no CA on record.
+# Warning: adj continuous but raw diverges past board limit with no CA or known
+# capital-structure adjustment on record.
 MISSING_EVENT_MAX_ADJ_RET = 0.15
 MISSING_EVENT_MIN_DIVERGENCE = 0.11
+
+# A share-count restructuring can change the reference price without being a
+# dividend/bonus/allotment event.  ``share_structure`` carries those events;
+# keep the vocabulary deliberately narrow because ordinary issuance, unlocks,
+# buybacks, and debt conversion do not make an ex-price adjustment by
+# themselves.  Without this reconciliation, a verified ``缩股`` on 000887.SZ
+# was incorrectly reported as an unrecorded corporate action.
+_STRUCTURAL_ADJUSTMENT_RE = "缩股|减资|合股|并股|拆股"
 
 _MAX_RECON_FINDINGS = 50
 
@@ -60,6 +73,18 @@ RETIRED_GAP_DAYS = 180
 # Only judge lakes spanning at least this long: over a short window a real
 # market genuinely may retire nobody, so zero retirements proves nothing.
 SURVIVORSHIP_MIN_SPAN_DAYS = 730
+
+
+def _traded_bars(bars: pl.LazyFrame) -> pl.LazyFrame:
+    """Keep real prints when the daily-bars schema exposes traded volume."""
+    if "volume" in bars.collect_schema().names():
+        # A diagonal scan inserts null for a legacy file that predates the
+        # volume column. Curated current rows require a non-null volume, so a
+        # null here is the compatibility marker rather than a traded value.
+        return bars.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
+    # Minimal/legacy fixtures may not have volume; retain their row-based
+    # semantics rather than making an otherwise readable lake unusable.
+    return bars
 
 
 def _trading_days(config: Config, trade_date: date) -> set[date]:
@@ -89,15 +114,13 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
     if not trading_days:
         return findings
 
-    bars_dates = set(
-        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
-        .select("trade_date")
-        .unique()
-        .collect()["trade_date"]
-        .to_list()
-    )
+    bars = scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+    bars_dates = set(bars.select("trade_date").unique().collect()["trade_date"].to_list())
     if not bars_dates:
         return findings
+    traded_dates = set(
+        _traded_bars(bars).select("trade_date").unique().collect()["trade_date"].to_list()
+    )
 
     # Bars on a closed calendar day.
     orphan = sorted(bars_dates - trading_days)
@@ -116,10 +139,15 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
             }
         )
 
-    # Trading days in the covered span with zero bars from any symbol.
-    first, last = min(bars_dates), max(bars_dates)
+    # Trading days in the traded-data span with zero traded bars from any
+    # symbol. A terminal partition containing only suspension placeholders is
+    # still checked above for calendar anomalies, but must not extend the
+    # market-wide coverage interval and create a false missing-day finding.
+    if not traded_dates:
+        return findings
+    first, last = min(traded_dates), max(traded_dates)
     expected = {d for d in trading_days if first <= d <= last}
-    missing = sorted(expected - bars_dates)
+    missing = sorted(expected - traded_dates)
     if missing:
         findings.append(
             {
@@ -128,7 +156,7 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
                 "check": "daily_bars_calendar_missing_day",
                 "message": (
                     f"{len(missing)} calendar trading day(s) in "
-                    f"{first.isoformat()}..{last.isoformat()} have zero bars "
+                    f"{first.isoformat()}..{last.isoformat()} have zero traded bars "
                     f"(e.g. {', '.join(d.isoformat() for d in missing[:_SAMPLE])})"
                 ),
                 "missing_count": len(missing),
@@ -201,7 +229,9 @@ def valuation_day_coverage_ratio(config: Config, trade_date: date) -> float | No
         .to_list()
     )
     bars_syms = set(
-        scan_parquet_root(bars_root, partition_col="trade_date", start=trade_date, end=trade_date)
+        _traded_bars(
+            scan_parquet_root(bars_root, partition_col="trade_date", start=trade_date, end=trade_date)
+        )
         .select("symbol")
         .unique()
         .collect()["symbol"]
@@ -300,7 +330,7 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
         .to_list()
     )
     bars_syms_all = set(
-        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+        _traded_bars(scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date))
         .select("symbol")
         .unique()
         .collect()["symbol"]
@@ -335,7 +365,7 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
         .to_list()
     )
     bars_dates = set(
-        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+        _traded_bars(scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date))
         .select("trade_date")
         .unique()
         .collect()["trade_date"]
@@ -365,7 +395,9 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
         .to_list()
     )
     bars_syms = set(
-        scan_parquet_root(bars_root, partition_col="trade_date", start=anchor, end=anchor)
+        _traded_bars(
+            scan_parquet_root(bars_root, partition_col="trade_date", start=anchor, end=anchor)
+        )
         .select("symbol")
         .unique()
         .collect()["symbol"]
@@ -398,50 +430,140 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
 
 
 def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
-    """Per (symbol, day) hfq adj vs raw returns + previous bar date. None if missing data."""
+    """Per (symbol, day) hfq adj vs raw returns + previous bar date.
+
+    The lake is partitioned by day, but the old implementation collected all
+    history before joining bars to factors.  A full audit therefore needed
+    several copies of ~19M rows in memory.  Process one calendar year at a
+    time and carry only each symbol's last joined row across the boundary;
+    retain only rows that can enter either reconciliation bucket.
+    """
     bars_root = config.curated_root / "daily_bars"
     af_root = config.derived_root / "adj_factors"
     if not dataset_has_parquet(bars_root) or not dataset_has_parquet(af_root):
         return None
-
-    bars = (
-        dedupe_lazy_by_primary_key(
-            scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date),
-            "daily_bars",
-        )
-        .select("symbol", "trade_date", "close")
-        .collect()
-    )
-    factors = (
-        dedupe_lazy_by_primary_key(
-            scan_parquet_root(af_root, partition_col="trade_date", end=trade_date),
-            "adj_factors",
-        )
-        .filter(pl.col("adjust_type") == "hfq")
-        .select("symbol", "trade_date", "factor")
-        .collect()
-    )
-    if bars.height < 2 or factors.is_empty():
+    bar_parts = list_partitions(bars_root, "trade_date")
+    if not bar_parts:
+        return None
+    first_date = bar_parts[0].start
+    last_date = min(trade_date, bar_parts[-1].end)
+    if first_date > last_date:
         return None
 
-    joined = bars.join(factors, on=["symbol", "trade_date"], how="inner").filter(
-        pl.col("close").is_not_null() & (pl.col("close") > 0) & (pl.col("factor") > 0)
+    carry = pl.DataFrame(
+        schema={
+            "symbol": pl.Utf8,
+            "trade_date": pl.Date,
+            "close": pl.Float64,
+            "_adj": pl.Float64,
+        }
     )
-    if joined.height < 2:
-        return None
+    interesting: list[pl.DataFrame] = []
 
-    return (
-        joined.with_columns((pl.col("close") * pl.col("factor")).alias("_adj"))
-        .sort(["symbol", "trade_date"])
-        .with_columns(
-            (pl.col("close") / pl.col("close").shift(1).over("symbol") - 1).alias("raw_ret"),
-            (pl.col("_adj") / pl.col("_adj").shift(1).over("symbol") - 1).alias("adj_ret"),
-            pl.col("trade_date").shift(1).over("symbol").alias("prev_trade_date"),
+    for year in range(first_date.year, last_date.year + 1):
+        chunk_start = max(first_date, date(year, 1, 1))
+        chunk_end = min(last_date, date(year, 12, 31))
+        bars = (
+            _traded_bars(
+                dedupe_lazy_by_primary_key(
+                    scan_parquet_root(
+                        bars_root,
+                        partition_col="trade_date",
+                        start=chunk_start,
+                        end=chunk_end,
+                    ),
+                    "daily_bars",
+                )
+            )
+            .select("symbol", "trade_date", "close")
+            .collect()
         )
-        .filter(pl.col("prev_trade_date").is_not_null())
-        .with_columns((pl.col("adj_ret") - pl.col("raw_ret")).abs().alias("divergence"))
-        .select("symbol", "prev_trade_date", "trade_date", "raw_ret", "adj_ret", "divergence")
-    )
+        if bars.is_empty():
+            continue
+        factors = (
+            dedupe_lazy_by_primary_key(
+                scan_parquet_root(
+                    af_root,
+                    partition_col="trade_date",
+                    start=chunk_start,
+                    end=chunk_end,
+                ),
+                "adj_factors",
+            )
+            .filter(pl.col("adjust_type") == "hfq")
+            .select("symbol", "trade_date", "factor")
+            .collect()
+        )
+        if factors.is_empty():
+            continue
+        joined = (
+            bars.join(factors, on=["symbol", "trade_date"], how="inner")
+            .filter(
+                pl.col("close").is_not_null()
+                & (pl.col("close") > 0)
+                & (pl.col("factor") > 0)
+            )
+            .with_columns((pl.col("close") * pl.col("factor")).alias("_adj"))
+            .select("symbol", "trade_date", "close", "_adj")
+            .sort(["symbol", "trade_date"])
+        )
+        if joined.is_empty():
+            continue
+
+        combined = (
+            pl.concat([carry, joined], how="vertical_relaxed")
+            .sort(["symbol", "trade_date"])
+            .with_columns(
+                (
+                    pl.col("close") / pl.col("close").shift(1).over("symbol") - 1
+                ).alias("raw_ret"),
+                (
+                    pl.col("_adj") / pl.col("_adj").shift(1).over("symbol") - 1
+                ).alias("adj_ret"),
+                pl.col("trade_date").shift(1).over("symbol").alias("prev_trade_date"),
+            )
+        )
+        chunk_returns = (
+            combined.filter(pl.col("trade_date") >= chunk_start)
+            .filter(pl.col("prev_trade_date").is_not_null())
+            .with_columns((pl.col("adj_ret") - pl.col("raw_ret")).abs().alias("divergence"))
+            .filter(
+                (
+                    (pl.col("adj_ret").abs() > ADJ_DISCONTINUITY_RET)
+                    & (pl.col("divergence") > ADJ_DISCONTINUITY_RET)
+                )
+                | (
+                    (pl.col("adj_ret").abs() <= MISSING_EVENT_MAX_ADJ_RET)
+                    & (pl.col("divergence") > MISSING_EVENT_MIN_DIVERGENCE)
+                )
+            )
+            .select(
+                "symbol",
+                "prev_trade_date",
+                "trade_date",
+                "raw_ret",
+                "adj_ret",
+                "divergence",
+            )
+        )
+        if not chunk_returns.is_empty():
+            interesting.append(chunk_returns)
+        # Carry forward from the union of the running carry and this chunk,
+        # not just this chunk: a symbol absent for an entire chunk (a
+        # multi-quarter halt spanning a year boundary) must keep its older
+        # carried row so the gap is still checked once the symbol resumes,
+        # instead of silently losing its prior-row state at the boundary.
+        carry = (
+            pl.concat([carry, joined], how="vertical_relaxed")
+            .sort(["symbol", "trade_date"])
+            .group_by("symbol", maintain_order=True)
+            .last()
+            .select("symbol", "trade_date", "close", "_adj")
+        )
+
+    if not interesting:
+        return pl.DataFrame()
+    return pl.concat(interesting, how="vertical_relaxed")
 
 
 def _capped_findings(
@@ -469,6 +591,33 @@ def _capped_findings(
 
 def _worst_per_symbol(df: pl.DataFrame, by: str) -> pl.DataFrame:
     return df.sort(by, descending=True).group_by("symbol", maintain_order=True).first()
+
+
+def _structural_adjustments(
+    config: Config, trade_date: date, *, symbols: list[str]
+) -> pl.DataFrame | None:
+    """Return share-count restructurings that can explain an ex-price move."""
+    root = config.curated_root / "share_structure"
+    if not dataset_has_parquet(root):
+        return None
+    structure = (
+        scan_parquet_root(
+            root,
+            partition_col="change_date",
+            end=trade_date,
+            symbols=symbols,
+        )
+        .select("symbol", "change_date", "change_reason")
+        .filter(
+            pl.col("change_reason")
+            .fill_null("")
+            .str.contains(_STRUCTURAL_ADJUSTMENT_RE)
+        )
+        .select("symbol", "change_date", "change_reason")
+        .unique()
+        .collect()
+    )
+    return None if structure.is_empty() else structure
 
 
 def _trading_day_successors(config: Config, trade_date: date) -> pl.DataFrame | None:
@@ -521,7 +670,11 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
         return []
 
     priced = set(
-        scan_parquet_root(bars_root).select("symbol").unique().collect()["symbol"].to_list()
+        _traded_bars(scan_parquet_root(bars_root))
+        .select("symbol")
+        .unique()
+        .collect()["symbol"]
+        .to_list()
     )
     with_factor = set(
         scan_parquet_root(fac_root).select("symbol").unique().collect()["symbol"].to_list()
@@ -653,6 +806,53 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
     if missing.is_empty():
         return findings
 
+    # Not every reference-price change is an ex-dividend event.  Reconcile
+    # explicitly recorded share-count restructurings before filing a missing
+    # corporate-action warning; otherwise a genuine capital reduction is
+    # mislabelled as a missing dividend/bonus row.
+    structural = _structural_adjustments(
+        config,
+        trade_date,
+        symbols=missing["symbol"].unique().to_list(),
+    )
+    if structural is not None:
+        explained = missing.join(
+            structural,
+            left_on=["symbol", "trade_date"],
+            right_on=["symbol", "change_date"],
+            how="inner",
+        )
+        if not explained.is_empty():
+            findings.append(
+                {
+                    "dataset": "share_structure",
+                    "severity": "info",
+                    "check": "adjustment_explained_by_share_structure",
+                    "message": (
+                        f"{explained.height} raw/hfq return divergence(s) match a recorded "
+                        "share-count restructuring rather than a dividend/bonus event"
+                    ),
+                    "events": [
+                        {
+                            "symbol": row["symbol"],
+                            "trade_date": _iso(row["trade_date"]),
+                            "change_reason": row["change_reason"],
+                        }
+                        for row in explained.select(
+                            "symbol", "trade_date", "change_reason"
+                        ).iter_rows(named=True)
+                    ][: _SAMPLE],
+                }
+            )
+            missing = missing.join(
+                structural,
+                left_on=["symbol", "trade_date"],
+                right_on=["symbol", "change_date"],
+                how="anti",
+            )
+            if missing.is_empty():
+                return findings
+
     # Delisted names get their own bucket, not because the gap is fake, but
     # because it is a *different, already-diagnosed* gap. Both tdx_protocol
     # (xdxr) and the eastmoney backup were checked live against a sample of
@@ -719,12 +919,16 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
 
 
 def _symbol_last_bar(config: Config, trade_date: date) -> pl.DataFrame | None:
-    """Per-symbol first/last bar date in curated ``daily_bars``. None if absent."""
+    """Per-symbol first/last traded date in ``daily_bars``. None if absent."""
     bars_root = config.curated_root / "daily_bars"
     if not dataset_has_parquet(bars_root):
         return None
+    bars = scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+    # A suspended/delisted name can retain carried-forward OHLC placeholders
+    # after its final print. Those rows must not hide a survivorship gap.
+    bars = _traded_bars(bars)
     out = (
-        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+        bars
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("first_bar"),
@@ -761,6 +965,21 @@ def universe_survivorship_findings(config: Config, trade_date: date) -> list[dic
     last_bar = _symbol_last_bar(config, trade_date)
     if last_bar is None:
         return []
+
+    instruments = _instruments_frame(config)
+    if instruments is not None and "asset_type" in instruments.columns:
+        # daily_bars also carries ETFs/LOFs for quote display. They commonly
+        # end with zero-volume carried-forward rows and are deliberately
+        # outside the research ``all_a`` universe, so they must not affect
+        # either the retirement ratio or the missing-delist check. Keep the
+        # minimal fixture behavior when older instrument fragments have no
+        # asset_type column.
+        research_symbols = set(
+            instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list()
+        )
+        last_bar = last_bar.filter(pl.col("symbol").is_in(sorted(research_symbols)))
+        if last_bar.is_empty():
+            return []
 
     lake_first = last_bar["first_bar"].min()
     lake_last = last_bar["last_bar"].max()
@@ -811,7 +1030,6 @@ def universe_survivorship_findings(config: Config, trade_date: date) -> list[dic
         }
     ]
 
-    instruments = _instruments_frame(config)
     if instruments is None or "delist_date" not in instruments.columns:
         return findings
 
@@ -876,6 +1094,7 @@ def _liquid_symbols_on(config: Config, trade_date: date, limit: int) -> list[str
         scan_parquet_root(root, partition_col="trade_date", start=trade_date, end=trade_date),
         "daily_bars",
     )
+    lf = _traded_bars(lf)
     cols = lf.collect_schema().names()
     rank_col = "amount" if "amount" in cols else "volume"
     df = (
@@ -1038,6 +1257,23 @@ def _st_from_names(instruments: pl.DataFrame) -> set[str] | None:
     )
 
 
+def _active_instruments_on(instruments: pl.DataFrame, trade_date: date) -> pl.DataFrame:
+    """Keep instruments that existed on the status observation date.
+
+    The catalogue retains delisted names and their last exchange name. Using
+    those historical names in a current-day ST cross-check creates a false
+    disagreement because the risk-warning board no longer lists them.
+    """
+    active = instruments
+    if "list_date" in active.columns:
+        listed = pl.col("list_date").cast(pl.Date, strict=False)
+        active = active.filter(listed.is_null() | (listed <= trade_date))
+    if "delist_date" in active.columns:
+        delisted = pl.col("delist_date").cast(pl.Date, strict=False)
+        active = active.filter(delisted.is_null() | (delisted >= trade_date))
+    return active
+
+
 def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]:
     """``trading_status`` ST labels vs the ST prefix on the instrument's name.
 
@@ -1051,7 +1287,8 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
     instruments = _instruments_frame(config)
     if instruments is None:
         return []
-    by_name = _st_from_names(instruments)
+    active_instruments = _active_instruments_on(instruments, trade_date)
+    by_name = _st_from_names(active_instruments)
     if by_name is None:
         return []
 
@@ -1071,7 +1308,7 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
 
     # Only judge names the instrument list actually knows about; a symbol absent
     # from `instruments` is a universe gap, not an ST disagreement.
-    known = set(instruments.get_column("symbol").to_list())
+    known = set(active_instruments.get_column("symbol").to_list())
     by_board &= known
 
     board_only = sorted(by_board - by_name)

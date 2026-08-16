@@ -152,6 +152,11 @@ def daily_bars_amount_completeness_findings(
     cols = lf.collect_schema().names()
     if not {"amount", "source"}.issubset(cols):
         return findings
+    if "volume" in cols:
+        # A suspension placeholder's amount=0 is a valid no-trade marker, not
+        # evidence that the source supplied a complete turnover field. Keep
+        # the sample-size gate tied to real traded rows, as the unit check is.
+        lf = lf.filter(pl.col("volume") > 0)
 
     stats = (
         lf.group_by("source")

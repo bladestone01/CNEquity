@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -19,7 +20,6 @@ from cnequity.domain.schemas import (
     PRIMARY_KEYS,
     SchemaValidationError,
     required_columns_for_dataset,
-    validate_dataframe,
 )
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
@@ -37,7 +37,7 @@ _AUDIT_SAMPLE_FILES = 20
 
 def _schema_contract_scan(
     files: list[Path], dataset: str, root: Path
-) -> tuple[dict | None, list[Path]]:
+) -> tuple[dict | None, list[Path], list[Path]]:
     """Validate historical files one at a time without unbounded memory use.
 
     The normal writer path is already strict. This is the read-only counterpart
@@ -48,13 +48,15 @@ def _schema_contract_scan(
     """
     invalid: list[dict[str, str]] = []
     valid: list[Path] = []
+    readable: list[Path] = []
+    unreadable_count = 0
     for path in files:
         try:
-            validate_dataframe(
-                pl.read_parquet(path),
-                dataset,
-                allow_missing_optional=True,
-            )
+            # Keep readable-but-invalid files in the secondary null/PK audit;
+            # only an unreadable footer should be removed from that scan.
+            pl.read_parquet_schema(path)
+            readable.append(path)
+            _validate_parquet_file(path, dataset)
             valid.append(path)
         except SchemaValidationError as exc:
             invalid.append(
@@ -64,6 +66,7 @@ def _schema_contract_scan(
                 }
             )
         except (OSError, pl.exceptions.PolarsError, ValueError) as exc:
+            unreadable_count += 1
             invalid.append(
                 {
                     "file": path.relative_to(root).as_posix(),
@@ -72,27 +75,203 @@ def _schema_contract_scan(
             )
 
     if not invalid:
-        return None, valid
+        return None, valid, readable
     shown = invalid[:_AUDIT_SAMPLE_FILES]
     suffix = f" (+{len(invalid) - len(shown)} more)" if len(invalid) > len(shown) else ""
+    return (
+        {
+            "dataset": dataset,
+            "severity": "error",
+            "check": "schema_contract",
+            "message": (
+                f"{len(invalid)} parquet file(s) violate the stored schema contract in "
+                f"curated {dataset}{suffix}"
+            ),
+            "files_checked": len(files),
+            "invalid_files": len(invalid),
+            "unreadable_files": unreadable_count,
+            "sample": shown,
+        },
+        valid,
+        readable,
+    )
+
+
+def _validate_parquet_file(path: Path, dataset: str) -> None:
+    """Validate one Parquet file without materializing all of its rows.
+
+    Full-lake health used to call ``read_parquet`` here. That is reasonable for
+    a small daily file, but it turns a historical tick/minute partition into a
+    multi-gigabyte temporary DataFrame before the actual audit even starts.
+    Read the footer for the contract and run the value checks as streaming
+    scalar aggregations instead. The resulting errors intentionally use the
+    same domain exception as ``validate_dataframe`` so callers keep one
+    actionable schema-contract finding.
+    """
+    schema = DATASET_SCHEMAS.get(dataset)
+    if schema is None:
+        pl.read_parquet_schema(path)
+        return
+
+    actual_schema = pl.read_parquet_schema(path)
+    required = required_columns_for_dataset(dataset, schema)
+    missing_required = [col for col in required if col not in actual_schema]
+    if missing_required:
+        raise SchemaValidationError(
+            f"dataset '{dataset}': missing required columns {missing_required}"
+        )
+
+    columns = [col for col in schema if col in actual_schema]
+    casts = []
+    for col in columns:
+        dtype = schema[col]
+        if isinstance(dtype, pl.Datetime) and actual_schema[col] == pl.Utf8:
+            casts.append(
+                pl.col(col)
+                .str.to_datetime(time_unit=dtype.time_unit, time_zone=dtype.time_zone, strict=False)
+                .alias(col)
+            )
+        elif dtype == pl.Date and actual_schema[col] == pl.Utf8:
+            casts.append(pl.col(col).str.to_date(strict=False).alias(col))
+        else:
+            casts.append(pl.col(col).cast(dtype, strict=False))
+
+    normalized = pl.scan_parquet(path).select(casts)
+    expressions = [pl.len().alias("_rows")]
+    expressions.extend(pl.col(col).null_count().alias(f"_null_{col}") for col in required)
+
+    string_required = [col for col in required if schema[col] == pl.Utf8]
+    expressions.extend(
+        pl.col(col).str.strip_chars().eq("").sum().alias(f"_blank_{col}")
+        for col in string_required
+    )
+
+    float_columns = [
+        col for col in columns if schema[col] in (pl.Float32, pl.Float64)
+    ]
+    expressions.extend(
+        (pl.col(col).is_not_null() & ~pl.col(col).is_finite()).sum().alias(f"_finite_{col}")
+        for col in float_columns
+    )
+
+    bar_datasets = {
+        "daily_bars",
+        "index_bars",
+        "minute_bars",
+        "minute_bars_5m",
+        "commodity_bars",
+        "sector_bars",
+        "trade_ticks",
+    }
+    price_columns = [col for col in ("open", "high", "low", "close", "price") if col in columns]
+    semantic_checks = [pl.col(col) <= 0 for col in price_columns]
+    if "volume" in columns:
+        semantic_checks.append(pl.col("volume") < 0)
+    if "amount" in columns:
+        semantic_checks.append(pl.col("amount").is_not_null() & (pl.col("amount") < 0))
+    if all(col in columns for col in ("open", "high", "low", "close")):
+        ohlc_row = (
+            pl.col("volume").is_null() | (pl.col("volume") > 0)
+            if "volume" in columns
+            else pl.lit(True)
+        )
+        semantic_checks.extend(
+            [
+                ohlc_row & (pl.col("high") < pl.col("open")),
+                ohlc_row & (pl.col("high") < pl.col("close")),
+                ohlc_row & (pl.col("low") > pl.col("open")),
+                ohlc_row & (pl.col("low") > pl.col("close")),
+                ohlc_row & (pl.col("low") > pl.col("high")),
+            ]
+        )
+    if dataset in bar_datasets and semantic_checks:
+        expressions.append(pl.any_horizontal(semantic_checks).sum().alias("_semantic_bad"))
+
+    try:
+        summary = normalized.select(expressions).collect(engine="streaming").row(0, named=True)
+    except pl.exceptions.PolarsError as exc:
+        raise SchemaValidationError(
+            f"dataset '{dataset}': values cannot be cast to the registered schema: {exc}"
+        ) from exc
+
+    missing_values = {
+        col: int(summary[f"_null_{col}"] or 0)
+        for col in required
+        if summary[f"_null_{col}"]
+    }
+    if missing_values:
+        detail = ", ".join(f"{col}={count}" for col, count in missing_values.items())
+        raise SchemaValidationError(
+            f"dataset '{dataset}': required columns contain null or unparseable values: {detail}"
+        )
+
+    blank_values = {
+        col: int(summary[f"_blank_{col}"] or 0)
+        for col in string_required
+        if summary[f"_blank_{col}"]
+    }
+    if blank_values:
+        detail = ", ".join(f"{col}={count}" for col, count in blank_values.items())
+        raise SchemaValidationError(
+            f"dataset '{dataset}': required string columns cannot be blank: {detail}"
+        )
+
+    invalid_finite = {
+        col: int(summary[f"_finite_{col}"] or 0)
+        for col in float_columns
+        if summary[f"_finite_{col}"]
+    }
+    if invalid_finite:
+        detail = ", ".join(f"{col}={count}" for col, count in invalid_finite.items())
+        raise SchemaValidationError(
+            f"dataset '{dataset}': non-finite numeric values are not allowed: {detail}"
+        )
+
+    semantic_bad = int(summary.get("_semantic_bad") or 0)
+    if semantic_bad:
+        raise SchemaValidationError(
+            f"dataset '{dataset}': {semantic_bad} row(s) violate numeric market-data invariants"
+        )
+
+
+def _schema_contract_findings(files: list[Path], dataset: str, root: Path) -> dict | None:
+    """Return the schema finding while keeping the scan helper testable."""
+    finding, _, _ = _schema_contract_scan(files, dataset, root)
+    return finding
+
+
+def _unreadable_parquet_finding(
+    files: list[Path], dataset: str, root: Path
+) -> dict | None:
+    """Check Parquet footers without validating every row in a normal audit."""
+    unreadable: list[dict[str, str]] = []
+    for path in files:
+        try:
+            pl.read_parquet_schema(path)
+        except (OSError, pl.exceptions.PolarsError, ValueError) as exc:
+            unreadable.append(
+                {
+                    "file": path.relative_to(root).as_posix(),
+                    "message": f"unreadable parquet or schema: {exc}",
+                }
+            )
+    if not unreadable:
+        return None
+    shown = unreadable[:_AUDIT_SAMPLE_FILES]
+    suffix = f" (+{len(unreadable) - len(shown)} more)" if len(unreadable) > len(shown) else ""
     return {
         "dataset": dataset,
         "severity": "error",
         "check": "schema_contract",
         "message": (
-            f"{len(invalid)} parquet file(s) violate the stored schema contract in "
-            f"curated {dataset}{suffix}"
+            f"{len(unreadable)} parquet file(s) are unreadable in curated "
+            f"{dataset}{suffix}"
         ),
         "files_checked": len(files),
-        "invalid_files": len(invalid),
+        "invalid_files": len(unreadable),
+        "unreadable_files": len(unreadable),
         "sample": shown,
-    }, valid
-
-
-def _schema_contract_findings(files: list[Path], dataset: str, root: Path) -> dict | None:
-    """Return the schema finding while keeping the scan helper testable."""
-    finding, _ = _schema_contract_scan(files, dataset, root)
-    return finding
+    }
 
 
 def partition_parquet_files(root: Path, partition_col: str, partition_value: str) -> list[Path]:
@@ -114,10 +293,6 @@ def partition_row_stats(files: list[Path]) -> dict[str, int | None]:
     }
 
 
-def _sample_files(files: list[Path], limit: int = _AUDIT_SAMPLE_FILES) -> list[Path]:
-    return files[:limit] if len(files) <= limit else files[:limit]
-
-
 def _lazy_pk_duplicate_count(lf: pl.LazyFrame, dataset: str) -> int:
     """Count duplicate PK rows across the whole audited partition."""
     pk = PRIMARY_KEYS.get(dataset, [])
@@ -130,9 +305,114 @@ def _lazy_pk_duplicate_count(lf: pl.LazyFrame, dataset: str) -> int:
         .agg(pl.len().alias("_pk_rows"))
         .filter(pl.col("_pk_rows") > 1)
         .select((pl.col("_pk_rows") - 1).sum().fill_null(0).alias("duplicate_rows"))
-        .collect()
+        .collect(engine="streaming")
     )
     return int(result["duplicate_rows"][0] or 0)
+
+
+def _partitioned_pk_duplicate_count(
+    files: list[Path], dataset: str, partition_col: str | None, root: Path
+) -> int:
+    """Count PK duplicates one on-disk partition at a time.
+
+    A whole-lake ``group_by(PK)`` is needlessly expensive for high-volume
+    intraday datasets: the partition column is already part of their PK, and
+    a correctly laid out file cannot duplicate a row in another date
+    partition. Keep the same exact check for files sharing one partition while
+    bounding memory by the largest partition. DuckDB handles each partition
+    with a bounded connection and can spill to a temporary directory; a
+    Polars hash group over 600M ticks otherwise needs several gigabytes.
+    Mixed or misplaced layouts are reported separately by
+    ``check_mixed_partition_granularity`` and the writer's partition contract.
+    """
+    if not files:
+        return 0
+    prefix = f"{partition_col}="
+    groups: dict[str, list[Path]] = {}
+    for path in files:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            relative = path
+        partition = next(
+            (part for part in relative.parts if part.startswith(prefix)),
+            "__root__",
+        )
+        groups.setdefault(partition, []).append(path)
+
+    pk = PRIMARY_KEYS.get(dataset, [])
+    if not pk:
+        return 0
+
+    import duckdb
+
+    identifiers = ", ".join(f'"{column.replace(chr(34), chr(34) * 2)}"' for column in pk)
+    duplicate_count = 0
+    with tempfile.TemporaryDirectory(prefix="cnequity-pk-") as scratch:
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("SET memory_limit='512MB'")
+            con.execute("SET threads=1")
+            con.execute("SET preserve_insertion_order=false")
+            con.execute("SET temp_directory=?", [scratch])
+            for group in groups.values():
+                query = (
+                    f"SELECT COUNT(*) - COUNT(DISTINCT ({identifiers})) "
+                    "FROM read_parquet(?, hive_partitioning=false)"
+                )
+                duplicate_count += int(con.execute(query, [[str(path) for path in group]]).fetchone()[0])
+        finally:
+            con.close()
+    return duplicate_count
+
+
+def _full_scalar_stats(files: list[Path], dataset: str) -> tuple[int, int, dict[str, int]]:
+    """Return row/mock/null totals with one bounded scalar Parquet query."""
+    if not files:
+        return 0, 0, {}
+
+    import duckdb
+
+    schema = DATASET_SCHEMAS.get(dataset, {})
+    required = required_columns_for_dataset(dataset, schema)
+    identifiers = {
+        column: f'"{column.replace(chr(34), chr(34) * 2)}"' for column in required
+    }
+    expressions = ["COUNT(*) AS _rows"]
+    if "source" in identifiers:
+        expressions.append(
+            f"SUM(CASE WHEN {identifiers['source']} = ? THEN 1 ELSE 0 END) AS _mock"
+        )
+    else:
+        expressions.append("0 AS _mock")
+    expressions.extend(
+        f"SUM(CASE WHEN {identifiers[column]} IS NULL THEN 1 ELSE 0 END) AS \"_null_{column}\""
+        for column in required
+    )
+    query = (
+        "SELECT "
+        + ", ".join(expressions)
+        + " FROM read_parquet(?, union_by_name=true, hive_partitioning=false)"
+    )
+
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute("SET memory_limit='512MB'")
+        con.execute("SET threads=1")
+        row = con.execute(query, [MOCK_SOURCE, [str(path) for path in files]]).fetchone()
+    finally:
+        con.close()
+
+    if row is None:
+        return 0, 0, {}
+    row_count = int(row[0] or 0)
+    mock_rows = int(row[1] or 0)
+    nulls = {
+        column: int(row[index + 2] or 0)
+        for index, column in enumerate(required)
+        if row[index + 2]
+    }
+    return row_count, mock_rows, nulls
 
 
 def _required_null_counts(lf: pl.LazyFrame, dataset: str) -> dict[str, int]:
@@ -145,7 +425,7 @@ def _required_null_counts(lf: pl.LazyFrame, dataset: str) -> dict[str, int]:
         return {}
     row = (
         lf.select([pl.col(col).null_count().alias(col) for col in required])
-        .collect()
+        .collect(engine="streaming")
         .row(0, named=True)
     )
     return {col: int(count) for col, count in row.items() if count}
@@ -380,9 +660,36 @@ def audit_curated_dataset(
             )
         else:
             contract_files = sorted(root.rglob("*.parquet"))
-    contract, valid_contract_files = _schema_contract_scan(contract_files, dataset, root)
+    contract, valid_contract_files, readable_contract_files = _schema_contract_scan(
+        contract_files, dataset, root
+    )
     if contract is not None:
         findings.append(contract)
+
+        # A current partition can contain an unreadable file too. Keep the
+        # structural finding, but run the remaining row/PK/null checks only on
+        # files that the contract scan proved readable. Otherwise a quality
+        # report turns the very corruption it is meant to surface into an
+        # uncaught collect() exception.
+        audit_files = valid_contract_files if full else readable_contract_files
+        audit_lf = scan_parquet_files(
+            audit_files,
+            missing_columns="insert" if full else "raise",
+            extra_columns="ignore" if full else "raise",
+        )
+
+    if not full:
+        # A normal audit validates only the active partition, but the quality
+        # checks below can scan the historical window. Inspect the other
+        # footers first so one old corrupt file cannot abort those checks.
+        current_files = set(contract_files)
+        historical_unreadable = _unreadable_parquet_finding(
+            [path for path in sorted(root.rglob("*.parquet")) if path not in current_files],
+            dataset,
+            root,
+        )
+        if historical_unreadable is not None:
+            findings.append(historical_unreadable)
 
     if full:
         # Do not let one unreadable historical file abort the entire audit.
@@ -395,18 +702,16 @@ def audit_curated_dataset(
             extra_columns="ignore",
         )
 
-    sample_lf = (
-        scan_parquet_files(
-            _sample_files(audit_files),
-            missing_columns="insert" if full else "raise",
-            extra_columns="ignore" if full else "raise",
-        )
-        if audit_files is not None
-        else audit_lf.limit(_AUDIT_SAMPLE_FILES)
-    )
-    sample_df = sample_lf.collect()
-    row_count = lazy_row_count(audit_lf)
-    mock_rows = lazy_mock_row_count(audit_lf, mock_source=MOCK_SOURCE)
+    # Sample rows, not sample files: a single intraday Parquet file can hold
+    # millions of rows, so collecting the first twenty files would defeat the
+    # bounded-memory contract of the full audit.
+    sample_df = audit_lf.limit(_AUDIT_SAMPLE_FILES).collect()
+    if full and audit_files is not None:
+        row_count, mock_rows, nulls = _full_scalar_stats(audit_files, dataset)
+    else:
+        row_count = lazy_row_count(audit_lf)
+        mock_rows = lazy_mock_row_count(audit_lf, mock_source=MOCK_SOURCE)
+        nulls = None
     file_count = len(audit_files) if audit_files is not None else None
 
     if mock_rows:
@@ -442,7 +747,10 @@ def audit_curated_dataset(
         }
     )
 
-    dupes = _lazy_pk_duplicate_count(audit_lf, dataset)
+    if full and audit_files is not None:
+        dupes = _partitioned_pk_duplicate_count(audit_files, dataset, partition_col, root)
+    else:
+        dupes = _lazy_pk_duplicate_count(audit_lf, dataset)
     if dupes:
         findings.append(
             {
@@ -454,7 +762,8 @@ def audit_curated_dataset(
             }
         )
 
-    nulls = _required_null_counts(audit_lf, dataset)
+    if nulls is None:
+        nulls = _required_null_counts(audit_lf, dataset)
     if nulls:
         detail = ", ".join(f"{col}={count}" for col, count in nulls.items())
         findings.append(
@@ -481,24 +790,35 @@ def audit_curated_dataset(
             )
 
     if partition_col is not None and partition_value is not None and previous_value is not None:
-        current_stats = partition_row_stats(
-            partition_parquet_files(root, partition_col, partition_value)
-        )
-        previous_stats = partition_row_stats(
-            partition_parquet_files(root, partition_col, previous_value)
-        )
-        granularity = DATASETS[dataset].partition_granularity if dataset in DATASETS else "day"
-        mutation = check_partition_row_mutation(
-            dataset,
-            partition_col,
-            current_value=partition_value,
-            previous_value=previous_value,
-            current_stats=current_stats,
-            previous_stats=previous_stats,
-            elapsed_fraction=period_elapsed_fraction(partition_value, granularity, trade_date),
-        )
-        if mutation is not None:
-            findings.append(mutation)
+        try:
+            current_stats = partition_row_stats(
+                partition_parquet_files(root, partition_col, partition_value)
+            )
+            previous_stats = partition_row_stats(
+                partition_parquet_files(root, partition_col, previous_value)
+            )
+        except (OSError, pl.exceptions.PolarsError, ValueError):
+            # The contract finding above is the actionable result for a bad
+            # file. Do not let the secondary period-over-period sentinel hide
+            # it by aborting the whole audit.
+            current_stats = previous_stats = None
+        if current_stats is not None and previous_stats is not None:
+            granularity = (
+                DATASETS[dataset].partition_granularity if dataset in DATASETS else "day"
+            )
+            mutation = check_partition_row_mutation(
+                dataset,
+                partition_col,
+                current_value=partition_value,
+                previous_value=previous_value,
+                current_stats=current_stats,
+                previous_stats=previous_stats,
+                elapsed_fraction=period_elapsed_fraction(
+                    partition_value, granularity, trade_date
+                ),
+            )
+            if mutation is not None:
+                findings.append(mutation)
 
     return findings
 

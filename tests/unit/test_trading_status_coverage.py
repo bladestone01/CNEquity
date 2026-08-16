@@ -9,6 +9,7 @@ from cnequity.quality.st_coverage import (
     build_st_scope,
     current_st_universe,
     publish_st_coverage_receipt,
+    st_evidence_coverage_report,
     write_st_checkpoint,
 )
 from cnequity.query.universe import coverage_start_date, trading_status_coverage_start
@@ -93,6 +94,101 @@ def test_current_st_universe_reads_nested_instrument_fragments(tmp_path):
     pl.DataFrame({"symbol": ["000001.SZ"]}).write_parquet(nested / "part-old.parquet")
 
     assert current_st_universe(cfg) == ["000001.SZ", "600519.SH"]
+
+
+def test_current_st_universe_excludes_cdrs(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH", "689009.SH"]}).write_parquet(
+        instruments / "part-merged.parquet"
+    )
+
+    assert current_st_universe(cfg) == ["600519.SH"]
+
+
+def test_current_st_universe_ignores_zero_volume_placeholders(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH", "000001.SZ"]}).write_parquet(
+        instruments / "part-merged.parquet"
+    )
+    bars = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "trade_date": [date(2024, 6, 28)] * 2,
+            "volume": [0, 100],
+        }
+    ).write_parquet(bars / "part-0.parquet")
+
+    assert current_st_universe(cfg) == ["000001.SZ"]
+
+
+def test_current_st_universe_keeps_legacy_rows_in_mixed_daily_schema(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH", "000001.SZ"]}).write_parquet(
+        instruments / "part-merged.parquet"
+    )
+    bars = cfg.curated_root / "daily_bars"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["600519.SH"], "trade_date": [date(2024, 6, 27)]}
+    ).write_parquet(bars / "legacy.parquet")
+    pl.DataFrame(
+        {"symbol": ["000001.SZ"], "trade_date": [date(2024, 6, 28)], "volume": [0]}
+    ).write_parquet(bars / "current.parquet")
+
+    assert current_st_universe(cfg) == ["600519.SH"]
+
+
+def test_current_st_universe_does_not_shrink_scope_around_corrupt_input(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH"]}).write_parquet(instruments / "valid.parquet")
+    (instruments / "broken.parquet").write_bytes(b"not a parquet file")
+
+    assert current_st_universe(cfg) == []
+
+
+def test_current_st_universe_refuses_partial_bar_scope_when_a_file_is_corrupt(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH"]}).write_parquet(instruments / "part-merged.parquet")
+    bars = cfg.curated_root / "daily_bars"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["600519.SH"], "trade_date": [date(2024, 6, 27)], "volume": [100]}
+    ).write_parquet(bars / "valid.parquet")
+    (bars / "broken.parquet").write_bytes(b"not a parquet file")
+
+    assert current_st_universe(cfg) == []
+
+
+def test_st_coverage_ignores_tampered_receipt(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    start = end = date(2024, 6, 27)
+    _write_status_partition(cfg, start, source="baostock")
+    _write_st_receipt(cfg, start, end)
+
+    import json
+
+    receipt_path = next(
+        (cfg.meta_root / "quality" / "coverage" / "historical_st_evidence").glob("*.json")
+    )
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload["completed_symbols_sha256"] = "tampered"
+    receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = st_evidence_coverage_report(cfg, start, end)
+    assert report["verified"] is False
+    assert report["reason"] == "no_matching_complete_receipt"
 
 
 def test_st_receipt_rejects_duplicate_primary_rows(tmp_path):

@@ -303,5 +303,17 @@ def test_rows_without_amount_are_skipped_not_flagged(config):
     assert daily_bars_volume_unit_findings(config, anchor) == []
 
 
+def test_amount_completeness_sample_ignores_zero_volume_placeholders(config):
+    anchor = date(2024, 6, 28)
+    traded = _rows("eastmoney", volume=SHARES, n=10, anchor=anchor)
+    for row in traded:
+        row["amount"] = None
+    placeholders = _rows("eastmoney", volume=0, n=30, anchor=anchor)
+    placeholders = [dict(row, amount=0.0) for row in placeholders]
+    _write_bars(config, traded + placeholders)
+
+    assert daily_bars_amount_completeness_findings(config, anchor) == []
+
+
 def test_no_curated_data_is_not_a_finding(config):
     assert daily_bars_volume_unit_findings(config, date(2024, 6, 28)) == []

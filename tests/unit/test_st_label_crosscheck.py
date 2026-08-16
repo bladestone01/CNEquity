@@ -23,23 +23,33 @@ TD = date(2026, 8, 1)
 
 
 def _lake(
-    tmp_path, *, names: dict[str, str], st_labeled: list[str], st_status: str = "st"
+    tmp_path,
+    *,
+    names: dict[str, str],
+    st_labeled: list[str],
+    st_status: str = "st",
+    delisted: set[str] | None = None,
 ) -> Config:
     root = tmp_path / "data"
 
     inst = root / "curated" / "instruments"
     inst.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(
-        {
-            "symbol": list(names),
-            "name": list(names.values()),
-            "exchange": [s[-2:] for s in names],
-            "asset_type": ["stock"] * len(names),
-            "source": ["tdx_protocol"] * len(names),
-            "data_version": ["v1"] * len(names),
-            "fetched_at": [datetime.now(timezone.utc)] * len(names),
-        }
-    ).write_parquet(inst / "part-0.parquet")
+    symbols = list(names)
+    instrument_rows = {
+        "symbol": symbols,
+        "name": list(names.values()),
+        "exchange": [s[-2:] for s in symbols],
+        "asset_type": ["stock"] * len(symbols),
+        "source": ["tdx_protocol"] * len(symbols),
+        "data_version": ["v1"] * len(symbols),
+        "fetched_at": [datetime.now(timezone.utc)] * len(symbols),
+    }
+    if delisted is not None:
+        instrument_rows["list_date"] = [date(2000, 1, 1)] * len(symbols)
+        instrument_rows["delist_date"] = [
+            date(2025, 1, 1) if symbol in delisted else None for symbol in symbols
+        ]
+    pl.DataFrame(instrument_rows).write_parquet(inst / "part-0.parquet")
 
     part = root / "curated" / "trading_status" / f"trade_date={TD.isoformat()}"
     part.mkdir(parents=True, exist_ok=True)
@@ -143,6 +153,19 @@ def test_symbols_missing_from_instruments_are_not_st_disagreements(tmp_path):
             "fetched_at": [datetime.now(timezone.utc)] * 10,
         }
     ).write_parquet(part / "part-1.parquet")
+    assert st_label_crosscheck_findings(cfg, TD) == []
+
+
+def test_delisted_st_names_are_not_compared_with_current_board(tmp_path):
+    names, _ = _universe(10, st_named=5, st_labeled=0)
+    symbols = list(names)
+    cfg = _lake(
+        tmp_path,
+        names=names,
+        st_labeled=[symbols[5]],
+        delisted=set(symbols[:5]),
+    )
+
     assert st_label_crosscheck_findings(cfg, TD) == []
 
 

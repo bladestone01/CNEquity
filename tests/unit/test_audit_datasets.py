@@ -239,6 +239,55 @@ def test_full_audit_isolates_an_unreadable_historical_parquet(tmp_path):
     )
 
 
+def test_lake_health_reports_unreadable_parquet_without_aborting(tmp_path):
+    from cnequity.quality.audit import lake_health
+
+    cfg = Config(data_root=tmp_path / "data")
+    broken = cfg.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    broken.mkdir(parents=True)
+    (broken / "part-broken.parquet").write_bytes(b"not a parquet file")
+
+    health = lake_health(cfg, date(2024, 6, 28))
+
+    contract = [
+        f
+        for f in health["error_findings"]
+        if f.get("dataset") == "daily_bars" and f.get("check") == "schema_contract"
+    ]
+    assert contract and contract[0]["invalid_files"] == 1
+    skipped = [f for f in health["warning_findings"] if f.get("check") == "quality_checks_skipped"]
+    assert skipped and skipped[0]["datasets"] == ["daily_bars"]
+    assert any(
+        blocker["code"] == "daily_bars_unreadable"
+        for blocker in health["historical_universe_validity"]["blockers"]
+    )
+
+
+def test_run_audit_reports_unreadable_historical_parquet_before_scans(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    current_date = date(2024, 6, 28)
+    _write_daily_bars_partition(cfg, current_date, ["600519.SH"])
+    broken = cfg.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    broken.mkdir(parents=True)
+    (broken / "part-broken.parquet").write_bytes(b"not a parquet file")
+
+    run_audit(cfg, "run-broken-history", current_date, {})
+
+    import json
+
+    payload = json.loads(
+        (cfg.meta_root / "quality" / "findings" / "run-broken-history.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    contract = [
+        f
+        for f in payload["findings"]
+        if f.get("dataset") == "daily_bars" and f.get("check") == "schema_contract"
+    ]
+    assert contract and any(f["unreadable_files"] == 1 for f in contract)
+
+
 def test_historical_contract_requires_core_fields_but_allows_nullable_evolution(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     trade_date = date(2024, 6, 28)

@@ -25,9 +25,9 @@ def _write_bars(root, series: dict[str, tuple[date, date]]) -> None:
     for d, syms in by_day.items():
         part = root / "curated" / "daily_bars" / f"trade_date={d.isoformat()}"
         part.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"symbol": syms, "trade_date": [d] * len(syms)}).write_parquet(
-            part / "part-merged.parquet"
-        )
+        pl.DataFrame(
+            {"symbol": syms, "trade_date": [d] * len(syms), "volume": [100] * len(syms)}
+        ).write_parquet(part / "part-merged.parquet")
 
 
 def _write_instruments(root, rows: dict[str, date | None]) -> None:
@@ -87,6 +87,27 @@ def test_retired_names_reported_and_clean_when_marked_delisted(tmp_path):
     assert checks["universe_survivorship"]["total_symbols"] == 2
 
 
+def test_zero_volume_placeholder_does_not_hide_retired_symbol(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    dead_last = _END - timedelta(days=RETIRED_GAP_DAYS + 30)
+    _write_bars(cfg.data_root, {"A": (_START, _END), "DEAD": (_START, dead_last)})
+
+    tail = cfg.data_root / "curated" / "daily_bars" / f"trade_date={_END.isoformat()}"
+    tail.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["A", "DEAD"],
+            "trade_date": [_END, _END],
+            "volume": [100, 0],
+        }
+    ).write_parquet(tail / "part-tail.parquet")
+
+    checks = _by_check(universe_survivorship_findings(cfg, _END))
+
+    assert "universe_survivorship_absent" not in checks
+    assert checks["universe_survivorship"]["retired_symbols"] == 1
+
+
 def test_flags_retired_symbol_with_no_delist_date(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     dead_last = _END - timedelta(days=RETIRED_GAP_DAYS + 30)
@@ -99,6 +120,22 @@ def test_flags_retired_symbol_with_no_delist_date(tmp_path):
     assert finding["severity"] == "warning"
     assert finding["unmarked_count"] == 1
     assert finding["sample"][0]["symbol"] == "DEAD"
+
+
+def test_display_only_etf_is_not_research_survivorship_gap(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    dead_last = _END - timedelta(days=RETIRED_GAP_DAYS + 30)
+    _write_bars(cfg.data_root, {"A": (_START, _END), "159915.SZ": (_START, dead_last)})
+    _write_instruments(cfg.data_root, {"A": None, "159915.SZ": None})
+    instruments = cfg.data_root / "curated" / "instruments" / "part-merged.parquet"
+    pl.DataFrame(
+        {"symbol": ["A", "159915.SZ"], "delist_date": [None, None], "asset_type": ["stock", "etf"]},
+        schema={"symbol": pl.Utf8, "delist_date": pl.Date, "asset_type": pl.Utf8},
+    ).write_parquet(instruments)
+
+    checks = _by_check(universe_survivorship_findings(cfg, _END))
+
+    assert "retired_symbol_missing_delist_date" not in checks
 
 
 def test_ordinary_suspension_is_not_counted_as_retired(tmp_path):

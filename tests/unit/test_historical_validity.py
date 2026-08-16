@@ -29,9 +29,13 @@ def _lake(tmp_path) -> Config:
     sessions = list_trading_dates(cfg, date(2020, 1, 2), date(2024, 12, 31))
     bars_root = cfg.curated_root / "daily_bars"
     bars_root.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({"symbol": ["600519.SH"] * len(sessions), "trade_date": sessions}).write_parquet(
-        bars_root / "part-0.parquet"
-    )
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"] * len(sessions),
+            "trade_date": sessions,
+            "volume": [100] * len(sessions),
+        }
+    ).write_parquet(bars_root / "part-0.parquet")
     _partition(
         cfg,
         "trading_status",
@@ -128,6 +132,28 @@ def test_manifest_blocks_interior_daily_bar_gap(tmp_path, monkeypatch):
     assert blocker["sample_sessions"] == ["2020-01-03"]
 
 
+def test_manifest_blocks_interior_placeholder_only_day(tmp_path, monkeypatch):
+    cfg = _lake(tmp_path)
+    bars_path = cfg.curated_root / "daily_bars" / "part-0.parquet"
+    bars = pl.read_parquet(bars_path).with_columns(
+        pl.when(pl.col("trade_date") == date(2020, 1, 3))
+        .then(0)
+        .otherwise(pl.col("volume"))
+        .alias("volume")
+    )
+    bars.write_parquet(bars_path)
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.delisted_coverage_report",
+        lambda *args, **kwargs: _survivorship(verified=True),
+    )
+
+    report = historical_universe_validity(cfg, date(2020, 1, 2), date(2024, 12, 31))
+
+    blocker = next(b for b in report["blockers"] if b["code"] == "daily_bars_interior_gap")
+    assert blocker["missing_sessions"] == 1
+    assert blocker["sample_sessions"] == ["2020-01-03"]
+
+
 def test_coarse_partition_bounds_use_real_rows_for_history_window(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "lake")
     instruments = cfg.curated_root / "instruments"
@@ -165,3 +191,27 @@ def test_coarse_partition_bounds_use_real_rows_for_history_window(tmp_path, monk
     assert {blocker["code"] for blocker in report["blockers"]} == {
         "daily_bars_window_incomplete",
     }
+
+
+def test_daily_bar_coverage_ignores_placeholder_only_boundary_partitions(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    for day, volume in (
+        (date(2024, 1, 10), 0),
+        (date(2024, 1, 15), 100),
+        (date(2024, 1, 20), 0),
+    ):
+        _partition(
+            cfg,
+            "daily_bars",
+            day,
+            pl.DataFrame(
+                {
+                    "symbol": ["600519.SH"],
+                    "trade_date": [day],
+                    "volume": [volume],
+                }
+            ),
+        )
+
+    assert coverage_start_date(cfg, "daily_bars") == date(2024, 1, 15)
+    assert coverage_end_date(cfg, "daily_bars") == date(2024, 1, 15)

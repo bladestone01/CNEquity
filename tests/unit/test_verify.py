@@ -43,9 +43,39 @@ def _write_days(cfg: Config, dataset: str, days: list[date], *, layer: str = "cu
     for d in days:
         part = base / dataset / f"trade_date={d.isoformat()}"
         part.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [d]}).write_parquet(
-            part / "part-0.parquet"
-        )
+        if dataset == "market_breadth":
+            metrics = (
+                "advance_count",
+                "decline_count",
+                "flat_count",
+                "limit_up_count",
+                "limit_down_count",
+                "advance_ratio",
+                "total_count",
+            )
+            pl.DataFrame(
+                {
+                    "trade_date": [d] * len(metrics),
+                    "metric_id": list(metrics),
+                    "value": [1.0] * len(metrics),
+                }
+            ).write_parquet(part / "part-0.parquet")
+        elif dataset == "industry_index":
+            pl.DataFrame(
+                {
+                    "trade_date": [d, d],
+                    "industry_code": ["2403", "2403"],
+                    "level": ["L2", "L2"],
+                    "weighting": ["equal", "amount"],
+                    "n_members": [1, 1],
+                    "n_priced": [1, 1],
+                    "n_excluded": [0, 0],
+                }
+            ).write_parquet(part / "part-0.parquet")
+        else:
+            pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [d]}).write_parquet(
+                part / "part-0.parquet"
+            )
 
 
 def test_required_dataset_with_nothing_in_it_is_a_gap(tmp_path):
@@ -62,6 +92,17 @@ def test_optional_empty_dataset_is_not_reported(tmp_path):
     cfg.curated_root.mkdir(parents=True, exist_ok=True)
     assert DATASETS["minute_bars"].required is False
     assert verify_dataset(cfg, DATASETS["minute_bars"], anchor=ANCHOR, watermark=None) == []
+
+
+def test_disabled_optional_dataset_with_old_rows_is_not_reported(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    part = cfg.curated_root / "trade_ticks" / "trade_date=2026-07-01"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [date(2026, 7, 1)]}).write_parquet(
+        part / "part-0.parquet"
+    )
+
+    assert verify_lake(cfg, anchor=ANCHOR, datasets=["trade_ticks"]) == []
 
 
 def test_interior_hole_in_a_daily_by_date_dataset_is_a_fault(tmp_path):
@@ -81,6 +122,88 @@ def test_interior_hole_in_a_daily_by_date_dataset_is_a_fault(tmp_path):
     assert gap.sample == (date(2026, 8, 5),)
     assert gap.start == gap.end == date(2026, 8, 5)
     assert gap.repairable is True
+
+
+def test_daily_bars_placeholder_only_partition_is_not_covered(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+    _calendar(cfg, sessions)
+    for day, volume in ((sessions[0], 100), (sessions[1], 0), (sessions[2], 100)):
+        part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {"symbol": ["600519.SH"], "trade_date": [day], "volume": [volume]}
+        ).write_parquet(part / "part-0.parquet")
+
+    gaps = verify_dataset(
+        cfg, DATASETS["daily_bars"], anchor=sessions[-1], watermark=sessions[-1]
+    )
+
+    interior = [gap for gap in gaps if gap.kind == "interior"]
+    assert len(interior) == 1
+    assert interior[0].sample == (sessions[1],)
+    assert last_contiguous_dense_date(cfg, DATASETS["daily_bars"]) == sessions[0]
+
+
+def test_dense_watermark_can_start_at_operational_baseline(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+    _calendar(cfg, sessions)
+    _write_days(cfg, "daily_bars", [sessions[0], sessions[2]])
+
+    assert last_contiguous_dense_date(cfg, DATASETS["daily_bars"]) == sessions[0]
+    assert (
+        last_contiguous_dense_date(cfg, DATASETS["daily_bars"], start=sessions[2])
+        == sessions[2]
+    )
+
+
+def test_empty_day_partition_is_not_covered_for_dense_non_bar_dataset(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+    _calendar(cfg, sessions)
+    _write_days(cfg, "adj_factors", [sessions[0], sessions[-1]], layer="derived")
+    empty = cfg.derived_root / "adj_factors" / f"trade_date={sessions[1].isoformat()}"
+    empty.mkdir(parents=True)
+    pl.DataFrame(schema={"symbol": pl.String, "trade_date": pl.Date}).write_parquet(
+        empty / "part-empty.parquet"
+    )
+
+    gaps = verify_dataset(
+        cfg,
+        DATASETS["adj_factors"],
+        anchor=sessions[-1],
+        watermark=sessions[-1],
+    )
+
+    interior = [gap for gap in gaps if gap.kind == "interior"]
+    assert len(interior) == 1
+    assert interior[0].sample == (sessions[1],)
+
+
+def test_nonempty_partition_survives_a_corrupt_sibling_file(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4)]
+    _calendar(cfg, sessions)
+    _write_days(cfg, "adj_factors", sessions, layer="derived")
+    (cfg.derived_root / "adj_factors" / f"trade_date={sessions[0].isoformat()}").joinpath(
+        "part-broken.parquet"
+    ).write_bytes(b"not a parquet file")
+
+    assert last_contiguous_dense_date(cfg, DATASETS["adj_factors"]) == sessions[-1]
+
+
+def test_verify_reports_unreadable_dense_dataset_instead_of_crashing(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    root = cfg.curated_root / "daily_bars" / "trade_date=2026-08-03"
+    root.mkdir(parents=True)
+    (root / "broken.parquet").write_bytes(b"not a parquet file")
+
+    gaps = verify_dataset(cfg, DATASETS["daily_bars"], anchor=ANCHOR, watermark=None)
+
+    assert len(gaps) == 1
+    assert gaps[0].kind == "unreadable"
+    assert gaps[0].repairable is False
 
 
 def test_market_breadth_interior_hole_is_a_fault(tmp_path):
@@ -103,6 +226,24 @@ def test_market_breadth_interior_hole_is_a_fault(tmp_path):
     interior = [gap for gap in gaps if gap.kind == "interior"]
     assert len(interior) == 1
     assert interior[0].sample == (sessions[1],)
+
+
+def test_partial_market_breadth_day_does_not_advance_dense_watermark(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    sessions = [date(2026, 8, 3), date(2026, 8, 4)]
+    _calendar(cfg, sessions)
+    _write_days(cfg, "market_breadth", [sessions[0]])
+    part = cfg.derived_root / "market_breadth" / f"trade_date={sessions[1].isoformat()}"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [sessions[1]],
+            "metric_id": ["advance_count"],
+            "value": [1.0],
+        }
+    ).write_parquet(part / "partial.parquet")
+
+    assert last_contiguous_dense_date(cfg, DATASETS["market_breadth"]) == sessions[0]
 
 
 def test_industry_index_interior_hole_is_a_fault(tmp_path):

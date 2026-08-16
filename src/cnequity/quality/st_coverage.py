@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from datetime import date, datetime, timezone
@@ -20,12 +21,14 @@ from typing import Any
 import polars as pl
 
 from cnequity.config import Config
-from cnequity.domain.symbols import is_all_a_symbol, parse_symbol
+from cnequity.domain.symbols import is_all_a_symbol, is_cdr_symbol, parse_symbol
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
-from cnequity.query.parquet_scan import collect_parquet_root
+from cnequity.query.parquet_scan import collect_parquet_root, scan_parquet_files
 
 ST_EVIDENCE_VERSION = 2
 ST_COVERAGE_CLAIM = "historical_st_evidence"
+
+logger = logging.getLogger(__name__)
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -62,10 +65,16 @@ def current_st_universe(config: Config) -> list[str]:
     if not root.exists():
         return []
     try:
-        frame = collect_parquet_root(root, hive=False)
-    except FileNotFoundError:
+        frame = dedupe_by_primary_key(
+            collect_parquet_root(root, hive=False),
+            "instruments",
+        )
+    except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+        # A partial universe is unsafe here: it can make an old receipt appear
+        # to cover every currently visible name. Keep the claim unverified
+        # until the structural audit repairs the unreadable input.
+        logger.warning("ST coverage: instruments are not readable: %s", exc)
         return []
-    frame = dedupe_by_primary_key(frame, "instruments")
     if "symbol" not in frame.columns:
         return []
     symbols: list[str] = []
@@ -74,22 +83,36 @@ def current_st_universe(config: Config) -> list[str]:
             parsed = parse_symbol(str(raw))
         except ValueError:
             continue
-        if is_all_a_symbol(parsed.code, parsed.exchange):
+        # ``is_all_a_symbol`` is intentionally a broad code-space predicate
+        # used by source discovery and therefore still admits SH 689xxx CDRs.
+        # The research ``all_a`` universe excludes CDRs; ST evidence must use
+        # the same universe or it creates an unnecessary scope member that can
+        # never contribute to stock-universe queries.
+        if is_all_a_symbol(parsed.code, parsed.exchange) and not is_cdr_symbol(
+            parsed.code, parsed.exchange
+        ):
             symbols.append(str(raw))
     bars_root = config.curated_root / "daily_bars"
     bar_files = list(bars_root.rglob("*.parquet")) if bars_root.exists() else []
-    bars = (
-        set(
-            pl.scan_parquet([str(path) for path in bar_files])
-            .select("symbol")
-            .unique()
-            .collect()["symbol"]
-            .to_list()
-        )
-        if bar_files
-        else set()
-    )
-    if bars:
+    if bar_files:
+        bar_scans: list[pl.LazyFrame] = []
+        for path in bar_files:
+            try:
+                bar_scan = scan_parquet_files([path])
+                # Suspended symbols may have carried-forward OHLC rows with no
+                # actual print. Keep old/minimal files without volume readable.
+                if "volume" in bar_scan.collect_schema().names():
+                    bar_scan = bar_scan.filter(pl.col("volume") > 0)
+                bar_scans.append(bar_scan)
+            except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+                logger.warning("ST coverage: daily_bars file is not readable: %s: %s", path, exc)
+                return []
+        bar_scan = pl.concat(bar_scans, how="diagonal_relaxed")
+        try:
+            bars = set(bar_scan.select("symbol").unique().collect()["symbol"].to_list())
+        except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+            logger.warning("ST coverage: daily_bars scan is not readable: %s", exc)
+            return []
         symbols = [symbol for symbol in symbols if symbol in bars]
     return sorted(set(symbols))
 
@@ -180,7 +203,7 @@ def _st_row_counts(
         )
     if not files:
         return {}
-    frame = pl.scan_parquet([str(path) for path in files], missing_columns="insert")
+    frame = scan_parquet_files(files, missing_columns="insert", extra_columns="ignore")
     schema = frame.collect_schema().names()
     frame = frame.filter(
         pl.col("symbol").is_in(sorted(symbols)),
@@ -299,9 +322,45 @@ def _receipts(config: Config) -> list[dict[str, Any]]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if payload.get("claim") == ST_COVERAGE_CLAIM:
+        if isinstance(payload, dict) and payload.get("claim") == ST_COVERAGE_CLAIM:
             out.append(payload)
     return out
+
+
+def _valid_receipt_scope(receipt: dict[str, Any]) -> tuple[dict[str, Any], date, date] | None:
+    """Return a receipt scope only when its integrity fields are consistent."""
+    scope = receipt.get("scope")
+    completed = receipt.get("completed_symbols")
+    if not isinstance(scope, dict) or not isinstance(completed, list):
+        return None
+    if receipt.get("schema_version") != 1 or receipt.get("status") != "complete":
+        return None
+    if not all(isinstance(symbol, str) for symbol in completed):
+        return None
+    if receipt.get("completed_symbols_count") != len(completed):
+        return None
+    if scope.get("expected_symbols_count") != len(completed):
+        return None
+    if receipt.get("completed_symbols_sha256") != symbol_scope_hash(completed):
+        return None
+    if scope.get("symbols_sha256") != symbol_scope_hash(completed):
+        return None
+    scope_id = scope.get("scope_id")
+    identity = {
+        key: value
+        for key, value in scope.items()
+        if key not in {"scope_id", "expected_symbols_count"}
+    }
+    if not isinstance(scope_id, str) or scope_id != _canonical_hash(identity):
+        return None
+    try:
+        scope_start = date.fromisoformat(str(scope["start"]))
+        scope_end = date.fromisoformat(str(scope["end"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if scope_start > scope_end:
+        return None
+    return scope, scope_start, scope_end
 
 
 def st_evidence_coverage_report(
@@ -313,9 +372,10 @@ def st_evidence_coverage_report(
     symbols = current_st_universe(config)
     candidates: list[dict[str, Any]] = []
     for receipt in _receipts(config):
-        scope = receipt.get("scope") or {}
-        if receipt.get("status") != "complete":
+        parsed = _valid_receipt_scope(receipt)
+        if parsed is None:
             continue
+        scope, scope_start, scope_end = parsed
         if scope.get("evidence_version") != ST_EVIDENCE_VERSION:
             continue
         if scope.get("source") != "baostock" or scope.get("universe") != "all_a":
@@ -323,8 +383,6 @@ def st_evidence_coverage_report(
         covered_symbols = set(receipt.get("completed_symbols", []))
         if not symbols or not set(symbols) <= covered_symbols:
             continue
-        scope_start = date.fromisoformat(scope["start"])
-        scope_end = date.fromisoformat(scope["end"])
         if start is not None and scope_start > start:
             continue
         if end is not None and scope_end < end:

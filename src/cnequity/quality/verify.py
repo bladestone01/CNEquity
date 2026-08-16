@@ -31,11 +31,16 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 
+import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 from cnequity.config import Config
-from cnequity.domain.datasets import DATASETS, DatasetSpec, is_stale
+from cnequity.domain.datasets import DATASETS, DatasetSpec, is_dataset_enabled, is_stale
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
-    list_hive_partition_dates,
+    list_partitions,
+    partition_dir,
     scan_parquet_root,
     uses_hive_partitions,
 )
@@ -109,31 +114,130 @@ def _dataset_root(config: Config, spec: DatasetSpec):
     return root / spec.name
 
 
+def _nonempty_day_partition_dates(root, partition_col: str) -> list[date]:
+    """Return day partitions whose Parquet footer contains at least one row."""
+    covered: list[date] = []
+    for partition in list_partitions(root, partition_col):
+        if partition.start != partition.end:
+            continue
+        files = sorted(partition_dir(root, partition_col, partition.value).rglob("*.parquet"))
+        has_rows = False
+        for path in files:
+            try:
+                if int(pq.ParquetFile(path).metadata.num_rows) > 0:
+                    has_rows = True
+                    break
+            except (OSError, pa.ArrowException, ValueError) as exc:
+                logger.warning(
+                    "verify: skipping unreadable file %s under %s: %s",
+                    path,
+                    root,
+                    exc,
+                )
+        if has_rows:
+            covered.append(partition.start)
+    return covered
+
+
 def _covered_days(config: Config, spec: DatasetSpec) -> list[date]:
     """Session dates present on disk for a dense dataset.
 
-    Read from directory names rather than by scanning rows: an interior-gap
-    check that had to open 6,000 parquet files to answer would not be run.
+    Read from directory names plus Parquet footers rather than scanning rows:
+    an interior-gap check that had to decode 6,000 parquet files to answer
+    would not be run.
     Coarser dense layouts (for example yearly ``index_bars``) fall back to a
     date-column-only scan; sparse datasets intentionally return no dates here.
     """
     if spec.partition_col is None or not _is_daily_by_date(spec):
         return []
     root = _dataset_root(config, spec)
+    if spec.name in {"market_breadth", "industry_index"}:
+        return _complete_derived_days(config, spec)
     if (
-        spec.partition_granularity == "day"
+        spec.name != "daily_bars"
+        and spec.partition_granularity == "day"
         and uses_hive_partitions(root, spec.partition_col)
         and not list(root.glob("*.parquet"))
     ):
-        return list_hive_partition_dates(root, spec.partition_col)
+        return _nonempty_day_partition_dates(root, spec.partition_col)
     if not dataset_has_parquet(root):
         return []
-    lf = scan_parquet_root(root, partition_col=spec.partition_col, hive=False)
+    lf = scan_parquet_root(
+        root,
+        partition_col=spec.partition_col,
+        hive=False,
+        traded_only=spec.name == "daily_bars",
+    )
     if spec.partition_col not in lf.collect_schema().names():
         return []
     return sorted(
         lf.select(spec.partition_col).drop_nulls().unique().collect()[spec.partition_col].to_list()
     )
+
+
+def _complete_derived_days(config: Config, spec: DatasetSpec) -> list[date]:
+    """Return dates whose derived primary groups are structurally complete."""
+    root = _dataset_root(config, spec)
+    if not dataset_has_parquet(root):
+        return []
+    lf = scan_parquet_root(root, partition_col=spec.partition_col, hive=False)
+    names = set(lf.collect_schema().names())
+    if spec.name == "market_breadth":
+        required = {"trade_date", "metric_id", "value"}
+        if not required.issubset(names):
+            return []
+        valid = pl.col("metric_id").is_in(
+            [
+                "advance_count",
+                "decline_count",
+                "flat_count",
+                "limit_up_count",
+                "limit_down_count",
+                "advance_ratio",
+                "total_count",
+            ]
+        ) & pl.col("value").is_not_null()
+        return sorted(
+            lf.group_by("trade_date")
+            .agg(
+                pl.col("metric_id").filter(valid).n_unique().alias("metric_count"),
+                pl.col("metric_id").filter(valid).len().alias("valid_row_count"),
+                pl.len().alias("row_count"),
+            )
+            .filter(
+                (pl.col("metric_count") == 7)
+                & (pl.col("valid_row_count") == 7)
+                & (pl.col("row_count") == 7)
+            )
+            .collect()["trade_date"]
+            .to_list()
+        )
+    required = {
+        "trade_date",
+        "industry_code",
+        "level",
+        "weighting",
+        "n_members",
+        "n_priced",
+        "n_excluded",
+    }
+    if not required.issubset(names):
+        return []
+    groups = (
+        lf.group_by("trade_date", "industry_code", "level")
+        .agg(
+            pl.col("weighting").n_unique().alias("weighting_count"),
+            pl.len().alias("row_count"),
+        )
+        .filter((pl.col("weighting_count") != 2) | (pl.col("row_count") != 2))
+        .select("trade_date")
+        .unique()
+    )
+    all_days = lf.select("trade_date").drop_nulls().unique().collect()
+    if all_days.is_empty():
+        return []
+    incomplete = set(groups.collect()["trade_date"].to_list())
+    return sorted(day for day in all_days["trade_date"].to_list() if day not in incomplete)
 
 
 def _trading_days(config: Config, start: date, end: date) -> list[date]:
@@ -144,13 +248,20 @@ def _trading_days(config: Config, start: date, end: date) -> list[date]:
     return list_trading_dates(config, start, end)
 
 
-def last_contiguous_dense_date(config: Config, spec: DatasetSpec) -> date | None:
+def last_contiguous_dense_date(
+    config: Config,
+    spec: DatasetSpec,
+    *,
+    start: date | None = None,
+) -> date | None:
     """Newest session before the first hole in a dense dataset's span.
 
     A raw maximum is not a safe incremental watermark: if a fetch lands on
     Monday and Wednesday but misses Tuesday, starting the next fetch after
     Wednesday makes Tuesday permanently invisible. Return the last session in
-    the continuous prefix instead. Sparse datasets deliberately return
+    the continuous prefix instead. ``start`` allows a dataset whose legacy
+    history predates its reliable incremental source to establish that prefix
+    from the source's operational baseline. Sparse datasets deliberately return
     ``None`` because a missing session is not evidence of a defect there.
     """
     if not _is_daily_by_date(spec):
@@ -158,8 +269,11 @@ def last_contiguous_dense_date(config: Config, spec: DatasetSpec) -> date | None
     days = _covered_days(config, spec)
     if not days:
         return None
-    expected = _trading_days(config, min(days), max(days))
-    present = set(days)
+    first = max(min(days), start) if start is not None else min(days)
+    if first > max(days):
+        return None
+    expected = _trading_days(config, first, max(days))
+    present = {day for day in days if day >= first}
     for index, session in enumerate(expected):
         if session not in present:
             return expected[index - 1] if index else None
@@ -194,7 +308,19 @@ def verify_dataset(
             )
         return gaps
 
-    days = _covered_days(config, spec)
+    try:
+        days = _covered_days(config, spec)
+    except (OSError, pl.exceptions.PolarsError, ValueError) as exc:
+        logger.warning("verify: %s is not readable: %s", spec.name, exc)
+        gaps.append(
+            Gap(
+                dataset=spec.name,
+                kind="unreadable",
+                detail=f"curated data could not be read: {exc}",
+                repairable=False,
+            )
+        )
+        return gaps
     first = min(days) if days else None
     last = max(days) if days else None
 
@@ -278,6 +404,9 @@ def verify_lake(
         spec = DATASETS.get(name)
         if spec is None:
             logger.warning("verify: unknown dataset %r; skipping", name)
+            continue
+        if not is_dataset_enabled(name, config):
+            logger.info("verify: %s is disabled in config; skipping coverage checks", name)
             continue
         watermark = state.get_date(name) if spec.watermark else None
         out.extend(verify_dataset(config, spec, anchor=anchor, watermark=watermark))

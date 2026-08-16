@@ -19,7 +19,7 @@ from cnequity.config import Config
 from cnequity.quality.cross_checks import adj_factor_coverage_findings
 
 
-def _lake(tmp_path, *, stocks, priced, factored, etfs=()):
+def _lake(tmp_path, *, stocks, priced, factored, etfs=(), no_trade=()):
     cfg = Config(data_root=tmp_path / "lake")
     for root in (cfg.curated_root, cfg.derived_root):
         root.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,11 @@ def _lake(tmp_path, *, stocks, priced, factored, etfs=()):
     bars = cfg.curated_root / "daily_bars" / "trade_date=2026-08-07"
     bars.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
-        {"symbol": list(priced), "trade_date": [date(2026, 8, 7)] * len(priced)}
+        {
+            "symbol": list(priced),
+            "trade_date": [date(2026, 8, 7)] * len(priced),
+            "volume": [0 if symbol in no_trade else 100 for symbol in priced],
+        }
     ).write_parquet(bars / "part-0.parquet")
 
     fac = cfg.derived_root / "adj_factors" / "trade_date=2026-08-07"
@@ -79,6 +83,20 @@ def test_etfs_do_not_count_against_coverage(tmp_path):
     sh = [f"6000{i:02d}.SH" for i in range(20)]
     etf = [f"5100{i:02d}.SH" for i in range(50)]
     cfg = _lake(tmp_path, stocks=sh, priced=sh + etf, factored=sh, etfs=etf)
+    assert adj_factor_coverage_findings(cfg, date(2026, 8, 7)) == []
+
+
+def test_placeholder_only_stock_does_not_count_as_priced(tmp_path):
+    sh = [f"6000{i:02d}.SH" for i in range(20)]
+    placeholder = "600099.SH"
+    cfg = _lake(
+        tmp_path,
+        stocks=sh + [placeholder],
+        priced=sh + [placeholder],
+        factored=sh,
+        no_trade=[placeholder],
+    )
+
     assert adj_factor_coverage_findings(cfg, date(2026, 8, 7)) == []
 
 

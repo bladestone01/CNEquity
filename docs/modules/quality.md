@@ -46,7 +46,7 @@
 | `empty_datasets` | 无 parquet 的注册数据集 |
 | `stale_datasets` | 水位落后超过 `max_staleness_days` |
 | `findings_by_severity` | error / warning / info 计数 |
-| `adj_factor_reconciliation` | 复权收益极值 + 缺 corporate_actions |
+| `adj_factor_reconciliation` | 复权收益极值 + 缺 corporate_actions；已记录的缩股/减资等股本重组由 `share_structure` 解释 |
 | `healthy` | 无 error 级 finding |
 
 与普通 run 级审计只检查当前活跃分区不同，`--full` 会对每个已有数据集的全部
@@ -99,9 +99,9 @@ cne audit --full --research-start 2020-01-01 --research-end 2024-12-31
 
 | 检查 | 说明 |
 |------|------|
-| daily_bars vs trading_calendar | 交易日无 bar |
-| valuation vs daily_bars | 估值有、行情无 |
-| adj_factor_reconciliation | bar-to-bar 复权收益 > 阈值；除权日缺 corporate_actions |
+| daily_bars vs trading_calendar | 交易日无真实成交 bar（`volume=0` 的停牌占位行不算覆盖） |
+| valuation vs daily_bars | 估值有、真实成交行情无 |
+| adj_factor_reconciliation | 真实成交 bar-to-bar 复权收益 > 阈值；除权日缺 corporate_actions（缩股/减资等已在 `share_structure` 记录的股本重组除外） |
 | `st_label_crosscheck` | `trading_status` 的 ST 标签 vs `instruments` 简称里的 ST 前缀 |
 
 ### st_label_crosscheck
