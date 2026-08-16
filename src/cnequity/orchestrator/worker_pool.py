@@ -256,7 +256,9 @@ def fetch_daily_bars_parallel(
     total_written = 0
     failed_symbols: list[str] = []
     rl = config.tdx_rate_limit_spec()
-    rate_limit_tuple = (rl.state_dir, rl.source, rl.min_interval) if rl else None
+    rate_limit_tuple = (
+        (rl.state_dir, rl.source, rl.min_interval, rl.lock_timeout) if rl else None
+    )
 
     def _run_batch(
         batch_id: str,

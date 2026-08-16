@@ -37,6 +37,7 @@ _WIN_LOCK_BYTES = 1
 # Poll LK_NBLCK instead so ``blocking=True`` means under Windows what it means
 # under flock — wait until the holder is done.
 _WIN_RETRY_INTERVAL = 0.05
+_POSIX_RETRY_INTERVAL = 0.05
 
 # Contention as reported by msvcrt.locking: EACCES from LK_NBLCK, EDEADLOCK from
 # an exhausted LK_LOCK. Anything else (a bad descriptor, say) is a real error and
@@ -56,20 +57,36 @@ _WIN_BUSY_ERRNOS = frozenset(
 
 
 class LockUnavailable(RuntimeError):
-    """A non-blocking acquire lost the race — someone else holds the lock."""
+    """A lock could not be acquired immediately or before its deadline."""
 
 
-def _acquire_posix(handle: IO, *, blocking: bool) -> None:
+def _acquire_posix(handle: IO, *, blocking: bool, timeout: float | None = None) -> None:
     import fcntl
 
-    if blocking:
+    if blocking and timeout is None:
         fcntl.flock(handle, fcntl.LOCK_EX)
         return
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (BlockingIOError, PermissionError) as exc:
-        # EWOULDBLOCK on Linux/macOS, EACCES on some other Unixes.
-        raise LockUnavailable(str(getattr(handle, "name", handle))) from exc
+
+    deadline = (
+        time.monotonic() + max(timeout, 0.0)
+        if blocking and timeout is not None
+        else None
+    )
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except (BlockingIOError, PermissionError) as exc:
+            # EWOULDBLOCK on Linux/macOS, EACCES on some other Unixes.
+            if not blocking:
+                raise LockUnavailable(str(getattr(handle, "name", handle))) from exc
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LockUnavailable(
+                        f"{getattr(handle, 'name', handle)}: timed out acquiring lock"
+                    ) from exc
+                time.sleep(min(_POSIX_RETRY_INTERVAL, remaining))
 
 
 def _release_posix(handle: IO) -> None:
@@ -78,9 +95,14 @@ def _release_posix(handle: IO) -> None:
     fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def _acquire_windows(handle: IO, *, blocking: bool) -> None:
+def _acquire_windows(handle: IO, *, blocking: bool, timeout: float | None = None) -> None:
     import msvcrt
 
+    deadline = (
+        time.monotonic() + max(timeout, 0.0)
+        if blocking and timeout is not None
+        else None
+    )
     while True:
         # The locked range starts at the current file position, and "a+" opens
         # at EOF — seek every time so both backends lock the same byte.
@@ -93,7 +115,15 @@ def _acquire_windows(handle: IO, *, blocking: bool) -> None:
                 raise
             if not blocking:
                 raise LockUnavailable(str(getattr(handle, "name", handle))) from exc
-            time.sleep(_WIN_RETRY_INTERVAL)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LockUnavailable(
+                        f"{getattr(handle, 'name', handle)}: timed out acquiring lock"
+                    ) from exc
+                time.sleep(min(_WIN_RETRY_INTERVAL, remaining))
+            else:
+                time.sleep(_WIN_RETRY_INTERVAL)
 
 
 def _release_windows(handle: IO) -> None:
@@ -108,12 +138,18 @@ _release = _release_windows if IS_WINDOWS else _release_posix
 
 
 @contextlib.contextmanager
-def exclusive_lock(path: Path | str, *, blocking: bool = True) -> Iterator[IO]:
+def exclusive_lock(
+    path: Path | str,
+    *,
+    blocking: bool = True,
+    timeout: float | None = None,
+) -> Iterator[IO]:
     """Hold an exclusive lock on *path* for the duration of the block.
 
     Creates the lock file (and its parent directory) if needed. With
     ``blocking=False`` a lock already held elsewhere raises
-    :class:`LockUnavailable` instead of waiting.
+    :class:`LockUnavailable` instead of waiting. With ``timeout`` set, a
+    blocking acquire polls until the deadline and then raises the same error.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,7 +157,7 @@ def exclusive_lock(path: Path | str, *, blocking: bool = True) -> Iterator[IO]:
     # locks are mandatory: opening "w" against a file whose byte 0 another
     # process holds fails outright instead of politely queueing.
     with open(path, "a+", encoding="utf-8") as handle:
-        _acquire(handle, blocking=blocking)
+        _acquire(handle, blocking=blocking, timeout=timeout)
         try:
             yield handle
         finally:

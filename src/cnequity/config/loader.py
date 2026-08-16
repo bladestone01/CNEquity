@@ -43,6 +43,7 @@ class Config:
     batch_stale_seconds: int = 3600
     tdx_enabled: bool = True
     tdx_min_interval_ms: int = 50
+    tdx_lock_timeout_sec: float = 15.0
     tdx_servers: str = "auto"
     tdx_connect_timeout_sec: int = 10
     # Preferred standard-market host pool ("ip:port"). When set and servers=auto,
@@ -126,6 +127,7 @@ class Config:
             str(self.meta_root / "rate_limits"),
             "tdx_protocol",
             self.tdx_min_interval_ms / 1000.0,
+            self.tdx_lock_timeout_sec,
         )
 
     @property
@@ -266,6 +268,7 @@ def load_config(path: str | Path) -> Config:
         batch_stale_seconds=int(orch.get("batch_stale_seconds", 3600)),
         tdx_enabled=bool(tdx.get("enabled", True)),
         tdx_min_interval_ms=int(tdx.get("min_interval_ms", 50)),
+        tdx_lock_timeout_sec=float(tdx.get("lock_timeout_sec", 15.0)),
         tdx_servers=str(tdx.get("servers", "auto")),
         tdx_connect_timeout_sec=int(tdx.get("connect_timeout_sec", 10)),
         tdx_host_pool=_parse_tdx_host_pool(tdx.get("hosts", {})),
@@ -329,6 +332,10 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("[tdx_protocol].servers must be 'auto' or host:port")
     if cfg.tdx_connect_timeout_sec < 1:
         errors.append("[tdx_protocol].connect_timeout_sec must be >= 1")
+    if cfg.tdx_min_interval_ms < 0:
+        errors.append("[tdx_protocol].min_interval_ms must be >= 0")
+    if cfg.tdx_lock_timeout_sec <= 0:
+        errors.append("[tdx_protocol].lock_timeout_sec must be > 0")
     if not cfg.daily_waves:
         errors.append("job.daily.waves must define at least one wave")
 

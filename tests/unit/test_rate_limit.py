@@ -1,8 +1,12 @@
 import json
 import time
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
+
+import pytest
 
 from cnequity.domain.rate_limit import RateLimiter, wait_source
+from cnequity.file_lock import LockUnavailable
 
 INTERVAL = 0.05
 
@@ -54,3 +58,20 @@ def test_corrupt_rate_state_is_replaced_atomically(tmp_path):
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     assert payload["last"] > 0
     assert not list(state_dir.glob(".*.tmp"))
+
+
+def test_rate_limiter_propagates_lock_timeout_instead_of_bypassing(monkeypatch, tmp_path):
+    seen = {}
+
+    @contextmanager
+    def busy_lock(path, **kwargs):
+        seen.update(kwargs)
+        raise LockUnavailable("busy")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("cnequity.domain.rate_limit.exclusive_lock", busy_lock)
+
+    with pytest.raises(LockUnavailable, match="busy"):
+        RateLimiter("test", INTERVAL, tmp_path / "rate_limits").wait()
+
+    assert seen["timeout"] == 15.0

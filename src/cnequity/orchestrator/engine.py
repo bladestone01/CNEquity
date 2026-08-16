@@ -320,7 +320,12 @@ class JobEngine:
 
         t0 = time.perf_counter()
         try:
-            out = entry.fn(self.config, trade_date, run_id, context)
+            # Internal step metadata is passed through a shallow copy so long-
+            # running non-worker steps can refresh their own batch heartbeat
+            # without exposing the batch id as user-facing context.
+            step_context = dict(context)
+            step_context["_batch_id"] = batch_id
+            out = entry.fn(self.config, trade_date, run_id, step_context)
             elapsed = time.perf_counter() - t0
             step_status = out.pop("status", "success")
             if step_status == "success" and _has_partial_failures(out):

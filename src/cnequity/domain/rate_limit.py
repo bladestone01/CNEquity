@@ -9,6 +9,8 @@ from pathlib import Path
 
 from cnequity.file_lock import exclusive_lock
 
+DEFAULT_LOCK_TIMEOUT_SECONDS = 15.0
+
 
 @dataclass(frozen=True)
 class RateLimitSpec:
@@ -17,6 +19,7 @@ class RateLimitSpec:
     state_dir: str
     source: str
     min_interval: float
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS
 
 
 @dataclass
@@ -26,6 +29,7 @@ class RateLimiter:
     name: str
     min_interval: float
     state_dir: Path
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS
 
     def wait(self) -> None:
         if self.min_interval <= 0:
@@ -35,7 +39,7 @@ class RateLimiter:
         lock_path = self.state_dir / f"{self.name}.lock"
         state_path = self.state_dir / f"{self.name}.json"
 
-        with exclusive_lock(lock_path):
+        with exclusive_lock(lock_path, timeout=self.lock_timeout):
             last = 0.0
             if state_path.exists():
                 try:

@@ -840,6 +840,7 @@ def fetch_corporate_actions(
     allow_mock: bool = False,
     primary_only: bool = False,
     config: Config | None = None,
+    on_progress=None,
 ) -> pl.DataFrame:
     empty = pl.DataFrame(
         schema={
@@ -855,8 +856,6 @@ def fetch_corporate_actions(
     )
     if allow_mock:
         return _fail_or_mock("corporate_actions", _MOCK_SHORT_CIRCUIT, True, empty)
-    wait_spec(rate_limit)
-
     frames: list[pl.DataFrame] = []
     try:
         if symbols:
@@ -867,6 +866,7 @@ def fetch_corporate_actions(
                 client_factory=quotes_client_factory(config),
                 rate_limit=rate_limit,
                 strict=backfill and primary_only,
+                on_progress=on_progress,
             )
             if tdx_df.height:
                 frames.append(tdx_df.with_columns(pl.lit("tdx_protocol").alias("source")))

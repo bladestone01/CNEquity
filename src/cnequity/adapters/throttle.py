@@ -15,7 +15,12 @@ class SourceRateLimiters:
         state_dir = self.config.meta_root / "rate_limits"
         if self.config.tdx_enabled:
             interval = self.config.tdx_min_interval_ms / 1000.0
-            self._limiters["tdx_protocol"] = RateLimiter("tdx_protocol", interval, state_dir)
+            self._limiters["tdx_protocol"] = RateLimiter(
+                "tdx_protocol",
+                interval,
+                state_dir,
+                lock_timeout=self.config.tdx_lock_timeout_sec,
+            )
         for source, interval in self.config.source_intervals.items():
             self._limiters[source] = RateLimiter(source, interval, state_dir)
 

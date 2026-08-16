@@ -61,6 +61,19 @@ def test_blocking_acquire_waits_for_the_holder(tmp_path):
     assert acquired.is_set()
 
 
+def test_posix_blocking_acquire_has_a_total_timeout(monkeypatch, win_handle):
+    _install(monkeypatch, "fcntl", FakeFcntl(raises=BlockingIOError()))
+    monkeypatch.setattr(file_lock.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(
+        file_lock.time,
+        "sleep",
+        lambda _: pytest.fail("zero timeout must not sleep"),
+    )
+
+    with pytest.raises(LockUnavailable, match="timed out"):
+        file_lock._acquire_posix(win_handle, blocking=True, timeout=0)
+
+
 def test_is_locked_reports_holder_state(tmp_path):
     path = tmp_path / "run.lock"
     assert is_locked(path) is False  # absent
@@ -163,6 +176,19 @@ def test_windows_non_blocking_contention_raises_lock_unavailable(monkeypatch, wi
 
     with pytest.raises(LockUnavailable):
         file_lock._acquire_windows(win_handle, blocking=False)
+
+
+def test_windows_blocking_acquire_has_a_total_timeout(monkeypatch, win_handle):
+    _install(monkeypatch, "msvcrt", FakeMsvcrt(busy=1))
+    monkeypatch.setattr(file_lock.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(
+        file_lock.time,
+        "sleep",
+        lambda _: pytest.fail("zero timeout must not sleep"),
+    )
+
+    with pytest.raises(LockUnavailable, match="timed out"):
+        file_lock._acquire_windows(win_handle, blocking=True, timeout=0)
 
 
 @pytest.mark.parametrize("code", sorted(file_lock._WIN_BUSY_ERRNOS))

@@ -12,6 +12,7 @@ from cnequity.quality.st_coverage import (
     write_st_checkpoint,
 )
 from cnequity.query.universe import coverage_end_date, coverage_start_date
+from cnequity.steps.common import list_trading_dates
 
 
 def _partition(cfg: Config, dataset: str, day: date, frame: pl.DataFrame) -> None:
@@ -25,13 +26,12 @@ def _lake(tmp_path) -> Config:
     instruments = cfg.curated_root / "instruments"
     instruments.mkdir(parents=True)
     pl.DataFrame({"symbol": ["600519.SH"]}).write_parquet(instruments / "part-merged.parquet")
-    for day in (date(2020, 1, 2), date(2024, 12, 31)):
-        _partition(
-            cfg,
-            "daily_bars",
-            day,
-            pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [day]}),
-        )
+    sessions = list_trading_dates(cfg, date(2020, 1, 2), date(2024, 12, 31))
+    bars_root = cfg.curated_root / "daily_bars"
+    bars_root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {"symbol": ["600519.SH"] * len(sessions), "trade_date": sessions}
+    ).write_parquet(bars_root / "part-0.parquet")
     _partition(
         cfg,
         "trading_status",
@@ -108,6 +108,24 @@ def test_manifest_explains_each_blocking_boundary(tmp_path, monkeypatch):
         "delisted_universe_unverified",
     }
     assert all(blocker["remediation"] for blocker in report["blockers"])
+
+
+def test_manifest_blocks_interior_daily_bar_gap(tmp_path, monkeypatch):
+    cfg = _lake(tmp_path)
+    bars_path = cfg.curated_root / "daily_bars" / "part-0.parquet"
+    bars = pl.read_parquet(bars_path)
+    bars.filter(pl.col("trade_date") != date(2020, 1, 3)).write_parquet(bars_path)
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.delisted_coverage_report",
+        lambda *args, **kwargs: _survivorship(verified=True),
+    )
+
+    report = historical_universe_validity(cfg, date(2020, 1, 2), date(2024, 12, 31))
+
+    assert report["universe_ready"] is False
+    blocker = next(b for b in report["blockers"] if b["code"] == "daily_bars_interior_gap")
+    assert blocker["missing_sessions"] == 1
+    assert blocker["sample_sessions"] == ["2020-01-03"]
 
 
 def test_coarse_partition_bounds_use_real_rows_for_history_window(tmp_path, monkeypatch):

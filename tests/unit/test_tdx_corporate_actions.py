@@ -249,6 +249,26 @@ def test_fetch_corporate_actions_tdx_dedupes(monkeypatch):
     assert "action_type" in empty.schema
 
 
+def test_fetch_corporate_actions_tdx_paces_and_reports_each_symbol(monkeypatch):
+    waits = []
+    progress = []
+    monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: waits.append(True))
+    monkeypatch.setattr(ca, "close_quotes_client", lambda client: None)
+
+    class Client:
+        def xdxr(self, symbol, market=None):
+            return None
+
+    ca.fetch_corporate_actions_tdx(
+        ["600519.SH", "000001.SZ", "920055.BJ"],
+        client_factory=Client,
+        on_progress=lambda done, total: progress.append((done, total)),
+    )
+
+    assert len(waits) == 3
+    assert progress == [(1, 3), (2, 3), (3, 3)]
+
+
 def test_fetch_corporate_actions_tdx_strict_rejects_symbol_fetch_error(monkeypatch):
     monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: None)
     monkeypatch.setattr(ca, "close_quotes_client", lambda client: None)

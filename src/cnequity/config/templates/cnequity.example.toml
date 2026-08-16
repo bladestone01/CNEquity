@@ -20,6 +20,9 @@ batch_stale_seconds = 3600  # running batches without heartbeat for this long â†
 enabled = true
 # Cross-process paced; 100ms is safer for long daily sweeps than 50ms.
 min_interval_ms = 100
+# Maximum time to wait for the shared cross-process rate-limit lock.
+# A timeout fails the request so it can be retried; it never bypasses pacing.
+lock_timeout_sec = 15.0
 servers = "auto"
 connect_timeout_sec = 10
 # Test/demo only: return fabricated rows (labeled source="mock") instead of

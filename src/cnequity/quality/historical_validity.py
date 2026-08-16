@@ -6,8 +6,44 @@ from datetime import date
 
 from cnequity.config import Config
 from cnequity.quality.st_coverage import st_evidence_coverage_report
+from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.query.universe import coverage_end_date, coverage_start_date, st_coverage_start
 from cnequity.steps.delisted import delisted_coverage_report
+
+
+def _daily_bar_missing_sessions(
+    config: Config,
+    start: date,
+    end: date,
+) -> list[date]:
+    """Return whole-market trading sessions absent from daily_bars.
+
+    Individual symbols can legitimately be suspended, so this is deliberately
+    a dataset-level check: a session is missing only when no daily bar landed
+    for any symbol.  The boundary check above cannot see this interior hole,
+    yet a backtest spanning it would silently bridge the missing session.
+    """
+    if start > end or not dataset_has_parquet(config.curated_root / "daily_bars"):
+        return []
+
+    from cnequity.steps.common import list_trading_dates
+
+    expected = list_trading_dates(config, start, end)
+    if not expected:
+        return []
+    actual = (
+        scan_parquet_root(
+            config.curated_root / "daily_bars",
+            partition_col="trade_date",
+            start=start,
+            end=end,
+        )
+        .select("trade_date")
+        .unique()
+        .collect()
+    )
+    present = set(actual["trade_date"].drop_nulls().to_list())
+    return [session for session in expected if session not in present]
 
 
 def _bars_end(config: Config) -> date | None:
@@ -92,6 +128,32 @@ def historical_universe_validity(
             }
         )
 
+    daily_bar_missing: list[date] = []
+    if (
+        window_valid
+        and requested_start is not None
+        and requested_end is not None
+    ):
+        daily_bar_missing = _daily_bar_missing_sessions(config, requested_start, requested_end)
+        if daily_bar_missing:
+            blockers.append(
+                {
+                    "check": "daily_bars_interior_coverage",
+                    "code": "daily_bars_interior_gap",
+                    "message": (
+                        f"daily_bars has no rows for {len(daily_bar_missing)} trading "
+                        f"session(s) inside the requested window (e.g. "
+                        f"{daily_bar_missing[0].isoformat()})"
+                    ),
+                    "missing_sessions": len(daily_bar_missing),
+                    "sample_sessions": [d.isoformat() for d in daily_bar_missing[:15]],
+                    "remediation": (
+                        "Backfill and compact daily_bars for the missing sessions before "
+                        "using this research window."
+                    ),
+                }
+            )
+
     survivorship: dict | None = None
     survivorship_valid = False
     if (
@@ -125,7 +187,7 @@ def historical_universe_validity(
                 }
             )
 
-    universe_ready = window_valid and st_valid and survivorship_valid
+    universe_ready = window_valid and not daily_bar_missing and st_valid and survivorship_valid
     return {
         "schema_version": 1,
         "claim": "historical_all_a_universe_validity",
@@ -139,6 +201,11 @@ def historical_universe_validity(
                 "passed": window_valid,
                 "observed_start": observed_start.isoformat() if observed_start else None,
                 "observed_end": observed_end.isoformat() if observed_end else None,
+            },
+            "daily_bars_interior_coverage": {
+                "passed": not daily_bar_missing,
+                "missing_sessions": len(daily_bar_missing),
+                "sample_sessions": [d.isoformat() for d in daily_bar_missing[:15]],
             },
             "historical_st_labels": {
                 "passed": st_valid,

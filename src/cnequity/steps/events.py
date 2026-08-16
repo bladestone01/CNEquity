@@ -17,6 +17,7 @@ from cnequity.adapters.eastmoney.earnings_disclosure import (
 from cnequity.adapters.tdx_protocol.client import fetch_corporate_actions
 from cnequity.config import Config
 from cnequity.domain.schemas import with_provenance
+from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.registry import register_step
 from cnequity.quality.failover import (
     snapshot_corporate_actions_backup,
@@ -46,6 +47,21 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
 
     if backfill:
         symbols = load_symbols(config)
+        batch_id = context.get("_batch_id")
+        manifest = Manifest(config.manifest_path) if batch_id else None
+
+        def on_progress(done: int, total: int) -> None:
+            if manifest is not None and (done % 50 == 0 or done == total):
+                try:
+                    manifest.touch_batch_heartbeat(run_id, batch_id)
+                except Exception as exc:  # noqa: BLE001 — heartbeat is auxiliary
+                    logger.warning(
+                        "corporate_actions: heartbeat update failed at %d/%d: %s",
+                        done,
+                        total,
+                        exc,
+                    )
+
         if config.failover_enabled:
             # Best-effort: this writes an EastMoney snapshot for cross-source
             # audit, not the canonical rows. It must never decide whether the
@@ -71,6 +87,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             allow_mock=config.tdx_allow_mock,
             primary_only=True,
             config=config,
+            on_progress=on_progress,
         )
         canonical_source = _CANONICAL_BACKFILL
     else:

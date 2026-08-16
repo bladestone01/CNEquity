@@ -76,6 +76,7 @@ def test_example_config_validates(monkeypatch):
     # a source no adapter reads (issue #3).
     assert "akshare" not in cfg.sources
     assert cfg.tdx_min_interval_ms == 100
+    assert cfg.tdx_lock_timeout_sec == 15.0
     # Every schedule group we ship must be defined and pass validation. This
     # replaced four per-group tests that each re-asserted validate_config == []
     # without pinning the platform, so all four failed on macOS.

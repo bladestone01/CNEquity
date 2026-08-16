@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import math
+import time
+from collections.abc import Callable
 from datetime import date
 
 import polars as pl
@@ -146,14 +148,17 @@ def fetch_corporate_actions_tdx(
     client_factory,
     rate_limit: RateLimitSpec | None = None,
     strict: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> pl.DataFrame:
     client = None
     frames: list[pl.DataFrame] = []
     on_date = None if backfill else trade_date
+    total = len(symbols)
+    started_at = time.monotonic()
     try:
         with TDX_SESSION_LOCK:
             client = client_factory()
-            for sym in symbols:
+            for index, sym in enumerate(symbols, start=1):
                 df = fetch_xdxr_for_symbol(
                     client,
                     sym,
@@ -163,6 +168,18 @@ def fetch_corporate_actions_tdx(
                 )
                 if df.height:
                     frames.append(df)
+                if on_progress is not None:
+                    on_progress(index, total)
+                if index == 1 or index % 100 == 0 or index == total:
+                    elapsed = time.monotonic() - started_at
+                    remaining = (elapsed / index) * (total - index) if index else 0.0
+                    logger.info(
+                        "corporate_actions TDX xdxr %d/%d symbols · %.1fs elapsed · ~%.1fs left",
+                        index,
+                        total,
+                        elapsed,
+                        remaining,
+                    )
     finally:
         close_quotes_client(client)
 
