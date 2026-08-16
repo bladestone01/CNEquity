@@ -129,6 +129,16 @@ def _file_sha256(path: Path) -> str:
 # the catalogue needs no migration and corrects itself as time passes.
 LIVE_RECENCY_DAYS = 30
 
+# repair_delisted_instruments' orphan scan (below) has the same "suspended
+# must not be mistaken for delisted" problem as the catalogue sweep above,
+# but for a symbol with no catalogue entry at all: it infers retirement from
+# a positive-volume trading gap alone. A run of at least this many vendor
+# placeholder rows after the last real trade means the vendor is still
+# actively tracking the symbol as listed, so the gap is a halt, not a
+# delisting. A handful of trailing placeholder rows (a source's habit of
+# tacking a few dummy rows onto a series after the real end) is not.
+_ORPHAN_ACTIVE_PLACEHOLDER_MIN_ROWS = 20
+
 
 def _reference_date(config: Config) -> date:
     """The market's latest session, as the lake sees it."""
@@ -253,6 +263,12 @@ _IDENTITY_EVIDENCE_VERSION = 1
 _IDENTITY_CLAIM = "delisted_security_identity"
 # Stage every N symbols so a long sweep that dies keeps what it already fetched.
 _INGEST_CHUNK = 50
+
+
+def _recovery_symbol_hash(symbols: list[str] | set[str]) -> str:
+    return hashlib.sha256(
+        json.dumps(sorted(set(symbols)), separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _ingested_symbols(config: Config) -> set[str]:
@@ -478,12 +494,13 @@ def _publish_recovery_receipt(config: Config, checkpoint: dict) -> Path:
             f"cannot publish delisted recovery before {len(missing)} symbol(s) reach curated storage"
         )
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "claim": _RECOVERY_CLAIM,
         "status": "complete",
         "scope": {key: value for key, value in scope.items() if key != "targets"},
         "recovered_symbols": sorted(recovered),
         "expected_no_data_symbols": sorted(no_data),
+        "target_symbols_sha256": _recovery_symbol_hash(recovered | no_data),
         "published_at": datetime.now(timezone.utc).isoformat(),
     }
     path = config.meta_root / "quality" / "coverage" / _RECOVERY_CLAIM / f"{scope['scope_id']}.json"
@@ -527,7 +544,32 @@ def delisted_recovery_covers(
         try:
             receipt = json.loads(path.read_text(encoding="utf-8"))
             scope = receipt["scope"]
-            covered = set(receipt.get("recovered_symbols", []))
+            recovered = receipt.get("recovered_symbols", [])
+            no_data = receipt.get("expected_no_data_symbols", [])
+            if (
+                receipt.get("claim") != _RECOVERY_CLAIM
+                or receipt.get("schema_version") != 2
+                or not isinstance(scope, dict)
+                or not isinstance(recovered, list)
+                or not isinstance(no_data, list)
+                or not all(isinstance(symbol, str) for symbol in recovered + no_data)
+                or set(recovered) & set(no_data)
+                or scope.get("targets_count") != len(set(recovered) | set(no_data))
+                or receipt.get("target_symbols_sha256")
+                != _recovery_symbol_hash(recovered + no_data)
+            ):
+                continue
+            identity = {
+                key: value
+                for key, value in scope.items()
+                if key not in {"scope_id", "targets_count"}
+            }
+            expected_scope_id = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if scope.get("scope_id") != expected_scope_id:
+                continue
+            covered = set(recovered)
             if (
                 receipt.get("status") == "complete"
                 and scope.get("evidence_version") == _RECOVERY_EVIDENCE_VERSION
@@ -535,7 +577,12 @@ def delisted_recovery_covers(
                 and date.fromisoformat(scope["end"]) >= end
                 and required <= covered
             ):
-                return True
+                spans = _bar_spans(config, sorted(required))
+                if all(
+                    symbol in spans and spans[symbol][0] <= start and spans[symbol][1] >= end
+                    for symbol in required
+                ):
+                    return True
         except (KeyError, OSError, ValueError, json.JSONDecodeError):
             continue
     return False
@@ -610,9 +657,9 @@ def _bar_spans(
     config: Config,
     symbols: list[str],
     *,
-    positive_volume_only: bool = False,
+    positive_volume_only: bool = True,
 ) -> dict[str, tuple[date, date]]:
-    """``symbol -> (first_bar, last_bar)`` for symbols that already have daily_bars."""
+    """``symbol -> (first/last traded date)`` for existing daily bars."""
     if not symbols:
         return {}
     root = config.curated_root / "daily_bars"
@@ -620,11 +667,12 @@ def _bar_spans(
         return {}
     from cnequity.query.parquet_scan import scan_parquet_root
 
-    bars = scan_parquet_root(root, partition_col="trade_date", hive=False).filter(
-        pl.col("symbol").is_in(symbols)
-    )
-    if positive_volume_only and "volume" in bars.collect_schema().names():
-        bars = bars.filter(pl.col("volume") > 0)
+    bars = scan_parquet_root(
+        root,
+        partition_col="trade_date",
+        hive=False,
+        traded_only=positive_volume_only,
+    ).filter(pl.col("symbol").is_in(symbols))
     frame = (
         bars.group_by("symbol")
         .agg(
@@ -663,10 +711,18 @@ def delisted_coverage_report(
         raise ValueError("sample must be non-negative")
 
     catalog = load_delisted_catalog(config)
+    recent = load_live_missing(config)
     candidates = {symbol: last for symbol, last in catalog.items() if last >= start}
     formal = known_delisted_instruments(config, end)
     formal_in_window = {symbol: value for symbol, value in formal.items() if value >= start}
-    symbols = sorted(set(candidates) | set(formal_in_window))
+    recent_in_window = {
+        symbol: terminal for symbol, terminal in recent.items() if start <= terminal <= end
+    }
+    # Recent catalogue probes are provisional live/missing names, not dead
+    # symbols. Include them in the evidence scan so a name already restored by
+    # the daily BJ fallback (instrument + bars present) is not quarantined as a
+    # survivorship gap merely because its discovery record is recent.
+    symbols = sorted(set(candidates) | set(formal_in_window) | set(recent_in_window))
 
     spans: dict[str, tuple[date, date]] = {}
     bars_root = config.curated_root / "daily_bars"
@@ -679,14 +735,12 @@ def delisted_coverage_report(
             start=start,
             end=end,
             symbols=symbols,
+            traded_only=True,
         )
         # EastMoney and baostock may retain suspended/formally-delisting rows
         # with zero volume after the final actual trade. The catalogue records
-        # the last *traded* session, so those placeholders must not move the
-        # terminal date. Older/minimal lakes without volume retain the best
-        # evidence they have instead of failing schema discovery.
-        if "volume" in bars.collect_schema().names():
-            bars = bars.filter(pl.col("volume") > 0)
+        # the last *traded* session, so the traded-only scan excludes those
+        # placeholders while preserving legacy files without volume.
         frame = (
             bars.group_by("symbol")
             .agg(
@@ -708,6 +762,7 @@ def delisted_coverage_report(
     missing_bars: list[dict] = []
     unknown_overlap: list[dict] = []
     terminal_mismatches: list[dict] = []
+    terminal_nonprinting: list[dict] = []
     missing_instruments: list[dict] = []
     invalid_delist_dates: list[dict] = []
     proven_overlap = 0
@@ -726,13 +781,32 @@ def delisted_coverage_report(
         else:
             proven_overlap += 1
             if overlap_is_definite and span[1] != catalog_last:
-                terminal_mismatches.append(
-                    {
-                        "symbol": symbol,
-                        "catalog_last_traded": catalog_last.isoformat(),
-                        "observed_last_bar": span[1].isoformat(),
-                    }
-                )
+                formal_delist = instrument_dates.get(symbol)
+                # Baostock's formal delist date is the day after the catalogue
+                # terminal for two recent names whose final catalogue quote
+                # carried no positive-volume print. Both independent raw-bar
+                # sources omit that date too, so this is a terminal semantics
+                # difference (last quote vs last print), not a missing bar.
+                if (
+                    formal_delist == catalog_last + timedelta(days=1)
+                    and 0 < (catalog_last - span[1]).days <= 3
+                ):
+                    terminal_nonprinting.append(
+                        {
+                            "symbol": symbol,
+                            "catalog_last_traded": catalog_last.isoformat(),
+                            "observed_last_bar": span[1].isoformat(),
+                            "instrument_delist_date": formal_delist.isoformat(),
+                        }
+                    )
+                else:
+                    terminal_mismatches.append(
+                        {
+                            "symbol": symbol,
+                            "catalog_last_traded": catalog_last.isoformat(),
+                            "observed_last_bar": span[1].isoformat(),
+                        }
+                    )
 
         # A definite catalogue terminal proves overlap even when its bars are
         # absent, so the security master must still represent the delisting.
@@ -757,11 +831,17 @@ def delisted_coverage_report(
         symbol: date.fromisoformat(value)
         for symbol, value in _read_catalog(config)["delisted"].items()
     }
-    recent = load_live_missing(config)
     recent_quarantined = [
         {"symbol": symbol, "probe_last_traded": terminal.isoformat()}
-        for symbol, terminal in sorted(recent.items())
-        if terminal >= start and symbol not in formal_in_window
+        for symbol, terminal in sorted(recent_in_window.items())
+        # A live/missing symbol whose last probe is after the requested
+        # window is not evidence about that historical window.  Including it
+        # here made a 2020..2024 research gate fail on 2026 newly issued BJ
+        # codes, even though the catalogue had no in-window gap for them. A
+        # recent name is only a blocker when the current lake still lacks its
+        # security-master row or its in-window bars.
+        if symbol not in formal_in_window
+        and (symbol not in instrument_dates or symbol not in spans)
     ]
     formal_no_overlap: list[dict] = []
     formal_unresolved: list[dict] = []
@@ -835,6 +915,7 @@ def delisted_coverage_report(
             "missing_bars": len(missing_bars),
             "unknown_overlap": len(unknown_overlap),
             "terminal_mismatch": len(terminal_mismatches),
+            "terminal_nonprinting": len(terminal_nonprinting),
             "missing_instrument": len(missing_instruments),
             "invalid_delist_date": len(invalid_delist_dates),
         },
@@ -846,6 +927,7 @@ def delisted_coverage_report(
             "missing_bars": limited(missing_bars),
             "unknown_overlap": limited(unknown_overlap),
             "terminal_mismatch": limited(terminal_mismatches),
+            "terminal_nonprinting": limited(terminal_nonprinting),
             "missing_instrument": limited(missing_instruments),
             "invalid_delist_date": limited(invalid_delist_dates),
         },
@@ -1067,8 +1149,11 @@ def repair_delisted_instruments(
         cutoff = lake_last - timedelta(days=RETIRED_GAP_DAYS)
         from cnequity.query.parquet_scan import scan_parquet_root
 
+        bars = scan_parquet_root(
+            bars_root, partition_col="trade_date", hive=False, traded_only=True
+        )
         last_bars = (
-            scan_parquet_root(bars_root, partition_col="trade_date", hive=False)
+            bars
             .group_by("symbol")
             .agg(pl.col("trade_date").max().alias("last_bar"))
             .filter(pl.col("last_bar") < cutoff)
@@ -1078,7 +1163,34 @@ def repair_delisted_instruments(
         inst = load_curated_instruments(config)
         if inst is not None:
             marked = set(inst.filter(pl.col("delist_date").is_not_null())["symbol"].to_list())
-        retired_orphans = [s for s in last_bars["symbol"].to_list() if s not in marked]
+        candidates = [s for s in last_bars["symbol"].to_list() if s not in marked]
+
+        # A stock that is merely halted (bankruptcy reorganisation, a
+        # regulatory investigation — both real, sometimes year-plus patterns
+        # in this market) but still formally listed keeps getting a daily
+        # placeholder row from the vendor throughout the halt. That is a
+        # trading gap identical to a dead stock's under the traded-only
+        # filter above, so the gap alone cannot tell the two apart. A run of
+        # placeholder rows past the last trade is the tell for "still being
+        # tracked as listed"; a token trailing row or two is not — require a
+        # real run before trusting a candidate is genuinely retired.
+        retired_orphans = candidates
+        if candidates:
+            last_bar_by_symbol = last_bars.filter(pl.col("symbol").is_in(candidates)).select(
+                "symbol", "last_bar"
+            )
+            tail_counts = (
+                scan_parquet_root(bars_root, partition_col="trade_date", hive=False)
+                .filter(pl.col("symbol").is_in(candidates))
+                .join(last_bar_by_symbol.lazy(), on="symbol", how="inner")
+                .filter(pl.col("trade_date") > pl.col("last_bar"))
+                .group_by("symbol")
+                .agg(pl.len().alias("tail_rows"))
+                .filter(pl.col("tail_rows") >= _ORPHAN_ACTIVE_PLACEHOLDER_MIN_ROWS)
+                .collect()
+            )
+            still_tracked = set(tail_counts["symbol"].to_list())
+            retired_orphans = [s for s in candidates if s not in still_tracked]
 
     targets = sorted(set(catalog) | set(retired_orphans))
     # Only stocks/CDRs — ETF-prefix orphans are noise for the equity universe.
@@ -1142,9 +1254,11 @@ def backfill_delisted_bars(
     """Recover dedicated delisted history with explicit three-state evidence.
 
     Each target ends as recovered, proven expected-no-data, or unresolved. A
-    complete receipt is published only when every target has one of the first
-    two states. The legacy global ``delisted_ingested`` marker is not completion
-    authority because it was not window-scoped and marked empty fetches done.
+    target whose curated bars already reach the catalogue terminal is reused
+    without another provider request. A complete receipt is published only
+    when every target has one of the first two states. The legacy global
+    ``delisted_ingested`` marker is not completion authority because it was not
+    window-scoped and marked empty fetches done.
     """
     from cnequity.adapters.sina.bars import fetch_daily_bars_sina, symbol_exists
     from cnequity.steps.http_common import write_fetched
@@ -1174,6 +1288,35 @@ def backfill_delisted_bars(
     dedicated = {
         symbol for symbol, evidence in targets.items() if evidence["ownership"] == "dedicated_fetch"
     }
+    # The first recovery pass may follow a broad source backfill (for example
+    # Baostock) that already covers most catalogue terminals. Re-fetching those
+    # symbols from Sina wastes provider budget and can create competing staged
+    # versions. Curated positive-volume bars are sufficient evidence here when
+    # their observed terminal reaches the catalogue terminal; anything shorter
+    # remains on the dedicated fetch path.
+    existing_spans = _bar_spans(config, sorted(dedicated))
+    reused = 0
+    for symbol in sorted(dedicated):
+        terminal = targets[symbol].get("last_traded_date")
+        observed = existing_spans.get(symbol)
+        if terminal is None or observed is None:
+            continue
+        expected_terminal = date.fromisoformat(terminal)
+        # Require the existing span to start no later than the catalogue
+        # terminal as well. A reused security code can have only a newer
+        # listing on disk; its later bars must not be mistaken for history of
+        # the retired listing.
+        if observed[0] > expected_terminal or observed[1] < expected_terminal:
+            continue
+        recovered_spans.setdefault(
+            symbol,
+            {
+                "first_trade_date": observed[0].isoformat(),
+                "last_trade_date": observed[1].isoformat(),
+            },
+        )
+        expected_no_data.discard(symbol)
+        reused += 1
     # A pre-window terminal probe is terminal evidence too: retrying it on
     # every run defeats the scoped checkpoint and wastes a provider request.
     todo = sorted(dedicated - set(recovered_spans) - expected_no_data)
@@ -1268,8 +1411,20 @@ def backfill_delisted_bars(
                 _write_recovery_checkpoint(config, checkpoint)
                 continue
 
-            first = bars["trade_date"].min()
-            last = bars["trade_date"].max()
+            # A provider can return a final quote-day placeholder with zero
+            # volume. Keep that raw row in curated storage, but make the
+            # recovery span agree with the positive-volume coverage contract;
+            # otherwise receipt publication fails after compact even though
+            # the terminal is a known last-quote/last-print difference.
+            evidence = bars.filter(pl.col("volume") > 0) if "volume" in bars.columns else bars
+            if evidence.is_empty():
+                empty_unresolved.append(symbol)
+                unresolved.add(symbol)
+                checkpoint["unresolved_symbols"] = sorted(unresolved)
+                _write_recovery_checkpoint(config, checkpoint)
+                continue
+            first = evidence["trade_date"].min()
+            last = evidence["trade_date"].max()
             pending_frames.append(bars)
             pending_spans[symbol] = (first, last)
             events.append(
@@ -1327,6 +1482,8 @@ def backfill_delisted_bars(
         "checkpoint": str(checkpoint_path),
         "symbols": len(targets),
         "recovered": len(recovered_spans),
+        "reused_curated": reused,
+        "to_fetch": len(todo),
         "expected_no_data": len(expected_no_data),
         "ending_patterns": dict(Counter(e["ending_pattern"] for e in events)),
     }

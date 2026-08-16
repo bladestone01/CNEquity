@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from datetime import date
 
+import polars as pl
+
 from cnequity.adapters.baostock.delisted_bars import (
     _fetch_one,
     _is_stock,
     roster_on,
     to_lake_symbol,
 )
+from cnequity.config import Config
+from cnequity.steps.bars import _delisted_universe
 
 
 class _Rs:
@@ -95,6 +99,30 @@ def test_roster_filters_indices_out():
     bs = _Bs(["sh.000001", "sh.600519", "sz.399001", "sz.300104"])
     bs.logged_in = True
     assert roster_on(date(2018, 6, 29), bs=bs, login=False) == {"600519.SH", "300104.SZ"}
+
+
+def test_delisted_universe_does_not_count_zero_volume_placeholder(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.curated_root / "daily_bars" / "trade_date=2020-01-06"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["600001.SH"], "trade_date": [date(2020, 1, 6)], "volume": [0]}
+    ).write_parquet(part / "part-0.parquet")
+
+    class _FakeBs:
+        def logout(self):
+            return None
+
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session.import_baostock", lambda: _FakeBs()
+    )
+    monkeypatch.setattr("cnequity.adapters.baostock._session._login", lambda *_args: None)
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        lambda *_args, **_kwargs: {"600001.SH"},
+    )
+
+    assert _delisted_universe(cfg, date(2020, 1, 1), date(2020, 12, 31)) == ["600001.SH"]
 
 
 def test_fetch_skips_suspended_sessions_rather_than_writing_zeros():

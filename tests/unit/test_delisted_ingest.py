@@ -2,6 +2,7 @@
 
 import json
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 
@@ -86,6 +87,49 @@ def test_bars_are_staged_with_sina_provenance(tmp_path):
     assert result["rows_written"] == 2
     assert staged["symbol"].unique().to_list() == ["600070.SH"]
     assert staged["source"].unique().to_list() == ["sina"]
+
+
+def test_zero_volume_terminal_is_not_recorded_as_last_traded_date(tmp_path):
+    cfg = _cfg(tmp_path, {"600070.SH": "2025-04-10"})
+    bars = pl.concat(
+        [
+            _bars("600070.SH", date(2016, 3, 1), date(2025, 4, 10)),
+            _bars("600070.SH", date(2025, 4, 11), date(2025, 4, 11)).with_columns(
+                pl.lit(0).cast(pl.Int64).alias("volume")
+            ),
+        ],
+        how="diagonal_relaxed",
+    )
+
+    result = backfill_delisted_bars(cfg, "run-1", _START, fetch=lambda s, c: bars)
+
+    checkpoint = json.loads(Path(result["checkpoint"]).read_text(encoding="utf-8"))
+    assert checkpoint["recovered_spans"]["600070.SH"]["last_trade_date"] == "2025-04-10"
+
+
+def test_existing_curated_terminal_is_reused_without_provider_fetch(tmp_path):
+    cfg = _cfg(tmp_path, {"600070.SH": "2025-04-10", "600083.SH": "2025-01-16"})
+    existing = _bars("600070.SH", date(2016, 3, 1), date(2025, 4, 10))
+    for day in existing["trade_date"].unique().to_list():
+        part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        existing.filter(pl.col("trade_date") == day).write_parquet(part / "part.parquet")
+    anchor_day = date(2026, 8, 14)
+    anchor = cfg.curated_root / "daily_bars" / f"trade_date={anchor_day.isoformat()}"
+    anchor.mkdir(parents=True, exist_ok=True)
+    _bars("600519.SH", anchor_day, anchor_day).write_parquet(anchor / "anchor.parquet")
+    fetched: list[str] = []
+
+    def fetch(symbol, client):
+        fetched.append(symbol)
+        return _bars(symbol, date(2016, 3, 1), date(2025, 1, 16))
+
+    result = backfill_delisted_bars(cfg, "run-1", _START, fetch=fetch)
+
+    assert fetched == ["600083.SH"]
+    assert result["reused_curated"] == 1
+    assert result["to_fetch"] == 1
+    assert result["recovered"] == 2
 
 
 def test_instruments_row_dates_the_delisting_from_the_last_bar(tmp_path):

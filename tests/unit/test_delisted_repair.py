@@ -135,6 +135,77 @@ def test_repair_picks_up_orphan_bars_not_in_the_catalog(tmp_path):
     assert row["list_date"].item() == date(2016, 1, 4)
 
 
+def test_repair_ignores_zero_volume_tail_when_finding_orphan_bars(tmp_path):
+    cfg = _cfg(tmp_path, {})
+    _write_bars(cfg, "000018.SZ", date(2016, 1, 4), date(2020, 1, 7))
+    tail = cfg.curated_root / "daily_bars" / "trade_date=2026-07-24"
+    tail.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["000018.SZ"],
+            "trade_date": [date(2026, 7, 24)],
+            "open": [1.0],
+            "high": [1.0],
+            "low": [1.0],
+            "close": [1.0],
+            "volume": [0],
+            "amount": [None],
+        },
+        schema={c: DAILY_BARS_SCHEMA[c] for c in _BAR_COLS},
+    ).write_parquet(tail / "part-placeholder.parquet")
+
+    result = repair_delisted_instruments(cfg, "run-1")
+
+    staged = _staged(cfg, "instruments", "run-1")
+    row = staged.filter(pl.col("symbol") == "000018.SZ")
+    assert result["from_orphan_bars"] == 1
+    assert row["delist_date"].item() == date(2020, 1, 7)
+
+
+def _write_placeholder_run(cfg: Config, symbol: str, dates: list[date]) -> None:
+    for d in dates:
+        part = cfg.curated_root / "daily_bars" / f"trade_date={d.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "symbol": [symbol],
+                "trade_date": [d],
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [1.0],
+                "volume": [0],
+                "amount": [None],
+            },
+            schema={c: DAILY_BARS_SCHEMA[c] for c in _BAR_COLS},
+        ).write_parquet(part / f"part-placeholder-{d.isoformat()}.parquet")
+
+
+def test_repair_ignores_suspended_stock_with_a_dense_placeholder_run(tmp_path):
+    """A merely-halted (still listed) stock must not be inferred as retired.
+
+    Unlike the single trailing placeholder row above (a source's habit of
+    tacking a dummy row onto a series after it truly ends), a long,
+    near-continuous run of placeholder rows past the last real trade is
+    evidence the vendor is still actively tracking the symbol as listed -
+    e.g. a real, sometimes year-plus bankruptcy-reorganisation halt - and
+    must not be inferred as a delisting from the trading gap alone.
+    """
+    from datetime import timedelta
+
+    cfg = _cfg(tmp_path, {})
+    _write_bars(cfg, "000099.SZ", date(2016, 1, 4), date(2019, 6, 10))
+    _write_placeholder_run(
+        cfg, "000099.SZ", [date(2026, 6, 1) + timedelta(days=i) for i in range(25)]
+    )
+
+    result = repair_delisted_instruments(cfg, "run-1")
+
+    staged = _staged(cfg, "instruments", "run-1")
+    assert result["from_orphan_bars"] == 0
+    assert staged.is_empty() or "000099.SZ" not in staged["symbol"].to_list()
+
+
 def test_instruments_rows_fills_null_list_date_from_recovery_spans(tmp_path):
     """A prior repair with no bars must not shadow a later backfill's list_date."""
     from cnequity.steps.delisted import _instruments_rows

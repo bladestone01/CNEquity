@@ -86,6 +86,20 @@ def test_coverage_separates_definite_unknown_terminal_and_identity_gaps(tmp_path
     assert report["counts"]["invalid_delist_date"] == 1
 
 
+def test_final_nonprinting_quote_is_not_a_missing_terminal_bar(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, {"600003.SH": "2021-06-07"})
+    _write_bars(cfg, "600003.SH", date(2019, 2, 1), date(2021, 6, 4))
+    _write_bars(cfg, "600519.SH", date(2026, 7, 24))
+    _write_instruments(cfg, [("600003.SH", date(2021, 6, 8))])
+    monkeypatch.setattr("cnequity.steps.delisted.pending_codes", lambda cfg: [])
+
+    report = delisted_coverage_report(cfg, date(2019, 1, 1), date(2024, 12, 31))
+
+    assert report["verified"] is True
+    assert report["counts"]["terminal_mismatch"] == 0
+    assert report["counts"]["terminal_nonprinting"] == 1
+
+
 def test_pending_discovery_blocks_an_otherwise_complete_report(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, {"600001.SH": "2020-01-03"})
     _write_bars(cfg, "600001.SH", date(2019, 1, 2), date(2020, 1, 3))
@@ -99,3 +113,36 @@ def test_pending_discovery_blocks_an_otherwise_complete_report(tmp_path, monkeyp
     assert report["discovery_complete"] is False
     assert report["verified"] is False
     assert report["samples"]["pending_probe"] == ["600999.SH"]
+
+
+def test_recent_live_missing_after_window_does_not_block_history(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, {})
+    _write_bars(cfg, "600519.SH", date(2026, 7, 24))
+    monkeypatch.setattr("cnequity.steps.delisted.pending_codes", lambda cfg: [])
+    monkeypatch.setattr(
+        "cnequity.steps.delisted.load_live_missing",
+        lambda cfg: {"920000.BJ": date(2026, 7, 21)},
+    )
+
+    report = delisted_coverage_report(cfg, date(2020, 1, 1), date(2024, 12, 31))
+
+    assert report["verified"] is True
+    assert report["counts"]["recent_quarantined"] == 0
+
+
+def test_recent_live_name_with_current_instrument_and_bars_is_not_quarantined(
+    tmp_path, monkeypatch
+):
+    cfg = _cfg(tmp_path, {})
+    _write_bars(cfg, "920000.BJ", date(2026, 7, 21), date(2026, 8, 14))
+    _write_instruments(cfg, [("920000.BJ", None)])
+    monkeypatch.setattr("cnequity.steps.delisted.pending_codes", lambda cfg: [])
+    monkeypatch.setattr(
+        "cnequity.steps.delisted.load_live_missing",
+        lambda cfg: {"920000.BJ": date(2026, 7, 21)},
+    )
+
+    report = delisted_coverage_report(cfg, date(2026, 7, 1), date(2026, 8, 14))
+
+    assert report["verified"] is True
+    assert report["counts"]["recent_quarantined"] == 0
