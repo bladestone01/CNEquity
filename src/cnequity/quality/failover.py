@@ -16,7 +16,7 @@ from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 from cnequity.adapters.eastmoney.trading_status import _fetch_suspended_symbols
 from cnequity.config import Config, FailoverDatasetSpec
 from cnequity.domain.schemas import data_version_for, with_provenance
-from cnequity.domain.symbols import parse_symbol
+from cnequity.domain.symbols import is_all_a_symbol, is_cdr_symbol, parse_symbol
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.storage.source_snapshots import SnapshotStore
 
@@ -412,9 +412,34 @@ def fetch_trading_status_backup(
         }
 
     missing = [s for s in sh_sz if s not in set(bs_df.get_column("symbol").to_list())]
+    # baostock's query_all_stock snapshot only serves SH/SZ A-shares. The
+    # requested universe also carries funds / B-shares / CDRs (the primary
+    # EastMoney path labels them normal too), so split the missing set: only
+    # A-share gaps are eligible for the wash-guard and the critical threshold;
+    # everything else is a benign out-of-scope default.
+    a_share_missing, scope_defaults = [], []
+    for sym in missing:
+        info = parse_symbol(sym)
+        if is_all_a_symbol(info.code, info.exchange) and not is_cdr_symbol(info.code, info.exchange):
+            a_share_missing.append(sym)
+        else:
+            scope_defaults.append(sym)
+
     previous = _previous_statuses(config, trade_date)
     threshold = max(50, len(symbols) // 100)
-    fill_rows, fill_failures, n_filled = _fill_missing(missing, previous, trade_date, threshold)
+    fill_rows, fill_failures, n_filled = _fill_missing(
+        a_share_missing, previous, trade_date, threshold
+    )
+    n_scope_defaults = len(scope_defaults)
+    fill_rows.extend(
+        {
+            "symbol": sym,
+            "trade_date": trade_date,
+            "is_trading": True,
+            "status": "normal",
+        }
+        for sym in scope_defaults
+    )
     if fill_failures:
         return None, {
             "failover_used": False,
@@ -446,6 +471,7 @@ def fetch_trading_status_backup(
         "source": spec.backup,
         "freshness": "fresh",
         "n_filled": n_filled,
+        "n_scope_defaults": n_scope_defaults,
         "n_bj_defaulted": n_bj_defaulted,
         "n_fill_failed": 0,
     }

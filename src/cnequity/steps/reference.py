@@ -313,6 +313,7 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
                 "detail": (
                     "primary (eastmoney) failed; baostock backup used "
                     f"(n_filled={degraded.get('n_filled', 0)}, "
+                    f"n_scope_defaults={degraded.get('n_scope_defaults', 0)}, "
                     f"n_bj_defaulted={degraded.get('n_bj_defaulted', 0)})"
                 ),
             }

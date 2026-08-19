@@ -226,3 +226,23 @@ def test_step_primary_success_uses_eastmoney_source(monkeypatch, config):
     assert "status" not in result or result["status"] == "success"
     assert not backup_calls
     assert set(captured["df"].get_column("source").to_list()) == {"eastmoney"}
+
+
+def test_backup_fills_scope_defaults_without_threshold(monkeypatch):
+    sh = ["510300.SH", "600519.SH"]  # ETF missing from the A-share snapshot
+    bs_df = _ts_frame(["600519.SH"], D)
+    monkeypatch.setattr(failover, "failover_spec", lambda config, dataset: _spec())
+    monkeypatch.setattr(failover, "_baostock_has_day", lambda config, trade_date: True)
+    monkeypatch.setattr(failover, "fetch_trading_status_baostock", lambda symbols, day, config: bs_df)
+    monkeypatch.setattr(failover, "_previous_statuses", lambda config, trade_date: {})
+    monkeypatch.setattr(failover, "_bj_rows", lambda config, bj, day: ([], 0))
+
+    class _Cfg:
+        sources = {"baostock": True}
+
+    frame, meta = failover.fetch_trading_status_backup(_Cfg(), sh, D)
+    assert frame is not None
+    assert meta["n_filled"] == 0
+    assert meta["n_scope_defaults"] == 1
+    rows = {r["symbol"]: r for r in frame.iter_rows(named=True)}
+    assert rows["510300.SH"]["status"] == "normal"
