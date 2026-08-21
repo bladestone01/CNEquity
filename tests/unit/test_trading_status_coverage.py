@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 import polars as pl
@@ -7,6 +8,7 @@ from cnequity.config import Config
 from cnequity.quality.audit import run_audit
 from cnequity.quality.st_coverage import (
     build_st_scope,
+    compose_st_coverage_receipt,
     current_st_universe,
     publish_st_coverage_receipt,
     st_evidence_coverage_report,
@@ -323,6 +325,84 @@ def test_st_receipt_counts_baostock_before_cross_source_dedupe(tmp_path):
     }
 
     assert publish_st_coverage_receipt(cfg, checkpoint).exists()
+
+
+def test_composes_deep_history_receipt_with_overlapping_tail(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH", "600520.SH"]}).write_parquet(
+        instruments / "part-merged.parquet"
+    )
+    bars = cfg.curated_root / "daily_bars"
+    for symbol, day in (("600519.SH", date(2001, 1, 2)), ("600520.SH", date(2020, 1, 2))):
+        path = bars / f"trade_date={day.isoformat()}"
+        path.mkdir(parents=True)
+        pl.DataFrame(
+            {
+                "symbol": [symbol],
+                "trade_date": [day],
+                "volume": [100],
+                "amount": [1000.0],
+            }
+        ).write_parquet(path / f"{symbol}.parquet")
+
+    status = cfg.curated_root / "trading_status"
+    for symbol, day in (
+        ("600519.SH", date(2001, 1, 2)),
+        ("600519.SH", date(2026, 8, 21)),
+        ("600520.SH", date(2026, 8, 21)),
+    ):
+        path = status / f"trade_date={day.isoformat()}"
+        path.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "symbol": [symbol],
+                "trade_date": [day],
+                "is_trading": [True],
+                "status": ["normal"],
+                "source": ["baostock"],
+            }
+        ).write_parquet(path / f"{symbol}.parquet")
+
+    base_scope = build_st_scope(
+        ["600519.SH"], date(2001, 1, 1), date(2026, 8, 14), universe="all_a_sh_sz"
+    )
+    base_checkpoint = {
+        "schema_version": 1,
+        "claim": "historical_st_evidence",
+        "scope": base_scope,
+        "status": "complete",
+        "completed_symbols": ["600519.SH"],
+        "evidence_rows_by_symbol": {"600519.SH": 1},
+        "unresolved_symbols": [],
+    }
+    write_st_checkpoint(cfg, base_checkpoint)
+    publish_st_coverage_receipt(cfg, base_checkpoint)
+
+    extension_scope = build_st_scope(
+        ["600519.SH", "600520.SH"], date(2016, 1, 1), date(2026, 8, 21), universe="all_a"
+    )
+    extension_checkpoint = {
+        "schema_version": 1,
+        "claim": "historical_st_evidence",
+        "scope": extension_scope,
+        "status": "complete",
+        "completed_symbols": ["600519.SH", "600520.SH"],
+        "evidence_rows_by_symbol": {"600519.SH": 1, "600520.SH": 1},
+        "unresolved_symbols": [],
+    }
+    write_st_checkpoint(cfg, extension_checkpoint)
+    extension_path = publish_st_coverage_receipt(cfg, extension_checkpoint)
+    extension_receipt = json.loads(extension_path.read_text(encoding="utf-8"))
+
+    composed = compose_st_coverage_receipt(cfg, extension_receipt)
+
+    assert composed is not None
+    report = st_evidence_coverage_report(cfg, date(2001, 1, 2), date(2026, 8, 21))
+    assert report["verified"] is True
+    assert report["coverage_start"] == "2001-01-01"
+    assert report["coverage_end"] == "2026-08-21"
 
 
 def test_audit_warns_when_st_labels_lag_bars(tmp_path):

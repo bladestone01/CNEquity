@@ -40,7 +40,7 @@ def _daily_bar_missing_sessions(
         end=end,
         traded_only=True,
     )
-    actual = bars.select("trade_date").unique().collect()
+    actual = bars.select("trade_date").unique().collect(engine="streaming")
     present = set(actual["trade_date"].drop_nulls().to_list())
     return [session for session in expected if session not in present]
 

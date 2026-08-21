@@ -182,7 +182,11 @@ def _covered_days(config: Config, spec: DatasetSpec) -> list[date]:
     if spec.partition_col not in lf.collect_schema().names():
         return []
     return sorted(
-        lf.select(spec.partition_col).drop_nulls().unique().collect()[spec.partition_col].to_list()
+        lf.select(spec.partition_col)
+        .drop_nulls()
+        .unique()
+        .collect(engine="streaming")[spec.partition_col]
+        .to_list()
     )
 
 
@@ -223,7 +227,7 @@ def _complete_derived_days(config: Config, spec: DatasetSpec) -> list[date]:
                 & (pl.col("valid_row_count") == 7)
                 & (pl.col("row_count") == 7)
             )
-            .collect()["trade_date"]
+            .collect(engine="streaming")["trade_date"]
             .to_list()
         )
     required = {
@@ -247,10 +251,10 @@ def _complete_derived_days(config: Config, spec: DatasetSpec) -> list[date]:
         .select("trade_date")
         .unique()
     )
-    all_days = lf.select("trade_date").drop_nulls().unique().collect()
+    all_days = lf.select("trade_date").drop_nulls().unique().collect(engine="streaming")
     if all_days.is_empty():
         return []
-    incomplete = set(groups.collect()["trade_date"].to_list())
+    incomplete = set(groups.collect(engine="streaming")["trade_date"].to_list())
     return sorted(day for day in all_days["trade_date"].to_list() if day not in incomplete)
 
 

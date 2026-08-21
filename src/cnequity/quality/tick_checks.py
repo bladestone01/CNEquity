@@ -99,7 +99,7 @@ def seq_gap_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:
             | (pl.col("hi") != pl.col("rows") - 1)
             | (pl.col("distinct") != pl.col("rows"))
         )
-        .collect()
+        .collect(engine="streaming")
     )
     if per_day.is_empty():
         return []
@@ -132,10 +132,10 @@ def off_session_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]
             & (pl.col("trade_time").dt.time() <= pl.lit(hi))
         )
     bad = lf.filter(~legal)
-    total = int(bad.select(pl.len()).collect().item())
+    total = int(bad.select(pl.len()).collect(engine="streaming").item())
     if not total:
         return []
-    sample = bad.select("symbol", "trade_time").head(3).collect()
+    sample = bad.select("symbol", "trade_time").head(3).collect(engine="streaming")
     examples = ", ".join(f"{r['symbol']}@{r['trade_time']}" for r in sample.iter_rows(named=True))
     return [
         {
@@ -155,10 +155,12 @@ def off_session_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]
 def trade_date_mismatch_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:
     """Rows whose partition date disagrees with their timestamp."""
     mismatched = lf.filter(pl.col("trade_time").dt.date() != pl.col("trade_date"))
-    total = int(mismatched.select(pl.len()).collect().item())
+    total = int(mismatched.select(pl.len()).collect(engine="streaming").item())
     if not total:
         return []
-    sample = mismatched.select("symbol", "trade_date", "trade_time").head(3).collect()
+    sample = mismatched.select("symbol", "trade_date", "trade_time").head(3).collect(
+        engine="streaming"
+    )
     examples = ", ".join(
         f"{r['symbol']} trade_date={r['trade_date']} trade_time={r['trade_time']}"
         for r in sample.iter_rows(named=True)
@@ -188,7 +190,7 @@ def truncation_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:
     opens = (
         lf.group_by("symbol", "trade_date")
         .agg(pl.col("trade_time").min().alias("first"), pl.len().alias("rows"))
-        .collect()
+        .collect(engine="streaming")
     )
     if opens.is_empty():
         return []
@@ -221,7 +223,7 @@ def truncation_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:
 
 def direction_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:
     """Unrecognised direction codes, or a buy/sell split that cannot be a market."""
-    counts = lf.group_by("direction").agg(pl.len().alias("rows")).collect()
+    counts = lf.group_by("direction").agg(pl.len().alias("rows")).collect(engine="streaming")
     if counts.is_empty():
         return []
     tally = dict(zip(counts["direction"], counts["rows"], strict=True))
@@ -310,7 +312,7 @@ def daily_reconciliation_findings(
             .then(pl.col("tick_amount") / pl.col("daily_amount"))
             .alias("amount_ratio"),
         )
-        .collect()
+        .collect(engine="streaming")
     )
 
     if joined.height < RECONCILE_MIN_SYMBOL_DAYS:
@@ -379,9 +381,6 @@ def trade_ticks_findings(
     required = {"symbol", "trade_date", "tick_seq", "trade_time", "price", "volume", "direction"}
     if not required.issubset(lf.collect_schema().names()):
         return []
-    if lf.select(pl.len()).collect().item() == 0:
-        return []
-
     findings: list[dict] = []
     findings.extend(seq_gap_findings(lf, start, trade_date))
     findings.extend(off_session_findings(lf, start, trade_date))

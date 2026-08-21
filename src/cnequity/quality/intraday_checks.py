@@ -80,10 +80,10 @@ def off_session_findings(lf: pl.LazyFrame, dataset: str, start: date, end: date)
             (pl.col("bar_time").dt.time() >= pl.lit(lo))
             & (pl.col("bar_time").dt.time() <= pl.lit(hi))
         )
-    bad = lf.filter(~legal).select("symbol", "bar_time").head(5).collect()
-    if bad.is_empty():
+    bad_rows = int(lf.filter(~legal).select(pl.len()).collect(engine="streaming").item())
+    if not bad_rows:
         return []
-    total = int(lf.filter(~legal).select(pl.len()).collect().item())
+    bad = lf.filter(~legal).select("symbol", "bar_time").head(5).collect(engine="streaming")
     examples = ", ".join(f"{r['symbol']}@{r['bar_time']}" for r in bad.iter_rows(named=True))
     return [
         {
@@ -91,10 +91,10 @@ def off_session_findings(lf: pl.LazyFrame, dataset: str, start: date, end: date)
             "severity": "error",
             "check": "minute_bars_off_session",
             "message": (
-                f"{total} bar(s) in {start}..{end} fall outside continuous trading "
+            f"{bad_rows} bar(s) in {start}..{end} fall outside continuous trading "
                 f"(09:31-11:30, 13:01-15:00); e.g. {examples}"
             ),
-            "rows": total,
+            "rows": bad_rows,
         }
     ]
 
@@ -104,10 +104,12 @@ def trade_date_mismatch_findings(
 ) -> list[dict]:
     """Rows whose partition date disagrees with their timestamp."""
     mismatched = lf.filter(pl.col("bar_time").dt.date() != pl.col("trade_date"))
-    total = int(mismatched.select(pl.len()).collect().item())
+    total = int(mismatched.select(pl.len()).collect(engine="streaming").item())
     if not total:
         return []
-    sample = mismatched.select("symbol", "trade_date", "bar_time").head(3).collect()
+    sample = mismatched.select("symbol", "trade_date", "bar_time").head(3).collect(
+        engine="streaming"
+    )
     examples = ", ".join(
         f"{r['symbol']} trade_date={r['trade_date']} bar_time={r['bar_time']}"
         for r in sample.iter_rows(named=True)
@@ -129,7 +131,11 @@ def trade_date_mismatch_findings(
 
 def session_coverage_findings(lf: pl.LazyFrame, dataset: str, start: date, end: date) -> list[dict]:
     """Symbol-days holding materially fewer bars than a full session."""
-    counts = lf.group_by("symbol", "trade_date", "frequency").agg(pl.len().alias("bars")).collect()
+    counts = (
+        lf.group_by("symbol", "trade_date", "frequency")
+        .agg(pl.len().alias("bars"))
+        .collect(engine="streaming")
+    )
     if counts.is_empty():
         return []
 
@@ -220,7 +226,7 @@ def daily_reconciliation_findings(
             .then(pl.col("minute_amount") / pl.col("daily_amount"))
             .alias("amount_ratio"),
         )
-        .collect()
+        .collect(engine="streaming")
     )
 
     if joined.height < RECONCILE_MIN_SYMBOL_DAYS:
@@ -287,9 +293,6 @@ def dataset_findings(
     cols = lf.collect_schema().names()
     if not {"symbol", "trade_date", "bar_time", "frequency", "volume"}.issubset(cols):
         return []
-    if lf.select(pl.len()).collect().item() == 0:
-        return []
-
     findings: list[dict] = []
     findings.extend(off_session_findings(lf, dataset, start, trade_date))
     findings.extend(trade_date_mismatch_findings(lf, dataset, start, trade_date))

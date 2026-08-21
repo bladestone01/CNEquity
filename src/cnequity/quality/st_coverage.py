@@ -23,7 +23,11 @@ import polars as pl
 from cnequity.config import Config
 from cnequity.domain.symbols import is_all_a_symbol, is_cdr_symbol, parse_symbol
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
-from cnequity.query.parquet_scan import collect_parquet_root, scan_parquet_files
+from cnequity.query.parquet_scan import (
+    collect_parquet_root,
+    scan_parquet_files,
+    scan_parquet_root,
+)
 
 ST_EVIDENCE_VERSION = 2
 ST_COVERAGE_CLAIM = "historical_st_evidence"
@@ -103,27 +107,26 @@ def current_st_universe(
         ):
             symbols.append(str(raw))
     bars_root = config.curated_root / "daily_bars"
-    bar_files = list(bars_root.rglob("*.parquet")) if bars_root.exists() else []
-    if bar_files:
-        bar_scans: list[pl.LazyFrame] = []
-        for path in bar_files:
-            try:
-                bar_scan = scan_parquet_files([path])
-                # Suspended symbols may have carried-forward OHLC rows with no
-                # actual print. Keep old/minimal files without volume readable.
-                if "volume" in bar_scan.collect_schema().names():
-                    bar_scan = bar_scan.filter(pl.col("volume") > 0)
-                if start is not None:
-                    bar_scan = bar_scan.filter(pl.col("trade_date") >= start)
-                if end is not None:
-                    bar_scan = bar_scan.filter(pl.col("trade_date") <= end)
-                bar_scans.append(bar_scan)
-            except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
-                logger.warning("ST coverage: daily_bars file is not readable: %s: %s", path, exc)
-                return []
-        bar_scan = pl.concat(bar_scans, how="diagonal_relaxed")
+    if bars_root.exists() and any(bars_root.rglob("*.parquet")):
         try:
-            bars = set(bar_scan.select("symbol").unique().collect()["symbol"].to_list())
+            # Let the partition-aware scanner prune the requested bar window
+            # and build one schema-aware lazy plan. The previous per-file
+            # concat constructed thousands of independent scans for a
+            # multi-decade daily lake before collecting only unique symbols.
+            bar_scan = scan_parquet_root(
+                bars_root,
+                partition_col="trade_date",
+                start=start,
+                end=end,
+                traded_only=True,
+            )
+            bars = set(
+                bar_scan.select("symbol")
+                .unique()
+                .collect(engine="streaming")
+                .get_column("symbol")
+                .to_list()
+            )
         except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
             logger.warning("ST coverage: daily_bars scan is not readable: %s", exc)
             return []
@@ -308,7 +311,7 @@ def _st_row_counts(
     # same-PK EastMoney snapshot must not erase the Baostock row from this
     # source-specific coverage claim before canonicalization.
     frame = dedupe_lazy_by_primary_key(frame, "trading_status")
-    counts = frame.group_by("symbol").len().collect()
+    counts = frame.group_by("symbol").len().collect(engine="streaming")
     return {row["symbol"]: int(row["len"]) for row in counts.iter_rows(named=True)}
 
 
@@ -399,6 +402,18 @@ def publish_st_receipts_for_compacted_run(config: Config, run_id: str) -> list[P
         if checkpoint.get("completion_run_id") != run_id:
             continue
         published.append(publish_st_coverage_receipt(config, checkpoint))
+    # A newer scoped sweep may overlap an older, wider receipt.  Compose them
+    # only after both source facts are in curated storage so a short tail sweep
+    # can safely extend a deep-history receipt without re-querying every name
+    # from the beginning of time.
+    for path in list(published):
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        composed = compose_st_coverage_receipt(config, receipt)
+        if composed is not None and composed not in published:
+            published.append(composed)
     return published
 
 
@@ -451,6 +466,145 @@ def _valid_receipt_scope(receipt: dict[str, Any]) -> tuple[dict[str, Any], date,
     if scope_start > scope_end:
         return None
     return scope, scope_start, scope_end
+
+
+def _first_traded_dates(config: Config, symbols: set[str], start: date, end: date) -> dict[str, date]:
+    """Return first persisted traded bar for each symbol in a set."""
+    if not symbols:
+        return {}
+    root = config.curated_root / "daily_bars"
+    if not root.exists():
+        return {}
+    try:
+        frame = (
+            scan_parquet_root(
+                root,
+                partition_col="trade_date",
+                start=start,
+                end=end,
+                traded_only=True,
+            )
+            .filter(pl.col("symbol").is_in(sorted(symbols)))
+            .select("symbol", "trade_date")
+            .group_by("symbol")
+            .agg(pl.col("trade_date").min().alias("first_trade_date"))
+            .collect(engine="streaming")
+        )
+    except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+        logger.warning("ST coverage: cannot inspect symbol inception bars: %s", exc)
+        return {}
+    return {
+        row["symbol"]: row["first_trade_date"]
+        for row in frame.iter_rows(named=True)
+        if row["first_trade_date"] is not None
+    }
+
+
+def compose_st_coverage_receipt(
+    config: Config,
+    extension_receipt: dict[str, Any],
+) -> Path | None:
+    """Compose an overlapping deep-history receipt with a newer tail receipt.
+
+    The extension must cover every symbol in the base receipt and overlap its
+    end date. Symbols added since the base receipt are accepted only when
+    their first persisted traded bar is on or after the extension start; this
+    proves that the shorter extension window does not omit a pre-listing
+    interval. The base receipt's row total is rechecked before composition.
+    """
+    parsed_extension = _valid_receipt_scope(extension_receipt)
+    if parsed_extension is None:
+        return None
+    extension_scope, extension_start, extension_end = parsed_extension
+    if extension_scope.get("source") != "baostock":
+        return None
+    extension_symbols = set(extension_receipt["completed_symbols"])
+
+    candidates: list[tuple[date, date, dict[str, Any], dict[str, Any]]] = []
+    for candidate in _receipts(config):
+        parsed_base = _valid_receipt_scope(candidate)
+        if parsed_base is None:
+            continue
+        base_scope, base_start, base_end = parsed_base
+        if base_scope.get("scope_id") == extension_scope.get("scope_id"):
+            continue
+        if base_scope.get("source") != "baostock":
+            continue
+        base_symbols = set(candidate["completed_symbols"])
+        if not base_symbols <= extension_symbols:
+            continue
+        # The two receipts must overlap; otherwise a calendar interval would
+        # be left unproven between the deep receipt and the tail sweep.
+        if base_start >= extension_start or base_end < extension_start:
+            continue
+        candidates.append((base_start, base_end, candidate, base_scope))
+    if not candidates:
+        return None
+
+    _, _, base_receipt, base_scope = min(candidates, key=lambda item: (item[0], -item[1].toordinal()))
+    base_symbols = set(base_receipt["completed_symbols"])
+
+    # The old receipt schema predates per-symbol counts. Its aggregate count
+    # is still a useful tamper check and is sufficient because the receipt is
+    # immutable evidence for the zero-row symbols as well.
+    base_counts = _st_row_counts(
+        config,
+        base_scope,
+        base_symbols,
+    )
+    if sum(base_counts.values()) != int(base_receipt.get("evidence_rows", -1)):
+        logger.warning(
+            "ST coverage: refusing receipt composition; base row total changed "
+            "(%d != %s)",
+            sum(base_counts.values()),
+            base_receipt.get("evidence_rows"),
+        )
+        return None
+
+    added_symbols = extension_symbols - base_symbols
+    first_dates = _first_traded_dates(
+        config,
+        added_symbols,
+        base_start,
+        extension_end,
+    )
+    if any(
+        first_dates.get(symbol) is None or first_dates[symbol] < extension_start
+        for symbol in added_symbols
+    ):
+        logger.info(
+            "ST coverage: cannot compose %s; added symbols lack post-extension inception evidence",
+            extension_scope.get("scope_id"),
+        )
+        return None
+
+    merged_scope = build_st_scope(
+        sorted(extension_symbols),
+        base_start,
+        extension_end,
+        universe=str(extension_scope.get("universe", "all_a")),
+    )
+    merged_counts = _st_row_counts(config, merged_scope, extension_symbols)
+    receipt = {
+        "schema_version": 1,
+        "claim": ST_COVERAGE_CLAIM,
+        "status": "complete",
+        "scope": {key: value for key, value in merged_scope.items() if key != "expected_symbols"},
+        "completed_symbols": sorted(extension_symbols),
+        "completed_symbols_count": len(extension_symbols),
+        "completed_symbols_sha256": symbol_scope_hash(sorted(extension_symbols)),
+        "evidence_rows": sum(merged_counts.values()),
+        "composition": {
+            "type": "overlapping_receipts",
+            "base_scope_id": base_scope["scope_id"],
+            "extension_scope_id": extension_scope["scope_id"],
+            "added_symbols_since_base": sorted(added_symbols),
+        },
+        "published_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path = _receipt_path(config, str(merged_scope["scope_id"]))
+    _atomic_json(path, receipt)
+    return path
 
 
 def st_evidence_coverage_report(

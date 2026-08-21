@@ -15,6 +15,7 @@ from cnequity.domain.datasets import PARTITION_COLS, curated_dataset_names
 from cnequity.domain.market_time import is_session_final
 from cnequity.quality.authority_checks import run_authority_checks
 from cnequity.quality.cross_checks import (
+    ADJ_RECON_LOOKBACK_DAYS,
     adj_factor_coverage_findings,
     adj_factor_reconciliation_findings,
     daily_bars_calendar_findings,
@@ -70,7 +71,7 @@ def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict
         )
         .select("trade_date")
         .unique()
-        .collect()
+        .collect(engine="streaming")
     )
     trading_days = set(cal["trade_date"].to_list())
     if not trading_days:
@@ -80,7 +81,7 @@ def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict
         scan_parquet_root(ib_root, partition_col="trade_date", end=trade_date)
         .select("symbol", "trade_date")
         .unique()
-        .collect()
+        .collect(engine="streaming")
     )
     if ib.is_empty():
         return findings
@@ -324,7 +325,13 @@ def _collect_lake_findings(
         daily_bars_close_crosscheck_findings(config, _last_trading_day(config, trade_date))
     )
     findings.extend(valuation_bars_coverage_findings(config, trade_date))
-    findings.extend(adj_factor_reconciliation_findings(config, trade_date))
+    findings.extend(
+        adj_factor_reconciliation_findings(
+            config,
+            trade_date,
+            lookback_days=None if full else ADJ_RECON_LOOKBACK_DAYS,
+        )
+    )
     findings.extend(adj_factor_coverage_findings(config, trade_date))
     findings.extend(universe_survivorship_findings(config, trade_date))
     # Both sides already in curated — costs no requests (issue #10).

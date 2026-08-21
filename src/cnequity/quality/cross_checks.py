@@ -14,7 +14,7 @@ Single-dataset integrity is in ``dataset_checks``. Here:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 
@@ -51,6 +51,7 @@ MISSING_EVENT_MIN_DIVERGENCE = 0.11
 _STRUCTURAL_ADJUSTMENT_RE = "缩股|减资|合股|并股|拆股"
 
 _MAX_RECON_FINDINGS = 50
+ADJ_RECON_LOOKBACK_DAYS = 30
 
 # --- adjustment-factor coverage ---------------------------------------------
 # adj_factors comes from Sina, daily_bars from TDX, and the two do not cover the
@@ -104,7 +105,7 @@ def _trading_days(config: Config, trade_date: date) -> set[date]:
         )
         .select("trade_date")
         .unique()
-        .collect()
+        .collect(engine="streaming")
     )
     return set(cal["trade_date"].to_list())
 
@@ -120,11 +121,27 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
         return findings
 
     bars = scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
-    bars_dates = set(bars.select("trade_date").unique().collect()["trade_date"].to_list())
-    if not bars_dates:
+    # Aggregate both calendar signals in one streaming pass. The old code
+    # collected the same historical daily_bars scan twice (all rows, then
+    # traded rows), which made a full health run needlessly amplify its peak
+    # memory on a multi-decade lake.
+    if "volume" in bars.collect_schema().names():
+        traded_rows = (pl.col("volume") > 0) | pl.col("volume").is_null()
+    else:
+        traded_rows = pl.lit(True)
+    date_stats = (
+        bars.group_by("trade_date")
+        .agg(
+            pl.len().alias("_rows"),
+            traded_rows.sum().alias("_traded_rows"),
+        )
+        .collect(engine="streaming")
+    )
+    if date_stats.is_empty():
         return findings
+    bars_dates = set(date_stats["trade_date"].to_list())
     traded_dates = set(
-        _traded_bars(bars).select("trade_date").unique().collect()["trade_date"].to_list()
+        date_stats.filter(pl.col("_traded_rows") > 0)["trade_date"].to_list()
     )
 
     # Bars on a closed calendar day.
@@ -198,7 +215,7 @@ def trading_calendar_horizon_findings(config: Config, trade_date: date) -> list[
             & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
         )
         .select(pl.col("trade_date").max().alias("last"))
-        .collect()
+        .collect(engine="streaming")
     )
     if written.is_empty() or written["last"][0] is None:
         return []
@@ -325,6 +342,28 @@ def last_complete_em_valuation_tip(
     return None
 
 
+def _unique_symbols_and_dates(lf: pl.LazyFrame) -> tuple[set[str], set[date]]:
+    """Collect the two small coverage dimensions in one streaming scan."""
+    columns = set(lf.collect_schema().names())
+    if "symbol" not in columns or "trade_date" not in columns:
+        return set(), set()
+    stats = (
+        lf.select(
+            pl.col("symbol").drop_nulls().unique().implode().alias("_symbols"),
+            pl.col("trade_date").drop_nulls().unique().implode().alias("_dates"),
+        )
+        .collect(engine="streaming")
+    )
+    if stats.is_empty():
+        return set(), set()
+    symbols = stats["_symbols"][0]
+    dates = stats["_dates"][0]
+    return (
+        set(symbols.to_list() if symbols is not None else []),
+        set(dates.to_list() if dates is not None else []),
+    )
+
+
 def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[dict]:
     """valuation_metrics vs daily_bars: orphan symbols + one-day coverage ratio."""
     findings: list[dict] = []
@@ -333,19 +372,11 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
     if not dataset_has_parquet(val_root) or not dataset_has_parquet(bars_root):
         return findings
 
-    val_syms_all = set(
+    val_syms_all, val_dates = _unique_symbols_and_dates(
         scan_parquet_root(val_root, partition_col="trade_date", end=trade_date)
-        .select("symbol")
-        .unique()
-        .collect()["symbol"]
-        .to_list()
     )
-    bars_syms_all = set(
+    bars_syms_all, bars_dates = _unique_symbols_and_dates(
         _traded_bars(scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date))
-        .select("symbol")
-        .unique()
-        .collect()["symbol"]
-        .to_list()
     )
     if not val_syms_all or not bars_syms_all:
         return findings
@@ -368,20 +399,6 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
             }
         )
 
-    val_dates = set(
-        scan_parquet_root(val_root, partition_col="trade_date", end=trade_date)
-        .select("trade_date")
-        .unique()
-        .collect()["trade_date"]
-        .to_list()
-    )
-    bars_dates = set(
-        _traded_bars(scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date))
-        .select("trade_date")
-        .unique()
-        .collect()["trade_date"]
-        .to_list()
-    )
     shared = val_dates & bars_dates
     if not shared:
         findings.append(
@@ -440,7 +457,12 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
     return findings
 
 
-def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
+def _adjusted_returns(
+    config: Config,
+    trade_date: date,
+    *,
+    lookback_days: int | None = None,
+) -> pl.DataFrame | None:
     """Per (symbol, day) hfq adj vs raw returns + previous bar date.
 
     The lake is partitioned by day, but the old implementation collected all
@@ -457,6 +479,15 @@ def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
     if not bar_parts:
         return None
     first_date = bar_parts[0].start
+    window_start = first_date
+    if lookback_days is not None:
+        if lookback_days <= 0:
+            raise ValueError("adjustment reconciliation lookback_days must be positive")
+        window_start = max(first_date, trade_date - timedelta(days=lookback_days))
+        # Carry one nearby historical print into the window. Pairs separated
+        # by longer suspensions are filtered by the trading-calendar
+        # successor check below, so there is no need to replay older history.
+        first_date = max(first_date, window_start - timedelta(days=31))
     last_date = min(trade_date, bar_parts[-1].end)
     if first_date > last_date:
         return None
@@ -487,7 +518,7 @@ def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
                 )
             )
             .select("symbol", "trade_date", "close")
-            .collect()
+            .collect(engine="streaming")
         )
         if bars.is_empty():
             continue
@@ -503,7 +534,7 @@ def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
             )
             .filter(pl.col("adjust_type") == "hfq")
             .select("symbol", "trade_date", "factor")
-            .collect()
+            .collect(engine="streaming")
         )
         if factors.is_empty():
             continue
@@ -527,7 +558,7 @@ def _adjusted_returns(config: Config, trade_date: date) -> pl.DataFrame | None:
             )
         )
         chunk_returns = (
-            combined.filter(pl.col("trade_date") >= chunk_start)
+            combined.filter(pl.col("trade_date") >= window_start)
             .filter(pl.col("prev_trade_date").is_not_null())
             .with_columns((pl.col("adj_ret") - pl.col("raw_ret")).abs().alias("divergence"))
             .filter(
@@ -614,7 +645,7 @@ def _structural_adjustments(
         .filter(pl.col("change_reason").fill_null("").str.contains(_STRUCTURAL_ADJUSTMENT_RE))
         .select("symbol", "change_date", "change_reason")
         .unique()
-        .collect()
+        .collect(engine="streaming")
     )
     return None if structure.is_empty() else structure
 
@@ -632,7 +663,7 @@ def _trading_day_successors(config: Config, trade_date: date) -> pl.DataFrame | 
         .filter(pl.col("is_trading"))
         .select("trade_date")
         .unique()
-        .collect()
+        .collect(engine="streaming")
         .sort("trade_date")
     )
     if cal.is_empty():
@@ -661,7 +692,9 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     if not dataset_has_parquet(inst_root):
         return []
 
-    instruments = dedupe_lazy_by_primary_key(scan_parquet_root(inst_root), "instruments").collect()
+    instruments = dedupe_lazy_by_primary_key(scan_parquet_root(inst_root), "instruments").collect(
+        engine="streaming"
+    )
     if "asset_type" not in instruments.columns:
         return []
     stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
@@ -672,11 +705,15 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
         _traded_bars(scan_parquet_root(bars_root))
         .select("symbol")
         .unique()
-        .collect()["symbol"]
+        .collect(engine="streaming")["symbol"]
         .to_list()
     )
     with_factor = set(
-        scan_parquet_root(fac_root).select("symbol").unique().collect()["symbol"].to_list()
+        scan_parquet_root(fac_root)
+        .select("symbol")
+        .unique()
+        .collect(engine="streaming")["symbol"]
+        .to_list()
     )
 
     findings: list[dict] = []
@@ -714,9 +751,14 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     return findings
 
 
-def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list[dict]:
+def adj_factor_reconciliation_findings(
+    config: Config,
+    trade_date: date,
+    *,
+    lookback_days: int | None = None,
+) -> list[dict]:
     """hfq continuity vs corporate_actions; errors/warnings capped per class."""
-    rets = _adjusted_returns(config, trade_date)
+    rets = _adjusted_returns(config, trade_date, lookback_days=lookback_days)
     if rets is None or rets.is_empty():
         return []
 
@@ -781,7 +823,7 @@ def adj_factor_reconciliation_findings(config: Config, trade_date: date) -> list
         scan_parquet_root(ca_root, partition_col="ex_date", end=trade_date)
         .select("symbol", "ex_date")
         .unique()
-        .collect()
+        .collect(engine="streaming")
         .sort(["symbol", "ex_date"])
     )
     if ex_dates.is_empty():
@@ -932,7 +974,7 @@ def _symbol_last_bar(config: Config, trade_date: date) -> pl.DataFrame | None:
             pl.col("trade_date").min().alias("first_bar"),
             pl.col("trade_date").max().alias("last_bar"),
         )
-        .collect()
+        .collect(engine="streaming")
     )
     return None if out.is_empty() else out
 
@@ -1100,7 +1142,7 @@ def _liquid_symbols_on(config: Config, trade_date: date, limit: int) -> list[str
         .select("symbol", rank_col)
         .sort(rank_col, descending=True, nulls_last=True)
         .limit(limit)
-        .collect()
+        .collect(engine="streaming")
     )
     return df["symbol"].to_list()
 
@@ -1114,7 +1156,7 @@ def _curated_closes(config: Config, trade_date: date, symbols: list[str]) -> dic
         )
         .filter(pl.col("symbol").is_in(symbols))
         .select("symbol", "close")
-        .collect()
+        .collect(engine="streaming")
     )
     return {r["symbol"]: float(r["close"]) for r in df.iter_rows(named=True)}
 
@@ -1296,7 +1338,7 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
         .filter(pl.col("status").is_in(["st", "*st"]))
         .select("symbol")
         .unique()
-        .collect()
+        .collect(engine="streaming")
     )
     if labeled.is_empty():
         # No ST rows for the day is a coverage question, not a disagreement —

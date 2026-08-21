@@ -99,7 +99,7 @@ def daily_bars_volume_unit_findings(
             pl.len().alias("rows"),
             pl.col("_ratio").median().alias("median_ratio"),
         )
-        .collect()
+        .collect(engine="streaming")
     )
 
     for row in stats.sort("source").iter_rows(named=True):
@@ -164,7 +164,7 @@ def daily_bars_amount_completeness_findings(
             pl.len().alias("rows"),
             pl.col("amount").is_null().sum().alias("missing_amount"),
         )
-        .collect()
+        .collect(engine="streaming")
     )
     for row in stats.sort("source").iter_rows(named=True):
         rows = int(row["rows"])

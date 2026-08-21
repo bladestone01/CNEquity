@@ -172,6 +172,26 @@ def test_factor_break_is_error(tmp_path):
     assert f["adj_ret"] == 1.0
 
 
+def test_windowed_reconciliation_skips_old_history(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    old = [date(2024, 1, 2), date(2024, 1, 3)]
+    current = date(2024, 6, 28)
+    _write_bars(
+        cfg.data_root,
+        [("A", old[0], 10.0), ("A", old[1], 10.0), ("A", current, 10.0)],
+    )
+    _write_factors(
+        cfg.data_root,
+        [("A", old[0], 1.0), ("A", old[1], 2.0), ("A", current, 2.0)],
+    )
+
+    assert adj_factor_reconciliation_findings(cfg, current, lookback_days=30) == []
+    assert any(
+        finding["check"] == "adj_close_discontinuity"
+        for finding in adj_factor_reconciliation_findings(cfg, current)
+    )
+
+
 def test_duplicate_factor_fragment_does_not_create_false_break(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     _write_bars(

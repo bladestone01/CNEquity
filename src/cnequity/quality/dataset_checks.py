@@ -698,7 +698,7 @@ def audit_curated_dataset(
     # Sample rows, not sample files: a single intraday Parquet file can hold
     # millions of rows, so collecting the first twenty files would defeat the
     # bounded-memory contract of the full audit.
-    sample_df = audit_lf.limit(_AUDIT_SAMPLE_FILES).collect()
+    sample_df = audit_lf.limit(_AUDIT_SAMPLE_FILES).collect(engine="streaming")
     if full and audit_files is not None:
         row_count, mock_rows, nulls = _full_scalar_stats(audit_files, dataset)
     else:
@@ -868,9 +868,13 @@ def check_mixed_partition_granularity(
     files = sorted(root.glob("**/*.parquet"))
     pk = PRIMARY_KEYS.get(dataset, [])
     if pk and len(files) <= _MIXED_GRANULARITY_PK_SCAN_MAX_FILES:
-        df = scan_parquet_files(files, hive=False).select(pk).collect()
-        if all(c in df.columns for c in pk):
-            pk_dupes = df.height - df.unique(subset=pk).height
+        # Keep the whole-dataset overlap check lazy as well. Mixed layouts are
+        # exactly the case where the old eager collect could pull a large
+        # legacy lake into memory before the audit reported the layout error.
+        pk_dupes = _lazy_pk_duplicate_count(
+            scan_parquet_files(files, hive=False).select(pk),
+            dataset,
+        )
 
     msg = (
         f"{stale_count} partition(s) still at {[g for g in on_disk if g != configured]} "

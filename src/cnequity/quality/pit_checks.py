@@ -41,19 +41,20 @@ def pit_announce_date_findings(config: Config) -> list[dict]:
             )
             if column in columns
         ]
-        bad = scan.filter(invalid).select(sample_columns).collect()
-        if bad.is_empty():
+        invalid_rows = int(scan.filter(invalid).select(pl.len()).collect(engine="streaming").item())
+        if not invalid_rows:
             continue
+        bad = scan.filter(invalid).select(sample_columns).limit(8).collect(engine="streaming")
         if spec.name == "financial_statement_items":
             check = "pit_invalid_announce_date"
             message = (
-                f"{bad.height} {spec.name} row(s) have missing or pre-floor announce_date; "
+                f"{invalid_rows} {spec.name} row(s) have missing or pre-floor announce_date; "
                 f"the supported PIT floor is {_MIN_FINANCIAL_ANNOUNCE_DATE.isoformat()}"
             )
         else:
             check = "pit_missing_announce_date"
             message = (
-                f"{bad.height} {spec.name} row(s) have no announce_date and cannot be queried PIT"
+                f"{invalid_rows} {spec.name} row(s) have no announce_date and cannot be queried PIT"
             )
         findings.append(
             {
@@ -61,7 +62,7 @@ def pit_announce_date_findings(config: Config) -> list[dict]:
                 "severity": "error",
                 "check": check,
                 "message": message,
-                "invalid_rows": bad.height,
+                "invalid_rows": invalid_rows,
                 "sample": bad.head(8).to_dicts(),
             }
         )

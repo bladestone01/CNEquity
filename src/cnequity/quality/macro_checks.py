@@ -55,7 +55,7 @@ def _latest_obs(config: Config, trade_date: date) -> dict[str, date]:
         scan_parquet_root(root, partition_col="obs_date", end=trade_date)
         .group_by("indicator_id")
         .agg(pl.col("obs_date").max().alias("latest"))
-        .collect()
+        .collect(engine="streaming")
     )
     return {r["indicator_id"]: r["latest"] for r in out.iter_rows(named=True)}
 
@@ -112,7 +112,7 @@ def macro_revision_findings(
     existing = (
         scan_parquet_root(root, partition_col="obs_date", end=trade_date)
         .select("indicator_id", "obs_date", "value")
-        .collect()
+        .collect(engine="streaming")
     )
     if existing.is_empty():
         return []
