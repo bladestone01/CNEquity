@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from cnequity.domain.schemas import INSTRUMENTS_SCHEMA, validate_dataframe
+from cnequity.domain.symbols import is_subscription_placeholder
 from cnequity.storage.atomic import write_parquet_atomic
 from cnequity.storage.parquet import StagingWriter
 
@@ -49,6 +50,13 @@ def _save_absence_state(path: Path, state: dict[str, dict[str, object]]) -> None
     os.replace(tmp, path)
 
 
+def _strip_subscription_placeholders(df: pl.DataFrame) -> pl.DataFrame:
+    if df.is_empty() or "name" not in df.columns:
+        return df
+    keep = [not is_subscription_placeholder(name) for name in df["name"].to_list()]
+    return df.filter(pl.Series(keep))
+
+
 def compact_instruments(
     staging_root: Path,
     curated_root: Path,
@@ -65,6 +73,7 @@ def compact_instruments(
         [validate_dataframe(pl.read_parquet(f), "instruments") for f in files],
         how="diagonal_relaxed",
     )
+    incoming = _strip_subscription_placeholders(incoming)
     incoming = incoming.sort("fetched_at").unique(subset=["symbol"], keep="last")
 
     out_path = curated_root / "instruments" / "part-merged.parquet"
@@ -74,6 +83,7 @@ def compact_instruments(
             [validate_dataframe(pl.read_parquet(path), "instruments") for path in curated_files],
             how="diagonal_relaxed",
         )
+        existing = _strip_subscription_placeholders(existing)
         existing = existing.sort("fetched_at").unique(subset=["symbol"], keep="last")
     else:
         existing = pl.DataFrame(schema=INSTRUMENTS_SCHEMA)

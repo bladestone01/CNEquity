@@ -14,6 +14,8 @@ def test_recognises_exact_and_suffixed_placeholder_names():
     assert is_subscription_placeholder("申购款")
     assert is_subscription_placeholder(" 认购款 ")
     assert is_subscription_placeholder("某某认购款")
+    assert is_subscription_placeholder("认购款\x00\x00")
+    assert is_subscription_placeholder("某某认购款\x00")
     assert not is_subscription_placeholder("贵州茅台")
     assert not is_subscription_placeholder(None)
     assert not is_subscription_placeholder("")

@@ -5,6 +5,7 @@ source="mock" so audit can reject them downstream.
 """
 
 from datetime import date
+from threading import Event
 
 import polars as pl
 import pytest
@@ -123,5 +124,35 @@ def test_daily_bars_keeps_other_symbols_when_one_symbol_page_fails(monkeypatch):
     monkeypatch.setattr(tdx, "fetch_bars_paginated", _fetch)
 
     out = tdx.fetch_daily_bars(["000001.SZ", "600519.SH"], START, END)
+
+    assert out["symbol"].to_list() == ["600519.SH"]
+
+
+def test_daily_bars_abandons_a_hung_symbol_request(monkeypatch):
+    row = {
+        "symbol": "600519.SH",
+        "trade_date": START,
+        "open": 1.0,
+        "high": 1.0,
+        "low": 1.0,
+        "close": 1.0,
+        "volume": 100,
+        "amount": 100.0,
+    }
+    release = Event()
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: object())
+    monkeypatch.setattr(tdx, "_close_quotes_client", lambda _client: None)
+    monkeypatch.setattr(tdx, "_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS", 0.01)
+
+    def _fetch(_client, symbol, *_args, **_kwargs):
+        if symbol == "000001.SZ":
+            release.wait(1.0)
+            return []
+        return [row]
+
+    monkeypatch.setattr(tdx, "fetch_bars_paginated", _fetch)
+
+    out = tdx.fetch_daily_bars(["600519.SH", "000001.SZ"], START, END)
+    release.set()
 
     assert out["symbol"].to_list() == ["600519.SH"]

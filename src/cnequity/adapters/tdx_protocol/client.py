@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import queue
+import signal
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import as_completed as _as_completed
@@ -66,6 +69,7 @@ _TDX_PROBE_SYMBOL = "000001"  # SSE composite; market=1
 _TDX_MAX_CANDIDATES = 16
 _TDX_PROBE_CONCURRENCY = 8  # parallel probes; first live responder wins
 _TDX_FETCH_ATTEMPTS = 3  # server rotations before a bar fetch fails loud
+_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
 def reset_tdx_server_cache() -> None:
@@ -359,6 +363,142 @@ def _fail_or_mock(
     return mock_df
 
 
+class TdxSymbolRequestTimeout(TimeoutError):
+    """A single TDX symbol request exceeded the bounded wire-call window."""
+
+
+class _TdxSignalTimeout(BaseException):
+    """Signal-only timeout that cannot be swallowed by the vendored client."""
+
+
+def _fetch_symbol_bars_signal_bounded(
+    client,
+    symbol: str,
+    start: date,
+    end: date,
+    *,
+    rate_limit: RateLimitSpec | None,
+    backfill: bool,
+    on_heartbeat: Callable[[], None] | None,
+) -> list[dict]:
+    """Bound a native socket call from the process' main thread.
+
+    The vendored Cython socket reader can hold the GIL while blocked in
+    ``poll``. In that state a Python watchdog thread cannot wake the main
+    thread's timed queue wait. A POSIX interval timer interrupts the native
+    syscall itself, while the BaseException subclass prevents the vendored
+    broad ``except Exception`` wrapper from swallowing the timeout.
+    """
+
+    def _raise_timeout(_signum, _frame) -> None:
+        raise _TdxSignalTimeout
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    started_at = time.monotonic()
+    signal.signal(signal.SIGALRM, _raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, _TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS)
+    try:
+        try:
+            return fetch_bars_paginated(
+                client,
+                symbol,
+                start,
+                end,
+                rate_limit=rate_limit,
+                backfill=backfill,
+                on_page=on_heartbeat,
+            )
+        except _TdxSignalTimeout as exc:
+            raise TdxSymbolRequestTimeout(
+                f"TDX bars timed out for {symbol} after "
+                f"{_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS:.1f}s"
+            ) from exc
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0.0:
+            elapsed = time.monotonic() - started_at
+            remaining = max(0.0, previous_timer[0] - elapsed)
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+
+
+def _fetch_symbol_bars_bounded(
+    client,
+    symbol: str,
+    start: date,
+    end: date,
+    *,
+    rate_limit: RateLimitSpec | None,
+    backfill: bool,
+    on_heartbeat: Callable[[], None] | None,
+) -> list[dict]:
+    """Run one blocking wire request behind a closeable watchdog.
+
+    The vendored socket client normally honors its socket timeout, but a
+    platform-level ``send()`` can still block indefinitely when a peer or
+    proxy disappears. A daemon thread lets the caller close the socket and
+    continue with the already collected rows instead of leaving a batch alive
+    forever. The caller must discard the client after a timeout.
+    """
+    if threading.current_thread() is threading.main_thread() and hasattr(signal, "SIGALRM"):
+        try:
+            return _fetch_symbol_bars_signal_bounded(
+                client,
+                symbol,
+                start,
+                end,
+                rate_limit=rate_limit,
+                backfill=backfill,
+                on_heartbeat=on_heartbeat,
+            )
+        except (AttributeError, OSError):
+            # Signal timers are unavailable outside a normal POSIX main
+            # thread; use the daemon-thread fallback below.
+            pass
+
+    result: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+    def _worker() -> None:
+        try:
+            result.put(
+                (
+                    "ok",
+                    fetch_bars_paginated(
+                        client,
+                        symbol,
+                        start,
+                        end,
+                        rate_limit=rate_limit,
+                        backfill=backfill,
+                        on_page=on_heartbeat,
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — forward the wire error
+            result.put(("error", exc))
+
+    thread = threading.Thread(
+        target=_worker,
+        name=f"tdx-bars-{symbol}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        kind, value = result.get(timeout=_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS)
+    except queue.Empty as exc:
+        raise TdxSymbolRequestTimeout(
+            f"TDX bars timed out for {symbol} after "
+            f"{_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS:.1f}s"
+        ) from exc
+    if kind == "error":
+        assert isinstance(value, Exception)
+        raise value
+    assert kind == "ok"
+    assert isinstance(value, list)
+    return value
+
+
 _MOCK_SHORT_CIRCUIT = "allow_mock enabled; skipping network fetch"
 
 
@@ -459,16 +599,25 @@ def fetch_daily_bars(
                     on_heartbeat()
                 try:
                     rows.extend(
-                        fetch_bars_paginated(
+                        _fetch_symbol_bars_bounded(
                             client,
                             sym,
                             start,
                             end,
                             rate_limit=rate_limit,
                             backfill=backfill,
-                            on_page=on_heartbeat,
+                            on_heartbeat=on_heartbeat,
                         )
                     )
+                except TdxSymbolRequestTimeout as exc:
+                    # Closing the client interrupts the stuck native socket;
+                    # the remaining symbols stay unresolved for the worker's
+                    # coverage validator and secondary source failover.
+                    logger.warning("TDX daily bars circuit opened: %s", exc)
+                    reset_tdx_server_cache()
+                    _close_quotes_client(client)
+                    client = None
+                    break
                 except Exception as exc:
                     # A page failure belongs to this symbol. Keeping already
                     # fetched rows lets the worker's coverage validator narrow

@@ -174,6 +174,41 @@ def test_compact_instruments_ignores_known_delisted_symbols_for_absence_circuit(
     assert json.loads(absence_state.read_text(encoding="utf-8")) == {}
 
 
+def test_compact_instruments_removes_padded_subscription_placeholders(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    curated_path = cfg.curated_root / "instruments" / "part-merged.parquet"
+    curated_path.parent.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            _instrument("600519.SH"),
+            {
+                **_instrument("517234.SH", delist_date=date(2026, 8, 18)),
+                "name": "认购款\x00\x00",
+                "asset_type": "etf",
+            },
+        ]
+    ).write_parquet(curated_path)
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "instruments",
+        "run-padded-placeholder",
+        "batch-0",
+        pl.DataFrame([_instrument("600519.SH")]),
+    )
+
+    rows, findings = compact_instruments(
+        cfg.staging_root,
+        cfg.curated_root,
+        "run-padded-placeholder",
+        date(2026, 8, 21),
+    )
+
+    assert rows == 1
+    assert findings == []
+    assert pl.read_parquet(curated_path)["symbol"].to_list() == ["600519.SH"]
+
+
 def test_compact_instruments_via_step_respects_manifest_gate(tmp_path):
     root = tmp_path / "data"
     cfg = Config(data_root=root)
@@ -405,6 +440,19 @@ def test_step_instrument_fallback_merges_nested_staging_fragments(tmp_path):
 
     assert set(load_symbols(cfg)) == {"600519.SH", "000001.SZ"}
     assert set(instrument_metadata(cfg)["symbol"]) == {"600519.SH", "000001.SZ"}
+
+
+def test_symbol_universe_ignores_padded_subscription_placeholders(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    root = cfg.curated_root / "instruments"
+    root.mkdir(parents=True)
+    valid = _instrument("600519.SH", list_date=date(2001, 8, 27))
+    placeholder = _instrument("561834.SH", list_date=date(2026, 8, 20))
+    placeholder["name"] = "认购款\x00\x00"
+    pl.DataFrame([valid, placeholder]).write_parquet(root / "part-merged.parquet")
+
+    assert load_symbols(cfg) == ["600519.SH"]
+    assert instrument_metadata(cfg)["symbol"].to_list() == ["600519.SH"]
 
 
 def test_tradable_universe_excludes_cdr(tmp_path):

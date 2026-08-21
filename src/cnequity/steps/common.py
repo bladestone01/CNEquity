@@ -13,6 +13,7 @@ from cnequity.adapters.tdx_protocol.client import fetch_instruments
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS, fetch_semantics
 from cnequity.domain.schemas import data_version_for, with_provenance
+from cnequity.domain.symbols import is_subscription_placeholder
 from cnequity.storage import StagingWriter
 from cnequity.storage.state import StateStore
 
@@ -149,6 +150,14 @@ def _load_staged_instruments(config: Config) -> pl.DataFrame | None:
 
     frame = pl.concat([pl.read_parquet(path) for path in files], how="diagonal_relaxed")
     return dedupe_by_primary_key(frame, "instruments")
+
+
+def _without_subscription_placeholders(frame: pl.DataFrame) -> pl.DataFrame:
+    """Keep transport-level subscription stubs out of downstream universes."""
+    if frame.is_empty() or "name" not in frame.columns:
+        return frame
+    keep = [not is_subscription_placeholder(name) for name in frame["name"].to_list()]
+    return frame.filter(pl.Series(keep))
 
 
 def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
@@ -390,14 +399,17 @@ def load_symbols(config: Config) -> list[str]:
     curated_frame = load_curated_instruments(config)
     staged_frame = _load_staged_instruments(config)
     if curated_frame is not None:
+        curated_frame = _without_subscription_placeholders(curated_frame)
         return curated_frame["symbol"].drop_nulls().to_list()
     if staged_frame is not None:
+        staged_frame = _without_subscription_placeholders(staged_frame)
         return staged_frame["symbol"].drop_nulls().to_list()
     df = fetch_instruments(
         rate_limit=config.tdx_rate_limit_spec(),
         allow_mock=config.tdx_allow_mock,
         config=config,
     )
+    df = _without_subscription_placeholders(df)
     return df["symbol"].to_list()
 
 
@@ -406,9 +418,9 @@ def instrument_metadata(config: Config) -> pl.DataFrame:
     curated_frame = load_curated_instruments(config)
     staged_frame = _load_staged_instruments(config)
     if curated_frame is not None:
-        frame = curated_frame
+        frame = _without_subscription_placeholders(curated_frame)
     elif staged_frame is not None:
-        frame = staged_frame
+        frame = _without_subscription_placeholders(staged_frame)
     else:
         return pl.DataFrame(
             schema={"symbol": pl.Utf8, "list_date": pl.Date, "delist_date": pl.Date}
@@ -441,6 +453,8 @@ def classify_daily_bar_ownership(
     end: date,
 ) -> DailyBarOwnership:
     """Route symbols without treating a silent exclusion as completion."""
+    from cnequity.domain.symbols import is_etf_symbol, parse_symbol
+
     out = DailyBarOwnership()
     for symbol in symbols:
         list_date, delist_date = spans.get(symbol, (None, None))
@@ -449,7 +463,16 @@ def classify_daily_bar_ownership(
         elif delist_date is not None and delist_date < start:
             out.expected_no_data.append(symbol)
         elif delist_date is not None and delist_date <= end:
-            out.delegated_delisted.append(symbol)
+            # Delisted-recovery receipts cover equities/CDRs, not funds. ETF
+            # instruments can receive a terminal date from the live snapshot
+            # when a subscription/redemption code disappears; routing those
+            # codes to the stock-only recovery gate blocks compaction forever.
+            try:
+                info = parse_symbol(symbol)
+                is_fund = is_etf_symbol(info.code, info.exchange)
+            except ValueError:
+                is_fund = False
+            (out.generic if is_fund else out.delegated_delisted).append(symbol)
         else:
             out.generic.append(symbol)
     return out

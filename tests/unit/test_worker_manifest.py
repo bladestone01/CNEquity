@@ -133,7 +133,7 @@ def test_symbol_batch_ids_unique_per_window(worker_config, monkeypatch):
     assert len({b["batch_id"] for b in batches}) == 2
 
 
-def test_partial_tdx_symbol_batch_is_not_staged_as_success(worker_config, monkeypatch):
+def test_partial_tdx_symbol_batch_keeps_valid_rows_but_stays_failed(worker_config, monkeypatch):
     import polars as pl
 
     from cnequity.domain.schemas import with_provenance
@@ -177,7 +177,10 @@ def test_partial_tdx_symbol_batch_is_not_staged_as_success(worker_config, monkey
     assert result["rows_written"] == 0
     batch = manifest.get_batches_for_run(run_id)[0]
     assert batch["status"] == "failed"
-    assert not list(worker_config.staging_root.glob("daily_bars/**/*.parquet"))
+    files = list(worker_config.staging_root.glob("daily_bars/**/*.parquet"))
+    assert len(files) == 1
+    staged = pl.read_parquet(files[0])
+    assert staged["symbol"].to_list() == ["600519.SH"]
 
 
 def test_wrong_date_tdx_batch_is_not_staged_as_success(worker_config, monkeypatch):
@@ -324,6 +327,11 @@ def test_partial_batch_retry_scope_is_reduced_to_missing_symbols(worker_config, 
     )
     assert retry["status"] == "success"
     assert calls == [["600519.SH", "000001.SZ"], ["600519.SH"]]
+    import polars as pl
+
+    curated = worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28"
+    rows = pl.concat([pl.read_parquet(path) for path in curated.glob("*.parquet")])
+    assert set(rows["symbol"].to_list()) == {"600519.SH", "000001.SZ"}
 
 
 def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):

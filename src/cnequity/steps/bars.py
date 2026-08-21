@@ -569,12 +569,12 @@ def _staged_daily_bar_partial_symbols(
     start: date,
     end: date,
 ) -> set[str]:
-    """Find symbols with an interior session gap in a staged multi-day window.
+    """Find symbols with a missing expected session in a staged window.
 
     A symbol can legitimately have no rows before listing, after delisting, or
-    during a suspension. Comparing only the interval between its first and
-    last staged bars avoids those edge gaps while still catching a partial
-    vendor response inside the symbol's observed history.
+    during a suspension. Instrument metadata narrows the expected range for
+    the first two cases; when metadata is unavailable, use the requested range
+    so a vendor response cannot hide a missing leading or trailing session.
     """
     if start >= end or not symbols:
         return set()
@@ -601,16 +601,16 @@ def _staged_daily_bar_partial_symbols(
 
     sessions = list_trading_dates(config, start, end)
     partial: set[str] = set()
-    spans = staged.group_by("symbol").agg(
-        pl.col("trade_date").min().alias("first_date"),
-        pl.col("trade_date").max().alias("last_date"),
-        pl.col("trade_date").n_unique().alias("observed_days"),
-    )
-    for row in spans.iter_rows(named=True):
-        expected = [
-            session for session in sessions if row["first_date"] <= session <= row["last_date"]
-        ]
-        if row["observed_days"] < len(expected):
+    metadata = _instrument_spans(config)
+    observed = staged.group_by("symbol").agg(pl.col("trade_date").unique().alias("dates"))
+    for row in observed.iter_rows(named=True):
+        list_date, delist_date = metadata.get(row["symbol"], (None, None))
+        expected_start = max(start, list_date) if list_date is not None else start
+        expected_end = min(end, delist_date) if delist_date is not None else end
+        expected = {
+            session for session in sessions if expected_start <= session <= expected_end
+        }
+        if expected - set(row["dates"]):
             partial.add(row["symbol"])
     return partial
 
@@ -1061,12 +1061,15 @@ def fetch_bars_via_sina(
     cost the whole run its Beijing coverage. They surface as an audit finding so
     a persistent gap is visible instead of silently shrinking the universe.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     import httpx
     import polars as pl
 
     from cnequity.adapters.sina.bars import fetch_daily_bars_sina
     from cnequity.steps.http_common import write_fetched
 
+    use_parallel = fetch is None
     fetch = fetch or (
         lambda symbol, client: fetch_daily_bars_sina(symbol, start=start, end=end, client=client)
     )
@@ -1074,23 +1077,37 @@ def fetch_bars_via_sina(
     failed: list[str] = []
     empty: list[str] = []
     covered_dates: dict[str, set[date]] = {}
-    # Gapfill is a best-effort repair path.  Keep one unresponsive symbol from
-    # holding the whole daily run for the full upstream timeout.
-    with httpx.Client(timeout=8.0) as client:
-        for symbol in symbols:
-            config.rate_limit("sina")
+
+    def fetch_one(symbol: str) -> tuple[str, pl.DataFrame | None, str | None]:
+        config.rate_limit("sina")
+        # Gapfill is a best-effort repair path.  Keep one unresponsive symbol
+        # from holding the whole daily run for the full upstream timeout.
+        with httpx.Client(timeout=8.0) as client:
             try:
                 bars = fetch(symbol, client)
             except Exception as exc:  # noqa: BLE001 — keep the rest of the board
                 logger.warning("sina bars failed for %s: %s", symbol, exc)
-                failed.append(symbol)
-                continue
-            if bars.is_empty():
-                empty.append(symbol)
-                failed.append(symbol)
-                continue
-            covered_dates[symbol] = set(bars["trade_date"].to_list())
-            frames.append(bars)
+                return symbol, None, "failed"
+        if bars.is_empty():
+            return symbol, None, "empty"
+        return symbol, bars, None
+
+    if use_parallel and symbols:
+        with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as pool:
+            results = list(pool.map(fetch_one, symbols))
+    else:
+        results = [fetch_one(symbol) for symbol in symbols]
+    for symbol, bars, failure_kind in results:
+        if failure_kind == "failed":
+            failed.append(symbol)
+            continue
+        if failure_kind == "empty":
+            empty.append(symbol)
+            failed.append(symbol)
+            continue
+        assert bars is not None
+        covered_dates[symbol] = set(bars["trade_date"].to_list())
+        frames.append(bars)
 
     expected_dates = set(list_trading_dates(config, start, end))
     for symbol in symbols:

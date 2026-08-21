@@ -136,6 +136,33 @@ def _require_daily_bar_date_coverage(df, start: date, end: date) -> None:
         )
 
 
+def _stage_daily_bar_rows(
+    staging_root: Path,
+    run_id: str,
+    batch_id: str,
+    df: pl.DataFrame,
+) -> None:
+    """Stage valid rows, merging a prior partial attempt for the same batch.
+
+    A coverage failure narrows the retry scope to missing symbols, but the
+    rows already returned by TDX are still useful. Keep them in the same
+    staging object and merge them with a later retry so recovering one symbol
+    cannot overwrite the other symbols from the original partial response.
+    """
+    if df.is_empty():
+        return
+    writer = StagingWriter(staging_root)
+    path = staging_root / "daily_bars" / f"run_id={run_id}" / f"part-{batch_id}.parquet"
+    if path.exists():
+        previous = pl.read_parquet(path)
+        df = pl.concat([previous, df], how="diagonal_relaxed")
+        df = df.sort("fetched_at").unique(
+            subset=["symbol", "trade_date"],
+            keep="last",
+        )
+    writer.write_batch("daily_bars", run_id, batch_id, df)
+
+
 def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
     (
         symbols,
@@ -189,10 +216,13 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             on_heartbeat=_heartbeat,
         )
         df = normalize_with_source(df, dataset=dataset)
-        _require_daily_bar_symbol_coverage(df, symbols)
         _require_daily_bar_date_coverage(df, start, end)
-        writer = StagingWriter(staging_root)
-        writer.write_batch(dataset, run_id, batch_id, df)
+        try:
+            _require_daily_bar_symbol_coverage(df, symbols)
+        except DailyBarCoverageError:
+            _stage_daily_bar_rows(staging_root, run_id, batch_id, df)
+            raise
+        _stage_daily_bar_rows(staging_root, run_id, batch_id, df)
         if manifest:
             manifest.finish_batch(
                 run_id,
@@ -288,10 +318,13 @@ def fetch_daily_bars_parallel(
                 on_heartbeat=_heartbeat,
             )
             df = normalize_with_source(df, dataset=dataset)
-            _require_daily_bar_symbol_coverage(df, batch_symbols)
             _require_daily_bar_date_coverage(df, batch_start, batch_end)
-            writer = StagingWriter(staging_root)
-            writer.write_batch(dataset, run_id, batch_id, df)
+            try:
+                _require_daily_bar_symbol_coverage(df, batch_symbols)
+            except DailyBarCoverageError:
+                _stage_daily_bar_rows(staging_root, run_id, batch_id, df)
+                raise
+            _stage_daily_bar_rows(staging_root, run_id, batch_id, df)
             manifest.finish_batch(
                 run_id,
                 batch_id,

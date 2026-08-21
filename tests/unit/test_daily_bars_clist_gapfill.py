@@ -568,6 +568,45 @@ def test_multiday_partial_symbol_is_gapfilled_without_overwriting_primary_rows(
     assert _staged_daily_bar_symbols(cfg, run_id, None) == {symbol}
 
 
+def test_multiday_partial_symbol_detects_leading_session_gap(tmp_path):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("backfill")
+    start, end = date(2024, 6, 20), date(2024, 6, 24)
+    symbol = "600519.SH"
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-late-start", _bar_frame([symbol], date(2024, 6, 21))
+    )
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-end", _bar_frame([symbol], end)
+    )
+
+    assert _staged_daily_bar_partial_symbols(cfg, run_id, [symbol], start, end) == {symbol}
+
+
+def test_multiday_partial_symbol_respects_listing_and_delisting_edges(tmp_path):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("backfill")
+    start, end = date(2024, 6, 20), date(2024, 6, 24)
+    symbol = "600519.SH"
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": [symbol],
+            "list_date": [date(2024, 6, 21)],
+            "delist_date": [date(2024, 6, 24)],
+        }
+    ).write_parquet(instruments / "part-merged.parquet")
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-listing", _bar_frame([symbol], date(2024, 6, 21))
+    )
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-delisting", _bar_frame([symbol], end)
+    )
+
+    assert _staged_daily_bar_partial_symbols(cfg, run_id, [symbol], start, end) == set()
+
+
 def test_multiday_fallback_failure_is_gapfilled_by_symbol(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     run_id = Manifest(cfg.manifest_path).start_run("backfill")

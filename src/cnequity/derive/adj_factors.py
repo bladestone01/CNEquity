@@ -630,6 +630,7 @@ def _compute_adj_factors_locked(
 
     tasks: list[tuple[str, str, pl.DataFrame, bool]] = []
     skipped_cdr: list[str] = []
+    skipped_unsupported: set[str] = set()
     for group in bars.partition_by("symbol"):
         sym = group["symbol"][0]
         if _is_cdr(sym):
@@ -638,6 +639,17 @@ def _compute_adj_factors_locked(
         sym_bars = group.select("trade_date").sort("trade_date")
         force = sym in refresh_set
         for adj in adjust_types:
+            # Sina does not publish adjustment-factor history for the Beijing
+            # segment.  If no cache exists, this is expected source coverage
+            # rather than a transient fetch failure; retrying it every day
+            # only turns a small, known gap into a run-level failure.
+            try:
+                exchange = parse_symbol(sym).exchange
+            except ValueError:
+                exchange = ""
+            if exchange == "BJ" and (_load_cache(config, sym, adj) is None):
+                skipped_unsupported.add(sym)
+                continue
             tasks.append((sym, adj, sym_bars, force))
     if skipped_cdr:
         logger.info(
@@ -650,7 +662,26 @@ def _compute_adj_factors_locked(
     frames: list[pl.DataFrame] = []
     failed: list[str] = []
     findings: list[dict] = []
-    succeeded: set[str] = set()
+    # Treat known source-unsupported symbols as resolved for retry-state
+    # purposes. Their bars remain usable as raw data, while adjusted consumers
+    # already mark rows without an exact factor and exclude them from derived
+    # return series.
+    succeeded: set[str] = set(skipped_unsupported)
+    if skipped_unsupported:
+        findings.append(
+            {
+                "dataset": "adj_factors",
+                "severity": "warning",
+                "check": "adj_factor_expected_no_data",
+                "message": (
+                    f"Sina has no adjustment-factor coverage for "
+                    f"{len(skipped_unsupported)} uncached Beijing symbol(s); "
+                    "raw bars remain available and adjusted consumers will exclude "
+                    "rows without an exact factor"
+                ),
+                "symbols": sorted(skipped_unsupported),
+            }
+        )
 
     if workers <= 1 or len(tasks) == 1:
         with httpx.Client(timeout=20.0) as client:

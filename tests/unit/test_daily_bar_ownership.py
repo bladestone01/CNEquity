@@ -28,6 +28,21 @@ def test_daily_bar_ownership_is_explicit_for_every_symbol():
     assert set(result.generic + result.delegated_delisted + result.expected_no_data) == set(symbols)
 
 
+def test_delisted_etf_is_not_sent_to_stock_recovery_gate():
+    result = classify_daily_bar_ownership(
+        ["517233.SH", "600003.SH"],
+        {
+            "517233.SH": (None, date(2026, 8, 18)),
+            "600003.SH": (date(2000, 1, 1), date(2026, 8, 18)),
+        },
+        date(2026, 8, 15),
+        date(2026, 8, 21),
+    )
+
+    assert result.generic == ["517233.SH"]
+    assert result.delegated_delisted == ["600003.SH"]
+
+
 def test_incomplete_delisted_ownership_blocks_compaction_and_retries(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "data")
     run_id = "run-ownership"

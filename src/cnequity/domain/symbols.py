@@ -161,7 +161,11 @@ def is_subscription_placeholder(name: str | None) -> bool:
     """TDX allotment / subscription stubs (``认购款``), not tradable securities."""
     if not name:
         return False
-    stripped = name.strip()
+    # Some TDX stock-list responses use C-style NUL padding for fixed-width
+    # names (for example ``认购款\x00\x00``). Treat that padding as transport
+    # noise before matching; otherwise the stub survives compaction and can be
+    # mistaken for a real instrument that was delisted on the snapshot date.
+    stripped = name.strip().rstrip("\x00").strip()
     if stripped in SUBSCRIPTION_PLACEHOLDER_NAMES:
         return True
     return any(stripped.endswith(marker) for marker in SUBSCRIPTION_PLACEHOLDER_NAMES)
