@@ -123,6 +123,60 @@ def test_backfill_recovers_terminal_staging_before_new_run(tmp_path):
     assert engine.calls[0][2] == run_id
 
 
+def test_backfill_reconciles_orphaned_running_staging_before_recovery(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("backfill")
+    manifest.start_batch(
+        run_id,
+        "st-running",
+        task_id="trading_status",
+        dataset="trading_status",
+        blocks_compaction=False,
+    )
+    StagingWriter(cfg.staging_root).write_batch(
+        "trading_status",
+        run_id,
+        "batch-00000",
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2024, 6, 28)],
+                "is_trading": [True],
+                "status": ["normal"],
+                "source": ["baostock"],
+                "data_version": ["v1"],
+                "fetched_at": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+    # Simulate a process that disappeared before it could finish the run.
+    old = "2000-01-01T00:00:00+00:00"
+    with manifest._connect() as conn:
+        conn.execute(
+            "UPDATE ingestion_runs SET started_at = ? WHERE run_id = ?", (old, run_id)
+        )
+        conn.execute(
+            "UPDATE ingestion_batches SET started_at = ?, heartbeat_at = ? WHERE run_id = ?",
+            (old, old, run_id),
+        )
+
+    class FakeEngine:
+        def __init__(self):
+            self.config = cfg
+            self.manifest = manifest
+            self.calls = []
+
+        def run_step(self, name, trade_date, recovered_run_id):
+            self.calls.append((name, trade_date, recovered_run_id))
+            return {"status": "success"}
+
+    engine = FakeEngine()
+    assert _recover_compactable_backfill_staging(engine, "trading_status") == [run_id]
+    assert engine.calls[0][2] == run_id
+    assert manifest.get_run(run_id)["status"] == "failed"
+
+
 def test_run_daily_failure_exits_nonzero(cfg_path, monkeypatch):
     monkeypatch.setattr(
         JobEngine,

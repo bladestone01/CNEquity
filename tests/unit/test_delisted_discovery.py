@@ -193,6 +193,25 @@ def test_a_delisting_past_the_recency_window_is_classified(tmp_path):
     assert live == {}
 
 
+def test_post_probe_bar_keeps_currently_listed_symbol_out_of_delisted_catalog(tmp_path):
+    cfg = _cfg(tmp_path)
+    _catalog(cfg, {"920000.BJ": "2026-07-21"})
+    part = cfg.curated_root / "daily_bars" / "trade_date=2026-08-21"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["920000.BJ"],
+            "trade_date": [date(2026, 8, 21)],
+            "volume": [100],
+        }
+    ).write_parquet(part / "part-merged.parquet")
+
+    delisted, live = classify_catalog(cfg)
+
+    assert delisted == {}
+    assert live == {"920000.BJ": date(2026, 8, 21)}
+
+
 def test_reference_is_the_lake_not_the_wall_clock(tmp_path):
     """A lake that stopped updating must not reclassify its universe as delisted."""
     cfg = _cfg(tmp_path)

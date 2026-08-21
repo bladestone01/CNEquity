@@ -46,6 +46,34 @@ def test_completes_normally_without_tripping_the_watchdog():
     assert bs.logged_out is True
 
 
+def test_main_thread_deadline_interrupts_a_blocking_fetch():
+    bs = _NoQueryBaostock()
+    calls = {"fetch": 0, "deadline": 0}
+
+    def stalled_fetch(_bs, _symbol, _s, _e):
+        calls["fetch"] += 1
+        threading.Event().wait(1.0)
+        return [{"symbol": _symbol}]
+
+    def on_deadline():
+        calls["deadline"] += 1
+
+    rows, failed = fetch_per_symbol(
+        ["600000.SH"],
+        date(2020, 1, 1),
+        date(2020, 12, 31),
+        stalled_fetch,
+        bs=bs,
+        sleep=lambda _s: None,
+        deadline=0.01,
+        on_deadline=on_deadline,
+    )
+
+    assert rows == []
+    assert failed == ["600000.SH"]
+    assert calls == {"fetch": 3, "deadline": 3}
+
+
 def test_mid_sweep_login_failure_returns_partial(monkeypatch):
     """A dead baostock session mid-sweep must not discard already-fetched rows."""
     from cnequity.adapters.baostock import _session as sess

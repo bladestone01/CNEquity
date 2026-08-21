@@ -109,6 +109,24 @@ def coverage_start_date(
         and not list(root.glob("*.parquet"))
     ):
         return coverage_start_from_partitions(root, date_col)
+    if (
+        dataset == "daily_bars"
+        and date_col == "trade_date"
+        and parts
+        and all(part.start == part.end for part in parts)
+        and not list(root.glob("*.parquet"))
+    ):
+        # Day partitions bound the scan exactly. Keep walking from the front
+        # because the earliest partition can contain only zero-volume
+        # suspension placeholders, which do not establish traded coverage.
+        for part in parts:
+            scan = scan_parquet_root(root, partition_col=date_col, start=part.start, end=part.end)
+            if "volume" in scan.collect_schema().names():
+                scan = scan.filter(pl.col("volume") > 0)
+            value = scan.select(pl.col(date_col).min()).collect().item()
+            if value is not None:
+                return value
+        return None
     try:
         scan = scan_parquet_root(
             root,
@@ -143,6 +161,25 @@ def coverage_end_date(
         and not list(root.glob("*.parquet"))
     ):
         return parts[-1].end
+    if (
+        dataset == "daily_bars"
+        and date_col == "trade_date"
+        and parts
+        and all(part.start == part.end for part in parts)
+        and not list(root.glob("*.parquet"))
+    ):
+        # As above, do not trust a final placeholder-only partition. In the
+        # normal lake this reads one Parquet partition instead of every
+        # historical file; the fallback remains fully row-based for mixed or
+        # loose layouts.
+        for part in reversed(parts):
+            scan = scan_parquet_root(root, partition_col=date_col, start=part.start, end=part.end)
+            if "volume" in scan.collect_schema().names():
+                scan = scan.filter(pl.col("volume") > 0)
+            value = scan.select(pl.col(date_col).max()).collect().item()
+            if value is not None:
+                return value
+        return None
     try:
         scan = scan_parquet_root(
             root,

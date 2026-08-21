@@ -150,12 +150,43 @@ def _reference_date(config: Config) -> date:
 def classify_catalog(config: Config) -> tuple[dict[str, date], dict[str, date]]:
     """Split the swept catalogue into (delisted, live-but-missing)."""
     raw = _read_catalog(config)["delisted"]
-    cutoff = _reference_date(config) - timedelta(days=LIVE_RECENCY_DAYS)
+    reference = _reference_date(config)
+    cutoff = reference - timedelta(days=LIVE_RECENCY_DAYS)
+    # A probe can be stale even when it is just outside the calendar-day
+    # recency window (this happened for the BJ snapshot recovered on 2026-08-21).
+    # If the current security master still has no formal delist date and the
+    # lake contains a positive-volume bar after the probe terminal, that is
+    # direct evidence of a listed/missing instrument, not a delisting. Use the
+    # bar span as a stronger read-time correction so repair and coverage never
+    # write a delist_date for a currently trading symbol.
+    instrument_dates: dict[str, date | None] = {}
+    instruments = load_curated_instruments(config)
+    if instruments is not None and {"symbol", "delist_date"} <= set(instruments.columns):
+        instrument_dates = {
+            row["symbol"]: row["delist_date"]
+            for row in instruments.select("symbol", "delist_date").iter_rows(named=True)
+        }
+    candidate_symbols = [
+        symbol
+        for symbol, value in raw.items()
+        if instrument_dates.get(symbol) is None and date.fromisoformat(value) < reference
+    ]
+    observed_spans = _bar_spans(
+        config,
+        candidate_symbols,
+        positive_volume_only=True,
+        start=reference - timedelta(days=LIVE_RECENCY_DAYS),
+        end=reference,
+    )
     delisted: dict[str, date] = {}
     live: dict[str, date] = {}
     for sym, value in raw.items():
         last = date.fromisoformat(value)
-        (delisted if last < cutoff else live)[sym] = last
+        observed = observed_spans.get(sym)
+        if instrument_dates.get(sym) is None and observed is not None and observed[1] > last:
+            live[sym] = observed[1]
+        else:
+            (delisted if last < cutoff else live)[sym] = last
     return delisted, live
 
 
@@ -658,6 +689,8 @@ def _bar_spans(
     symbols: list[str],
     *,
     positive_volume_only: bool = True,
+    start: date | None = None,
+    end: date | None = None,
 ) -> dict[str, tuple[date, date]]:
     """``symbol -> (first/last traded date)`` for existing daily bars."""
     if not symbols:
@@ -672,7 +705,10 @@ def _bar_spans(
         partition_col="trade_date",
         hive=False,
         traded_only=positive_volume_only,
-    ).filter(pl.col("symbol").is_in(symbols))
+        start=start,
+        end=end,
+        symbols=symbols,
+    )
     frame = (
         bars.group_by("symbol")
         .agg(

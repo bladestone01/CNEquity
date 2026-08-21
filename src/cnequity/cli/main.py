@@ -928,6 +928,19 @@ def _recover_compactable_backfill_staging(engine: JobEngine, dataset: str) -> li
     config = getattr(engine, "config", None)
     if config is None:  # lightweight engine doubles in CLI/unit tests
         return []
+    # A hard-killed worker leaves its manifest row as ``running``. Reconcile
+    # stale rows before selecting recovery candidates; otherwise their staged
+    # facts stay invisible and the next retry fetches already checkpointed
+    # symbols again. Active runs remain protected by the per-run lock.
+    reconciled = engine.manifest.reconcile_orphaned_runs(
+        stale_after_seconds=config.batch_stale_seconds,
+        locks_root=config.meta_root,
+    )
+    if reconciled.get("runs_closed"):
+        logging.getLogger(__name__).warning(
+            "Reconciled %d orphaned backfill run(s) before staging recovery",
+            reconciled["runs_closed"],
+        )
     writer = StagingWriter(config.staging_root)
     recovered: list[str] = []
     for run in engine.manifest.list_runs("backfill"):

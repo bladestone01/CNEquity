@@ -90,7 +90,18 @@ def step_hot_rank(config: Config, trade_date: date, run_id: str, context: dict) 
     def _fetch(d: date, *, config: Config):
         return fetch_hot_rank(d, config=config, require_top_n=True)
 
-    return _run_rotation_step(config, trade_date, run_id, "hot_rank", _fetch)
+    # The vendor endpoint is a live snapshot and can legally return its last
+    # published session when the requested session has not been refreshed yet.
+    # Validate the response date before staging it; otherwise a stale payload
+    # is recorded as a successful update for the requested day.
+    return _run_rotation_step(
+        config,
+        trade_date,
+        run_id,
+        "hot_rank",
+        _fetch,
+        date_col="trade_date",
+    )
 
 
 # Daily still walks a window rather than a single day: `last.js` carries ~140

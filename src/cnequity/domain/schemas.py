@@ -966,9 +966,13 @@ def sanitize_dataset_rows(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
         and "is_trading" in df.columns
         and df.schema["trade_date"] == pl.Date
     ):
+        from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
+
         return df.with_columns(
             (
-                pl.col("is_trading") & (pl.col("trade_date").dt.weekday() <= 5)
+                pl.col("is_trading")
+                & (pl.col("trade_date").dt.weekday() <= 5)
+                & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
             ).alias("is_trading")
         )
     return df

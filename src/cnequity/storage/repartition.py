@@ -77,6 +77,9 @@ def _has_sanitizable_rows(dataset: str, files: list[Path]) -> bool:
         if dataset == "trading_calendar":
             if "is_trading" not in scan.collect_schema().names():
                 continue
+            from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
+
+            predicate |= pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
             predicate &= pl.col("is_trading")
         count = scan.filter(predicate).select(pl.len()).collect().item()
         if count:

@@ -7,6 +7,7 @@ Long sweeps drop sessions; retry each symbol with backoff and refresh every
 from __future__ import annotations
 
 import logging
+import signal
 import socket
 import threading
 import time
@@ -36,6 +37,48 @@ _DEFAULT_BATCH_REST = 120.0
 _PER_SYMBOL_DEADLINE_SECONDS = 45.0
 # Bound blocked reads (dropped conn can leave ESTABLISHED forever).
 _SOCKET_TIMEOUT_SECONDS = 30.0
+
+
+class _FetchDeadline(TimeoutError):
+    """Raised in the fetching thread when one vendor query exceeds its budget."""
+
+
+def _fetch_with_deadline(fetch, deadline: float, on_deadline):
+    """Run one vendor query with a hard deadline.
+
+    A background thread can close a socket, but closing a descriptor from
+    another thread does not reliably interrupt ``recv`` on macOS. The main
+    ingestion path therefore uses ``SIGALRM`` so the blocked Python socket
+    call is interrupted in the same thread. Libraries that invoke this helper
+    from a worker thread keep the existing Timer fallback.
+    """
+    use_alarm = (
+        threading.current_thread() is threading.main_thread()
+        and hasattr(signal, "setitimer")
+        and hasattr(signal, "ITIMER_REAL")
+    )
+    if use_alarm:
+        previous_handler = signal.getsignal(signal.SIGALRM)
+
+        def _alarm_handler(_signum, _frame):
+            on_deadline()
+            raise _FetchDeadline(f"vendor query exceeded {deadline:.1f}s deadline")
+
+        signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.setitimer(signal.ITIMER_REAL, deadline)
+        try:
+            return fetch()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+    watchdog = threading.Timer(deadline, on_deadline)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        return fetch()
+    finally:
+        watchdog.cancel()
 
 
 def import_baostock():
@@ -215,18 +258,18 @@ def fetch_per_symbol(
             got: list[dict] | None = None
             abort_remaining = False
             for attempt in range(_MAX_RETRIES):
-                watchdog = threading.Timer(deadline, on_deadline)
-                watchdog.start()
                 try:
-                    got = fetch_one(bs, symbol, start, end)
+                    got = _fetch_with_deadline(
+                        lambda symbol=symbol: fetch_one(bs, symbol, start, end),
+                        deadline,
+                        on_deadline,
+                    )
                 except Exception as exc:  # noqa: BLE001 — stalled socket / broken pipe
                     # A socket timeout, dropped connection, or watchdog-closed
                     # socket raises here; treat it like a query error so the
                     # symbol is retried on a fresh login.
                     logger.warning("%s query error for %s: %s", label, symbol, exc)
                     got = None
-                finally:
-                    watchdog.cancel()
                 if got is not None:
                     break
                 sleep(_BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)])

@@ -154,6 +154,29 @@ def test_fetch_incremental_daily_loops_gap_days_for_by_date(tmp_path):
     assert findings == []
 
 
+def test_fetch_incremental_daily_rejects_stale_snapshot_date(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    requested = date(2024, 6, 28)
+
+    def _fetch(day: date) -> pl.DataFrame:
+        assert day == requested
+        return pl.DataFrame(
+            {"trade_date": [date(2024, 6, 27)], "symbol": ["600519.SH"], "value": [1.0]}
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"hot_rank: fetch for 2024-06-28 returned 1 row\(s\) with a different",
+    ):
+        fetch_incremental_daily(
+            cfg,
+            "hot_rank",
+            requested,
+            _fetch,
+            date_col="trade_date",
+        )
+
+
 def test_allowed_empty_response_is_reported_for_dense_dataset(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     _seed_trading_calendar(cfg, date(2024, 6, 24), date(2024, 6, 28))
