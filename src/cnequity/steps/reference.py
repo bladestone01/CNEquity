@@ -23,6 +23,7 @@ from cnequity.domain.symbols import (
     is_tdx_servable,
     parse_symbol,
 )
+from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.registry import register_step
 from cnequity.quality.st_coverage import (
     ST_EVIDENCE_VERSION,
@@ -241,7 +242,12 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
 @register_step("trading_status", group="core")
 def step_trading_status(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_backfill", False):
-        return _backfill_trading_status_st(config, trade_date, run_id)
+        return _backfill_trading_status_st(
+            config,
+            trade_date,
+            run_id,
+            batch_id=context.get("_batch_id"),
+        )
 
     symbols = context.get("symbols") or load_symbols(config)
     expected_symbols = set(symbols)
@@ -419,7 +425,13 @@ def _resolve_explicit_st_symbols(config: Config, raw: list[str]) -> list[str]:
     return sorted(set(resolved))
 
 
-def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -> dict:
+def _backfill_trading_status_st(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    *,
+    batch_id: str | None = None,
+) -> dict:
     """Persist complete historical ST/normal evidence from Baostock.
 
     Completion is an exact versioned scope, not inferred from row presence. The
@@ -486,9 +498,15 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
 
     rows_read = 0
     rows_written = 0
+    manifest = Manifest(config.manifest_path) if batch_id else None
     for offset in range(0, len(todo), _ST_BACKFILL_CHUNK):
         batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
         is_last_batch = offset + len(batch) >= len(todo)
+        if manifest is not None:
+            # This step can run for hours under the provider's cooldown. Keep
+            # the manifest alive before each provider batch so recovery does
+            # not mistake an active sweep for an orphaned run.
+            manifest.touch_batch_heartbeat(run_id, batch_id)
         df, failed = fetch_st_history(
             batch,
             start,

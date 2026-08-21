@@ -88,6 +88,11 @@ class DatasetSpec:
         When False, an empty curated root is a warning (not an error) and does
         not alone make ``lake_health`` UNHEALTHY. Use for registered datasets
         whose source is not yet wired or is temporarily unavailable.
+    empty_severity:
+        Override the severity used when the curated root is absent or empty.
+        ``None`` derives ``error`` for required datasets and ``warning`` for
+        optional datasets. A retired source with no replacement can use
+        ``info`` so its expected absence does not look like an ingest failure.
     history_horizon_days:
         Trading days of history the *source* still serves, counted back from
         today. ``None`` (the default) means the source has no such limit and
@@ -162,6 +167,7 @@ class DatasetSpec:
     # so their inherent lag is not mistaken for a stuck pipeline.
     max_staleness_days: int = 1
     required: bool = True
+    empty_severity: Literal["error", "warning", "info"] | None = None
     history_horizon_days: int | None = None
     history_floor_date: date | None = None
     source_retired_date: date | None = None
@@ -682,6 +688,10 @@ _SPECS = [
         # must not advance a freshness watermark beyond the run day.
         watermark=False,
         required=False,
+        # The EastMoney report was retired; no replacement source is wired.
+        # Keep the registry entry for the schema and future replacement, but
+        # do not present its expected empty root as an active quality warning.
+        empty_severity="info",
     ),
     # L8 risk
     DatasetSpec(

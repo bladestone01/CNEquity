@@ -340,6 +340,7 @@ def _source_diff_config(root: Path) -> Config:
                 backup="eastmoney",
                 compare_fields=["close"],
                 price_tolerance_bps=10.0,
+                snapshot_cadence="daily",
             )
         ],
     )
@@ -383,6 +384,21 @@ def test_source_diff_reports_backup_date_mismatch_as_warning(tmp_path):
     assert finding["severity"] == "warning"
     assert finding["primary_unique_keys"] == 1
     assert finding["backup_unique_keys"] == 0
+
+
+def test_source_diff_reports_missing_on_demand_snapshot_as_info(tmp_path):
+    day = date(2024, 6, 28)
+    _write_primary_bars(tmp_path, ["600519.SH"], day)
+    _write_backup_bars(tmp_path, ["600519.SH"], date(2024, 6, 27))
+
+    cfg = _source_diff_config(tmp_path)
+    cfg.failover_datasets[0].snapshot_cadence = "on_demand"
+    diffs = diff_dataset(cfg, cfg.failover_datasets[0], trade_date=day)
+
+    finding = next(d for d in diffs if d["check"] == "backup_not_captured_for_date")
+    assert finding["severity"] == "info"
+    assert finding["snapshot_cadence"] == "on_demand"
+    assert finding["backup_snapshot_rows"] == 1
 
 
 def test_source_diff_reports_primary_missing_for_date_as_warning(tmp_path):

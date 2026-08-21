@@ -410,3 +410,25 @@ def test_audit_coverage_info_when_st_and_suspension_aligned(tmp_path):
     assert len(coverage) == 1
     assert coverage[0]["severity"] == "info"
     assert coverage[0]["st_evidence_verified"] is True
+
+
+def test_audit_st_evidence_uses_last_traded_bar_on_weekend(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    last_trading_day = date(2024, 6, 28)
+    _write_bars_partition(cfg, last_trading_day)
+    _write_status_partition(cfg, last_trading_day, status="st", source="baostock")
+    _write_st_receipt(cfg, last_trading_day, last_trading_day)
+
+    run_id = "run-weekend-st-coverage"
+    run_audit(cfg, run_id, date(2024, 6, 29), {})  # Saturday
+
+    import json
+
+    payload = json.loads(
+        (cfg.meta_root / "quality" / "findings" / f"{run_id}.json").read_text(encoding="utf-8")
+    )
+    coverage = [f for f in payload["findings"] if f.get("check") == "trading_status_coverage_start"]
+    assert len(coverage) == 1
+    assert coverage[0]["severity"] == "info"
+    assert coverage[0]["st_evidence_verified"] is True
+    assert coverage[0]["daily_bars_end"] == last_trading_day.isoformat()

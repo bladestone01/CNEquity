@@ -42,6 +42,7 @@ from cnequity.quality.unit_checks import (
 )
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.query.universe import (
+    coverage_end_date,
     coverage_start_date,
     st_coverage_start,
     trading_status_coverage_start,
@@ -260,8 +261,13 @@ def _collect_lake_findings(
     ts_start = trading_status_coverage_start(config)
     if ts_start is not None:
         bars_start = coverage_start_date(config, "daily_bars")
+        bars_end = coverage_end_date(config, "daily_bars") or _last_trading_day(config, trade_date)
         observed_st_start = st_coverage_start(config)
-        evidence = st_evidence_coverage_report(config, bars_start, trade_date)
+        # The audit may run on a weekend or holiday. Evidence must cover the
+        # actual bar window, not the wall-clock date when the audit runs;
+        # otherwise a receipt through Friday remains falsely incomplete on
+        # Saturday even though no Saturday bar can exist.
+        evidence = st_evidence_coverage_report(config, bars_start, bars_end)
         if evidence["verified"]:
             message = (
                 "trading_status has complete versioned ST/normal evidence for "
@@ -300,6 +306,7 @@ def _collect_lake_findings(
                     "unsupported_exchange_counts", {}
                 ),
                 "daily_bars_start": bars_start.isoformat() if bars_start else None,
+                "daily_bars_end": bars_end.isoformat() if bars_end else None,
             }
         )
 
@@ -360,27 +367,35 @@ def lake_health(
     research_end: date | None = None,
 ) -> dict:
     """Lake health: findings + freshness → ``meta/quality/health-latest.json``."""
-    from cnequity.domain.datasets import is_dataset_enabled, is_stale
+    from cnequity.domain.datasets import DATASETS, is_dataset_enabled, is_stale
     from cnequity.quality.historical_validity import historical_universe_validity
     from cnequity.query.reader import list_datasets
 
-    findings = _collect_lake_findings(config, trade_date, None, full=True)
+    anchor = _last_trading_day(config, trade_date)
+    # Health can be requested on a weekend/holiday. All data observations
+    # (including source snapshots) must use the last actual session; the raw
+    # calendar date is retained below for reporting only.
+    findings = _collect_lake_findings(config, anchor, None, full=True)
     # source_diff is local-only: it compares curated rows with the latest
     # already-captured backup snapshot. Running it here makes an explicit
     # health check authoritative even when no ingestion run happened today.
-    findings.extend(run_source_diffs(config, f"health-{trade_date.isoformat()}", trade_date))
+    findings.extend(run_source_diffs(config, f"health-{anchor.isoformat()}", anchor))
     by_severity: dict[str, int] = {}
     for f in findings:
         sev = f.get("severity", "info")
         by_severity[sev] = by_severity.get(sev, 0) + 1
 
-    anchor = _last_trading_day(config, trade_date)
     catalog = list_datasets(config=config)
     stale: list[str] = []
     empty: list[str] = []
+    expected_empty: list[str] = []
     for row in catalog.iter_rows(named=True):
         if not row["has_data"]:
-            empty.append(row["dataset"])
+            spec = DATASETS.get(row["dataset"])
+            if spec is not None and spec.empty_severity == "info":
+                expected_empty.append(row["dataset"])
+            else:
+                empty.append(row["dataset"])
             continue
         if not row["watermarked"] or not is_dataset_enabled(row["dataset"], config):
             continue
@@ -401,6 +416,7 @@ def lake_health(
         "warning_findings": [f for f in findings if f.get("severity") == "warning"],
         "stale_datasets": sorted(stale),
         "empty_datasets": sorted(empty),
+        "expected_empty_datasets": sorted(expected_empty),
         # Research readiness is intentionally independent of operational
         # health. A fresh lake can still be unsafe for a long backtest, while a
         # stale optional dataset need not invalidate a closed historical study.

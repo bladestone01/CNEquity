@@ -2,7 +2,14 @@ import sys
 from pathlib import Path
 
 import cnequity.steps  # noqa: F401 — register steps
-from cnequity.config import Config, ScheduleGroup, WaveConfig, load_config, validate_config
+from cnequity.config import (
+    Config,
+    FailoverDatasetSpec,
+    ScheduleGroup,
+    WaveConfig,
+    load_config,
+    validate_config,
+)
 from cnequity.config.bootstrap import path_for_toml
 
 
@@ -37,6 +44,22 @@ servers = "not-a-server"
     cfg = load_config(cfg_path)
     errors = validate_config(cfg)
     assert any("servers must be" in e for e in errors)
+
+
+def test_validate_config_rejects_invalid_failover_snapshot_cadence(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        failover_datasets=[
+            FailoverDatasetSpec(
+                name="daily_bars",
+                primary="tdx_protocol",
+                backup="eastmoney",
+                snapshot_cadence="hourly",
+            )
+        ],
+    )
+    errors = validate_config(cfg)
+    assert any("snapshot_cadence" in e for e in errors)
 
 
 def test_validate_config_accepts_registered_waves(tmp_path):

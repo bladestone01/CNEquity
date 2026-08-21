@@ -219,10 +219,34 @@ def diff_dataset(
             }
         ]
 
+    backup_rows_before_date_filter = backup.height
     if trade_date is not None:
         date_col = _date_column(spec.name)
         if date_col and date_col in backup.columns:
             backup = backup.filter(pl.col(date_col) == trade_date)
+
+    if (
+        backup.is_empty()
+        and backup_rows_before_date_filter
+        and getattr(spec, "snapshot_cadence", "on_demand") == "on_demand"
+    ):
+        return [
+            {
+                "dataset": spec.name,
+                "check": "backup_not_captured_for_date",
+                "severity": "info",
+                "message": (
+                    f"no {spec.backup} snapshot was captured for the comparison window; "
+                    f"{spec.name} backup snapshots are on-demand"
+                ),
+                "primary_source": spec.primary,
+                "backup_source": spec.backup,
+                "primary_unique_keys": primary.height,
+                "backup_unique_keys": 0,
+                "backup_snapshot_rows": backup_rows_before_date_filter,
+                "snapshot_cadence": "on_demand",
+            }
+        ]
 
     pk = PRIMARY_KEYS.get(spec.name, [])
     if not pk:

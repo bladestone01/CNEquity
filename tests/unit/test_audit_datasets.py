@@ -57,7 +57,7 @@ def test_audit_checks_all_partition_col_datasets(tmp_path):
         for f in payload["findings"]
         if f.get("check") == "exists" and f.get("dataset") == "economic_calendar"
     ]
-    assert optional_exists and optional_exists[0]["severity"] == "warning"
+    assert optional_exists and optional_exists[0]["severity"] == "info"
     required_exists = [
         f
         for f in payload["findings"]
@@ -373,3 +373,43 @@ def test_full_health_includes_a_fresh_source_diff(tmp_path, monkeypatch):
     health = lake_health(cfg, date(2024, 6, 28))
 
     assert source_finding in health["warning_findings"]
+
+
+def test_full_health_anchors_observations_to_last_trading_day(tmp_path, monkeypatch):
+    from cnequity.quality.audit import lake_health
+
+    cfg = Config(data_root=tmp_path / "data")
+    calendar_day = date(2024, 6, 29)  # Saturday
+    last_trading_day = date(2024, 6, 28)
+    observed: dict[str, date] = {}
+
+    monkeypatch.setattr(
+        "cnequity.quality.audit._last_trading_day",
+        lambda _config, _trade_date: last_trading_day,
+    )
+    monkeypatch.setattr(
+        "cnequity.quality.audit._collect_lake_findings",
+        lambda _config, trade_date, *_args, **_kwargs: observed.setdefault(
+            "findings", trade_date
+        )
+        and [],
+    )
+    monkeypatch.setattr(
+        "cnequity.quality.audit.run_source_diffs",
+        lambda _config, _run_id, trade_date: observed.setdefault("source_diff", trade_date)
+        and [],
+    )
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.historical_universe_validity",
+        lambda *args, **kwargs: {
+            "universe_ready": True,
+            "window": {"start": None, "end": None},
+            "blockers": [],
+        },
+    )
+
+    health = lake_health(cfg, calendar_day)
+
+    assert observed == {"findings": last_trading_day, "source_diff": last_trading_day}
+    assert health["trade_date"] == calendar_day.isoformat()
+    assert health["last_trading_day"] == last_trading_day.isoformat()

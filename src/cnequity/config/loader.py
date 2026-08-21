@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from cnequity.domain.rate_limit import RateLimitSpec
 
@@ -31,6 +32,10 @@ class FailoverDatasetSpec:
     backup: str
     compare_fields: list[str] = field(default_factory=lambda: ["close"])
     price_tolerance_bps: float = 10.0
+    # ``on_demand`` snapshots are written only when a route/gap-fill invokes
+    # the backup source. Their absence for a clean primary day is informative,
+    # not a primary-data failure. ``daily`` requires a same-day peer.
+    snapshot_cadence: Literal["on_demand", "daily"] = "on_demand"
 
 
 @dataclass
@@ -250,6 +255,7 @@ def load_config(path: str | Path) -> Config:
                 backup=str(item.get("backup", "eastmoney")),
                 compare_fields=list(item.get("compare_fields", ["close"])),
                 price_tolerance_bps=float(item.get("price_tolerance_bps", 10.0)),
+                snapshot_cadence=str(item.get("snapshot_cadence", "on_demand")),
             )
         )
 
@@ -338,6 +344,12 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("[tdx_protocol].lock_timeout_sec must be > 0")
     if not cfg.daily_waves:
         errors.append("job.daily.waves must define at least one wave")
+    for spec in cfg.failover_datasets:
+        if spec.snapshot_cadence not in {"on_demand", "daily"}:
+            errors.append(
+                f"failover dataset {spec.name!r}: snapshot_cadence must be "
+                "'on_demand' or 'daily'"
+            )
 
     # Each frequency must have a dataset to land in, or its rows would have
     # nowhere to go and its horizon nowhere to be declared.

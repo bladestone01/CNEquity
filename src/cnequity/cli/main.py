@@ -1312,6 +1312,11 @@ def audit(
         )
         if health["empty_datasets"]:
             click.echo(f"  empty datasets: {', '.join(health['empty_datasets'])}")
+        if health.get("expected_empty_datasets"):
+            click.echo(
+                "  expected empty datasets: "
+                f"{', '.join(health['expected_empty_datasets'])}"
+            )
         if health["stale_datasets"]:
             click.echo(f"  STALE datasets: {', '.join(health['stale_datasets'])}")
         for f in health["error_findings"]:

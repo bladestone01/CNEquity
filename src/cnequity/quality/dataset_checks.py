@@ -560,8 +560,13 @@ def audit_curated_dataset(
     findings: list[dict] = []
     from cnequity.domain.datasets import DATASETS
 
-    required = DATASETS[dataset].required if dataset in DATASETS else True
-    empty_severity = "error" if required else "warning"
+    spec = DATASETS.get(dataset)
+    required = spec.required if spec is not None else True
+    empty_severity = (
+        spec.empty_severity
+        if spec is not None and spec.empty_severity is not None
+        else ("error" if required else "warning")
+    )
 
     if not root.exists():
         findings.append(
