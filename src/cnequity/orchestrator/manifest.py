@@ -269,6 +269,31 @@ class Manifest:
                 ),
             )
 
+    def resolve_failed_batch(
+        self,
+        run_id: str,
+        batch_id: str,
+        *,
+        error_message: str,
+    ) -> None:
+        """Close a failed attempt after a step-level recovery succeeds.
+
+        Worker batches are recorded as failed before the step-level secondary
+        source gets a chance to repair their symbols. Keeping that terminal
+        status would block compaction even when the step verified recovery.
+        The failed attempt remains in the audit ledger, but its current
+        completion state becomes success.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_batches
+                SET status = 'success', finished_at = ?, error_message = ?
+                WHERE run_id = ? AND batch_id = ? AND status = 'failed'
+                """,
+                (_utcnow(), error_message, run_id, batch_id),
+            )
+
     def supersede_batches(
         self,
         run_id: str,
@@ -570,6 +595,33 @@ class Manifest:
                 (run_id,),
             )
             return cur.fetchall()
+
+    def get_successful_batches(
+        self,
+        dataset: str,
+        window_start: str,
+        window_end: str,
+        *,
+        exclude_run_id: str | None = None,
+    ) -> list[sqlite3.Row]:
+        """Find successful batches for an identical date window.
+
+        Daily catchup is resumable across runs: a prior run may have compact
+        verified batches before a later batch failed. Those batches are safe to
+        reuse, while failed/running attempts are intentionally excluded.
+        """
+        query = """
+            SELECT * FROM ingestion_batches
+            WHERE dataset = ? AND status = 'success'
+              AND window_start = ? AND window_end = ?
+        """
+        params: list[object] = [dataset, window_start, window_end]
+        if exclude_run_id is not None:
+            query += " AND run_id != ?"
+            params.append(exclude_run_id)
+        query += " ORDER BY finished_at, run_id, batch_id"
+        with self._connect() as conn:
+            return conn.execute(query, params).fetchall()
 
     def get_batch(self, run_id: str, batch_id: str) -> sqlite3.Row | None:
         with self._connect() as conn:

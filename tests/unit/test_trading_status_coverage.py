@@ -107,6 +107,73 @@ def test_current_st_universe_excludes_cdrs(tmp_path):
     assert current_st_universe(cfg) == ["600519.SH"]
 
 
+def test_st_coverage_reports_unsupported_bj_separately(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH", "920001.BJ"]}).write_parquet(
+        instruments / "part-merged.parquet"
+    )
+    bars = cfg.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "920001.BJ"],
+            "trade_date": [date(2024, 6, 27)] * 2,
+            "volume": [100, 100],
+        }
+    ).write_parquet(bars / "part-0.parquet")
+
+    # This is the legacy name used by the existing production receipt for the
+    # Baostock-supported SH/SZ subset.
+    scope = build_st_scope(
+        ["600519.SH"], date(2024, 6, 27), date(2024, 6, 27), universe="all_a_sh_sz"
+    )
+    checkpoint = {
+        "schema_version": 1,
+        "claim": "historical_st_evidence",
+        "scope": scope,
+        "status": "complete",
+        "completed_symbols": ["600519.SH"],
+        "evidence_rows_by_symbol": {"600519.SH": 0},
+        "unresolved_symbols": [],
+    }
+    write_st_checkpoint(cfg, checkpoint)
+    publish_st_coverage_receipt(cfg, checkpoint)
+
+    report = st_evidence_coverage_report(cfg, date(2024, 6, 27), date(2024, 6, 27))
+
+    assert report["verified"] is False
+    assert report["supported_coverage_verified"] is True
+    assert report["current_symbols"] == 2
+    assert report["supported_symbols"] == 1
+    assert report["unsupported_symbols"] == 1
+    assert report["unsupported_exchange_counts"] == {"BJ": 1}
+    assert report["reason"] == "unsupported_exchange_symbols"
+
+
+def test_current_st_universe_can_prune_bars_to_requested_window(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH", "000001.SZ"]}).write_parquet(
+        instruments / "part-merged.parquet"
+    )
+    bars = cfg.curated_root / "daily_bars"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "trade_date": [date(2024, 6, 27), date(2024, 6, 28)],
+            "volume": [100, 100],
+        }
+    ).write_parquet(bars / "part-0.parquet")
+
+    assert current_st_universe(cfg, start=date(2024, 6, 27), end=date(2024, 6, 27)) == [
+        "600519.SH"
+    ]
+
+
 def test_current_st_universe_ignores_zero_volume_placeholders(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     instruments = cfg.curated_root / "instruments"
@@ -280,6 +347,48 @@ def test_audit_warns_when_st_labels_lag_bars(tmp_path):
     assert coverage[0]["coverage_start"] == "2016-01-04"
     assert coverage[0]["st_coverage_start"] == "2024-06-28"
     assert "ST evidence" in coverage[0]["message"]
+
+
+def test_audit_surfaces_unsupported_st_source_scope(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    day = date(2024, 6, 28)
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH", "920001.BJ"]}).write_parquet(
+        instruments / "part-merged.parquet"
+    )
+    bars = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "920001.BJ"],
+            "trade_date": [day, day],
+            "open": [10.0, 10.0],
+            "high": [11.0, 11.0],
+            "low": [9.0, 9.0],
+            "close": [10.5, 10.5],
+            "volume": [1000, 1000],
+            "amount": [10_500.0, 10_500.0],
+            "source": ["tdx_protocol", "sina"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [f"{day.isoformat()}T00:00:00+00:00"] * 2,
+        }
+    ).write_parquet(bars / "part-0.parquet")
+    _write_status_partition(cfg, day)
+
+    run_id = "run-unsupported-st-scope"
+    run_audit(cfg, run_id, day, {})
+
+    import json
+
+    findings = json.loads(
+        (cfg.meta_root / "quality" / "findings" / f"{run_id}.json").read_text(encoding="utf-8")
+    )["findings"]
+    coverage = [f for f in findings if f.get("check") == "trading_status_coverage_start"]
+    assert len(coverage) == 1
+    assert coverage[0]["st_evidence_unsupported_symbols"] == 1
+    assert coverage[0]["st_evidence_unsupported_exchange_counts"] == {"BJ": 1}
+    assert "BJ=1" in coverage[0]["message"]
 
 
 def test_audit_coverage_info_when_st_and_suspension_aligned(tmp_path):

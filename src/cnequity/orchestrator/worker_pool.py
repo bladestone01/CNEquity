@@ -14,7 +14,6 @@ from cnequity.adapters.tdx_protocol.client import fetch_daily_bars, normalize_wi
 from cnequity.config import Config, load_config
 from cnequity.domain.rate_limit import RateLimitSpec
 from cnequity.orchestrator.manifest import Manifest
-from cnequity.quality.failover import snapshot_daily_bars_backup
 from cnequity.steps.common import BACKFILL_START
 from cnequity.storage import StagingWriter
 
@@ -96,10 +95,29 @@ def _require_daily_bar_symbol_coverage(df, symbols: list[str]) -> None:
     if missing:
         preview = ", ".join(missing[:8])
         suffix = "..." if len(missing) > 8 else ""
-        raise RuntimeError(
+        raise DailyBarCoverageError(
             f"daily_bars: TDX returned no rows for {len(missing)} requested symbol(s): "
-            f"{preview}{suffix}"
+            f"{preview}{suffix}",
+            missing_symbols=missing,
         )
+
+
+class DailyBarCoverageError(RuntimeError):
+    """TDX returned a partial symbol batch with an explicit missing scope."""
+
+    def __init__(self, message: str, *, missing_symbols: list[str]):
+        super().__init__(message)
+        self.missing_symbols = tuple(missing_symbols)
+
+
+def _failed_symbols_for_error(exc: BaseException, symbols: list[str]) -> list[str]:
+    """Return the narrow retry scope when a validator identified one."""
+    missing = getattr(exc, "missing_symbols", None)
+    if isinstance(missing, (list, tuple, set)):
+        scoped = [str(symbol) for symbol in missing if str(symbol) in set(symbols)]
+        if scoped:
+            return list(dict.fromkeys(scoped))
+    return list(symbols)
 
 
 def _require_daily_bar_date_coverage(df, start: date, end: date) -> None:
@@ -130,7 +148,6 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
         rate_limit,
         allow_mock,
         manifest_path,
-        failover_enabled,
         backfill,
         config_path,
     ) = args
@@ -191,28 +208,12 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             "failed_symbols": [],
         }
     except Exception as exc:
+        failed_scope = _failed_symbols_for_error(exc, symbols)
         if manifest:
+            manifest.set_batch_symbols(run_id, batch_id, failed_scope)
             manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
         # Tip windows: step-level clist gap-fill. Multi-day: kline snapshot only
         # (staging gap-fill also happens at the step for failed_symbols).
-        if failover_enabled and dataset == "daily_bars" and start < end:
-            from cnequity.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_bars
-            from cnequity.domain.schemas import data_version_for, with_provenance
-            from cnequity.storage.source_snapshots import SnapshotStore
-
-            backup_df = fetch_em_bars(symbols, start, end, config=tdx_cfg)
-            if backup_df.height:
-                version = data_version_for(dataset)
-                backup_df = with_provenance(backup_df, source="eastmoney", data_version=version)
-                SnapshotStore(Path(staging_root).parent / "meta").write(
-                    dataset,
-                    backup_df,
-                    source="eastmoney",
-                    data_version=version,
-                    run_id=run_id,
-                    batch_id=f"{batch_id}-backup",
-                    trade_date=end,
-                )
         raise
 
 
@@ -305,16 +306,9 @@ def fetch_daily_bars_parallel(
                 "failed_symbols": [],
             }
         except Exception as exc:
+            failed_scope = _failed_symbols_for_error(exc, batch_symbols)
+            manifest.set_batch_symbols(run_id, batch_id, failed_scope)
             manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
-            if config.failover_enabled and dataset == "daily_bars":
-                snapshot_daily_bars_backup(
-                    config,
-                    symbols=batch_symbols,
-                    start=batch_start,
-                    end=batch_end,
-                    run_id=run_id,
-                    batch_id=f"{batch_id}-backup",
-                )
             raise
 
     def _outcome(had_error: bool) -> dict[str, Any]:
@@ -357,10 +351,11 @@ def fetch_daily_bars_parallel(
                 total_read += result["rows_read"]
                 total_written += result["rows_written"]
                 _progress(batch_symbols)
-            except Exception:
+            except Exception as exc:
                 had_error = True
-                failed_symbols.extend(batch_symbols)
-                _progress(batch_symbols, failed=True)
+                failed_scope = _failed_symbols_for_error(exc, batch_symbols)
+                failed_symbols.extend(failed_scope)
+                _progress(failed_scope, failed=True)
         return _outcome(had_error)
 
     def _task_for(batch: tuple) -> tuple:
@@ -376,7 +371,6 @@ def fetch_daily_bars_parallel(
             rate_limit_tuple,
             config.tdx_allow_mock,
             manifest_path,
-            config.failover_enabled,
             _window_backfill(config, batch_start),
             str(config.config_path) if config.config_path else "",
         )
@@ -418,7 +412,7 @@ def fetch_daily_bars_parallel(
                     had_error = True
                     batch = pending.pop(batch_id, None)
                     if batch is not None:
-                        failed_symbols.extend(batch[1])
+                        failed_symbols.extend(_failed_symbols_for_error(exc, batch[1]))
                     _progress(batch[1] if batch else [], failed=True)
                     logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
     except BrokenProcessPool:
@@ -452,7 +446,7 @@ def fetch_daily_bars_parallel(
                 pending.pop(batch_id, None)
             except Exception as exc:
                 had_error = True
-                failed_symbols.extend(batch[1])
+                failed_symbols.extend(_failed_symbols_for_error(exc, batch[1]))
                 logger.warning("%s batch %s failed on serial retry: %s", dataset, batch_id, exc)
 
     return _outcome(had_error)

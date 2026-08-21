@@ -99,6 +99,40 @@ def test_checkpoint_batches_match_provider_cooldown_batches(tmp_path, monkeypatc
     assert [rests for _, rests in calls] == [True, True, False]
 
 
+def test_backfill_skips_provider_unsupported_bj_symbols(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    _write_instruments(cfg, ["600000.SH", "920001.BJ"])
+    calls: list[list[str]] = []
+
+    def fake_fetch(symbols, start, end, **kwargs):
+        calls.append(list(symbols))
+        return pl.DataFrame(schema={
+            "symbol": pl.Utf8,
+            "trade_date": pl.Date,
+            "is_trading": pl.Boolean,
+            "status": pl.Utf8,
+        }), []
+
+    monkeypatch.setattr("cnequity.adapters.baostock.st_history.fetch_st_history", fake_fetch)
+    result = _backfill_trading_status_st(cfg, date(2026, 7, 1), "run1")
+
+    assert calls == [["600000.SH"]]
+    assert result["coverage_pending_compact"] is True
+    assert result["unsupported_symbols"] == 1
+    assert result["unsupported_exchanges"] == ["BJ"]
+
+
+def test_explicit_bj_st_scope_fails_with_provider_capability_message(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    _write_instruments(cfg, ["920001.BJ"])
+    cfg._backfill_symbols = ["920001.BJ"]
+
+    import pytest
+
+    with pytest.raises(ValueError, match="cannot query BJ symbols"):
+        _backfill_trading_status_st(cfg, date(2026, 7, 1), "run1")
+
+
 def test_new_run_rechecks_positive_rows_that_never_reached_storage(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "data")
     _write_instruments(cfg, ["600000.SH", "600001.SH"])

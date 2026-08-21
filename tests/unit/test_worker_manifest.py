@@ -173,7 +173,7 @@ def test_partial_tdx_symbol_batch_is_not_staged_as_success(worker_config, monkey
     )
 
     assert result["had_error"] is True
-    assert result["failed_symbols"] == ["600519.SH", "000001.SZ"]
+    assert result["failed_symbols"] == ["000001.SZ"]
     assert result["rows_written"] == 0
     batch = manifest.get_batches_for_run(run_id)[0]
     assert batch["status"] == "failed"
@@ -250,6 +250,10 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
         "cnequity.steps.bars.load_symbols",
         lambda _cfg: ["600519.SH", "000001.SZ"],
     )
+    # This test exercises retry of a failed primary batch.  Keep the backup
+    # vendors disabled so the first failure remains deterministic and does not
+    # depend on a live Sina/EastMoney response.
+    worker_config.sources.update({"sina": False, "eastmoney": False})
     worker_config.tdx_allow_mock = False
 
     init_data_layout(worker_config)
@@ -279,6 +283,47 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
         "derive_industry_index",
         "audit",
     }
+
+
+def test_partial_batch_retry_scope_is_reduced_to_missing_symbols(worker_config, monkeypatch):
+    from cnequity.adapters.tdx_protocol import client as tdx
+
+    worker_config.batch_size = 2
+    worker_config.failover_enabled = False
+    worker_config.sources.update({"sina": False, "eastmoney": False})
+    calls: list[list[str]] = []
+    attempts = 0
+
+    def _fetch(symbols, start, end, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        calls.append(list(symbols))
+        if attempts == 1:
+            # The second symbol proves that the first one is the only missing
+            # key; retry must not repeat the whole original batch.
+            return tdx._mock_bars([symbols[1]], start, end)
+        return tdx._mock_bars(symbols, start, end)
+
+    monkeypatch.setattr("cnequity.orchestrator.worker_pool.fetch_daily_bars", _fetch)
+    monkeypatch.setattr("cnequity.steps.bars.load_symbols", lambda _cfg: ["600519.SH", "000001.SZ"])
+    worker_config.tdx_allow_mock = False
+
+    init_data_layout(worker_config)
+    engine = JobEngine(worker_config)
+    result = engine.run_job("daily", date(2024, 6, 28), steps=["daily_bars"])
+    assert result["status"] == "failed"
+    failed = Manifest(worker_config.manifest_path).get_failed_batches(result["run_id"])
+    assert len(failed) == 1
+    assert failed[0]["symbols_json"] == '["600519.SH"]'
+
+    retry = engine.run_job(
+        "daily",
+        date(2024, 6, 28),
+        run_id=result["run_id"],
+        retry_failed_only=True,
+    )
+    assert retry["status"] == "success"
+    assert calls == [["600519.SH", "000001.SZ"], ["600519.SH"]]
 
 
 def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):

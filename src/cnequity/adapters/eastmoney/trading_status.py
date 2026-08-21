@@ -7,15 +7,19 @@ from datetime import date
 import polars as pl
 
 from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
-from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
 
 # Risk-warning board (ST / *ST), the fs behind quote.eastmoney.com st_board.
 # Do NOT use all-A market fs here.
 _ST_FS = "m:0+f:4,m:1+f:4"
-_SUSPEND_REPORT = "RPT_CUSTOM_SUSPEND_DATA_INTERFACE"
-_SUSPEND_COLUMNS = "SECURITY_CODE,TRADE_MARKET,STOP_DATE,RESUME_DATE"
+# The old datacenter report now rejects otherwise valid requests with a
+# server-side 9501 contract requiring undocumented MARKET/DATETIME values.
+# This is the same feed used by EastMoney's public suspension page and keeps
+# the market/date selector explicit instead of guessing the retired report's
+# enum values.
+_SUSPEND_LIST_URL = "https://datapc.eastmoney.com/emdatacenter/tfg/list2"
+_SUSPEND_MARKET = 1  # all mainland markets; non-A rows are filtered below
 # Smaller pages: large pz on push2 often 502s (esp. overseas).
 _ST_PAGE_SIZE = 100
 
@@ -35,11 +39,17 @@ def _em_date(value: object) -> date | None:
 
 
 def _suspension_covers(item: dict, trade_date: date) -> bool:
-    stop_date = _em_date(item.get("STOP_DATE"))
+    stop_date = _em_date(
+        item.get("STOP_DATE")
+        or item.get("SUSPEND_START_DATE")
+        or item.get("SUSPEND_START_TIME")
+    )
     if stop_date is None or stop_date > trade_date:
         return False
 
-    resume_raw = str(item.get("RESUME_DATE") or "").strip().lower()
+    resume_raw = str(
+        item.get("RESUME_DATE") or item.get("SUSPEND_END_TIME") or ""
+    ).strip().lower()
     if not resume_raw or resume_raw == "null":
         return True
     resume_date = _em_date(resume_raw)
@@ -64,13 +74,36 @@ def _fetch_st_symbols(client: EastMoneyClient) -> set[str]:
 
 
 def _fetch_suspended_symbols(client: EastMoneyClient, trade_date: date) -> set[str]:
-    ds = trade_date.strftime("%Y-%m-%d")
-    rows = fetch_datacenter(
-        client,
-        _SUSPEND_REPORT,
-        _SUSPEND_COLUMNS,
-        filter_expr=f"(STOP_DATE<='{ds}')(RESUME_DATE>='{ds}'~RESUME_DATE='null')",
+    response = client.get(
+        _SUSPEND_LIST_URL,
+        params={
+            "mkt": _SUSPEND_MARKET,
+            "st": "SUSPEND_START_DATE",
+            "sr": -1,
+            "fd": trade_date.isoformat(),
+        },
     )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError("EastMoney suspension response is not an object")
+    if payload.get("success") is False:
+        raise RuntimeError(
+            "EastMoney suspension list failed: "
+            f"{payload.get('message') or 'unknown response error'}"
+        )
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("EastMoney suspension response without a result object")
+    raw_rows = result.get("data")
+    if raw_rows is None:
+        rows: list[dict] = []
+    elif isinstance(raw_rows, list):
+        if any(not isinstance(item, dict) for item in raw_rows):
+            raise RuntimeError("EastMoney suspension response contains a non-object row")
+        rows = raw_rows
+    else:
+        raise RuntimeError("EastMoney suspension response data is not a list")
 
     matching_rows = [item for item in rows if _suspension_covers(item, trade_date)]
     if rows and not matching_rows:

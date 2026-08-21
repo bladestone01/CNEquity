@@ -135,16 +135,32 @@ def historical_universe_validity(
     st_evidence = st_evidence_coverage_report(config, requested_start, requested_end)
     st_valid = bool(st_evidence["verified"])
     if not st_valid:
+        unsupported = int(st_evidence.get("unsupported_symbols", 0) or 0)
+        if st_evidence.get("reason") == "unsupported_exchange_symbols":
+            message = (
+                "historical ST evidence covers the supported exchanges, but "
+                f"{unsupported} all-A symbol(s) belong to an exchange not served by "
+                "the configured historical source"
+            )
+            remediation = (
+                "Configure an independent historical BJ ST source (for example a "
+                "licensed ST-history feed), or explicitly exclude BJ symbols from "
+                "the research universe; do not treat them as normal."
+            )
+        else:
+            message = "historical ST evidence has no complete, current scope receipt " \
+                f"for the requested window ({st_evidence['reason']})"
+            remediation = (
+                "Run a full `cne backfill trading_status` for this window and current "
+                "all-A symbol scope; resolve every failed symbol."
+            )
         blockers.append(
             {
                 "check": "historical_st_labels",
                 "code": "historical_st_labels_incomplete",
-                "message": "historical ST evidence has no complete, current scope receipt "
-                f"for the requested window ({st_evidence['reason']})",
-                "remediation": (
-                    "Run a full `cne backfill trading_status` for this window and current "
-                    "all-A symbol scope; resolve every failed symbol."
-                ),
+                "message": message,
+                "remediation": remediation,
+                "unsupported_symbols": unsupported,
             }
         )
 

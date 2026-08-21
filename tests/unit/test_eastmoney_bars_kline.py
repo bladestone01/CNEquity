@@ -122,6 +122,29 @@ def test_fetch_daily_bars_continues_after_symbol_failure():
     assert df.row(0, named=True)["symbol"] == "600519.SH"
 
 
+def test_fetch_daily_bars_opens_circuit_after_repeated_transport_failures(monkeypatch):
+    client = _Client(
+        raise_for={
+            "0.000001",
+            "0.000002",
+            "0.000003",
+            "0.000004",
+            "0.000005",
+        }
+    )
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.is_transport_fail_fast", lambda _exc: True)
+
+    df = fetch_daily_bars(
+        ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ", "000005.SZ"],
+        date(2024, 6, 1),
+        date(2024, 6, 28),
+        client=client,
+    )
+
+    assert df.is_empty()
+    assert len(client.calls) == 3
+
+
 def test_fetch_daily_bars_empty_when_no_rows():
     client = _Client({})
     df = fetch_daily_bars(["600519.SH"], date(2024, 6, 1), date(2024, 6, 28), client=client)

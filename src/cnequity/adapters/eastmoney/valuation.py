@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import polars as pl
@@ -11,6 +12,7 @@ from cnequity.adapters.eastmoney.common import _to_float
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 
 _VALUATION_FIELDS = "f12,f13,f9,f23,f45,f20,f21"
+logger = logging.getLogger(__name__)
 
 
 def fetch_valuation_metrics(
@@ -26,9 +28,9 @@ def fetch_valuation_metrics(
         rows_raw = fetch_clist_pages(client, fields=_VALUATION_FIELDS)
         mapped_rows = clist_rows_to_symbols(rows_raw)
         if len(mapped_rows) != len(rows_raw):
-            raise RuntimeError(
-                "EastMoney valuation_metrics clist returned "
-                f"{len(rows_raw) - len(mapped_rows)} unmappable security row(s)"
+            logger.warning(
+                "EastMoney valuation_metrics clist dropped %d non-security row(s)",
+                len(rows_raw) - len(mapped_rows),
             )
         rows = []
         for sym, item in mapped_rows:

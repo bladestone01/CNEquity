@@ -17,6 +17,10 @@ from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_
 logger = logging.getLogger(__name__)
 
 _HOT_RANK_URL = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList"
+# The public endpoint currently caps the response at 100 rows and returns an
+# empty page for pageNo>1 or pageSize>100. Keep the default honest; requesting
+# 500 must remain an explicit contract check for callers that need more.
+_HOT_SOURCE_LIMIT = 100
 _NEWS_URL = "https://np-listapi.eastmoney.com/comm/web/getFastNewsList"
 _HOT_MAX_PAGES = 100
 _NEWS_MAX_PAGES = 100
@@ -81,7 +85,7 @@ def _news_market(code: str) -> str:
 
 
 def fetch_hot_rank(
-    trade_date: date, *, top_n: int = 500, config=None, require_top_n: bool = False
+    trade_date: date, *, top_n: int = _HOT_SOURCE_LIMIT, config=None, require_top_n: bool = False
 ) -> pl.DataFrame:
     if top_n < 0:
         raise ValueError("hot rank top_n must be non-negative")

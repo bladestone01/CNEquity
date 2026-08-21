@@ -457,17 +457,25 @@ def fetch_daily_bars(
             for sym in symbols:
                 if on_heartbeat is not None:
                     on_heartbeat()
-                rows.extend(
-                    fetch_bars_paginated(
-                        client,
-                        sym,
-                        start,
-                        end,
-                        rate_limit=rate_limit,
-                        backfill=backfill,
-                        on_page=on_heartbeat,
+                try:
+                    rows.extend(
+                        fetch_bars_paginated(
+                            client,
+                            sym,
+                            start,
+                            end,
+                            rate_limit=rate_limit,
+                            backfill=backfill,
+                            on_page=on_heartbeat,
+                        )
                     )
-                )
+                except Exception as exc:
+                    # A page failure belongs to this symbol. Keeping already
+                    # fetched rows lets the worker's coverage validator narrow
+                    # the retry/failover scope instead of discarding a whole
+                    # market batch because one code timed out.
+                    logger.warning("TDX daily bars failed for %s: %s", sym, exc)
+                    reset_tdx_server_cache()
             if rows:
                 return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
             reason = "TDX returned no bars"

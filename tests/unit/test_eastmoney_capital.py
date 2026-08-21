@@ -115,14 +115,16 @@ def test_fund_flow_closes_owned_client_when_clist_fails(monkeypatch):
     assert created[0].closed is True
 
 
-def test_fund_flow_rejects_unmappable_clist_rows(monkeypatch):
+def test_fund_flow_drops_unmappable_non_security_rows(monkeypatch):
     monkeypatch.setattr(
         cap,
         "fetch_clist_pages",
         lambda *args, **kwargs: [{"f12": "600519", "f13": 1}, {"f12": "123456"}],
     )
-    with pytest.raises(RuntimeError, match="fund_flow clist returned 1 unmappable"):
-        cap.fetch_fund_flow(date(2025, 1, 2), client=SimpleNamespace(close=lambda: None))
+    out = cap.fetch_fund_flow(
+        date(2025, 1, 2), client=SimpleNamespace(close=lambda: None)
+    )
+    assert out["symbol"].to_list() == ["600519.SH"]
 
 
 def test_capital_adapters_close_owned_client_when_parsing_fails(monkeypatch):

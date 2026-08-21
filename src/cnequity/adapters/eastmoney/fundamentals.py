@@ -248,6 +248,10 @@ def _fetch_report(
         report.columns,
         filter_expr=filter_expr,
         page_size=500,
+        # Financial announcements can be inserted while a paged daily report
+        # is being read. Keep the truncation/short-page guards, but accept a
+        # small upward count drift once all declared pages are read.
+        allow_count_overrun=True,
     )
 
 

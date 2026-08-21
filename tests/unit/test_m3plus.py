@@ -186,7 +186,7 @@ def test_membership_adapters_close_owned_client_when_parsing_fails(
     assert created[0].closed is True
 
 
-def test_index_constituents_rejects_a_stale_source_snapshot():
+def test_index_constituents_carries_forward_member_effective_dates():
     client = FakeDatacenterClient(
         {
             "RPT_INDEX_CONSTITUENT": [
@@ -199,12 +199,12 @@ def test_index_constituents_rejects_a_stale_source_snapshot():
         }
     )
 
-    with pytest.raises(RuntimeError, match="000300.SH"):
-        fetch_index_constituents(
-            date(2024, 6, 28),
-            indices=["000300.SH"],
-            client=client,  # type: ignore[arg-type]
-        )
+    df = fetch_index_constituents(
+        date(2024, 6, 28),
+        indices=["000300.SH"],
+        client=client,  # type: ignore[arg-type]
+    )
+    assert df["as_of_date"].to_list() == [date(2024, 6, 28)]
 
 
 def test_index_constituents_rejects_an_empty_requested_index():

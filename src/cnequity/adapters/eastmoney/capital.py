@@ -146,9 +146,9 @@ def fetch_fund_flow(
         rows_raw = fetch_clist_pages(client, fields=_FUND_FLOW_FIELDS)
         mapped_rows = clist_rows_to_symbols(rows_raw)
         if len(mapped_rows) != len(rows_raw):
-            raise RuntimeError(
-                "EastMoney fund_flow clist returned "
-                f"{len(rows_raw) - len(mapped_rows)} unmappable security row(s)"
+            logger.warning(
+                "EastMoney fund_flow clist dropped %d non-security row(s)",
+                len(rows_raw) - len(mapped_rows),
             )
         rows = []
         for sym, item in mapped_rows:

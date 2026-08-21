@@ -172,6 +172,84 @@ def _record_delegated_ownership_batch(
     return complete
 
 
+def _reuse_successful_daily_bars(
+    config: Config,
+    run_id: str,
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> set[str]:
+    """Seed this run from verified staging batches of an interrupted run.
+
+    A failed catchup should not make the next run re-fetch every symbol whose
+    earlier batch already finished successfully. Only manifest-successful
+    batches with the exact same window are eligible; failed/running staging is
+    never reused. A symbol is removed from the new fetch scope only when all
+    trading sessions in the window are present.
+    """
+    import polars as pl
+
+    from cnequity.orchestrator.manifest import Manifest
+    from cnequity.storage import StagingWriter
+
+    sessions = list_trading_dates(config, start, end)
+    if not symbols or not sessions:
+        return set()
+    batches = Manifest(config.manifest_path).get_successful_batches(
+        "daily_bars",
+        start.isoformat(),
+        end.isoformat(),
+        exclude_run_id=run_id,
+    )
+    if not batches:
+        return set()
+
+    files = []
+    for batch in batches:
+        path = config.staging_root / "daily_bars" / f"run_id={batch['run_id']}" / (
+            f"part-{batch['batch_id']}.parquet"
+        )
+        if path.exists():
+            files.append(path)
+    if not files:
+        return set()
+
+    frames = [pl.read_parquet(path) for path in files]
+    reused = pl.concat(frames, how="diagonal_relaxed").filter(
+        pl.col("symbol").is_in(symbols)
+        & pl.col("trade_date").is_in(sessions)
+    )
+    if reused.is_empty():
+        return set()
+    reused = reused.sort("fetched_at").unique(
+        subset=["symbol", "trade_date"], keep="last"
+    )
+    reused_symbols = set(
+        reused.group_by("symbol")
+        .len()
+        .filter(pl.col("len") == len(sessions))
+        .get_column("symbol")
+        .to_list()
+    )
+    if not reused_symbols:
+        return set()
+
+    reused = reused.filter(pl.col("symbol").is_in(sorted(reused_symbols)))
+    StagingWriter(config.staging_root).write_batch(
+        "daily_bars",
+        run_id,
+        f"reused-successful-{start.isoformat()}-{end.isoformat()}",
+        reused,
+    )
+    logger.info(
+        "daily_bars: reused %d symbol(s) from %d prior successful batch(es); "
+        "fetching the remaining scope",
+        len(reused_symbols),
+        len(files),
+    )
+    return reused_symbols
+
+
 def _merge_ownership_result(
     out: dict,
     config: Config,
@@ -285,18 +363,25 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
     # arrive, which is exactly how the lake ended up with zero BJ coverage.
     # Tip gaps after TDX are a second routing case (ADR-0005): EastMoney clist.
     tdx_symbols, fallback_symbols = split_by_quote_source(ownership.generic)
+    reused_symbols = _reuse_successful_daily_bars(
+        config, run_id, ownership.generic, start, end
+    )
+    fetch_tdx_symbols = [symbol for symbol in tdx_symbols if symbol not in reused_symbols]
+    fetch_fallback_symbols = [
+        symbol for symbol in fallback_symbols if symbol not in reused_symbols
+    ]
     result = fetch_daily_bars_parallel(
         config,
-        tdx_symbols,
+        fetch_tdx_symbols,
         start,
         end,
         run_id,
         "daily_bars",
     )
     sina_result = None
-    if fallback_symbols:
+    if fetch_fallback_symbols:
         sina_result = fetch_bars_via_sina(
-            config, fallback_symbols, start, end, run_id, batch_prefix="sina"
+            config, fetch_fallback_symbols, start, end, run_id, batch_prefix="sina"
         )
     out = _finish_daily_bars(
         config,
@@ -368,8 +453,20 @@ def _finish_daily_bars(
             rows_read += int(gap.get("rows_read", 0))
             rows_written += int(gap.get("rows_written", 0))
             findings.extend(gap.get("audit_findings") or [])
-            if gap.get("filled") and gap.get("complete", False):
+            # A source can complete the failed symbol set in two valid ways:
+            # it may stage replacement rows, or it may prove that every
+            # unresolved symbol has no bars in this window (for example a
+            # suspended/new ETF).  The latter deliberately has
+            # ``filled=False`` but must not keep the whole market snapshot in
+            # a failed state.  Do not clear errors for an unattempted fallback
+            # with neither rows nor explicit expected-no-data evidence.
+            if gap.get("complete", False) and (
+                gap.get("filled") or gap.get("expected_no_data_symbols")
+            ):
                 had_error = False
+                _resolve_recovered_daily_batches(
+                    config, run_id, resolved_symbols=failed_set
+                )
 
         partial_only = sorted(partial_symbols - failed_set)
         if partial_only:
@@ -429,6 +526,26 @@ def _finish_daily_bars(
     if findings:
         result["context_updates"] = {"audit_findings": findings}
     return result
+
+
+def _resolve_recovered_daily_batches(
+    config: Config, run_id: str, *, resolved_symbols: set[str]
+) -> None:
+    """Unblock only worker attempts whose failed symbols were verified downstream."""
+    from cnequity.orchestrator.manifest import Manifest
+
+    manifest = Manifest(config.manifest_path)
+    for batch in manifest.get_failed_batches(run_id):
+        if batch["dataset"] != "daily_bars" or batch["task_id"] != "daily_bars":
+            continue
+        batch_symbols = set(json.loads(batch["symbols_json"] or "[]"))
+        if not batch_symbols or not batch_symbols.issubset(resolved_symbols):
+            continue
+        manifest.resolve_failed_batch(
+            run_id,
+            batch["batch_id"],
+            error_message="resolved by Sina/EastMoney gap-fill or verified expected no-data",
+        )
 
 
 def _staged_daily_bar_symbols(config: Config, run_id: str, trade_date: date | None) -> set[str]:
@@ -647,7 +764,13 @@ def _gapfill_multiday_via_kline(
     end: date,
     require_complete: bool = True,
 ) -> dict:
-    """Stage EastMoney kline for failed or partially covered symbols."""
+    """Stage a secondary kline source for failed or partially covered symbols.
+
+    Sina is tried first for a complete failed TDX batch because it is reachable
+    from the overseas deployment.  EastMoney remains a second fallback for any
+    Sina misses.  The path is only entered for symbols that already failed TDX
+    and never changes an existing TDX row.
+    """
     import polars as pl
 
     from cnequity.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_kline
@@ -656,32 +779,123 @@ def _gapfill_multiday_via_kline(
     from cnequity.quality.failover import failover_spec, write_backup_snapshot
     from cnequity.storage import StagingWriter
 
-    spec = failover_spec(config, "daily_bars")
-    if spec is None or not config.sources.get(spec.backup, True) or not symbols:
+    if not symbols:
         return {"rows_read": 0, "rows_written": 0, "filled": False}
+
+    sina_rows = 0
+    sina_failed: set[str] = set()
+    sina_empty: set[str] = set()
+    sina_findings: list[dict] = []
+    # A complete failed batch has no TDX rows to protect.  Do not use this
+    # shortcut for partial-only repair calls, where the staging area may
+    # already contain valid TDX rows for the same symbol.
+    if require_complete and config.sources.get("sina", True):
+        sina = fetch_bars_via_sina(
+            config,
+            symbols,
+            start,
+            end,
+            run_id,
+            batch_prefix="sina-kline-gapfill",
+        )
+        sina_rows = int(sina.get("rows_written", 0))
+        sina_failed = set(sina.get("failed_symbol_names") or [])
+        sina_empty = set(sina.get("empty_symbol_names") or [])
+        sina_findings.extend(
+            (sina.get("context_updates") or {}).get("audit_findings") or []
+        )
+        if sina_empty:
+            sina_findings.append(
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_sina_expected_no_data",
+                    "message": (
+                        f"Sina returned no bars for {len(sina_empty)} symbol(s) over "
+                        f"{start}..{end}; treated as expected no-data after the "
+                        "primary TDX batch failed"
+                    ),
+                    "symbols": sorted(sina_empty),
+                }
+            )
+        if sina_rows:
+            sina_findings.append(
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_sina_gapfill",
+                    "message": (
+                        f"routed {sina_rows} row(s) through Sina for "
+                        f"{len(symbols)} failed TDX symbol(s)"
+                    ),
+                    "symbols": len(symbols),
+                    "unresolved_symbols": len(sina_failed),
+                    "complete": not sina_failed,
+                }
+            )
+        if not sina_failed:
+            return {
+                "rows_read": sina_rows,
+                "rows_written": sina_rows,
+                "filled": bool(sina_rows),
+                "complete": True,
+                "audit_findings": sina_findings,
+            }
+        # An empty, non-error response is an explicit no-data signal from
+        # Sina.  Do not spend another long request on those symbols; this is
+        # common for newly listed or non-price ETF instruments that TDX also
+        # cannot serve.
+        unresolved = sorted(sina_failed - sina_empty)
+        if not unresolved:
+            return {
+                "rows_read": sina_rows,
+                "rows_written": sina_rows,
+                "filled": bool(sina_rows) or bool(sina_empty),
+                "complete": True,
+                "expected_no_data_symbols": sorted(sina_empty),
+                "audit_findings": sina_findings,
+            }
+        # Only ask EastMoney about what Sina could not supply.  This keeps the
+        # request bounded and prevents a successful Sina row from being
+        # overwritten by a later backup source.
+        symbols = unresolved
+
+    spec = failover_spec(config, "daily_bars")
+    if spec is None or not config.sources.get(spec.backup, True):
+        return {
+            "rows_read": sina_rows,
+            "rows_written": sina_rows,
+            "filled": bool(sina_rows) or bool(sina_empty),
+            "complete": not (sina_failed - sina_empty),
+            "expected_no_data_symbols": sorted(sina_empty),
+            "audit_findings": sina_findings,
+        }
 
     df = fetch_em_kline(symbols, start, end, config=config)
     if df.is_empty():
         return {
-            "rows_read": 0,
-            "rows_written": 0,
-            "filled": False,
-            "complete": False,
+            "rows_read": sina_rows,
+            "rows_written": sina_rows,
+            "filled": bool(sina_rows) or bool(sina_empty),
+            "complete": not (sina_failed - sina_empty),
+            "expected_no_data_symbols": sorted(sina_empty),
             "audit_findings": [
+                *sina_findings,
                 {
                     "dataset": "daily_bars",
                     "severity": "warning",
                     "check": "daily_bars_kline_gapfill",
                     "message": (
-                        f"TDX coverage was incomplete for {len(symbols)} symbol(s) over "
-                        f"{start}..{end}; EastMoney kline returned no rows"
+                        f"TDX/Sina coverage was incomplete for {len(symbols)} "
+                        f"symbol(s) over {start}..{end}; EastMoney kline returned no rows"
                     ),
                 }
             ],
         }
 
     expected_dates = list_trading_dates(config, start, end)
-    expected_keys = {(symbol, day) for symbol in symbols for day in expected_dates}
+    expected_symbols = set(symbols) - sina_empty
+    expected_keys = {(symbol, day) for symbol in expected_symbols for day in expected_dates}
     actual_keys = set(zip(df["symbol"].to_list(), df["trade_date"].to_list(), strict=True))
 
     # Drop symbol×date pairs already staged so we never overwrite TDX rows.
@@ -722,11 +936,11 @@ def _gapfill_multiday_via_kline(
                 }
             )
         return {
-            "rows_read": df.height,
-            "rows_written": 0,
+            "rows_read": sina_rows + df.height,
+            "rows_written": sina_rows,
             "filled": True,
             "complete": not missing_keys,
-            "audit_findings": audit_findings,
+            "audit_findings": [*sina_findings, *audit_findings],
         }
 
     gap_df = with_provenance(
@@ -761,11 +975,12 @@ def _gapfill_multiday_via_kline(
         rows_written=gap_df.height,
     )
     result = {
-        "rows_read": gap_df.height,
-        "rows_written": gap_df.height,
+        "rows_read": sina_rows + gap_df.height,
+        "rows_written": sina_rows + gap_df.height,
         "filled": True,
         "complete": not missing_keys,
         "audit_findings": [
+            *sina_findings,
             {
                 "dataset": "daily_bars",
                 "severity": "warning",
@@ -857,8 +1072,11 @@ def fetch_bars_via_sina(
     )
     frames: list[pl.DataFrame] = []
     failed: list[str] = []
+    empty: list[str] = []
     covered_dates: dict[str, set[date]] = {}
-    with httpx.Client(timeout=30.0) as client:
+    # Gapfill is a best-effort repair path.  Keep one unresponsive symbol from
+    # holding the whole daily run for the full upstream timeout.
+    with httpx.Client(timeout=8.0) as client:
         for symbol in symbols:
             config.rate_limit("sina")
             try:
@@ -868,6 +1086,7 @@ def fetch_bars_via_sina(
                 failed.append(symbol)
                 continue
             if bars.is_empty():
+                empty.append(symbol)
                 failed.append(symbol)
                 continue
             covered_dates[symbol] = set(bars["trade_date"].to_list())
@@ -895,6 +1114,7 @@ def fetch_bars_via_sina(
         # failed fallback symbols through the same historical gap-fill as TDX
         # failures; a count alone cannot identify which keys need recovery.
         result["failed_symbol_names"] = list(dict.fromkeys(failed))
+        result["empty_symbol_names"] = list(dict.fromkeys(empty))
         result["context_updates"] = {
             "audit_findings": [
                 {
@@ -906,6 +1126,7 @@ def fetch_bars_via_sina(
                         f"failed to fetch from the fallback vendor "
                         f"(e.g. {', '.join(failed[:5])})"
                     ),
+                    "empty_symbols": len(empty),
                 }
             ]
         }

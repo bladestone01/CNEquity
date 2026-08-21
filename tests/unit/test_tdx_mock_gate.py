@@ -99,3 +99,29 @@ def test_daily_bars_dedupes_duplicate_symbol_input(monkeypatch):
 
     out = tdx.fetch_daily_bars(["600519.SH", "600519.SH"], START, END)
     assert out.height == 1
+
+
+def test_daily_bars_keeps_other_symbols_when_one_symbol_page_fails(monkeypatch):
+    row = {
+        "symbol": "600519.SH",
+        "trade_date": START,
+        "open": 1.0,
+        "high": 1.0,
+        "low": 1.0,
+        "close": 1.0,
+        "volume": 100,
+        "amount": 100.0,
+    }
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: object())
+    monkeypatch.setattr(tdx, "_close_quotes_client", lambda _client: None)
+
+    def _fetch(_client, symbol, *_args, **_kwargs):
+        if symbol == "000001.SZ":
+            raise RuntimeError("one symbol timed out")
+        return [row]
+
+    monkeypatch.setattr(tdx, "fetch_bars_paginated", _fetch)
+
+    out = tdx.fetch_daily_bars(["000001.SZ", "600519.SH"], START, END)
+
+    assert out["symbol"].to_list() == ["600519.SH"]

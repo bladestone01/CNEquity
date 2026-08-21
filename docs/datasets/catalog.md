@@ -264,7 +264,7 @@ bars_15m = (
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
 | sentiment_scores | trade_date | symbol, trade_date, score_channel | by_date | ✓ | derived | |
-| hot_rank | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 人气榜 top500 |
+| hot_rank | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 人气榜 top100（公开接口上限） |
 | sector_bars | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 回填：ths（同花顺 board-kline） |
 | sector_fund_flow | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 板块主力净流入 |
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 新闻标题 |

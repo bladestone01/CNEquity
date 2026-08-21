@@ -323,6 +323,66 @@ def test_trading_status_rejects_partial_feed(cfg, monkeypatch):
         reference.step_trading_status(cfg, date(2024, 6, 28), "run-partial", {})
 
 
+def test_trading_status_uses_conservative_cached_snapshot_on_source_outage(cfg, monkeypatch):
+    from cnequity.domain.schemas import with_provenance
+    from cnequity.steps import reference
+
+    status_part = cfg.curated_root / "trading_status" / "trade_date=2024-06"
+    status_part.mkdir(parents=True)
+    with_provenance(
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2024, 6, 27)],
+                "is_trading": [True],
+                "status": ["normal"],
+            }
+        ),
+        source="eastmoney",
+        data_version="v1",
+    ).write_parquet(status_part / "part-merged.parquet")
+    monkeypatch.setattr(reference, "load_symbols", lambda _cfg: ["600519.SH", "000001.SZ"])
+    monkeypatch.setattr(
+        reference,
+        "fetch_trading_status",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("EastMoney down")),
+    )
+
+    result = reference.step_trading_status(cfg, date(2024, 6, 28), "run-cached", {})
+
+    finding = result["context_updates"]["audit_findings"][-1]
+    assert finding["check"] == "trading_status_cached_fallback"
+    staged = list((cfg.staging_root / "trading_status").rglob("*.parquet"))
+    out = pl.read_parquet(staged[0]).sort("symbol")
+    assert out["status"].to_list() == ["suspended", "normal"]
+    assert out["source"].unique().to_list() == ["eastmoney_cached"]
+
+
+def test_trading_status_rejects_too_old_cached_snapshot(cfg, monkeypatch):
+    from cnequity.domain.schemas import with_provenance
+    from cnequity.steps import reference
+
+    status_part = cfg.curated_root / "trading_status" / "trade_date=2024-06"
+    status_part.mkdir(parents=True)
+    with_provenance(
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2024, 6, 20)],
+                "is_trading": [True],
+                "status": ["normal"],
+            }
+        ),
+        source="eastmoney",
+        data_version="v1",
+    ).write_parquet(status_part / "part-merged.parquet")
+    monkeypatch.setattr(reference, "load_symbols", lambda _cfg: ["600519.SH"])
+    monkeypatch.setattr(reference, "fetch_trading_status", lambda *_a, **_k: pl.DataFrame())
+
+    with pytest.raises(RuntimeError, match="trading_status: no rows returned"):
+        reference.step_trading_status(cfg, date(2024, 6, 28), "run-stale-cache", {})
+
+
 def test_trading_status_preserves_incremental_findings(cfg, monkeypatch):
     from cnequity.steps import reference
 

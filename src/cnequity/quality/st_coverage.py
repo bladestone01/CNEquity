@@ -27,6 +27,11 @@ from cnequity.query.parquet_scan import collect_parquet_root, scan_parquet_files
 
 ST_EVIDENCE_VERSION = 2
 ST_COVERAGE_CLAIM = "historical_st_evidence"
+# Baostock's k-data ``isST`` history does not contain North Exchange (BJ)
+# securities. Keep this explicit instead of retrying 580 symbols forever and
+# then presenting a partial receipt as if it covered the full all-A universe.
+ST_EVIDENCE_UNSUPPORTED_EXCHANGES = frozenset({"BJ"})
+ST_EVIDENCE_COMPATIBLE_UNIVERSES = frozenset({"all_a", "all_a_sz", "all_a_sh_sz"})
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +60,12 @@ def symbol_scope_hash(symbols: list[str]) -> str:
     return _canonical_hash(sorted(set(symbols)))
 
 
-def current_st_universe(config: Config) -> list[str]:
+def current_st_universe(
+    config: Config,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
     """All-A instruments whose price history makes ST evidence relevant.
 
     This is deliberately disk-only.  A coverage check must never make a
@@ -103,6 +113,10 @@ def current_st_universe(config: Config) -> list[str]:
                 # actual print. Keep old/minimal files without volume readable.
                 if "volume" in bar_scan.collect_schema().names():
                     bar_scan = bar_scan.filter(pl.col("volume") > 0)
+                if start is not None:
+                    bar_scan = bar_scan.filter(pl.col("trade_date") >= start)
+                if end is not None:
+                    bar_scan = bar_scan.filter(pl.col("trade_date") <= end)
                 bar_scans.append(bar_scan)
             except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
                 logger.warning("ST coverage: daily_bars file is not readable: %s: %s", path, exc)
@@ -115,6 +129,30 @@ def current_st_universe(config: Config) -> list[str]:
             return []
         symbols = [symbol for symbol in symbols if symbol in bars]
     return sorted(set(symbols))
+
+
+def st_evidence_unsupported_symbols(symbols: list[str]) -> list[str]:
+    """Symbols the configured historical ST source cannot query.
+
+    This is intentionally source-specific.  The symbols remain valid all-A
+    securities and must not be deleted from instruments or daily bars; they
+    are reported as an explicit research limitation until an independent BJ
+    historical ST source is configured.
+    """
+    unsupported: list[str] = []
+    for symbol in symbols:
+        try:
+            if parse_symbol(symbol).exchange in ST_EVIDENCE_UNSUPPORTED_EXCHANGES:
+                unsupported.append(symbol)
+        except ValueError:
+            continue
+    return sorted(set(unsupported))
+
+
+def st_evidence_supported_symbols(symbols: list[str]) -> list[str]:
+    """Symbols that Baostock can serve for the historical ST sweep."""
+    unsupported = set(st_evidence_unsupported_symbols(symbols))
+    return sorted(set(symbols) - unsupported)
 
 
 def build_st_scope(
@@ -421,7 +459,9 @@ def st_evidence_coverage_report(
     end: date | None = None,
 ) -> dict[str, Any]:
     """Return whether a complete, current all-A receipt covers the window."""
-    symbols = current_st_universe(config)
+    symbols = current_st_universe(config, start=start, end=end)
+    unsupported_symbols = st_evidence_unsupported_symbols(symbols)
+    supported_symbols = st_evidence_supported_symbols(symbols)
     candidates: list[dict[str, Any]] = []
     for receipt in _receipts(config):
         parsed = _valid_receipt_scope(receipt)
@@ -430,10 +470,13 @@ def st_evidence_coverage_report(
         scope, scope_start, scope_end = parsed
         if scope.get("evidence_version") != ST_EVIDENCE_VERSION:
             continue
-        if scope.get("source") != "baostock" or scope.get("universe") != "all_a":
+        if (
+            scope.get("source") != "baostock"
+            or scope.get("universe") not in ST_EVIDENCE_COMPATIBLE_UNIVERSES
+        ):
             continue
         covered_symbols = set(receipt.get("completed_symbols", []))
-        if not symbols or not set(symbols) <= covered_symbols:
+        if not supported_symbols or not set(supported_symbols) <= covered_symbols:
             continue
         if start is not None and scope_start > start:
             continue
@@ -457,11 +500,25 @@ def st_evidence_coverage_report(
             "requested_start": start.isoformat() if start else None,
             "requested_end": end.isoformat() if end else None,
             "current_symbols": len(symbols),
+            "supported_symbols": len(supported_symbols),
+            "unsupported_symbols": len(unsupported_symbols),
+            "unsupported_exchange_counts": {
+                exchange: sum(
+                    1
+                    for symbol in unsupported_symbols
+                    if parse_symbol(symbol).exchange == exchange
+                )
+                for exchange in sorted(ST_EVIDENCE_UNSUPPORTED_EXCHANGES)
+                if any(parse_symbol(symbol).exchange == exchange for symbol in unsupported_symbols)
+            },
             "reason": "no_current_universe" if not symbols else "no_matching_complete_receipt",
         }
     scope = best["scope"]
+    unsupported = bool(unsupported_symbols)
     return {
-        "verified": True,
+        # A partial source receipt is useful evidence, but it cannot certify
+        # the full all-A research universe while unsupported exchanges remain.
+        "verified": not unsupported,
         "claim": ST_COVERAGE_CLAIM,
         "evidence_version": ST_EVIDENCE_VERSION,
         "requested_start": start.isoformat() if start else None,
@@ -469,5 +526,18 @@ def st_evidence_coverage_report(
         "coverage_start": scope["start"],
         "coverage_end": scope["end"],
         "current_symbols": len(symbols),
+        "supported_symbols": len(supported_symbols),
+        "unsupported_symbols": len(unsupported_symbols),
+        "unsupported_exchange_counts": {
+            exchange: sum(
+                1
+                for symbol in unsupported_symbols
+                if parse_symbol(symbol).exchange == exchange
+            )
+            for exchange in sorted(ST_EVIDENCE_UNSUPPORTED_EXCHANGES)
+            if any(parse_symbol(symbol).exchange == exchange for symbol in unsupported_symbols)
+        },
+        "supported_coverage_verified": True,
+        "reason": "unsupported_exchange_symbols" if unsupported else None,
         "scope_id": scope["scope_id"],
     }

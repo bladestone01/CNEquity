@@ -22,7 +22,7 @@ import polars as pl
 
 from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
 from cnequity.adapters.eastmoney.common import _to_float, parse_em_ymd
-from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, is_transport_fail_fast
 from cnequity.adapters.numeric import finite_int64
 from cnequity.domain.symbols import parse_symbol
 from cnequity.domain.units import lots_to_shares
@@ -35,6 +35,7 @@ _MARKET = {"SH": "1", "SZ": "0", "BJ": "2"}
 # push2 clist live quote fields → tip OHLC. There is no trade_date in the
 # payload; callers stamp the run's session date (same pattern as fund_flow).
 _CLIST_BAR_FIELDS = "f12,f13,f17,f15,f16,f2,f5,f6"
+_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3
 
 
 def _secid(symbol: str) -> str:
@@ -137,8 +138,9 @@ def fetch_daily_bars(
     end_s = end.strftime("%Y%m%d")
     rows: list[dict] = []
     rejected = 0
+    consecutive_transport_failures = 0
     try:
-        for sym in symbols:
+        for index, sym in enumerate(symbols):
             params = {
                 "secid": _secid(sym),
                 "fields1": "f1,f2,f3,f4,f5,f6",
@@ -154,7 +156,21 @@ def fetch_daily_bars(
                 klines = (resp.json().get("data") or {}).get("klines") or []
             except Exception as exc:
                 logger.warning("EastMoney kline failed for %s: %s", sym, exc)
+                if is_transport_fail_fast(exc):
+                    consecutive_transport_failures += 1
+                    if consecutive_transport_failures >= _MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+                        logger.warning(
+                            "EastMoney kline circuit opened after %d consecutive "
+                            "transport failures; leaving %d symbol(s) unresolved",
+                            consecutive_transport_failures,
+                            len(symbols) - index - 1,
+                        )
+                        break
+                else:
+                    consecutive_transport_failures = 0
                 continue
+
+            consecutive_transport_failures = 0
 
             for line in klines:
                 parts = str(line).split(",")

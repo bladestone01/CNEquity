@@ -28,6 +28,17 @@
   <key>RunAtLoad</key>
   <false/>
 
+  <!-- The Helsinki Mac is the gate/data host, not the mainland EastMoney
+       extension host.  EquityLab's catchup adds the local breadth pass when
+       the daily gate needs it; keeping the scheduled run on core avoids
+       spending hours retrying capital/research endpoints that require a
+       mainland egress. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CNE_GROUPS</key>
+    <string>core</string>
+  </dict>
+
   <key>WorkingDirectory</key>
   <string>__REPO_ROOT__</string>
 

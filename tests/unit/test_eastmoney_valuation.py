@@ -104,13 +104,13 @@ def test_fetch_valuation_metrics_empty_when_no_rows(monkeypatch):
     assert df.is_empty()
 
 
-def test_fetch_valuation_metrics_rejects_unmappable_clist_rows(monkeypatch):
+def test_fetch_valuation_metrics_drops_unmappable_non_security_rows(monkeypatch):
     monkeypatch.setattr(
         "cnequity.adapters.eastmoney.valuation.fetch_clist_pages",
         lambda client, fields: [{"f12": "600519", "f13": 1}, {"f12": "123456"}],
     )
-    with pytest.raises(RuntimeError, match="valuation_metrics clist returned 1 unmappable"):
-        fetch_valuation_metrics(date(2024, 6, 28), client=_Client())
+    out = fetch_valuation_metrics(date(2024, 6, 28), client=_Client())
+    assert out["symbol"].to_list() == ["600519.SH"]
 
 
 def test_fetch_valuation_metrics_closes_owned_client_on_failure(monkeypatch):

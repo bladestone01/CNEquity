@@ -76,12 +76,11 @@ def fetch_index_constituents(
                     )
                     continue
                 returned_date = str(item.get("TRADE_DATE") or "")[:10]
-                if returned_date != as_of_date.isoformat():
+                if returned_date and returned_date > as_of_date.isoformat():
                     logger.warning(
-                        "EastMoney index constituents: requested %s for %s, received %s",
+                        "EastMoney index constituents: ignoring future member date for %s: %s",
                         index_code,
-                        as_of_date.isoformat(),
-                        returned_date or "<missing>",
+                        returned_date,
                     )
                     continue
                 code = str(item.get("SECURITY_CODE", "")).zfill(6)

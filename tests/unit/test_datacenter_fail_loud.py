@@ -171,6 +171,20 @@ def test_fetch_datacenter_rejects_rows_over_declared_count():
         fetch_datacenter(client, "RPT_TEST", "COL", max_retries=1, retry_backoff_seconds=0)
 
 
+def test_fetch_datacenter_can_accept_upward_count_drift_after_complete_pages():
+    result = {"pages": 1, "count": 1, "data": [{"x": 1}, {"x": 2}]}
+    client = FakeClient([{"success": True, "result": result}])
+    rows = fetch_datacenter(
+        client,
+        "RPT_TEST",
+        "COL",
+        max_retries=1,
+        retry_backoff_seconds=0,
+        allow_count_overrun=True,
+    )
+    assert len(rows) == 2
+
+
 def test_fetch_datacenter_clamps_page_size_to_500():
     """pageSize>500 must be clamped or EM silently truncates high-volume reports."""
     captured = {}

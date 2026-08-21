@@ -7,7 +7,6 @@ from datetime import date
 import pytest
 
 import cnequity.adapters.eastmoney.trading_status as ts
-from cnequity.adapters.eastmoney import datacenter
 
 
 class _FakeResponse:
@@ -27,7 +26,7 @@ class _FakeClient:
         self.get_raises = get_raises
         self.closed = False
 
-    def get(self, url):
+    def get(self, url, **kwargs):
         if self.get_raises is not None:
             raise self.get_raises
         return _FakeResponse(self.payload)
@@ -81,60 +80,71 @@ def test_fetch_suspended_symbols_parses_result_rows():
     assert out == {"600519.SH"}
 
 
+def test_fetch_suspended_symbols_uses_public_market_date_feed():
+    payload = {
+        "success": True,
+        "result": {
+            "data": [
+                {
+                    "SECURITY_CODE": "600519",
+                    "SECUCODE": "600519.SH",
+                    "SUSPEND_START_DATE": "2024-06-27 00:00:00",
+                    "SUSPEND_END_TIME": None,
+                }
+            ]
+        },
+    }
+
+    class _CapturingClient(_FakeClient):
+        def __init__(self):
+            super().__init__(payload)
+            self.url = None
+            self.params = None
+
+        def get(self, url, **kwargs):
+            self.url = url
+            self.params = kwargs.get("params")
+            return super().get(url, **kwargs)
+
+    client = _CapturingClient()
+    assert ts._fetch_suspended_symbols(client, date(2024, 6, 28)) == {"600519.SH"}
+    assert client.url == ts._SUSPEND_LIST_URL
+    assert client.params == {
+        "mkt": 1,
+        "st": "SUSPEND_START_DATE",
+        "sr": -1,
+        "fd": "2024-06-28",
+    }
+
+
 def test_fetch_suspended_symbols_raises_on_transport_failure(monkeypatch):
-    monkeypatch.setattr(datacenter.time, "sleep", lambda _seconds: None)
     client = _FakeClient(get_raises=RuntimeError("network down"))
     with pytest.raises(RuntimeError, match="network down"):
         ts._fetch_suspended_symbols(client, date(2024, 6, 28))
 
 
-def test_fetch_suspended_symbols_paginates_until_reported_total():
-    page1 = {
+def test_fetch_suspended_symbols_reads_all_rows_from_public_feed():
+    payload = {
         "success": True,
         "result": {
-            "pages": 2,
-            "count": 501,
             "data": [
                 {
                     "SECURITY_CODE": "600519",
                     "STOP_DATE": "2024-06-27",
                     "RESUME_DATE": "null",
-                }
-            ]
-            * 500,
-        },
-    }
-    page2 = {
-        "success": True,
-        "result": {
-            "pages": 2,
-            "count": 501,
-            "data": [
+                },
                 {
                     "SECURITY_CODE": "000001",
                     "STOP_DATE": "2024-06-28",
                     "RESUME_DATE": "2024-07-01",
-                }
-            ],
+                },
+            ]
         },
     }
-
-    class _PagedClient:
-        def __init__(self):
-            self.responses = [page1, page2]
-            self.urls: list[str] = []
-
-        def get(self, url):
-            self.urls.append(url)
-            payload = self.responses.pop(0)
-            return _FakeResponse(payload)
-
-    client = _PagedClient()
+    client = _FakeClient(payload)
     out = ts._fetch_suspended_symbols(client, date(2024, 6, 28))
 
     assert out == {"600519.SH", "000001.SZ"}
-    assert len(client.urls) == 2
-    assert "pageNumber=2" in client.urls[1]
 
 
 def test_fetch_suspended_symbols_rejects_rows_outside_requested_interval():

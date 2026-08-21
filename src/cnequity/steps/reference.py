@@ -30,6 +30,8 @@ from cnequity.quality.st_coverage import (
     current_st_universe,
     load_st_checkpoint,
     reusable_st_checkpoint_symbols,
+    st_evidence_supported_symbols,
+    st_evidence_unsupported_symbols,
     write_st_checkpoint,
 )
 from cnequity.steps.common import (
@@ -42,6 +44,8 @@ from cnequity.steps.common import (
 from cnequity.steps.http_common import write_fetched
 
 logger = logging.getLogger(__name__)
+
+_CACHED_TRADING_STATUS_MAX_AGE = timedelta(days=5)
 
 # Flush + checkpoint on the same boundary as Baostock's anti-blacklist batch.
 # A larger chunk used to discard up to ~200 symbols of in-memory evidence when
@@ -252,29 +256,104 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
     # here. The one genuinely independent ST reading, baostock's per-day `isST`,
     # is a per-symbol sweep and stays where it is affordable: the `--backfill`
     # path below. See issue #3.
+    fallback_days: list[date] = []
+    fallback_errors: list[str] = []
+    cached_snapshot: pl.DataFrame | None = None
+
+    def _cached_status(day: date) -> pl.DataFrame | None:
+        """Return the last curated status snapshot, conservatively expanded.
+
+        trading_status is advisory for the daily signal gate. When EastMoney is
+        temporarily unreachable, keeping known ST/halt labels is safer than
+        turning every name into ``normal``. Symbols absent from the cached
+        snapshot are marked suspended so an outage cannot add an unverified
+        name to the tradable universe.
+        """
+        nonlocal cached_snapshot
+        if cached_snapshot is None:
+            try:
+                from cnequity.query.reader import load
+
+                history = load(
+                    "trading_status",
+                    data_root=config.data_root,
+                    end=day - timedelta(days=1),
+                )
+            except Exception as exc:  # noqa: BLE001 — fallback is best effort
+                logger.warning("cached trading_status unavailable: %s", exc)
+                return None
+            if history.is_empty():
+                return None
+            latest = history.get_column("trade_date").max()
+            if latest is None or day - latest > _CACHED_TRADING_STATUS_MAX_AGE:
+                logger.warning(
+                    "cached trading_status is too old for %s: latest=%s max_age=%s",
+                    day,
+                    latest,
+                    _CACHED_TRADING_STATUS_MAX_AGE,
+                )
+                return None
+            cached_snapshot = history.filter(pl.col("trade_date") == latest).select(
+                "symbol", "is_trading", "status"
+            )
+
+        known = {
+            row["symbol"]: row
+            for row in cached_snapshot.iter_rows(named=True)
+            if row.get("symbol")
+        }
+        rows = []
+        for symbol in symbols:
+            previous = known.get(symbol)
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "trade_date": day,
+                    "is_trading": bool(previous["is_trading"]) if previous else False,
+                    "status": previous["status"] if previous else "suspended",
+                }
+            )
+        return pl.DataFrame(rows)
+
     def _fetch(day: date):
-        frame = fetch_trading_status(
-            symbols,
-            day,
-            rate_limit=rl,
-            allow_mock=config.tdx_allow_mock,
-            config=config,
-        )
-        if frame.is_empty():
+        nonlocal cached_snapshot
+        try:
+            frame = fetch_trading_status(
+                symbols,
+                day,
+                rate_limit=rl,
+                allow_mock=config.tdx_allow_mock,
+                config=config,
+            )
+            if frame.is_empty():
+                raise RuntimeError("trading_status: no rows returned")
+            if "symbol" not in frame.columns:
+                raise RuntimeError("trading_status: response is missing the symbol column")
+            observed_symbols = set(frame.get_column("symbol").drop_nulls().to_list())
+            missing = sorted(expected_symbols - observed_symbols)
+            unexpected = sorted(observed_symbols - expected_symbols)
+            if missing or unexpected:
+                details: list[str] = []
+                if missing:
+                    details.append(f"missing {len(missing)} requested symbol(s)")
+                if unexpected:
+                    details.append(f"returned {len(unexpected)} unexpected symbol(s)")
+                raise RuntimeError(
+                    "trading_status: incomplete daily snapshot; " + "; ".join(details)
+                )
+            cached_snapshot = frame.select("symbol", "is_trading", "status")
             return frame
-        if "symbol" not in frame.columns:
-            raise RuntimeError("trading_status: response is missing the symbol column")
-        observed_symbols = set(frame.get_column("symbol").drop_nulls().to_list())
-        missing = sorted(expected_symbols - observed_symbols)
-        unexpected = sorted(observed_symbols - expected_symbols)
-        if missing or unexpected:
-            details: list[str] = []
-            if missing:
-                details.append(f"missing {len(missing)} requested symbol(s)")
-            if unexpected:
-                details.append(f"returned {len(unexpected)} unexpected symbol(s)")
-            raise RuntimeError("trading_status: incomplete daily snapshot; " + "; ".join(details))
-        return frame
+        except Exception as exc:  # noqa: BLE001 — EastMoney outage is advisory here
+            cached = _cached_status(day)
+            if cached is None:
+                raise
+            fallback_days.append(day)
+            fallback_errors.append(f"{day.isoformat()}: {exc}")
+            logger.warning(
+                "trading_status: EastMoney unavailable for %s; using last curated snapshot",
+                day,
+            )
+            return cached
 
     df, _findings = fetch_incremental_daily(
         config,
@@ -288,13 +367,29 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
         if _findings:
             result["context_updates"] = {"audit_findings": _findings}
         return result
+    findings = list(_findings)
+    if fallback_days:
+        findings.append(
+            {
+                "dataset": "trading_status",
+                "severity": "warning",
+                "check": "trading_status_cached_fallback",
+                "message": (
+                    f"EastMoney unavailable for {len(fallback_days)} day(s); reused the "
+                    "last curated status snapshot and conservatively suspended unknown symbols"
+                ),
+                "days": [day.isoformat() for day in fallback_days],
+                "errors": fallback_errors[:3],
+            }
+        )
     # This adapter is an EastMoney current-state snapshot even though it is
     # exposed through the TDX facade. Preserve the actual evidence owner so
     # downstream PIT precedence never mistakes it for exchange history.
-    df = with_provenance(df.drop("source", strict=False), source="eastmoney", data_version="v1")
+    source = "eastmoney_cached" if fallback_days else "eastmoney"
+    df = with_provenance(df.drop("source", strict=False), source=source, data_version="v1")
     result = write_simple(config, run_id, "trading_status", df)
-    if _findings:
-        result["context_updates"] = {"audit_findings": _findings}
+    if findings:
+        result["context_updates"] = {"audit_findings": findings}
     return result
 
 
@@ -348,6 +443,19 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
                 universe = [symbol for symbol in universe if symbol in bars]
         universe_name = "all_a"
 
+    # Baostock has no BJ historical ST series. Do not spend a full retry cycle
+    # on a known provider capability gap; the coverage report still keeps those
+    # valid all-A symbols visible as an explicit unsupported-exchange blocker.
+    unsupported_symbols = st_evidence_unsupported_symbols(universe)
+    if explicit is not None and unsupported_symbols:
+        preview = ", ".join(unsupported_symbols[:10])
+        suffix = "..." if len(unsupported_symbols) > 10 else ""
+        raise ValueError(
+            "trading_status ST backfill cannot query BJ symbols with Baostock: "
+            f"{preview}{suffix}"
+        )
+    universe = st_evidence_supported_symbols(universe)
+
     scope = build_st_scope(universe, start, end, universe=universe_name)
     checkpoint = load_st_checkpoint(config, scope)
     completed = reusable_st_checkpoint_symbols(config, checkpoint, run_id)
@@ -363,7 +471,7 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
         checkpoint["unresolved_symbols"] = []
         checkpoint["completion_run_id"] = run_id
         write_st_checkpoint(config, checkpoint)
-        return {
+        result = {
             "rows_read": 0,
             "rows_written": 0,
             "scope_id": scope["scope_id"],
@@ -371,6 +479,10 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
             "coverage_pending_compact": True,
             "note": "all symbols already have ST evidence for this exact scope",
         }
+        if unsupported_symbols:
+            result["unsupported_symbols"] = len(unsupported_symbols)
+            result["unsupported_exchanges"] = ["BJ"]
+        return result
 
     rows_read = 0
     rows_written = 0
@@ -438,6 +550,9 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
         "completed_symbols": len(completed),
         "expected_symbols": len(universe),
     }
+    if unsupported_symbols:
+        result["unsupported_symbols"] = len(unsupported_symbols)
+        result["unsupported_exchanges"] = ["BJ"]
     if complete:
         result["coverage_pending_compact"] = True
     else:

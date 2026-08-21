@@ -102,6 +102,7 @@ def fetch_datacenter(
     stop_after: Callable[[list[dict]], bool] | None = None,
     keyset_column: str | None = None,
     trust_page_size: bool = False,
+    allow_count_overrun: bool = False,
 ) -> list[dict]:
     """Page a datacenter report to exhaustion, or until *stop_after* says stop.
 
@@ -248,10 +249,17 @@ def fetch_datacenter(
             )
         rows.extend(batch)
         shard_rows += len(batch)
-        if expected_count is not None and shard_rows > expected_count:
+        if expected_count is not None and shard_rows > expected_count and not allow_count_overrun:
             raise EastMoneyDatacenterError(
                 f"EastMoney datacenter {report} returned more than declared "
                 f"count={expected_count} rows ({shard_rows})"
+            )
+        if expected_count is not None and shard_rows > expected_count and allow_count_overrun:
+            logger.warning(
+                "EastMoney datacenter %s count drifted upward: declared %d, observed at least %d",
+                report,
+                expected_count,
+                shard_rows,
             )
         if stop_after is not None and stop_after(batch):
             stopped_early = True

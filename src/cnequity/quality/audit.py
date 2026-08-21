@@ -267,6 +267,16 @@ def _collect_lake_findings(
                 "trading_status rows exist, but no complete current-scope ST evidence "
                 f"receipt covers the bar window ({evidence['reason']})"
             )
+            unsupported_symbols = int(evidence.get("unsupported_symbols", 0))
+            if unsupported_symbols:
+                exchange_counts = evidence.get("unsupported_exchange_counts") or {}
+                exchange_detail = ", ".join(
+                    f"{exchange}={count}" for exchange, count in sorted(exchange_counts.items())
+                )
+                message += (
+                    f"; historical ST source does not cover {unsupported_symbols} "
+                    f"current symbol(s) ({exchange_detail or 'exchange unknown'})"
+                )
         findings.append(
             {
                 "dataset": "trading_status",
@@ -278,6 +288,12 @@ def _collect_lake_findings(
                 "st_evidence_coverage_start": evidence.get("coverage_start"),
                 "st_evidence_coverage_end": evidence.get("coverage_end"),
                 "st_evidence_verified": evidence["verified"],
+                "st_evidence_receipt_reason": evidence.get("reason"),
+                "st_evidence_supported_symbols": evidence.get("supported_symbols"),
+                "st_evidence_unsupported_symbols": evidence.get("unsupported_symbols", 0),
+                "st_evidence_unsupported_exchange_counts": evidence.get(
+                    "unsupported_exchange_counts", {}
+                ),
                 "daily_bars_start": bars_start.isoformat() if bars_start else None,
             }
         )

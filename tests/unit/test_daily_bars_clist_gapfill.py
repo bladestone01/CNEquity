@@ -15,6 +15,7 @@ from cnequity.steps.bars import (
     _finish_daily_bars,
     _gapfill_tip_via_clist,
     _reject_preopen_placeholder,
+    _resolve_recovered_daily_batches,
     _staged_daily_bar_partial_symbols,
     _staged_daily_bar_symbols,
 )
@@ -418,6 +419,16 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
 
     monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist", _clist)
     monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": 1,
+            "failed_symbol_names": ["600519.SH"],
+            "empty_symbol_names": [],
+        },
+    )
 
     result = _finish_daily_bars(
         cfg,
@@ -437,6 +448,75 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
     assert clist_calls == []
     assert kline_calls == [["600519.SH"]]
     assert result["rows_written"] == 7
+
+
+def test_multiday_accepts_explicit_no_data_from_fallback(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("backfill")
+    start, end = date(2024, 6, 20), date(2024, 6, 28)
+
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": 1,
+            "failed_symbol_names": ["561833.SH"],
+            "empty_symbol_names": ["561833.SH"],
+        },
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
+
+    result = _finish_daily_bars(
+        cfg,
+        end,
+        run_id,
+        start=start,
+        end=end,
+        expected_tdx_symbols=["561833.SH"],
+        tdx_result={
+            "rows_read": 0,
+            "rows_written": 0,
+            "had_error": True,
+            "failed_symbols": ["561833.SH"],
+        },
+        sina_result=None,
+    )
+
+    assert result["rows_written"] == 0
+    findings = result["context_updates"]["audit_findings"]
+    assert any(f["check"] == "daily_bars_sina_expected_no_data" for f in findings)
+
+
+def test_resolve_recovered_daily_batches_does_not_close_unrelated_failures(tmp_path):
+    cfg = _cfg(tmp_path)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("backfill")
+    manifest.start_batch(
+        run_id,
+        "batch-a",
+        "daily_bars",
+        "daily_bars",
+        symbols=["561833.SH"],
+    )
+    manifest.start_batch(
+        run_id,
+        "batch-b",
+        "daily_bars",
+        "daily_bars",
+        symbols=["561834.SH"],
+    )
+    manifest.finish_batch(run_id, "batch-a", "failed", error_message="TDX empty")
+    manifest.finish_batch(run_id, "batch-b", "failed", error_message="TDX empty")
+
+    _resolve_recovered_daily_batches(cfg, run_id, resolved_symbols={"561833.SH"})
+
+    batches = {row["batch_id"]: row for row in manifest.get_batches_for_run(run_id)}
+    assert batches["batch-a"]["status"] == "success"
+    assert batches["batch-b"]["status"] == "failed"
 
 
 def test_multiday_partial_symbol_is_gapfilled_without_overwriting_primary_rows(
@@ -459,6 +539,16 @@ def test_multiday_partial_symbol_is_gapfilled_without_overwriting_primary_rows(
         return pl.concat([_bar_frame(symbols, day) for day in days])
 
     monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": 1,
+            "failed_symbol_names": [symbol],
+            "empty_symbol_names": [],
+        },
+    )
     result = _finish_daily_bars(
         cfg,
         end,
@@ -491,6 +581,16 @@ def test_multiday_fallback_failure_is_gapfilled_by_symbol(tmp_path, monkeypatch)
         return pl.concat([_bar_frame(symbols, day) for day in days])
 
     monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": 1,
+            "failed_symbol_names": [symbol],
+            "empty_symbol_names": [],
+        },
+    )
     result = _finish_daily_bars(
         cfg,
         end,

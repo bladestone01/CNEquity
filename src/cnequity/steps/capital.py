@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 
@@ -19,6 +19,7 @@ from cnequity.adapters.eastmoney.capital import (
     fetch_northbound_holdings,
 )
 from cnequity.config import Config
+from cnequity.domain.market_time import shanghai_now
 from cnequity.orchestrator.registry import register_step
 from cnequity.steps.common import BACKFILL_START, incremental_trade_dates, list_trading_dates
 from cnequity.steps.http_common import run_incremental_fetched, write_fetched
@@ -488,10 +489,13 @@ def step_margin_trading(config: Config, trade_date: date, run_id: str, context: 
         return _backfill_margin_trading(config, trade_date, run_id)
 
     def _fetch(day: date, *, config: Config) -> pl.DataFrame:
-        return _validate_margin_snapshot(fetch_margin_trading(day, config=config), day)
+        frame = fetch_margin_trading(day, config=config)
+        if frame.is_empty() and day < shanghai_now().date() - timedelta(days=2):
+            raise RuntimeError(f"margin_trading: no rows returned for {day.isoformat()}")
+        return _validate_margin_snapshot(frame, day)
 
     return _run_capital_step(
-        config, trade_date, run_id, "margin_trading", _fetch, allow_empty=False
+        config, trade_date, run_id, "margin_trading", _fetch, allow_empty=True
     )
 
 
