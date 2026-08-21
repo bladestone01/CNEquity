@@ -224,6 +224,23 @@ def test_index_constituents_backfill_writes_cni(cfg, monkeypatch):
     assert findings[0]["code"] == "cni_index_backfill_incomplete"
 
 
+def test_index_constituents_backfill_empty_cni_is_retryable_warning(cfg, monkeypatch):
+    cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 1, 31)
+    monkeypatch.setattr(st, "_month_end_trading_days", lambda *a, **k: [date(2024, 1, 31)])
+    monkeypatch.setattr(st, "_existing_as_of_dates", lambda *a, **k: set())
+    monkeypatch.setattr(st, "fetch_cni_index_adjustments", lambda _: pl.DataFrame())
+
+    result = st.step_index_constituents(cfg, date(2024, 1, 31), "run-cni-empty", {})
+
+    assert result["status"] == "warning"
+    assert result["rows_written"] == 0
+    assert result["context_updates"]["audit_findings"][0]["code"] == (
+        "cni_index_backfill_incomplete"
+    )
+
+
 def test_index_constituents_backfill_rejects_thin_nonempty_index(cfg, monkeypatch):
     cfg._backfill = True
     cfg._backfill_start = date(2024, 1, 1)

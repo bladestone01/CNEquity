@@ -253,6 +253,21 @@ def test_compact_merges_into_an_existing_period_partition(tmp_path):
     assert sorted(df["trade_date"].to_list()) == [date(2024, 1, 4), date(2024, 6, 3)]
 
 
+def test_compact_removes_legacy_index_weekend_rows(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    root = cfg.curated_root / "index_bars" / "trade_date=1991"
+    root.mkdir(parents=True, exist_ok=True)
+    _bar_frame([date(1991, 4, 5), date(1991, 4, 6)]).write_parquet(
+        root / "part-merged.parquet"
+    )
+    _stage_bars(cfg, "index_bars", "run-clean", [date(1991, 4, 8)])
+
+    compact_dataset(cfg.staging_root, cfg.curated_root, "index_bars", "run-clean")
+
+    dates = pl.read_parquet(root / "part-merged.parquet")["trade_date"].sort().to_list()
+    assert dates == [date(1991, 4, 5), date(1991, 4, 8)]
+
+
 # --- repartition ------------------------------------------------------------
 
 
@@ -290,6 +305,44 @@ def test_repartition_is_idempotent(tmp_path):
     repartition_dataset(cfg, "index_bars")
 
     assert repartition_dataset(cfg, "index_bars").changed is False
+
+
+def test_repartition_cleans_weekend_index_rows_in_current_layout(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    root = cfg.curated_root / "index_bars" / "trade_date=1991"
+    root.mkdir(parents=True, exist_ok=True)
+    _bar_frame([date(1991, 4, 5), date(1991, 4, 6)]).write_parquet(
+        root / "part-merged.parquet"
+    )
+
+    result = repartition_dataset(cfg, "index_bars")
+
+    assert result.changed is True
+    cleaned = pl.read_parquet(root / "part-merged.parquet")
+    assert cleaned["trade_date"].to_list() == [date(1991, 4, 5)]
+
+
+def test_repartition_cleans_weekend_trading_calendar_flags(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    root = cfg.curated_root / "trading_calendar" / "trade_date=1991"
+    root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(1991, 4, 5), date(1991, 4, 6)],
+            "is_trading": [True, True],
+            "source": ["seed", "seed"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": ["2026-07-21T00:00:00+00:00"] * 2,
+        }
+    ).with_columns(pl.col("fetched_at").str.to_datetime(time_unit="us", time_zone="UTC")).write_parquet(
+        root / "part-merged.parquet"
+    )
+
+    result = repartition_dataset(cfg, "trading_calendar")
+
+    assert result.changed is True
+    cleaned = pl.read_parquet(root / "part-merged.parquet")
+    assert cleaned.filter(pl.col("is_trading"))["trade_date"].to_list() == [date(1991, 4, 5)]
 
 
 def test_dry_run_leaves_the_dataset_untouched(tmp_path):

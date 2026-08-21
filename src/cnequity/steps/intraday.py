@@ -18,7 +18,7 @@ from cnequity.adapters.tdx_protocol.minute_bars import pages_for_window
 from cnequity.config import Config
 from cnequity.domain.datasets import get_dataset, intraday_datasets
 from cnequity.orchestrator.registry import register_step
-from cnequity.steps.common import incremental_window, load_symbols
+from cnequity.steps.common import incremental_window, instrument_metadata, load_symbols
 from cnequity.storage import StagingWriter
 
 logger = logging.getLogger(__name__)
@@ -136,6 +136,53 @@ def resolve_scope(config: Config) -> list[str]:
     )
 
 
+def _filter_all_scope_to_listed_symbols(
+    config: Config, symbols: list[str], start: date, end: date
+) -> list[str]:
+    """Drop delisted/future listings from a current intraday sweep.
+
+    ``load_symbols`` is intentionally survivorship-free and therefore includes
+    historical instruments. That is correct for daily history, but an ``all``
+    intraday window against the current TDX tip would otherwise spend a full
+    request batch on every old code and report a misleading all-empty result.
+    Keep symbols absent from metadata (forward-compatible with partial lakes),
+    while excluding known names whose listing span cannot overlap the window.
+    """
+    try:
+        metadata = instrument_metadata(config)
+    except (AttributeError, OSError, RuntimeError):
+        return symbols
+    required = {"symbol", "list_date", "delist_date"}
+    if metadata.is_empty() or not required.issubset(metadata.columns):
+        return symbols
+
+    metadata = metadata.with_columns(
+        pl.col("symbol").cast(pl.Utf8, strict=False),
+        pl.col("list_date").cast(pl.Date, strict=False),
+        pl.col("delist_date").cast(pl.Date, strict=False),
+    )
+    known = set(metadata.get_column("symbol").drop_nulls().to_list())
+    active = set(
+        metadata.filter(
+            (pl.col("list_date").is_null() | (pl.col("list_date") <= end))
+            & (pl.col("delist_date").is_null() | (pl.col("delist_date") >= start))
+        )
+        .get_column("symbol")
+        .drop_nulls()
+        .to_list()
+    )
+    filtered = [symbol for symbol in symbols if symbol not in known or symbol in active]
+    excluded = len(symbols) - len(filtered)
+    if excluded:
+        logger.info(
+            "minute_bars scope=all: excluded %d symbol(s) outside %s..%s listing span",
+            excluded,
+            start,
+            end,
+        )
+    return filtered
+
+
 def horizon_start(dataset: str, today: date) -> date | None:
     """Earliest date the source still serves, or None when unbounded."""
     return get_dataset(dataset).earliest_available(today)
@@ -201,10 +248,19 @@ def capture_intraday_bars(
             ),
         }
 
-    symbols = resolve_scope(config)
     start, end = _window(config, dataset, trade_date)
     if start > end:
         return {"rows_read": 0, "rows_written": 0, "note": f"empty window {start}..{end}"}
+    symbols = resolve_scope(config)
+    if (config.minute_bars_scope or "").strip() == "all":
+        symbols = _filter_all_scope_to_listed_symbols(config, symbols, start, end)
+    if not symbols:
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "symbols": 0,
+            "note": f"no listed symbols in {start}..{end}",
+        }
 
     # Bound the page walk: without it, every symbol is paged back to its full
     # retention depth and the extra pages are then discarded by the window

@@ -128,11 +128,12 @@ def fetch_daily_bars(
     *,
     client: EastMoneyClient | None = None,
     config=None,
+    timeout_sec: float | None = None,
 ) -> pl.DataFrame:
     """Per-symbol historical kline (slow). Prefer :func:`fetch_daily_bars_clist` for tip."""
     owns = client is None
     if client is None:
-        client = EastMoneyClient(config=config)
+        client = EastMoneyClient(config=config, timeout_sec=timeout_sec)
 
     beg = start.strftime("%Y%m%d")
     end_s = end.strftime("%Y%m%d")

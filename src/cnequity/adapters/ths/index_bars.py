@@ -63,10 +63,17 @@ def _parse_index_kline(payload: dict[str, Any], symbol: str) -> list[dict]:
             continue
         stamp = parts[0]
         try:
+            trade_date = date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
+            # SSE/SZSE index sessions are Monday-Friday.  THS has returned
+            # historical Saturday rows for the early-1990s series; accepting
+            # them poisons the bar-derived calendar and makes every other
+            # dataset appear to have a missing session on that Saturday.
+            if trade_date.weekday() >= 5:
+                continue
             rows.append(
                 {
                     "symbol": symbol,
-                    "trade_date": date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8])),
+                    "trade_date": trade_date,
                     "open": _finite_float(parts[1]),
                     "high": _finite_float(parts[2]),
                     "low": _finite_float(parts[3]),

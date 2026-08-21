@@ -9,6 +9,10 @@ from __future__ import annotations
 # Weekday market closures (CNY, National Day, etc.)
 CLOSED_DATES: frozenset[str] = frozenset(
     {
+        # Historical correction confirmed by the SSE 2001 fact book: the
+        # annual 240-session count excludes New Year's Day, while an old THS
+        # payload incorrectly carried two stock rows for this date.
+        "2001-01-01",
         # 2016
         "2016-01-01",
         "2016-02-08",

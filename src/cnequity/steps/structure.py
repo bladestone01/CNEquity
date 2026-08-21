@@ -215,10 +215,32 @@ def _backfill_index_constituents(config: Config, trade_date: date, run_id: str) 
         frames.append(expand_cni_constituents_as_of(adj, todo))
 
     if not frames:
-        raise RuntimeError(
-            "index_constituents backfill: no CNI adjustment rows for "
-            + ", ".join(CNI_BACKFILL_INDICES)
-        )
+        # Empty CNI workbooks are an unavailable-source/unsupported-coverage
+        # condition, not a malformed dataframe. Keep the run retryable and
+        # explain the scope without turning a source gap into a traceback.
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "status": "warning",
+            "as_of_dates": 0,
+            "note": "CNI returned no adjustment history",
+            "context_updates": {
+                "audit_findings": [
+                    {
+                        "dataset": "index_constituents",
+                        "severity": "warning",
+                        "code": "cni_index_backfill_incomplete",
+                        "message": (
+                            "CNI returned empty adjustment history for: "
+                            + ", ".join(failed_indices)
+                            + ". (CSI 000300/000905 still EM-daily only)"
+                        ),
+                        "failed_indices": failed_indices,
+                        "thin_snapshots": [],
+                    }
+                ]
+            },
+        }
     df = pl.concat([f for f in frames if not f.is_empty()])
     if df.is_empty():
         raise RuntimeError("index_constituents backfill: expansion produced 0 rows")

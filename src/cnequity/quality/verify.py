@@ -68,6 +68,17 @@ class Gap:
     def repair_command(self, config_path: str) -> str | None:
         if not self.repairable:
             return None
+        # Derived datasets are rebuilt from curated inputs; there is no
+        # registered ingestion step named ``adj_factors`` or
+        # ``industry_index`` for ``cne backfill`` to invoke.
+        if self.dataset in {"adj_factors", "industry_index"}:
+            cmd = f"cne derive {self.dataset} --config {config_path}"
+            if self.dataset == "industry_index":
+                if self.start is not None:
+                    cmd += f" --start {self.start.isoformat()}"
+                if self.end is not None:
+                    cmd += f" --end {self.end.isoformat()}"
+            return cmd
         cmd = f"cne backfill {self.dataset} --config {config_path}"
         if self.start is not None:
             cmd += f" --start {self.start.isoformat()}"

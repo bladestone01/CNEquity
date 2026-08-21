@@ -871,7 +871,11 @@ def _gapfill_multiday_via_kline(
             "audit_findings": sina_findings,
         }
 
-    df = fetch_em_kline(symbols, start, end, config=config)
+    # EastMoney is a secondary path and is intermittently returning 502s from
+    # the overseas proxy. Bound this repair request more tightly than the
+    # normal vendor timeout so one failed batch cannot stall daily for minutes
+    # after Sina has already been tried.
+    df = fetch_em_kline(symbols, start, end, config=config, timeout_sec=8.0)
     if df.is_empty():
         return {
             "rows_read": sina_rows,

@@ -988,9 +988,14 @@ def _backfill_symbol_chunked(cfg, dataset: str, start: date, end: date, chunk_sy
     by symbol keeps one walk per name, bounds compact memory, and makes a kill
     cost only the current symbol batch.
     """
-    from cnequity.steps.intraday import resolve_scope
+    from cnequity.steps.intraday import (
+        _filter_all_scope_to_listed_symbols,
+        resolve_scope,
+    )
 
     symbols = resolve_scope(cfg)
+    if (cfg.minute_bars_scope or "").strip() == "all":
+        symbols = _filter_all_scope_to_listed_symbols(cfg, symbols, start, end)
     if not symbols:
         raise click.ClickException(
             f"{dataset}: scope resolved to zero symbols — check [minute_bars].scope"

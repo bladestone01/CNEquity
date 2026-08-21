@@ -6,7 +6,7 @@ import polars as pl
 
 from cnequity.domain.datasets import granularity_for_dataset
 from cnequity.domain.partitions import Granularity
-from cnequity.domain.schemas import PRIMARY_KEYS, validate_dataframe
+from cnequity.domain.schemas import PRIMARY_KEYS, sanitize_dataset_rows, validate_dataframe
 from cnequity.storage.atomic import write_parquet_atomic
 
 
@@ -22,7 +22,7 @@ class StagingWriter:
         batch_id: str,
         df: pl.DataFrame,
     ) -> Path:
-        df = validate_dataframe(df, dataset)
+        df = sanitize_dataset_rows(validate_dataframe(df, dataset), dataset)
         out_dir = self.staging_root / dataset / f"run_id={run_id}"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"part-{batch_id}.parquet"
@@ -110,7 +110,7 @@ def compact_dataset(
     # Re-validate on read: staging/curated written before a schema change
     # (e.g. fetched_at str → timestamp) must be normalized before concat.
     combined = pl.concat(
-        [validate_dataframe(pl.read_parquet(f), dataset) for f in files],
+        [sanitize_dataset_rows(validate_dataframe(pl.read_parquet(f), dataset), dataset) for f in files],
         how="diagonal_relaxed",
     )
     pk = PRIMARY_KEYS.get(dataset, [])
@@ -123,7 +123,10 @@ def compact_dataset(
         existing_files = sorted(out_dir.rglob("*.parquet")) if out_dir.exists() else []
         if existing_files:
             existing = pl.concat(
-                [validate_dataframe(pl.read_parquet(path), dataset) for path in existing_files],
+                [
+                    sanitize_dataset_rows(validate_dataframe(pl.read_parquet(path), dataset), dataset)
+                    for path in existing_files
+                ],
                 how="diagonal_relaxed",
             )
             combined = pl.concat([existing, combined], how="diagonal_relaxed")
@@ -149,7 +152,9 @@ def compact_dataset(
         frames = [group]
         if existing_dir.exists():
             for existing in existing_dir.rglob("*.parquet"):
-                frames.append(validate_dataframe(pl.read_parquet(existing), dataset))
+                frames.append(
+                    sanitize_dataset_rows(validate_dataframe(pl.read_parquet(existing), dataset), dataset)
+                )
         merged = pl.concat(frames, how="diagonal_relaxed")
         if pk:
             merged = merged.sort("fetched_at").unique(subset=pk, keep="last")

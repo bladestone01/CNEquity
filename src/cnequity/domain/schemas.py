@@ -944,6 +944,36 @@ def validate_dataframe(
     return normalized
 
 
+def sanitize_dataset_rows(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
+    """Drop known transport artefacts before rows are persisted or merged."""
+    if (
+        dataset in {"daily_bars", "index_bars"}
+        and "trade_date" in df.columns
+        and df.schema["trade_date"] == pl.Date
+    ):
+        from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
+
+        # SSE/SZSE sessions are Monday-Friday. Historical source payloads also
+        # contain a small set of known holiday rows; retaining them contaminates
+        # the derived calendar and creates false coverage gaps.
+        return df.filter(
+            (pl.col("trade_date").dt.weekday() <= 5)
+            & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+        )
+    if (
+        dataset == "trading_calendar"
+        and "trade_date" in df.columns
+        and "is_trading" in df.columns
+        and df.schema["trade_date"] == pl.Date
+    ):
+        return df.with_columns(
+            (
+                pl.col("is_trading") & (pl.col("trade_date").dt.weekday() <= 5)
+            ).alias("is_trading")
+        )
+    return df
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 

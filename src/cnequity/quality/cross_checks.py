@@ -18,6 +18,7 @@ from datetime import date
 
 import polars as pl
 
+from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 from cnequity.config import Config
 from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import (
@@ -96,7 +97,11 @@ def _trading_days(config: Config, trade_date: date) -> set[date]:
             scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date),
             "trading_calendar",
         )
-        .filter(pl.col("is_trading"))
+        .filter(
+            pl.col("is_trading")
+            & (pl.col("trade_date").dt.weekday() <= 5)
+            & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+        )
         .select("trade_date")
         .unique()
         .collect()
@@ -187,7 +192,11 @@ def trading_calendar_horizon_findings(config: Config, trade_date: date) -> list[
 
     written = (
         dedupe_lazy_by_primary_key(scan_parquet_root(cal_root), "trading_calendar")
-        .filter(pl.col("is_trading"))
+        .filter(
+            pl.col("is_trading")
+            & (pl.col("trade_date").dt.weekday() <= 5)
+            & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+        )
         .select(pl.col("trade_date").max().alias("last"))
         .collect()
     )

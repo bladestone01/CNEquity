@@ -174,6 +174,8 @@ def is_transport_fail_fast(exc: BaseException) -> bool:
     identically. Read timeouts are excluded on purpose — those do come back
     on a second try when EastMoney is merely busy.
     """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response is not None and exc.response.status_code >= 500
     return isinstance(
         exc,
         (
@@ -193,6 +195,7 @@ class EastMoneyClient:
         min_interval: float | None = None,
         *,
         config: Config | None = None,
+        timeout_sec: float | None = None,
     ):
         # Prefer Config pacing; bare clients default to 1.0s in-process spacing.
         self.config = config
@@ -204,11 +207,12 @@ class EastMoneyClient:
             self.min_interval = float(min_interval)
         self._last_request = 0.0
         self._proxy = None
-        timeout = 15.0
+        timeout = 15.0 if timeout_sec is None else float(timeout_sec)
         if config is not None:
             if getattr(config, "eastmoney_proxy", None):
                 self._proxy = config.eastmoney_proxy
-            timeout = float(getattr(config, "eastmoney_timeout_sec", 15.0) or 15.0)
+            if timeout_sec is None:
+                timeout = float(getattr(config, "eastmoney_timeout_sec", 15.0) or 15.0)
         self._timeout = timeout
         # httpx>=0.28 removed ``proxies``; older httpx still needs it. The mootdx
         # pin that forced <0.26 is gone, but the floor is still 0.25.

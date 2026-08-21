@@ -98,6 +98,13 @@ def _bar_dates(curated_root: Path, dataset: str) -> set[date]:
             names = scan.collect_schema().names()
             if "trade_date" not in names:
                 continue
+            # SSE/SZSE sessions are Monday-Friday.  Historical source rows
+            # must never turn a weekend into a market session while deriving
+            # the pre-seed calendar.
+            scan = scan.filter(
+                (pl.col("trade_date").dt.weekday() <= 5)
+                & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+            )
             if dataset == "daily_bars" and "volume" in names:
                 scan = scan.filter(pl.col("volume") > 0)
             values = scan.select("trade_date").collect().get_column("trade_date").drop_nulls()
@@ -186,6 +193,8 @@ def build_trading_calendar(
         in_seed = seed.filter(pl.col("trade_date") == d)
         if not in_seed.is_empty():
             is_trading = bool(in_seed["is_trading"][0])
+        elif d.isoformat() in CLOSED_DATES:
+            is_trading = False
         elif d in bar_trading_days:
             is_trading = True
         elif (

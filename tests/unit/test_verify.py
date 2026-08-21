@@ -361,6 +361,17 @@ def test_repair_command_carries_the_window(tmp_path):
     assert gap.repair_command("my.toml") == "cne backfill daily_bars --config my.toml"
 
 
+def test_repair_command_routes_derived_datasets_to_derive(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    cfg.derived_root.mkdir(parents=True, exist_ok=True)
+
+    adj = verify_dataset(cfg, DATASETS["adj_factors"], anchor=ANCHOR, watermark=None)[0]
+    industry = verify_dataset(cfg, DATASETS["industry_index"], anchor=ANCHOR, watermark=None)[0]
+
+    assert adj.repair_command("my.toml") == "cne derive adj_factors --config my.toml"
+    assert industry.repair_command("my.toml") == "cne derive industry_index --config my.toml"
+
+
 def test_verify_lake_skips_unknown_dataset_names(tmp_path):
     cfg = Config(data_root=tmp_path / "lake")
     cfg.curated_root.mkdir(parents=True, exist_ok=True)

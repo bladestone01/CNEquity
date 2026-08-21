@@ -9,6 +9,7 @@ from datetime import date, timedelta
 
 import polars as pl
 
+from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 from cnequity.adapters.tdx_protocol.client import fetch_instruments
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS, fetch_semantics
@@ -174,7 +175,11 @@ def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
         covered = set(cal.get_column("trade_date").drop_nulls().to_list())
         expected_days = (end - start).days + 1
         if len(covered) == expected_days:
-            out = cal.filter(pl.col("is_trading"))["trade_date"].sort().to_list()
+            out = cal.filter(
+                pl.col("is_trading")
+                & (pl.col("trade_date").dt.weekday() <= 5)
+                & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+            )["trade_date"].sort().to_list()
             if out:
                 return out
         else:
@@ -199,7 +204,11 @@ def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
         seed_path=effective_seed,
         curated_root=config.curated_root if config.curated_root.exists() else None,
     )
-    return calendar.filter(pl.col("is_trading"))["trade_date"].sort().to_list()
+    return calendar.filter(
+        pl.col("is_trading")
+        & (pl.col("trade_date").dt.weekday() <= 5)
+        & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+    )["trade_date"].sort().to_list()
 
 
 def incremental_trade_dates(config: Config, dataset: str, trade_date: date) -> list[date]:
@@ -210,6 +219,8 @@ def incremental_trade_dates(config: Config, dataset: str, trade_date: date) -> l
 
 def is_trading_day(config: Config, trade_date: date) -> bool:
     """Return whether *trade_date* is a trading day per curated calendar or seed."""
+    if trade_date.weekday() >= 5 or trade_date.isoformat() in CLOSED_DATES:
+        return False
     cal = _load_trading_calendar_df(config, start=trade_date, end=trade_date)
     if cal is not None and not cal.is_empty():
         row = cal.filter(pl.col("trade_date") == trade_date)

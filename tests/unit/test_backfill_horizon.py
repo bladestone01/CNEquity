@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from cnequity.cli import main as cli_main
@@ -167,6 +168,34 @@ def test_minute_bars_declares_symbol_chunking_not_date_chunking():
     assert get_dataset("minute_bars_5m").backfill_chunk_symbols == 200
     assert get_dataset("daily_bars").backfill_chunk_days is None
     assert get_dataset("daily_bars").backfill_chunk_symbols is None
+
+
+def test_all_intraday_scope_excludes_symbols_outside_listing_window(monkeypatch):
+    from cnequity.steps import intraday
+
+    monkeypatch.setattr(
+        intraday,
+        "instrument_metadata",
+        lambda _config: pl.DataFrame(
+            {
+                "symbol": ["600519.SH", "600695.SH", "300001.SZ"],
+                "list_date": [date(2001, 1, 1), date(1993, 1, 1), date(2027, 1, 1)],
+                "delist_date": [None, date(2022, 6, 14), None],
+            },
+            schema={
+                "symbol": pl.Utf8,
+                "list_date": pl.Date,
+                "delist_date": pl.Date,
+            },
+        ),
+    )
+
+    assert intraday._filter_all_scope_to_listed_symbols(
+        object(),
+        ["600519.SH", "600695.SH", "300001.SZ", "000001.SZ"],
+        date(2026, 8, 19),
+        date(2026, 8, 21),
+    ) == ["600519.SH", "000001.SZ"]
 
 
 def test_symbol_chunked_backfill_walks_full_window_per_symbol_batch(monkeypatch):

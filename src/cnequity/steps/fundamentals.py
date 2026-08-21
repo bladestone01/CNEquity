@@ -109,7 +109,7 @@ def _valuation_history_end(config: Config, trade_date: date) -> date:
 
 
 def _backfill_valuation_metrics(config: Config, trade_date: date, run_id: str) -> dict:
-    """Historical PE/PB/PS + market cap from baostock over all_a (2016 → tip).
+    """Historical PE/PB/PS + market cap from baostock over the requested window.
 
     Resumable: symbols that already have baostock rows *with* ``float_mv`` filled
     densely (≥80%) are skipped. Progress is written every
@@ -160,15 +160,25 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
     if bar_universe:
         universe = [s for s in universe if s in bar_universe]
     history_end = _valuation_history_end(config, trade_date)
-    if history_end < _VALUATION_BACKFILL_START:
+    history_start = max(
+        getattr(config, "_backfill_start", None) or _VALUATION_BACKFILL_START,
+        _VALUATION_BACKFILL_START,
+    )
+    requested_end = getattr(config, "_backfill_end", None)
+    if requested_end is not None:
+        history_end = min(history_end, requested_end)
+    if history_end < history_start:
         return {
             "rows_read": 0,
             "rows_written": 0,
             "note": "history_end before backfill start; nothing to fetch",
+            "history_start": history_start.isoformat(),
             "history_end": history_end.isoformat(),
             "orphan_purge": purge_summary,
         }
-    todo = _symbols_needing_backfill(config, universe, end=history_end)
+    todo = _symbols_needing_backfill(
+        config, universe, start=history_start, end=history_end
+    )
     if not todo:
         return {
             "rows_read": 0,
@@ -186,7 +196,7 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
         batch = todo[offset : offset + _VALUATION_BACKFILL_CHUNK]
         try:
             df, failed = fetch_valuation_history(
-                batch, _VALUATION_BACKFILL_START, history_end, config=config
+                batch, history_start, history_end, config=config
             )
         except RuntimeError as exc:
             # Ban / login death mid-sweep: keep prior chunks, surface remainder.
@@ -197,7 +207,7 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
         all_failed.extend(failed)
         if not df.is_empty():
             df = _validate_valuation_history_batch(
-                df, batch, _VALUATION_BACKFILL_START, history_end
+                df, batch, history_start, history_end
             )
             # Unique part name per chunk — write_simple's default batch-0 would
             # overwrite prior chunks in the same run_id before compact.
@@ -217,6 +227,7 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
         "rows_written": rows_written,
         "orphan_purge": purge_summary,
         "symbols_todo": len(todo),
+        "history_start": history_start.isoformat(),
         "history_end": history_end.isoformat(),
     }
     if aborted_reason:
@@ -247,6 +258,7 @@ def _symbols_needing_backfill(
     config: Config,
     universe: list[str],
     *,
+    start: date | None = None,
     end: date | None = None,
 ) -> list[str]:
     """Symbols missing baostock history, or with sparse market-cap fill.
@@ -260,6 +272,7 @@ def _symbols_needing_backfill(
 
     expected_end: dict[str, date | None] | None = None
     if end is not None:
+        window_start = start or _VALUATION_BACKFILL_START
         expected_end = {symbol: end for symbol in universe}
         metadata = instrument_metadata(config)
         if not metadata.is_empty() and "symbol" in metadata.columns:
@@ -271,7 +284,7 @@ def _symbols_needing_backfill(
                 delist_date = row.get("delist_date")
                 if list_date is not None and list_date > end:
                     expected_end[symbol] = None
-                elif delist_date is not None and delist_date < _VALUATION_BACKFILL_START:
+                elif delist_date is not None and delist_date < window_start:
                     expected_end[symbol] = None
                 elif delist_date is not None and delist_date < end:
                     expected_end[symbol] = delist_date

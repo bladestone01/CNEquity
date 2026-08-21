@@ -56,6 +56,8 @@ def test_new_year_holiday_not_trading():
         cal = build_trading_calendar(d, d)
         assert cal["is_trading"][0] is False, d
 
+    assert build_trading_calendar(date(2001, 1, 1), date(2001, 1, 1))["is_trading"][0] is False
+
 
 def test_seed_is_authoritative_over_index_bars(tmp_path):
     # A spurious index_bars row on a seed holiday must not flip it to trading.
@@ -85,6 +87,32 @@ def test_daily_placeholder_does_not_create_pre_seed_session(tmp_path):
         date(2010, 2, 10), date(2010, 2, 24), curated_root=tmp_path / "curated"
     )
     assert date(2010, 2, 17) not in set(cal.filter(pl.col("is_trading"))["trade_date"])
+
+
+def test_weekend_index_bar_does_not_create_pre_seed_session(tmp_path):
+    root = tmp_path / "curated" / "index_bars"
+    root.mkdir(parents=True)
+    saturday = date(2010, 2, 13)
+    pl.DataFrame({"trade_date": [saturday], "symbol": ["000001.SH"]}).write_parquet(
+        root / "part-000.parquet"
+    )
+
+    cal = build_trading_calendar(saturday, saturday, curated_root=tmp_path / "curated")
+
+    assert cal["is_trading"][0] is False
+
+
+def test_known_historical_holiday_overrides_bar_evidence(tmp_path):
+    root = tmp_path / "curated" / "daily_bars"
+    root.mkdir(parents=True)
+    holiday = date(2001, 1, 1)
+    pl.DataFrame(
+        {"trade_date": [holiday], "symbol": ["000529.SZ"], "volume": [100]}
+    ).write_parquet(root / "part-000.parquet")
+
+    cal = build_trading_calendar(holiday, holiday, curated_root=tmp_path / "curated")
+
+    assert cal["is_trading"][0] is False
 
 
 def test_corrupt_bar_file_does_not_abort_calendar_derivation(tmp_path):

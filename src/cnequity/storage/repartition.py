@@ -26,7 +26,7 @@ import polars as pl
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
 from cnequity.domain.partitions import partition_value
-from cnequity.domain.schemas import PRIMARY_KEYS, validate_dataframe
+from cnequity.domain.schemas import PRIMARY_KEYS, sanitize_dataset_rows, validate_dataframe
 from cnequity.file_lock import lake_mutation_lock
 from cnequity.query.parquet_scan import list_partitions, partition_dir
 from cnequity.storage.atomic import write_parquet_atomic
@@ -59,6 +59,29 @@ class RepartitionResult:
 
 def _dir_bytes(paths: list[Path]) -> int:
     return sum(f.stat().st_size for f in paths if f.is_file())
+
+
+def _has_sanitizable_rows(dataset: str, files: list[Path]) -> bool:
+    """Detect rows that need cleanup even when partition layout is current."""
+    if dataset not in {"daily_bars", "index_bars", "trading_calendar"}:
+        return False
+    for path in files:
+        scan = pl.scan_parquet(str(path))
+        if "trade_date" not in scan.collect_schema().names():
+            continue
+        predicate = pl.col("trade_date").dt.weekday() > 5
+        if dataset in {"daily_bars", "index_bars"}:
+            from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
+
+            predicate |= pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+        if dataset == "trading_calendar":
+            if "is_trading" not in scan.collect_schema().names():
+                continue
+            predicate &= pl.col("is_trading")
+        count = scan.filter(predicate).select(pl.len()).collect().item()
+        if count:
+            return True
+    return False
 
 
 def repartition_dataset(
@@ -94,6 +117,7 @@ def _repartition_dataset_locked(
         raise RepartitionError(f"no partitions under {root}")
 
     files_before = sorted(root.glob("**/*.parquet"))
+    needs_cleanup = _has_sanitizable_rows(dataset, files_before)
     target_values = {partition_value(p.start, spec.partition_granularity) for p in partitions}
     already = all(
         p.value == partition_value(p.start, spec.partition_granularity) for p in partitions
@@ -110,7 +134,7 @@ def _repartition_dataset_locked(
         bytes_after=0,
         changed=False,
     )
-    if already:
+    if already and not needs_cleanup:
         result.partitions_after = result.partitions_before
         result.files_after = result.files_before
         result.bytes_after = result.bytes_before
@@ -118,7 +142,10 @@ def _repartition_dataset_locked(
 
     # Whole-dataset read: the datasets that need this are the small ones, and a
     # partial rewrite cannot guarantee the row-count check below.
-    frames = [validate_dataframe(pl.read_parquet(f), dataset) for f in files_before]
+    frames = [
+        sanitize_dataset_rows(validate_dataframe(pl.read_parquet(f), dataset), dataset)
+        for f in files_before
+    ]
     combined = pl.concat(frames, how="diagonal_relaxed")
     # Same PK dedupe as compact: a granularity flip often leaves day dirs beside
     # the new year/month dirs, and a naive concat would bake those overlaps into

@@ -252,6 +252,23 @@ def test_index_kline_rows_carry_frequency():
     assert rows[0]["close"] == 3731.00
 
 
+def test_index_kline_drops_historical_weekend_rows():
+    from cnequity.adapters.ths.index_bars import _parse_index_kline
+
+    rows = _parse_index_kline(
+        {
+            "data": (
+                "19910405,121.07,121.73,120.50,121.10,100,1000;"
+                "19910406,121.10,121.20,120.90,121.00,100,1000;"
+                "19910408,121.11,121.11,120.80,121.05,100,1000"
+            )
+        },
+        "399001.SZ",
+    )
+
+    assert [row["trade_date"].isoformat() for row in rows] == ["1991-04-05", "1991-04-08"]
+
+
 def test_index_symbol_without_a_code_raises():
     """An unmapped symbol is a caller error — silently fetching nothing would
     read as 'this index has no history'."""
