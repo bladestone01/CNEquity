@@ -49,8 +49,17 @@ def _fetch_with_deadline(fetch, deadline: float, on_deadline):
     A background thread can close a socket, but closing a descriptor from
     another thread does not reliably interrupt ``recv`` on macOS. The main
     ingestion path therefore uses ``SIGALRM`` so the blocked Python socket
-    call is interrupted in the same thread. Libraries that invoke this helper
-    from a worker thread keep the existing Timer fallback.
+    call is interrupted in the same thread.
+
+    ``SIGALRM``/``setitimer`` is POSIX-only (absent on Windows) and can only
+    be armed from the main thread, so both callers off the main thread and
+    every caller on Windows fall through to running ``fetch`` in a daemon
+    worker thread instead. That worker cannot be killed if it never returns,
+    but the caller does not wait on it past ``deadline`` either way: it is a
+    bound on the *caller's* wait, not on the query itself. ``on_deadline``
+    still gets a chance to close the underlying connection so the orphaned
+    worker fails fast rather than lingering, but nothing here depends on that
+    succeeding for the deadline to hold.
     """
     use_alarm = (
         threading.current_thread() is threading.main_thread()
@@ -72,13 +81,25 @@ def _fetch_with_deadline(fetch, deadline: float, on_deadline):
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous_handler)
 
-    watchdog = threading.Timer(deadline, on_deadline)
-    watchdog.daemon = True
-    watchdog.start()
-    try:
-        return fetch()
-    finally:
-        watchdog.cancel()
+    outcome: dict = {}
+    done = threading.Event()
+
+    def _run():
+        try:
+            outcome["value"] = fetch()
+        except Exception as exc:  # noqa: BLE001 — re-raised in the caller below
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    if not done.wait(deadline):
+        on_deadline()
+        raise _FetchDeadline(f"vendor query exceeded {deadline:.1f}s deadline")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def import_baostock():
