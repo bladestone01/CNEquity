@@ -60,10 +60,9 @@ ADJ_RECON_LOOKBACK_DAYS = 30
 # factor=1.0 — a raw price inside a result the caller asked to have adjusted,
 # marked only by an `adj_is_exact` column most callers never select.
 #
-# Measured on a full lake: 260 of 6,128 stocks had no factor at all (252 BJ),
-# and a one-year `universe="all_a"` hfq window carried 10,480 such rows, 10,461
-# of them a real close>0. None of it raised, and none of it appeared in an
-# audit — which is what this check is for. Reported per exchange, because
+# The exact counts are lake- and window-dependent. Before this check existed,
+# uncovered rows neither raised nor appeared in an audit — which is what this
+# check is for. Reported per exchange, because
 # "北交所 is uncovered" is one fact and 252 per-symbol findings is noise.
 ADJ_COVERAGE_WARN_RATIO = 0.98
 
@@ -711,35 +710,62 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     if not stocks:
         return []
 
-    priced = set(
+    bar_span = (
         _canonical_traded_bars(scan_parquet_root(bars_root))
-        .select("symbol")
-        .unique()
-        .collect(engine="streaming")["symbol"]
-        .to_list()
+        .select("symbol", "trade_date")
+        .group_by("symbol")
+        .agg(
+            pl.col("trade_date").min().alias("bar_first"),
+            pl.col("trade_date").max().alias("bar_last"),
+        )
+        .collect(engine="streaming")
     )
-    with_factor = set(
+    if bar_span.is_empty():
+        return []
+    factor_span = (
         scan_parquet_root(fac_root)
-        .select("symbol")
-        .unique()
-        .collect(engine="streaming")["symbol"]
-        .to_list()
+        .select("symbol", "trade_date")
+        .group_by("symbol")
+        .agg(
+            pl.col("trade_date").min().alias("factor_first"),
+            pl.col("trade_date").max().alias("factor_last"),
+        )
+        .collect(engine="streaming")
     )
+    spans = bar_span.join(factor_span, on="symbol", how="left")
 
     findings: list[dict] = []
     by_exchange: dict[str, list[str]] = {}
-    for symbol in stocks & priced:
+    for symbol in stocks & set(spans["symbol"].to_list()):
         by_exchange.setdefault(symbol.rsplit(".", 1)[-1], []).append(symbol)
 
     for exchange, symbols in sorted(by_exchange.items()):
         total = len(symbols)
         if not total:
             continue
-        covered = sum(1 for s in symbols if s in with_factor)
+        span_by_symbol = {
+            row["symbol"]: row
+            for row in spans.filter(pl.col("symbol").is_in(symbols)).iter_rows(named=True)
+        }
+        fully_covered = {
+            symbol
+            for symbol, row in span_by_symbol.items()
+            if (
+                row["factor_first"] is not None
+                and row["factor_last"] is not None
+                and row["factor_first"] <= row["bar_first"]
+                and row["factor_last"] >= row["bar_last"]
+            )
+        }
+        covered = len(fully_covered)
         ratio = covered / total
         if ratio >= ADJ_COVERAGE_WARN_RATIO:
             continue
         missing = total - covered
+        without_factor = sum(
+            1 for symbol in symbols if span_by_symbol[symbol]["factor_first"] is None
+        )
+        partial = missing - without_factor
         findings.append(
             {
                 "dataset": "adj_factors",
@@ -747,15 +773,19 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                 "check": "adj_factor_coverage",
                 "exchange": exchange,
                 "message": (
-                    f"{exchange}: {missing} of {total} priced stocks have no adjustment "
-                    f"factor ({ratio:.0%} covered). load(adjust='hfq') returns those bars "
-                    "unadjusted at factor=1.0 unless strict_adj=True — check adj_is_exact"
+                    f"{exchange}: {missing} of {total} priced stocks lack a complete "
+                    f"adjustment-factor span ({ratio:.0%} covered; "
+                    f"{without_factor} with no factor, {partial} partial). "
+                    "load(adjust='hfq') returns uncovered bars unadjusted at factor=1.0 "
+                    "unless strict_adj=True — check adj_is_exact"
                 ),
                 "symbols_total": total,
                 "symbols_covered": covered,
                 "symbols_missing": missing,
+                "symbols_without_factor": without_factor,
+                "symbols_partial": partial,
                 "coverage_ratio": round(ratio, 4),
-                "sample": sorted(s for s in symbols if s not in with_factor)[:_SAMPLE],
+                "sample": sorted(set(symbols) - fully_covered)[:_SAMPLE],
             }
         )
     return findings
@@ -909,11 +939,10 @@ def adj_factor_reconciliation_findings(
     # (xdxr) and the eastmoney backup were checked live against a sample of
     # these symbols and neither returns any corporate-action history for a
     # name once it drops off their live symbol list — a vendor behavior tied
-    # to delisting, not a market-id or filter bug (measured 2026-08: 109 of
-    # 111 flagged symbols were delisted; the 2 still-listed ones were a genuine
-    # stale-fetch gap and an isolated 2007 event). Filing 109 near-identical
-    # "warning"s for one proven, unfixable-with-current-sources root cause
-    # buries the handful that are actually worth investigating.
+    # to delisting, not a market-id or filter bug. The exact count is
+    # lake-dependent, and filing one warning per delisted symbol for this
+    # proven, unfixable-with-current-sources root cause would bury the handful
+    # that are actually worth investigating.
     instruments = _instruments_frame(config)
     if instruments is not None and "delist_date" in instruments.columns:
         missing = missing.join(instruments.select("symbol", "delist_date"), on="symbol", how="left")
@@ -964,6 +993,7 @@ def adj_factor_reconciliation_findings(
                 ),
                 "symbols_total": delisted.height,
                 "sample": sorted(delisted["symbol"].to_list())[:_SAMPLE],
+                "source_limited": True,
             }
         )
     return findings

@@ -413,11 +413,16 @@ _SPECS = [
     # L2 corporate events
     DatasetSpec(
         "corporate_actions",
-        primary_source="tdx_protocol",
-        backup_source="eastmoney",
+        # The daily step is EastMoney's date-filtered snapshot; TDX xdxr is
+        # the per-symbol history/backfill path and the same-day comparison
+        # source. Keep this aligned with the failover config because the
+        # registry also controls canonical row precedence in query views.
+        primary_source="eastmoney",
+        backup_source="tdx_protocol",
         tier="L2",
         partition_col="ex_date",
         partition_granularity="year",
+        backfill_source="tdx_protocol",
     ),
     DatasetSpec(
         "announcement_index",

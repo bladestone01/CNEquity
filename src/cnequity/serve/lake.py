@@ -277,7 +277,11 @@ class LakeView:
         findings = self._health_findings()
         historical = findings.get("historical_universe_validity") or {}
         blockers = historical.get("blockers") or []
-        info_findings = findings.get("info_findings") or []
+        source_findings = [
+            finding
+            for severity in ("error_findings", "warning_findings", "info_findings")
+            for finding in (findings.get(severity) or [])
+        ]
         freshness = stats_freshness(self.config)
         counts: dict[str, int] = {}
         for row in rows:
@@ -318,7 +322,7 @@ class LakeView:
             ],
             "source_limitations": [
                 str(finding["message"])
-                for finding in info_findings
+                for finding in source_findings
                 if isinstance(finding, dict)
                 and finding.get("source_limited")
                 and finding.get("message")

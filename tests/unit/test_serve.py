@@ -614,6 +614,12 @@ def test_health_exposes_historical_research_gate(lake):
                     "unsupported_symbols": 580,
                     "unsupported_exchange_counts": {"BJ": 580},
                 },
+                "warning_findings": [
+                    {
+                        "source_limited": True,
+                        "message": "BJ historical ST source does not cover 580 symbols",
+                    }
+                ],
                 "info_findings": [
                     {
                         "source_limited": True,
@@ -638,7 +644,10 @@ def test_health_exposes_historical_research_gate(lake):
     assert body["historical_universe_blockers"] == [
         "BJ historical ST evidence unavailable"
     ]
-    assert body["source_limitations"] == ["399001.SZ has 18 known source gaps"]
+    assert body["source_limitations"] == [
+        "BJ historical ST source does not cover 580 symbols",
+        "399001.SZ has 18 known source gaps",
+    ]
 
 
 def test_static_asset_urls_are_stamped_so_an_upgrade_is_not_served_from_cache(client):

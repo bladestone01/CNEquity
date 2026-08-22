@@ -370,6 +370,7 @@ def _collect_lake_findings(
                 "st_evidence_unsupported_exchange_counts": evidence.get(
                     "unsupported_exchange_counts", {}
                 ),
+                "source_limited": bool(evidence.get("unsupported_symbols")),
                 "daily_bars_start": bars_start.isoformat() if bars_start else None,
                 "daily_bars_end": bars_end.isoformat() if bars_end else None,
             }

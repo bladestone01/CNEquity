@@ -297,6 +297,36 @@ def test_lake_health_persists_informational_findings(tmp_path, monkeypatch):
     assert saved["info_findings"] == [info]
 
 
+def test_lake_health_preserves_source_limited_warning(tmp_path, monkeypatch):
+    from cnequity.quality import audit as audit_module
+
+    cfg = Config(data_root=tmp_path / "data")
+    finding = {
+        "dataset": "trading_status",
+        "severity": "warning",
+        "check": "trading_status_coverage_start",
+        "st_evidence_verified": False,
+        "st_evidence_unsupported_symbols": 1,
+        "st_evidence_unsupported_exchange_counts": {"BJ": 1},
+        "source_limited": True,
+        "message": "historical ST source does not cover 1 BJ symbol",
+    }
+    monkeypatch.setattr(audit_module, "_collect_lake_findings", lambda *args, **kwargs: [finding])
+    monkeypatch.setattr(audit_module, "run_source_diffs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.historical_universe_validity",
+        lambda *args, **kwargs: {
+            "window": {"start": None, "end": None},
+            "universe_ready": False,
+            "blockers": [],
+        },
+    )
+
+    health = audit_module.lake_health(cfg, date(2024, 6, 28))
+
+    assert health["warning_findings"][0]["source_limited"] is True
+
+
 def test_lake_health_persists_selected_research_universe(tmp_path, monkeypatch):
     from cnequity.quality import audit as audit_module
 

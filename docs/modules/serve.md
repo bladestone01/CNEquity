@@ -35,7 +35,7 @@
 
 | 端点 | 内容 |
 |------|------|
-| `GET /api/health` | 锚定交易日、fresh/stale/empty 计数、总行数与体积、findings 分级、带 universe 标记的历史研究门禁、全 A ST 基线、源限制说明、度量表新鲜度 |
+| `GET /api/health` | 锚定交易日、fresh/stale/empty 计数、总行数与体积、findings 分级、带 universe 标记的历史研究门禁、全 A ST 基线、跨 severity 的源限制说明、度量表新鲜度 |
 | `GET /api/tiers` | L0–L8 汇总（数据集数、各状态计数、行数、体积、成员） |
 | `GET /api/datasets?tier=` | 逐数据集：注册表字段 + 覆盖 + 水位 + 度量 |
 | `GET /api/datasets/{name}` | 详情：注册表契约 + schema + 主键 + 缺口 + findings + 建议命令 + 最近 batch |

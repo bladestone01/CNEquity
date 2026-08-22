@@ -2,11 +2,10 @@
 
 The two come from different vendors — factors from Sina, bars from TDX — and
 they do not cover the same market: Sina's factor series essentially skips
-北交所. `load(adjust="hfq")` defaults to strict_adj=False, so those bars come
-back at factor=1.0, i.e. raw prices inside a result the caller asked to have
-adjusted, marked only by an `adj_is_exact` column most callers never select.
-Measured on a real lake: 252 of 580 priced BJ stocks, and 10,480 such rows in a
-one-year all_a window. Nothing raised and nothing appeared in the audit.
+北交所. `load(adjust="hfq")` defaults to strict_adj=False, so bars without a
+complete factor span come back at factor=1.0, i.e. raw prices inside a result
+the caller asked to have adjusted, marked only by an `adj_is_exact` column most
+callers never select.
 """
 
 from __future__ import annotations
@@ -69,6 +68,31 @@ def test_fully_covered_exchange_is_silent(tmp_path):
     sh = [f"6000{i:02d}.SH" for i in range(20)]
     cfg = _lake(tmp_path, stocks=sh, priced=sh, factored=sh)
     assert adj_factor_coverage_findings(cfg, date(2026, 8, 7)) == []
+
+
+def test_partial_factor_span_is_reported_as_incomplete(tmp_path):
+    sh = [f"6000{i:02d}.SH" for i in range(20)]
+    cfg = _lake(tmp_path, stocks=sh, priced=sh, factored=sh)
+    earlier = cfg.curated_root / "daily_bars" / "trade_date=2024-01-02"
+    earlier.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": [sh[0]],
+            "trade_date": [date(2024, 1, 2)],
+            "volume": [100],
+        }
+    ).write_parquet(earlier / "part-0.parquet")
+
+    findings = adj_factor_coverage_findings(cfg, date(2026, 8, 7))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["symbols_covered"] == 19
+    assert finding["symbols_missing"] == 1
+    assert finding["symbols_without_factor"] == 0
+    assert finding["symbols_partial"] == 1
+    assert finding["sample"] == [sh[0]]
+    assert "partial" in finding["message"]
 
 
 def test_a_few_missing_names_stay_below_the_threshold(tmp_path):

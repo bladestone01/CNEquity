@@ -63,6 +63,14 @@ def test_catalog_header_states_the_registered_count():
     assert f"**{len(DATASETS)} 个注册数据集**" in header
 
 
+def test_catalog_history_floor_table_has_no_duplicate_datasets():
+    """The measured source-history table must not repeat a dataset row."""
+    text = CATALOG.read_text(encoding="utf-8")
+    history = text.split("### 历史视野", 1)[1].split("### `trade_ticks` 的容量", 1)[0]
+    names = [match.group(1) for match in re.finditer(r"^\|\s*([a-z][a-z0-9_]*)\s*\|", history, re.M)]
+    assert len(names) == len(set(names)), f"duplicate history-floor rows: {names}"
+
+
 # --- sources.md group labels -------------------------------------------------
 # Same failure mode, different file: sources.md tags each dataset with the
 # schedule group and start time it runs in. Both drifted — fund_flow was labelled
@@ -143,6 +151,31 @@ def test_readme_sources_match_the_registry():
         if primary != spec.primary_source or backup != want_backup:
             mismatches.append(
                 f"{name}: README={primary}/{backup} registry={spec.primary_source}/{want_backup}"
+            )
+    assert mismatches == []
+
+
+def test_failover_sources_match_the_registry():
+    """Configured failover precedence must match canonical query precedence."""
+    import sys
+    from unittest.mock import patch
+
+    from cnequity.config import load_config
+
+    example = Path(__file__).resolve().parents[2] / "configs" / "cnequity.example.toml"
+    with patch.object(sys, "platform", "linux"):
+        cfg = load_config(example)
+
+    mismatches = []
+    for failover in cfg.failover_datasets:
+        spec = DATASETS.get(failover.name)
+        if spec is None:
+            mismatches.append(f"{failover.name}: missing from registry")
+            continue
+        if (spec.primary_source, spec.backup_source) != (failover.primary, failover.backup):
+            mismatches.append(
+                f"{failover.name}: registry={spec.primary_source}/{spec.backup_source} "
+                f"config={failover.primary}/{failover.backup}"
             )
     assert mismatches == []
 

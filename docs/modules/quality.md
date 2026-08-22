@@ -109,6 +109,7 @@ cne audit --full --research-universe all_a_sh_sz \
 | daily_bars vs trading_calendar | 交易日无真实成交 bar（`volume=0` 的停牌占位行不算覆盖） |
 | valuation vs daily_bars | 估值有、真实成交行情无 |
 | `daily_bars_amount_completeness` | 按 source 检查成交额完整性；Sina 不发布 `amount`，记录为 `info`，其他源缺失记录为 `warning` |
+| `adj_factor_coverage` | 按标的核对 `daily_bars` 与 `adj_factors` 的起止跨度；因子缺失或只覆盖部分历史时记录为 `warning` |
 | adj_factor_reconciliation | 真实成交 bar-to-bar 复权收益 > 阈值；除权日缺 corporate_actions（缩股/减资等已在 `share_structure` 记录的股本重组除外） |
 | `st_label_crosscheck` | `trading_status` 的 ST 标签 vs `instruments` 简称里的 ST 前缀 |
 

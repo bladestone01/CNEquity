@@ -206,6 +206,7 @@ def daily_bars_amount_completeness_findings(
                 "missing_ratio": ratio,
                 "window_start": start.isoformat(),
                 "window_end": trade_date.isoformat(),
+                "source_limited": source == "sina",
             }
         )
     return findings
