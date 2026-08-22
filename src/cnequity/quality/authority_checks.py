@@ -133,7 +133,12 @@ def _curated_status(config: Config, trade_date: date) -> tuple[set[str], set[str
         return None
     out = (
         dedupe_lazy_by_primary_key(
-            scan_parquet_root(root, partition_col="trade_date", end=trade_date),
+            scan_parquet_root(
+                root,
+                partition_col="trade_date",
+                start=trade_date,
+                end=trade_date,
+            ),
             "trading_status",
         )
         .filter(pl.col("trade_date") == pl.lit(trade_date))

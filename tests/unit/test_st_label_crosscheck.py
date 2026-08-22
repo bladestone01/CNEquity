@@ -79,6 +79,26 @@ def test_agreeing_feeds_produce_no_finding(tmp_path):
     assert st_label_crosscheck_findings(_lake(tmp_path, names=names, st_labeled=labeled), TD) == []
 
 
+def test_st_label_crosscheck_reads_only_the_audit_day(monkeypatch, tmp_path):
+    names, labeled = _universe(20, st_named=4, st_labeled=4)
+    cfg = _lake(tmp_path, names=names, st_labeled=labeled)
+
+    from cnequity.quality import cross_checks as checks
+
+    requested: dict[str, object] = {}
+    original = checks.scan_parquet_root
+
+    def bounded_scan(*args, **kwargs):
+        requested.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(checks, "scan_parquet_root", bounded_scan)
+
+    assert st_label_crosscheck_findings(cfg, TD) == []
+    assert requested["start"] == TD
+    assert requested["end"] == TD
+
+
 def test_star_st_statuses_are_counted_as_st_labels(tmp_path):
     names, labeled = _universe(20, st_named=5, st_labeled=5)
     assert (

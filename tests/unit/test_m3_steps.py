@@ -358,6 +358,37 @@ def test_trading_status_uses_conservative_cached_snapshot_on_source_outage(cfg, 
     assert out["source"].unique().to_list() == ["eastmoney_cached"]
 
 
+def test_trading_status_cached_fallback_reads_only_recent_window(cfg, monkeypatch):
+    from cnequity.steps import reference
+
+    requested: dict[str, object] = {}
+
+    def fake_load(dataset, **kwargs):
+        requested.update(kwargs)
+        assert dataset == "trading_status"
+        return pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2024, 6, 27)],
+                "is_trading": [True],
+                "status": ["normal"],
+            }
+        )
+
+    monkeypatch.setattr("cnequity.query.reader.load", fake_load)
+    monkeypatch.setattr(reference, "load_symbols", lambda _cfg: ["600519.SH"])
+    monkeypatch.setattr(
+        reference,
+        "fetch_trading_status",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("EastMoney down")),
+    )
+
+    reference.step_trading_status(cfg, date(2024, 6, 28), "run-bounded-cache", {})
+
+    assert requested["start"] == date(2024, 6, 23)
+    assert requested["end"] == date(2024, 6, 27)
+
+
 def test_trading_status_rejects_too_old_cached_snapshot(cfg, monkeypatch):
     from cnequity.domain.schemas import with_provenance
     from cnequity.steps import reference

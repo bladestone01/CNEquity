@@ -286,6 +286,56 @@ def test_sh_sz_universe_explicitly_excludes_bj_symbols(tmp_path):
     assert set(out["symbol"].to_list()) == {"600519.SH", "000001.SZ"}
 
 
+def test_universe_filter_bounds_status_scan_to_bar_window(monkeypatch, tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "list_date": [date(2001, 1, 1)],
+            "delist_date": [None],
+        }
+    ).write_parquet(instruments / "part-merged.parquet")
+    status = cfg.curated_root / "trading_status" / "trade_date=2024-06-28"
+    status.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 28)],
+            "is_trading": [True],
+            "status": ["normal"],
+        }
+    ).write_parquet(status / "part-0.parquet")
+
+    from cnequity.query import universe as universe_mod
+
+    requested: dict[str, object] = {}
+    original = universe_mod.scan_parquet_root
+
+    def bounded_scan(*args, **kwargs):
+        requested.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(universe_mod, "scan_parquet_root", bounded_scan)
+
+    out = apply_universe_filter(
+        pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "trade_date": [date(2024, 6, 28)],
+                "close": [1800.0],
+            }
+        ),
+        cfg,
+        universe="all_a",
+    )
+
+    assert out["symbol"].to_list() == ["600519.SH"]
+    assert requested["start"] == date(2024, 6, 28)
+    assert requested["end"] == date(2024, 6, 28)
+
+
 def test_all_a_filter_rejects_missing_date_column(tmp_path):
     with pytest.raises(ValueError, match="requires date column 'trade_date'"):
         apply_universe_filter(

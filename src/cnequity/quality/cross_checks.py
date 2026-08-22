@@ -1375,7 +1375,12 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
 
     labeled = (
         dedupe_lazy_by_primary_key(
-            scan_parquet_root(status_root, partition_col="trade_date", end=trade_date),
+            scan_parquet_root(
+                status_root,
+                partition_col="trade_date",
+                start=trade_date,
+                end=trade_date,
+            ),
             "trading_status",
         )
         .filter(pl.col("trade_date") == pl.lit(trade_date))

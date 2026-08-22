@@ -342,12 +342,23 @@ def apply_universe_filter(
     # empty universe (for example an ETF/CDR-only fixture), not a reason to
     # bypass the filter and leak every input row through.
     df = df.filter(pl.col("symbol").is_in(valid_symbols.to_list()))
+    if df.is_empty():
+        return df.drop(["list_date", "delist_date"], strict=False)
+
+    # Status is partitioned by month but can span the whole research history.
+    # The universe decision only needs the dates present in this bar query;
+    # leaving the bounds unset would decode the full status lake for every
+    # `load(..., universe=...)` call.
+    status_start = df.get_column(date_col).min()
+    status_end = df.get_column(date_col).max()
 
     try:
         status = dedupe_lazy_by_primary_key(
             scan_parquet_root(
                 config.curated_root / "trading_status",
                 partition_col="trade_date",
+                start=status_start,
+                end=status_end,
             ),
             "trading_status",
         )

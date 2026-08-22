@@ -283,6 +283,12 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
                 history = load(
                     "trading_status",
                     data_root=config.data_root,
+                    # A cached fallback is accepted only when its latest
+                    # snapshot is at most five days old. Bound the read to
+                    # that same window; passing only ``end`` would decode the
+                    # entire historical status lake (17M+ rows in a real
+                    # full-market lake) during an outage.
+                    start=day - _CACHED_TRADING_STATUS_MAX_AGE,
                     end=day - timedelta(days=1),
                 )
             except Exception as exc:  # noqa: BLE001 — fallback is best effort

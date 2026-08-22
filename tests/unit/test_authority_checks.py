@@ -145,6 +145,26 @@ def test_agreeing_labels_are_silent(monkeypatch, tmp_path):
     assert ac.st_labels_vs_exchange(_lake(tmp_path, status=status), TD) == []
 
 
+def test_st_exchange_check_reads_only_the_audit_day(monkeypatch, tmp_path):
+    syms, names = _universe(20, st_designated=2)
+    status = {s: ("st" if i < 2 else "normal") for i, s in enumerate(syms)}
+    cfg = _lake(tmp_path, status=status)
+    _exchange(monkeypatch, names)
+
+    requested: dict[str, object] = {}
+    original = ac.scan_parquet_root
+
+    def bounded_scan(*args, **kwargs):
+        requested.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ac, "scan_parquet_root", bounded_scan)
+
+    assert ac.st_labels_vs_exchange(cfg, TD) == []
+    assert requested["start"] == TD
+    assert requested["end"] == TD
+
+
 def test_star_st_statuses_are_counted_as_labels(monkeypatch, tmp_path):
     syms, names = _universe(50, st_designated=10)
     _exchange(monkeypatch, names)
