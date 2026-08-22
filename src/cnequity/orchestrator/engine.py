@@ -502,6 +502,14 @@ class JobEngine:
         self, run_id: str, trade_date: date, *, auto_finalize: bool = True
     ) -> dict[str, Any]:
         run_meta = self.manifest.get_run_metadata(run_id)
+        # The caller (cne retry) has no session date of its own — it passes
+        # whatever run_job() defaulted to, which is today. A run retried after
+        # its trade_date has rolled over must still fetch the session it was
+        # started for, not today's, or a backfill for a past date silently
+        # requests data that has not been published yet and never lands.
+        stored_trade_date = run_meta.get("trade_date")
+        if stored_trade_date:
+            trade_date = date.fromisoformat(stored_trade_date)
         self.config._backfill = bool(run_meta.get("backfill"))
         scope = run_meta.get("backfill_scope") or {}
         for attr, key in (

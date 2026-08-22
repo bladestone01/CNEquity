@@ -37,6 +37,45 @@ def test_retry_pending_when_batches_still_running(tmp_path):
     assert result["incomplete_by_status"]["running"] == 1
 
 
+def test_retry_uses_the_original_runs_trade_date_not_today(tmp_path, monkeypatch):
+    """`cne retry` has no trade_date of its own; run_job() defaults the
+    parameter to today when the caller omits it, exactly as the CLI does. A
+    run retried after its own trade_date has rolled over must still resume
+    the session it was started for, or a backfill for a past date silently
+    asks sources for data dated today, which never lands.
+    """
+    cfg = Config(data_root=tmp_path / "data", tdx_allow_mock=True)
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    stored_date = "2024-06-28"
+    run_id = manifest.start_run("daily", {"trade_date": stored_date})
+    manifest.start_batch(
+        run_id,
+        "batch-daily_bars",
+        "daily_bars",
+        "daily_bars",
+        symbols=["600519.SH"],
+        window_start=stored_date,
+        window_end=stored_date,
+    )
+    manifest.finish_batch(run_id, "batch-daily_bars", "failed", error_message="boom")
+    manifest.finish_run(run_id, "failed")
+
+    engine = JobEngine(cfg)
+    seen_dates: list[date] = []
+
+    def fake_run_step(name, trade_date, run_id, context, *, retry_of=None):
+        seen_dates.append(trade_date)
+        return {"status": "success"}
+
+    monkeypatch.setattr(engine, "_run_step", fake_run_step)
+
+    # No trade_date passed — mirrors `cne retry --run-id <id>` exactly.
+    engine.run_job("retry", run_id=run_id, retry_failed_only=True)
+
+    assert seen_dates == [date.fromisoformat(stored_date)]
+
+
 def test_worker_batch_specs_reads_manifest_window(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     init_data_layout(cfg)
