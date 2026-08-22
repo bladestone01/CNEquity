@@ -35,6 +35,26 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`cne retry` resumes a run on its own trade_date, not today's.** The CLI
+  never passed a `trade_date`, so a retry fell through to today by default.
+  Retrying a run after its session rolled over — the ordinary case — replayed
+  every failed batch against today's date instead of the run's, so a backfill
+  for a past date silently asked sources for data dated today and the retry
+  always "succeeded" without ever closing the original gap. The run's real
+  trade_date was already recorded and already read back for other purposes;
+  now it's used for this too. `resume_init` shares the same fix.
+- **`cne config validate` rejects malformed `[[failover.datasets]]` entries.**
+  An unregistered dataset name, a `primary`/`backup` that names no real
+  source, or a duplicate entry for the same dataset all passed silently
+  before — failover for that dataset just never did anything, discovered
+  during an actual outage instead of at config time.
+- **The Windows deadline fallback for Baostock queries is now a real timeout.**
+  Without `SIGALRM` (every query on Windows, regardless of thread), the
+  watchdog only fired a socket-close side effect and hoped it would interrupt
+  the blocked call — a query blocked on anything else, or where the close
+  didn't propagate, could run past its declared deadline indefinitely. The
+  fetch now runs in a daemon worker thread and the caller's own wait is what's
+  bounded, so the deadline holds regardless of what the query is doing.
 - **EastMoney list requests no longer lose their query string on httpx 0.28+.**
   httpx 0.27 and earlier merged a `params` dict into a URL's existing query;
   0.28 replaces the query instead. The push2 `ut` token was injected as a
