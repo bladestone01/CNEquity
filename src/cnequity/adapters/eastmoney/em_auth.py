@@ -143,9 +143,10 @@ def apply_push2_token(url: str, params) -> dict | None:
     """Return the ``params`` to send so a push2 request carries ``ut``.
 
     Callers build push2 URLs both ways — a fully-formed query string and a
-    ``params`` dict — so both are handled. httpx merges ``params`` into an
-    existing query rather than replacing it, which is what makes returning a
-    one-key dict safe for the query-string callers.
+    ``params`` dict — so both are handled. Returning a one-key dict is only
+    safe for the query-string callers because :meth:`EastMoneyClient.get`
+    merges the result into the URL itself; do not pass this straight to httpx,
+    where 0.28 would replace the caller's query instead of merging into it.
     """
     if not is_push2_url(url):
         return params
@@ -244,7 +245,16 @@ class EastMoneyClient:
         headers.update(build_eastmoney_headers(url, self._client))
         params = apply_push2_token(url, kwargs.pop("params", None))
         if params is not None:
-            kwargs["params"] = params
+            # Merge into the URL ourselves rather than handing `params` to httpx.
+            # httpx <= 0.27 merged it into an existing query; 0.28 replaced the
+            # query outright. clist.py builds a fully-formed query string and
+            # relies on this call only to add `ut`, so under 0.28 every clist
+            # request degenerated to `?ut=...` — losing fs, fields, pn, pz and
+            # fid, and silently under-fetching fund_flow, the ST board,
+            # instruments, rotation and valuation. pyproject caps nothing above
+            # httpx>=0.25, so a fresh `pip install cnequity` hit exactly this.
+            # copy_merge_params behaves identically on both versions.
+            url = str(httpx.URL(url).copy_merge_params(params))
         return self._client.get(url, headers=headers, **kwargs)
 
     def post(self, url: str, **kwargs) -> httpx.Response:

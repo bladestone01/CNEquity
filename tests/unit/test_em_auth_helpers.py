@@ -184,6 +184,64 @@ def test_client_get_sends_ut_on_push2_requests():
     assert "secid=1.600519" in seen["url"]
 
 
+def test_client_get_preserves_a_prebuilt_query_string_when_adding_ut():
+    """clist.py builds the whole query itself and passes no ``params``.
+
+    Injecting ``ut`` must not cost the caller's own query. httpx <= 0.27 merged
+    a ``params`` dict into an existing query; 0.28 replaces the query outright,
+    which turned every clist request into ``?ut=...`` and silently under-fetched
+    fund_flow, the ST board, instruments, rotation and valuation.
+    """
+    client = EastMoneyClient(min_interval=0.0)
+    seen: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"data": None})
+
+    client._client = httpx.Client(transport=httpx.MockTransport(_handler))
+    client.get(
+        "https://push2.eastmoney.com/api/qt/clist/get"
+        "?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f12&fs=m%3A0%2Bt%3A6&fields=f12%2Cf14"
+    )
+    client.close()
+
+    query = httpx.URL(seen["url"]).params
+    assert query.get("ut") == em._PUSH2_UT
+    # The caller's fields survive alongside it.
+    for key, value in (("pn", "1"), ("pz", "100"), ("fid", "f12"), ("fs", "m:0+t:6")):
+        assert query.get(key) == value, f"{key} was dropped from the clist query"
+    assert query.get("fields") == "f12,f14"
+
+
+def test_client_get_merges_ut_into_the_url_not_the_params_kwarg(monkeypatch):
+    """Pin the mechanism, not just the result.
+
+    The behavioral test above passes on httpx <= 0.27 even without the merge,
+    because httpx did it for us. Asserting that nothing is handed to httpx as
+    ``params`` keeps the guard meaningful on whichever version is installed.
+    """
+    client = EastMoneyClient(min_interval=0.0)
+    seen: dict = {}
+
+    def _fake_get(url, headers=None, **kwargs):
+        seen["url"] = url
+        seen["kwargs"] = kwargs
+        resp = MagicMock()
+        resp.status_code = 200
+        return resp
+
+    monkeypatch.setattr(client._client, "get", _fake_get)
+    client.get("https://push2.eastmoney.com/api/qt/clist/get?fs=m%3A0&fields=f12")
+    client.close()
+
+    assert "params" not in seen["kwargs"], "params must be merged into the URL, not forwarded"
+    query = httpx.URL(seen["url"]).params
+    assert query.get("ut") == em._PUSH2_UT
+    assert query.get("fs") == "m:0"
+    assert query.get("fields") == "f12"
+
+
 # --- client plumbing --------------------------------------------------------
 
 
@@ -286,7 +344,12 @@ def test_eastmoney_client_get_routes_push2his_through_the_same_pool(monkeypatch)
         timeout=30.0,
     )
     assert resp.status_code == 200
-    assert seen["params"] == {"secid": "1.600519", "ut": em._PUSH2_UT}
+    # Caller params and the injected ut both ride in the URL now — see
+    # test_client_get_merges_ut_into_the_url_not_the_params_kwarg.
+    assert seen["params"] is None
+    query = httpx.URL(seen["url"]).params
+    assert query.get("secid") == "1.600519"
+    assert query.get("ut") == em._PUSH2_UT
     assert seen["timeout"] == 30.0
     client.close()
 

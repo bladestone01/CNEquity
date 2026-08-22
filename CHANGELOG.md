@@ -35,6 +35,16 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **EastMoney list requests no longer lose their query string on httpx 0.28+.**
+  httpx 0.27 and earlier merged a `params` dict into a URL's existing query;
+  0.28 replaces the query instead. The push2 `ut` token was injected as a
+  one-key `params` dict, so on 0.28 every clist request collapsed to
+  `?ut=...` — dropping `fs`, `fields`, `pn`, `pz` and `fid`, and silently
+  under-fetching fund flow, the ST board, instruments, rotation and valuation.
+  Nothing caps httpx above `>=0.25`, so this affected any fresh install even
+  though the pinned dev lockfile (0.25.2) and the offline test suite both hid
+  it. The token is now merged into the URL, which behaves identically on every
+  supported httpx version, and the suite is green on 0.25.2 and 0.28.1 alike.
 - **One canonical source precedence across the whole lake.** Storage, query,
   views, calendar, sector mapping, adjustment factors, intraday and tick checks,
   and every quality consumer now resolve multi-source rows the same way:
