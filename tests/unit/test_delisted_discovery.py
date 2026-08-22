@@ -3,6 +3,7 @@
 import json
 from datetime import date, timedelta
 
+import httpx
 import polars as pl
 
 from cnequity.config import Config
@@ -112,6 +113,29 @@ def test_a_failing_probe_stays_pending_rather_than_being_filed(tmp_path):
     assert result.probed == 15
     still_pending = set(pending_codes(cfg))
     assert set(result.failed) <= still_pending
+
+
+def test_sweep_retries_transient_sina_rate_limit(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    attempts = 0
+    sleeps: list[float] = []
+    request = httpx.Request("GET", "https://example.test/sina")
+
+    def flaky(symbol, client):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            response = httpx.Response(456, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+        return date(2009, 12, 15)
+
+    monkeypatch.setattr("cnequity.steps.delisted.time.sleep", sleeps.append)
+    result = discover_delisted(cfg, limit=1, probe=flaky)
+
+    assert attempts == 3
+    assert sleeps == [5.0, 10.0]
+    assert result.delisted == 1
+    assert result.failed == []
 
 
 def test_catalog_survives_and_accumulates_across_sweeps(tmp_path):

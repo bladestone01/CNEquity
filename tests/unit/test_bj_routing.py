@@ -3,12 +3,18 @@
 import json
 from datetime import date
 
+import httpx
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.domain.schemas import DAILY_BARS_SCHEMA
 from cnequity.domain.symbols import is_tdx_servable, split_by_quote_source
-from cnequity.steps.bars import fetch_bars_via_sina
+from cnequity.steps.bars import (
+    _resolve_daily_bar_scope,
+    fetch_bars_via_sina,
+    repair_bse_tip_amounts_from_curated,
+)
 from cnequity.steps.delisted import catalog_path
 from cnequity.steps.reference import _merge_untdxable_instruments
 from cnequity.storage.parquet import StagingWriter
@@ -77,6 +83,118 @@ def test_fallback_bars_are_staged_with_their_own_provenance(tmp_path):
     assert staged["source"].unique().to_list() == ["sina"]
 
 
+def test_bse_tip_amount_requires_exact_sina_ohlcv(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"sina": True, "bse": True},
+        source_intervals={"bse": 0.0},
+    )
+    day = date(2026, 8, 21)
+    bse = _bars("920000.BJ", [day]).with_columns(pl.lit(1234.5).alias("amount"))
+    monkeypatch.setattr("cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse)
+
+    result = fetch_bars_via_sina(
+        cfg,
+        ["920000.BJ"],
+        day,
+        day,
+        "run-1",
+        fetch=lambda s, c: _bars(s, [day]),
+    )
+
+    staged = _staged(cfg, "run-1")
+    assert staged["amount"].item() == 1234.5
+    assert staged["source"].item() == "bse"
+    assert result["context_updates"]["audit_findings"][0]["check"] == (
+        "daily_bars_bse_amount_supplement"
+    )
+
+
+def test_bse_tip_mismatch_keeps_sina_amount_null(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"sina": True, "bse": True},
+        source_intervals={"bse": 0.0},
+    )
+    day = date(2026, 8, 21)
+    bse = _bars("920000.BJ", [day]).with_columns(
+        pl.lit(2.0).alias("close"),
+        pl.lit(1234.5).alias("amount"),
+    )
+    monkeypatch.setattr("cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse)
+
+    result = fetch_bars_via_sina(
+        cfg,
+        ["920000.BJ"],
+        day,
+        day,
+        "run-1",
+        fetch=lambda s, c: _bars(s, [day]),
+    )
+
+    staged = _staged(cfg, "run-1")
+    assert staged["amount"].item() is None
+    assert staged["source"].item() == "sina"
+    assert result["context_updates"]["audit_findings"][0]["check"] == (
+        "daily_bars_bse_quote_mismatch"
+    )
+
+
+def test_scoped_daily_backfill_rejects_unknown_instrument(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    monkeypatch.setattr("cnequity.steps.bars.load_symbols", lambda config: ["920000.BJ"])
+
+    with pytest.raises(RuntimeError, match="not present in instruments"):
+        _resolve_daily_bar_scope(cfg, ["920000.BJ", "999999.BJ"])
+
+
+def test_bse_curated_repair_does_not_call_sina(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"bse": True},
+        source_intervals={"bse": 0.0},
+    )
+    day = date(2026, 8, 21)
+    part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+    part.mkdir(parents=True)
+    _bars("920000.BJ", [day]).write_parquet(part / "part-merged.parquet")
+    bse = _bars("920000.BJ", [day]).with_columns(pl.lit(1234.5).alias("amount"))
+    monkeypatch.setattr("cnequity.steps.bars.load_symbols", lambda config: ["920000.BJ"])
+    monkeypatch.setattr("cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse)
+
+    result = repair_bse_tip_amounts_from_curated(cfg, day, "run-repair", ["920000.BJ"])
+
+    staged = _staged(cfg, "run-repair")
+    assert result["rows_written"] == 1
+    assert staged["amount"].item() == 1234.5
+    assert staged["source"].item() == "bse"
+
+
+def test_bse_curated_repair_does_not_claim_success_when_bse_is_unavailable(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"bse": True},
+        source_intervals={"bse": 0.0},
+    )
+    day = date(2026, 8, 21)
+    part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+    part.mkdir(parents=True)
+    _bars("920000.BJ", [day]).write_parquet(part / "part-merged.parquet")
+    monkeypatch.setattr("cnequity.steps.bars.load_symbols", lambda config: ["920000.BJ"])
+    monkeypatch.setattr(
+        "cnequity.adapters.bse.daily_quotes.fetch_daily_quotes",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("BSE down")),
+    )
+
+    result = repair_bse_tip_amounts_from_curated(cfg, day, "run-repair", ["920000.BJ"])
+
+    assert result["status"] == "warning"
+    assert result["rows_written"] == 0
+    assert result["context_updates"]["audit_findings"][0]["check"] == (
+        "daily_bars_bse_amount_unavailable"
+    )
+
+
 def test_one_dead_symbol_does_not_cost_the_whole_board(tmp_path):
     cfg = Config(data_root=tmp_path / "data", sources={"sina": True})
 
@@ -107,6 +225,41 @@ def test_no_fallback_symbols_is_a_cheap_noop(tmp_path):
         cfg, [], date(2026, 7, 21), date(2026, 7, 21), "run-1", fetch=must_not_be_called
     )
     assert result["rows_written"] == 0
+
+
+def test_sina_bars_retries_transient_rate_limit(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"sina": True, "sina_bars": True},
+        source_intervals={"sina_bars": 0.0},
+        retry_backoff_seconds=5,
+    )
+    attempts = 0
+    sleeps: list[float] = []
+    request = httpx.Request("GET", "https://example.test/sina")
+
+    def flaky(symbol, client):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            response = httpx.Response(456, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+        return _bars(symbol, [date(2026, 7, 21)])
+
+    monkeypatch.setattr("cnequity.steps.bars.time.sleep", sleeps.append)
+    result = fetch_bars_via_sina(
+        cfg,
+        ["920000.BJ"],
+        date(2026, 7, 21),
+        date(2026, 7, 21),
+        "run-retry",
+        fetch=flaky,
+    )
+
+    assert attempts == 3
+    assert sleeps == [5.0, 10.0]
+    assert result["rows_written"] == 1
+    assert "failed_symbols" not in result
 
 
 # --- instruments ------------------------------------------------------------

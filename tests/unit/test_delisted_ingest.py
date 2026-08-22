@@ -4,6 +4,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+import httpx
 import polars as pl
 
 from cnequity.config import Config
@@ -188,6 +189,29 @@ def test_a_failed_symbol_is_not_marked_done_so_a_rerun_retries_it(tmp_path):
     assert "600070.SH" not in _ingested_symbols(cfg)
     assert "600083.SH" in _ingested_symbols(cfg)
     assert delisted_symbols_in_window(cfg, _START) == ["600070.SH"]
+
+
+def test_delisted_sina_retries_transient_rate_limit(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, {"600070.SH": "2025-04-10"})
+    attempts = 0
+    sleeps: list[float] = []
+    request = httpx.Request("GET", "https://example.test/sina")
+
+    def flaky(symbol, client):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            response = httpx.Response(456, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+        return _bars(symbol, date(2016, 3, 1), date(2025, 4, 10))
+
+    monkeypatch.setattr("cnequity.steps.delisted.time.sleep", sleeps.append)
+    result = backfill_delisted_bars(cfg, "run-retry", _START, fetch=flaky)
+
+    assert attempts == 3
+    assert sleeps == [5.0, 10.0]
+    assert result["rows_written"] == 2
+    assert result["coverage_pending_compact"] is True
 
 
 def test_rerun_is_a_noop_once_everything_is_ingested(tmp_path):

@@ -142,14 +142,19 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 | 选项 | 说明 |
 |------|------|
 | `--start` / `--end` | 窗口（日内数据集拒绝早于源端视野的 `--start`） |
-| `--symbols` | 日内、`trading_status`、`corporate_actions` 的临时标的范围；其他数据集仍使用配置中的范围 |
+| `--symbols` | 日内、`daily_bars`、`trading_status`、`corporate_actions` 的临时标的范围；其他数据集仍使用配置中的范围 |
 | `--baostock-repair` | 仅 `corporate_actions`：显式补抓已退市 SH/SZ 标的的 Baostock 分红除权数据；建议与 `--symbols` 配合 |
 | `--ths-repair` | 仅 `corporate_actions`：显式补抓已退市 BJ 标的的同花顺历史分红除权数据；建议与 `--symbols` 配合 |
 | `--eastmoney-bj-repair` | 仅 `corporate_actions`：按北交所旧码→920 新码映射向 EastMoney 定向补抓历史分红除权数据；建议与 `--symbols` 配合 |
+| `--bse-tip-repair` | 仅 `daily_bars`：读取已有 session 的 OHLCV，仅向 BSE 请求成交额并严格核对；必须同时指定相同的 `--start/--end` 与 `--symbols` |
 
 ```bash
 cne backfill minute_bars_5m --start 2026-05-01 --end 2026-07-31 \
   --symbols 600519.SH,000001.SZ
+
+# 已有 BJ 日线只补当前分区成交额，不重抓 Sina 历史
+cne backfill daily_bars --start 2026-08-21 --end 2026-08-21 \
+  --symbols 920000.BJ,920001.BJ --bse-tip-repair
 ```
 
 ### sector_bars

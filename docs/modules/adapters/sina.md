@@ -33,7 +33,15 @@ adjust_types = ["hfq"]
 [sources.sina]
 enabled = true
 min_interval_seconds = 0.3
+
+[sources.sina_bars]
+enabled = true
+min_interval_seconds = 1.0
 ```
+
+`sina_bars` 是 BJ 日线 fallback 的独立限速器；复权因子仍使用 `sina`，避免两类
+请求共享过快的 0.3 秒间隔而触发新浪 HTTP 456。日线 fallback 对 429/456/5xx
+还会做有限退避重试。
 
 ---
 

@@ -80,6 +80,7 @@ cne config validate --config configs/cnequity.toml
 | nbs | 1.0 | 仅 audit：PMI 发布稿对照，每次两个请求 |
 | exchange | 1.0 | 仅 audit：交易所上市列表，每所一个请求 |
 | sina | 0.3 | 复权因子；经 `adj_factors` 的 `wait_source` |
+| sina_bars | 1.0 | BJ/退市日线 fallback；独立于复权因子限速，配合 HTTP 456 有限重试 |
 | baostock | 1.0 + batch 20/120s | 历史市值/ST；禁止多进程并行扫 |
 
 ---

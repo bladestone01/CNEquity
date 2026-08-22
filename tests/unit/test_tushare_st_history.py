@@ -137,6 +137,40 @@ def test_unknown_st_type_fails_closed():
     assert failed == ["920001.BJ"]
 
 
+def test_missing_stock_st_identity_fails_closed():
+    client = _Client(
+        {"920001.BJ": [[None, "*ST测试", "20170104", "ST", "风险警示板"]]}
+    )
+    df, failed = fetch_st_history(
+        ["920001.BJ"],
+        date(2017, 1, 1),
+        date(2017, 1, 5),
+        token="secret",
+        client=client,
+        trading_dates={"920001.BJ": [date(2017, 1, 4)]},
+    )
+
+    assert df.is_empty()
+    assert failed == ["920001.BJ"]
+
+
+def test_invalid_stock_st_date_fails_closed():
+    client = _Client(
+        {"920001.BJ": [_row("920001.BJ", "not-a-date")]}
+    )
+    df, failed = fetch_st_history(
+        ["920001.BJ"],
+        date(2017, 1, 1),
+        date(2017, 1, 5),
+        token="secret",
+        client=client,
+        trading_dates={"920001.BJ": [date(2017, 1, 4)]},
+    )
+
+    assert df.is_empty()
+    assert failed == ["920001.BJ"]
+
+
 def test_retries_transient_timeout_before_emitting_evidence(tmp_path):
     client = _FlakyClient(
         {"920001.BJ": [_row("920001.BJ", "20170104")]},

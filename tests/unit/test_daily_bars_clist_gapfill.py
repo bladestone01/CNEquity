@@ -319,6 +319,34 @@ def test_tip_tdx_fail_clist_recovers_step(tmp_path, monkeypatch):
     assert manifest.get_batch(run_id, "tdx-batch-0")["status"] == "success"
 
 
+def test_historical_tip_backfill_validates_staged_end_not_job_as_of(tmp_path, monkeypatch):
+    """A weekend/as-of date must not hide a successfully staged past session."""
+    cfg = _cfg(tmp_path)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("backfill")
+    fetched = date(2026, 8, 21)
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-batch-0", _bar_frame(["600519.SH"], fetched)
+    )
+    monkeypatch.setattr(
+        "cnequity.steps.bars._gapfill_tip_via_clist",
+        lambda *args, **kwargs: {"rows_read": 0, "rows_written": 0, "audit_findings": []},
+    )
+
+    result = _finish_daily_bars(
+        cfg,
+        date(2026, 8, 23),
+        run_id,
+        start=fetched,
+        end=fetched,
+        expected_tdx_symbols=["600519.SH"],
+        tdx_result={"rows_read": 1, "rows_written": 1},
+        sina_result=None,
+    )
+
+    assert result["rows_written"] == 1
+
+
 def test_retry_routes_non_tdx_symbols_to_fallback(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     run_id = Manifest(cfg.manifest_path).start_run("daily:core")

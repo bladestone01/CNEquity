@@ -294,16 +294,69 @@ def test_symbols_flag_overrides_scope_for_intraday(tmp_path, monkeypatch):
     assert "5m" in cfg.minute_bars_frequencies
 
 
-def test_symbols_flag_is_rejected_for_datasets_without_a_configured_scope(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli_main, "_cfg", lambda _p: object())
+def test_symbols_flag_scopes_daily_bar_repairs(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace()
+    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+    monkeypatch.setattr(
+        cli_main,
+        "_backfill_once",
+        lambda config, dataset: {"status": "success", "rows_written": 0},
+    )
 
     from click.testing import CliRunner
 
     result = CliRunner().invoke(
         cli_main.cli, _backfill_argv("daily_bars", "--symbols", "600519.SH")
     )
-    assert result.exit_code != 0
-    assert "only applies to datasets with a configured scope" in result.output
+    assert result.exit_code == 0, result.output
+    assert cfg._backfill_symbols == ["600519.SH"]
+
+
+def test_bse_tip_repair_requires_one_session_and_symbols(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace()
+    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+    monkeypatch.setattr(
+        cli_main,
+        "_backfill_once",
+        lambda config, dataset: {"status": "success", "rows_written": 1},
+    )
+
+    from click.testing import CliRunner
+
+    runner = CliRunner()
+    missing_symbols = runner.invoke(
+        cli_main.cli,
+        _backfill_argv(
+            "daily_bars",
+            "--start",
+            "2026-08-21",
+            "--end",
+            "2026-08-21",
+            "--bse-tip-repair",
+        ),
+    )
+    assert missing_symbols.exit_code != 0
+    assert "requires --symbols" in missing_symbols.output
+
+    different_days = runner.invoke(
+        cli_main.cli,
+        _backfill_argv(
+            "daily_bars",
+            "--start",
+            "2026-08-20",
+            "--end",
+            "2026-08-21",
+            "--symbols",
+            "920000.BJ",
+            "--bse-tip-repair",
+        ),
+    )
+    assert different_days.exit_code != 0
+    assert "same explicit --start and --end" in different_days.output
 
 
 def test_symbols_flag_points_each_dataset_at_its_own_config_block():

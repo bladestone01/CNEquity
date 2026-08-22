@@ -27,6 +27,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -50,6 +51,12 @@ from cnequity.steps.common import (
 logger = logging.getLogger(__name__)
 
 _CATALOG_FILE = "delisted_catalog.json"
+# Sina returns HTTP 456 when a bulk history sweep exceeds its anti-abuse
+# budget.  Delisted recovery is another daily-kline sweep, so it needs the
+# same bounded retry policy as the live BJ fallback instead of turning a
+# transient rate limit into a durable unresolved symbol.
+_SINA_RETRY_STATUS_CODES = frozenset({429, 456, 500, 502, 503, 504})
+_SINA_FETCH_ATTEMPTS = 3
 # Checkpoint cadence. Small enough that an interrupted sweep loses seconds of
 # work, large enough that the state file is not rewritten on every request.
 _CHECKPOINT_EVERY = 100
@@ -107,6 +114,31 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
         with suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def _run_sina_with_retry(operation, *, symbol: str, operation_name: str, config: Config):
+    """Run one Sina recovery request with its own pacing and bounded retries."""
+    for attempt in range(_SINA_FETCH_ATTEMPTS):
+        config.rate_limit("sina_bars")
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001 — classify transport response below
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            retryable = status_code in _SINA_RETRY_STATUS_CODES
+            if not retryable or attempt + 1 >= _SINA_FETCH_ATTEMPTS:
+                raise
+            delay = max(float(getattr(config, "retry_backoff_seconds", 5)), 1.0) * (attempt + 1)
+            logger.warning(
+                "sina %s transient HTTP %s for %s; retrying in %.1fs (%d/%d)",
+                operation_name,
+                status_code,
+                symbol,
+                delay,
+                attempt + 1,
+                _SINA_FETCH_ATTEMPTS - 1,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def _file_sha256(path: Path) -> str:
@@ -248,9 +280,13 @@ def discover_delisted(
 
     with httpx.Client(timeout=20.0) as client:
         for index, symbol in enumerate(todo, start=1):
-            config.rate_limit("sina")
             try:
-                last_seen = probe(symbol, client)
+                last_seen = _run_sina_with_retry(
+                    lambda symbol=symbol: probe(symbol, client),
+                    symbol=symbol,
+                    operation_name="discovery probe",
+                    config=config,
+                )
             except Exception as exc:  # noqa: BLE001 — never misfile an outage
                 logger.warning("delisted discovery: probe failed for %s: %s", symbol, exc)
                 result.failed.append(symbol)
@@ -1447,9 +1483,13 @@ def backfill_delisted_bars(
 
     with httpx.Client(timeout=30.0) as client:
         for index, symbol in enumerate(todo, start=1):
-            config.rate_limit("sina")
             try:
-                bars = fetch(symbol, client)
+                bars = _run_sina_with_retry(
+                    lambda symbol=symbol: fetch(symbol, client),
+                    symbol=symbol,
+                    operation_name="bars",
+                    config=config,
+                )
             except Exception as exc:  # noqa: BLE001 — one dead symbol must not stop the sweep
                 logger.warning("delisted bars: fetch failed for %s: %s", symbol, exc)
                 failed.append(symbol)
@@ -1458,9 +1498,13 @@ def backfill_delisted_bars(
                 _write_recovery_checkpoint(config, checkpoint)
                 continue
             if bars.is_empty():
-                config.rate_limit("sina")
                 try:
-                    terminal = probe_last(symbol, client)
+                    terminal = _run_sina_with_retry(
+                        lambda symbol=symbol: probe_last(symbol, client),
+                        symbol=symbol,
+                        operation_name="terminal probe",
+                        config=config,
+                    )
                 except Exception as exc:  # noqa: BLE001 — unresolved stays retryable
                     logger.warning("delisted bars: terminal probe failed for %s: %s", symbol, exc)
                     empty_unresolved.append(symbol)

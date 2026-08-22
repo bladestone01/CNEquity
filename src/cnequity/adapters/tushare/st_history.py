@@ -376,12 +376,21 @@ def fetch_st_history(
                             sleep=sleep,
                         ):
                             returned_code = str(item.get("ts_code") or "").strip().upper()
-                            if returned_code and returned_code not in aliases:
+                            # The endpoint is queried per symbol/alias.  A
+                            # missing code is just as unsafe as a different
+                            # code: accepting it could attach another
+                            # security's positive ST row to this symbol.
+                            if returned_code not in aliases:
                                 raise RuntimeError(
-                                    f"Tushare stock_st returned {returned_code} while querying {symbol}"
+                                    "Tushare stock_st returned an invalid code "
+                                    f"{returned_code!r} while querying {symbol}"
                                 )
                             trade_date = _parse_date(item.get("trade_date"))
-                            if trade_date is None or not (start <= trade_date <= end):
+                            if trade_date is None:
+                                raise RuntimeError(
+                                    f"Tushare stock_st returned an invalid trade_date for {symbol}"
+                                )
+                            if not (start <= trade_date <= end):
                                 continue
                             kind = str(item.get("type") or "").strip().upper()
                             if kind not in {"ST", "*ST"}:

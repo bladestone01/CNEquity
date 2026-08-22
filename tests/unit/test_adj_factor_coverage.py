@@ -1,8 +1,9 @@
 """adj_factors coverage against daily_bars.
 
 The two come from different vendors — factors from Sina, bars from TDX — and
-they do not cover the same market: Sina's factor series essentially skips
-北交所. `load(adjust="hfq")` defaults to strict_adj=False, so bars without a
+their coverage can diverge for new, retired, or source-unavailable symbols.
+Sina does serve 北交所, so a missing BJ factor is not an exchange-wide
+exemption. `load(adjust="hfq")` defaults to strict_adj=False, so bars without a
 complete factor span come back at factor=1.0, i.e. raw prices inside a result
 the caller asked to have adjusted, marked only by an `adj_is_exact` column most
 callers never select.

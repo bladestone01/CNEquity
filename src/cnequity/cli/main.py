@@ -748,9 +748,9 @@ def run_catchup(
     "symbols_str",
     default=None,
     help="Comma-separated symbols for a scoped intraday, trading_status, or "
-    "corporate_actions backfill. The trading_status checkpoint and coverage "
-    "evidence retain the exact scope; other datasets use their configured "
-    "watchlist block.",
+    "corporate_actions backfill, or a scoped daily_bars repair. The "
+    "trading_status checkpoint and coverage evidence retain the exact scope; "
+    "daily_bars keeps the explicit scope in backfill metadata.",
 )
 @click.option(
     "--workers",
@@ -774,6 +774,11 @@ def run_catchup(
     is_flag=True,
     help="For corporate_actions only: repair legacy BJ symbols through current 920xxx EastMoney codes.",
 )
+@click.option(
+    "--bse-tip-repair",
+    is_flag=True,
+    help="For daily_bars only: fill an existing session's BJ amount from BSE without re-fetching Sina.",
+)
 def backfill(
     dataset: str,
     config_path: str,
@@ -786,6 +791,7 @@ def backfill(
     baostock_repair: bool,
     ths_repair: bool,
     eastmoney_bj_repair: bool,
+    bse_tip_repair: bool,
 ):
     """Backfill a dataset."""
     _progress_logging()
@@ -802,6 +808,8 @@ def backfill(
         raise click.ClickException("--ths-repair only applies to corporate_actions")
     if eastmoney_bj_repair and dataset != "corporate_actions":
         raise click.ClickException("--eastmoney-bj-repair only applies to corporate_actions")
+    if bse_tip_repair and dataset != "daily_bars":
+        raise click.ClickException("--bse-tip-repair only applies to daily_bars")
     if baostock_repair:
         cfg._corporate_actions_baostock_repair = True
     if ths_repair:
@@ -814,10 +822,18 @@ def backfill(
         cfg._sector_bars_force = force
     start_d = date.fromisoformat(start_str) if start_str else None
     end_d = date.fromisoformat(end_str) if end_str else None
+    if bse_tip_repair:
+        if not symbols_str:
+            raise click.ClickException("--bse-tip-repair requires --symbols")
+        if start_d is None or end_d is None or start_d != end_d:
+            raise click.ClickException(
+                "--bse-tip-repair requires the same explicit --start and --end session"
+            )
+        cfg._bse_tip_repair = True
     _guard_history_horizon(dataset, start_d)
     if symbols_str:
         symbols = [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
-        if dataset in ("trading_status", "corporate_actions"):
+        if dataset in ("daily_bars", "trading_status", "corporate_actions"):
             cfg._backfill_symbols = symbols
         else:
             _override_scope(cfg, dataset, symbols)

@@ -111,8 +111,12 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a_sh_sz")
 现在 BJ 行情走 Sina（`domain/symbols.py::split_by_quote_source` 分流），
 instruments 每次日更从代码空间扫描的「在市但缺失」桶补齐。注意两点：
 
-- BJ 行的 `source` 是 `sina`，且 **`amount` 为 null**（Sina 不给成交额），
-  换手额类因子对北交所会缺失
+- BJ 历史回补/新浪来源的 `amount` 可能为 null（Sina 不给成交额）；开启
+  `sources.bse` 后，日更 tip 会仅对北交所官网 OHLCV 与新浪逐行完全一致的行补成交额，
+  历史回补仍不制造成交额，换手额类因子对未补齐历史窗口仍会缺失
+- 已落盘的单个交易日可用 `cne backfill daily_bars --start <日> --end <日>
+  --symbols <BJ列表> --bse-tip-repair` 定向补写；该模式只读取已有 OHLCV，
+  不重新请求新浪历史，也不会用成交额反推价格或成交量
 - 新上市的北交所票要等下一次 `cne delisted discover` 扫到才会进 instruments，
   不是当天自动出现
 

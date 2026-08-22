@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from datetime import date, datetime
 
 import polars as pl
@@ -41,6 +42,8 @@ _DAILY_BAR_FINAL_AT = A_SHARE_FINAL_AT
 # have been tried. A large missing fraction, however, is a partial market
 # capture and must not be checkpointed as a successful tip.
 _DAILY_BAR_TIP_MAX_MISSING_RATIO = 0.05
+_SINA_RETRY_STATUS_CODES = frozenset({429, 456, 500, 502, 503, 504})
+_SINA_FETCH_ATTEMPTS = 3
 
 
 def _reject_unfinished_daily_bar_window(
@@ -270,6 +273,105 @@ def _merge_ownership_result(
     return out
 
 
+def _resolve_daily_bar_scope(config: Config, symbols: list[str]) -> list[str]:
+    """Validate an explicit daily-bar repair scope against instruments."""
+    requested = list(dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()))
+    if not requested:
+        raise RuntimeError("daily_bars backfill symbols must not be empty")
+    known = set(load_symbols(config))
+    unknown = sorted(set(requested) - known)
+    if unknown:
+        preview = ", ".join(unknown[:8])
+        suffix = "..." if len(unknown) > 8 else ""
+        raise RuntimeError(
+            f"daily_bars backfill symbols are not present in instruments: {preview}{suffix}"
+        )
+    return requested
+
+
+def repair_bse_tip_amounts_from_curated(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    symbols: list[str],
+) -> dict:
+    """Supplement an existing BJ session without re-fetching Sina history.
+
+    This targeted repair uses the curated OHLCV as the cross-check input and
+    queries BSE once for its current snapshot. Only rows that receive a
+    non-null BSE amount are staged; no price, volume, or historical row is
+    invented.
+    """
+    from cnequity.query.parquet_scan import collect_parquet_root
+    from cnequity.steps.http_common import write_fetched
+
+    target = _resolve_daily_bar_scope(config, symbols)
+    current = collect_parquet_root(
+        config.curated_root / "daily_bars",
+        partition_col="trade_date",
+        start=trade_date,
+        end=trade_date,
+        symbols=target,
+    )
+    current = dedupe_by_primary_key(current, "daily_bars")
+    if current.is_empty():
+        raise RuntimeError(f"daily_bars {trade_date}: no curated rows found for the repair scope")
+
+    observed = set(current.get_column("symbol").to_list())
+    missing = sorted(set(target) - observed)
+    candidate = current.filter(pl.col("amount").is_null())
+    updated, findings = _supplement_bse_tip_amounts(
+        config,
+        candidate,
+        trade_date=trade_date,
+        symbols=target,
+    )
+    if "source" not in updated.columns:
+        updated = updated.with_columns(pl.lit("sina").alias("source"))
+    changed = updated.filter(pl.col("amount").is_not_null() & (pl.col("source") == "bse"))
+    if not changed.is_empty():
+        out = write_fetched(
+            config,
+            run_id,
+            "daily_bars",
+            changed,
+            source="bse",
+            batch_id="bse-tip-repair-0000",
+        )
+    else:
+        out = {"rows_read": 0, "rows_written": 0}
+
+    if missing:
+        preview = ", ".join(missing[:8])
+        suffix = "..." if len(missing) > 8 else ""
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "warning",
+                "check": "daily_bars_bse_tip_repair_missing_rows",
+                "message": (
+                    f"{len(missing)} requested BJ symbol(s) have no curated row on "
+                    f"{trade_date}: {preview}{suffix}"
+                ),
+                "source": "bse",
+                "missing_symbols": len(missing),
+            }
+        )
+    result = {
+        "rows_read": current.height,
+        "rows_written": int(out.get("rows_written", 0)),
+    }
+    if findings:
+        result["context_updates"] = {"audit_findings": findings}
+        if any(
+            f.get("severity") == "warning"
+            or f.get("check") == "daily_bars_bse_amount_unavailable"
+            for f in findings
+        ):
+            result["status"] = "warning"
+    return result
+
+
 @register_step(
     "daily_bars",
     group="core",
@@ -390,7 +492,20 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         end = trade_date
     _reject_unfinished_daily_bar_window(config, end)
 
-    symbols = load_symbols(config)
+    if getattr(config, "_bse_tip_repair", False):
+        if start != end:
+            raise RuntimeError("BSE tip repair requires a one-session daily_bars window")
+        explicit_scope = getattr(config, "_backfill_symbols", None)
+        if explicit_scope is None:
+            raise RuntimeError("BSE tip repair requires an explicit symbol scope")
+        return repair_bse_tip_amounts_from_curated(config, end, run_id, explicit_scope)
+
+    explicit_scope = getattr(config, "_backfill_symbols", None) if getattr(config, "_backfill", False) else None
+    symbols = (
+        _resolve_daily_bar_scope(config, explicit_scope)
+        if explicit_scope is not None
+        else load_symbols(config)
+    )
     rebackfill = context.get("symbols_to_rebackfill") or []
     if rebackfill:
         symbols = list(dict.fromkeys(rebackfill + symbols))
@@ -455,7 +570,13 @@ def _finish_daily_bars(
     tdx_result: dict,
     sina_result: dict | None,
 ) -> dict:
-    """Apply tip clist / multi-day kline gap-fill, then pre-open rejection."""
+    """Apply gap-fill and validate the latest fetched session.
+
+    ``trade_date`` is the job's as-of date, while ``end`` is the session
+    actually fetched. They differ for a historical ``cne backfill`` run (for
+    example a weekend repair), so all staging and pre-open checks must use
+    ``end``. Normal daily runs happen to have the same two dates.
+    """
     rows_read = int(tdx_result.get("rows_read", 0))
     rows_written = int(tdx_result.get("rows_written", 0))
     findings: list[dict] = []
@@ -528,15 +649,15 @@ def _finish_daily_bars(
             rows_written += int(gap.get("rows_written", 0))
             findings.extend(gap.get("audit_findings") or [])
 
-    _reject_preopen_placeholder(config, run_id, trade_date)
+    _reject_preopen_placeholder(config, run_id, end)
 
     if tip:
-        staged = _staged_daily_bar_symbols(config, run_id, trade_date)
+        staged = _staged_daily_bar_symbols(config, run_id, end)
         expected_symbols = set(expected_tdx_symbols) | set(expected_fallback_symbols or [])
         missing_staged = expected_symbols - staged
         if expected_symbols and not staged:
             raise RuntimeError(
-                f"daily_bars {trade_date}: TDX failed and EastMoney clist gap-fill "
+                f"daily_bars {end}: TDX failed and EastMoney clist gap-fill "
                 "produced no staged tip rows"
             )
         if missing_staged:
@@ -554,7 +675,7 @@ def _finish_daily_bars(
                     "severity": "warning",
                     "check": "daily_bars_tip_missing_symbols",
                     "message": (
-                        f"daily_bars {trade_date}: {len(missing_staged)} expected tip "
+                        f"daily_bars {end}: {len(missing_staged)} expected tip "
                         "key(s) remain missing after TDX and EastMoney clist gap-fill "
                         f"(may be suspended): {preview}{suffix}"
                     ),
@@ -567,7 +688,7 @@ def _finish_daily_bars(
             )
             if len(missing_staged) > allowed_missing:
                 raise RuntimeError(
-                    f"daily_bars {trade_date}: {len(missing_staged)}/"
+                    f"daily_bars {end}: {len(missing_staged)}/"
                     f"{len(expected_symbols)} expected tip key(s) remain missing "
                     f"after failover (allowed at most {allowed_missing}); refusing "
                     "to checkpoint a partial market snapshot"
@@ -1112,6 +1233,138 @@ def _reject_preopen_placeholder(config: Config, run_id: str, trade_date: date) -
         )
 
 
+def _supplement_bse_tip_amounts(
+    config: Config,
+    merged: pl.DataFrame,
+    *,
+    trade_date: date,
+    symbols: list[str],
+) -> tuple[pl.DataFrame, list[dict]]:
+    """Fill only BJ tip turnover that passes an official OHLCV cross-check.
+
+    Sina is the historical fallback for Beijing bars but does not expose
+    turnover. BSE's quotation endpoint is a current snapshot, so it is not a
+    history source: a row is eligible only when its session is the requested
+    date and every OHLCV field agrees exactly with the Sina row already staged.
+    A mismatch keeps the Sina row unchanged and becomes an audit finding.
+    """
+    bse_symbols = sorted({symbol for symbol in symbols if symbol.endswith(".BJ")})
+    if not bse_symbols or not config.sources.get("bse", False):
+        return merged, []
+
+    from cnequity.adapters.bse.daily_quotes import fetch_daily_quotes
+
+    try:
+        bse = fetch_daily_quotes(trade_date, symbols=bse_symbols, config=config)
+    except Exception as exc:  # noqa: BLE001 — Sina remains the usable fallback
+        logger.warning("BSE tip turnover supplement failed for %s: %s", trade_date, exc)
+        return merged, [
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_bse_amount_unavailable",
+                "message": f"BSE tip quote unavailable for {trade_date}: {exc}",
+                "source": "bse",
+                "source_limited": True,
+            }
+        ]
+
+    if bse.is_empty():
+        return merged, [
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_bse_amount_unavailable",
+                "message": (
+                    f"BSE returned no dated tip quote for {trade_date}; Sina amount stays null"
+                ),
+                "source": "bse",
+                "source_limited": True,
+            }
+        ]
+
+    if "source" not in merged.columns:
+        merged = merged.with_columns(pl.lit("sina").alias("source"))
+    bse = bse.select(
+        "symbol",
+        "trade_date",
+        pl.col("open").alias("_bse_open"),
+        pl.col("high").alias("_bse_high"),
+        pl.col("low").alias("_bse_low"),
+        pl.col("close").alias("_bse_close"),
+        pl.col("volume").alias("_bse_volume"),
+        pl.col("amount").alias("_bse_amount"),
+    )
+    joined = merged.join(bse, on=["symbol", "trade_date"], how="left")
+    bse_present = pl.col("_bse_amount").is_not_null()
+    exact_match = pl.all_horizontal(
+        pl.col(left) == pl.col(right)
+        for left, right in (
+            ("open", "_bse_open"),
+            ("high", "_bse_high"),
+            ("low", "_bse_low"),
+            ("close", "_bse_close"),
+            ("volume", "_bse_volume"),
+        )
+    )
+    amount_missing = pl.col("amount").is_null()
+    supplement = bse_present & exact_match & amount_missing
+    mismatch = bse_present & ~exact_match
+    supplemented = joined.filter(supplement)
+    mismatched = joined.filter(mismatch)
+    updated = (
+        joined.with_columns(
+            pl.when(supplement)
+            .then(pl.col("_bse_amount"))
+            .otherwise(pl.col("amount"))
+            .alias("amount"),
+            pl.when(supplement)
+            .then(pl.lit("bse"))
+            .otherwise(pl.col("source"))
+            .alias("source"),
+        )
+        .drop(
+            "_bse_open",
+            "_bse_high",
+            "_bse_low",
+            "_bse_close",
+            "_bse_volume",
+            "_bse_amount",
+        )
+    )
+    findings: list[dict] = []
+    if supplemented.height:
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_bse_amount_supplement",
+                "message": (
+                    f"BSE official tip quote supplied amount for {supplemented.height} row(s) "
+                    f"on {trade_date} after exact Sina OHLCV matching"
+                ),
+                "source": "bse",
+                "rows_supplemented": supplemented.height,
+                "symbols_supplemented": supplemented.get_column("symbol").n_unique(),
+            }
+        )
+    if mismatched.height:
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "warning",
+                "check": "daily_bars_bse_quote_mismatch",
+                "message": (
+                    f"BSE tip quote disagreed with Sina OHLCV for {mismatched.height} row(s) "
+                    f"on {trade_date}; Sina rows were retained"
+                ),
+                "source": "bse",
+                "rows_mismatched": mismatched.height,
+            }
+        )
+    return updated, findings
+
+
 def fetch_bars_via_sina(
     config: Config,
     symbols: list[str],
@@ -1146,18 +1399,34 @@ def fetch_bars_via_sina(
     covered_dates: dict[str, set[date]] = {}
 
     def fetch_one(symbol: str) -> tuple[str, pl.DataFrame | None, str | None]:
-        config.rate_limit("sina")
-        # Gapfill is a best-effort repair path.  Keep one unresponsive symbol
-        # from holding the whole daily run for the full upstream timeout.
-        with httpx.Client(timeout=8.0) as client:
+        for attempt in range(_SINA_FETCH_ATTEMPTS):
+            config.rate_limit("sina_bars")
+            # Gapfill is a best-effort repair path. Keep one unresponsive
+            # symbol from holding the whole daily run for the full timeout.
             try:
-                bars = fetch(symbol, client)
+                with httpx.Client(timeout=8.0) as client:
+                    bars = fetch(symbol, client)
             except Exception as exc:  # noqa: BLE001 — keep the rest of the board
-                logger.warning("sina bars failed for %s: %s", symbol, exc)
-                return symbol, None, "failed"
-        if bars.is_empty():
-            return symbol, None, "empty"
-        return symbol, bars, None
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                retryable = status_code in _SINA_RETRY_STATUS_CODES
+                if not retryable or attempt + 1 >= _SINA_FETCH_ATTEMPTS:
+                    logger.warning("sina bars failed for %s: %s", symbol, exc)
+                    return symbol, None, "failed"
+                delay = max(float(getattr(config, "retry_backoff_seconds", 5)), 1.0) * (attempt + 1)
+                logger.warning(
+                    "sina bars transient HTTP %s for %s; retrying in %.1fs (%d/%d)",
+                    status_code,
+                    symbol,
+                    delay,
+                    attempt + 1,
+                    _SINA_FETCH_ATTEMPTS - 1,
+                )
+                time.sleep(delay)
+                continue
+            if bars.is_empty():
+                return symbol, None, "empty"
+            return symbol, bars, None
+        return symbol, None, "failed"
 
     if use_parallel and symbols:
         with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as pool:
@@ -1184,14 +1453,20 @@ def fetch_bars_via_sina(
             failed.append(symbol)
 
     rows = 0
+    supplement_findings: list[dict] = []
     if frames:
         merged = pl.concat(frames, how="diagonal_relaxed")
+        if start == end:
+            merged, supplement_findings = _supplement_bse_tip_amounts(
+                config, merged, trade_date=start, symbols=symbols
+            )
         out = write_fetched(
             config, run_id, "daily_bars", merged, source="sina", batch_id=f"{batch_prefix}-0000"
         )
         rows = int(out.get("rows_written", 0))
 
     result: dict = {"rows_read": rows, "rows_written": rows}
+    audit_findings = list(supplement_findings)
     if failed:
         result["failed_symbols"] = len(failed)
         # Keep the names as well as the count. The daily step can then route
@@ -1199,21 +1474,21 @@ def fetch_bars_via_sina(
         # failures; a count alone cannot identify which keys need recovery.
         result["failed_symbol_names"] = list(dict.fromkeys(failed))
         result["empty_symbol_names"] = list(dict.fromkeys(empty))
-        result["context_updates"] = {
-            "audit_findings": [
-                {
-                    "dataset": "daily_bars",
-                    "severity": "warning",
-                    "check": "fallback_source_incomplete",
-                    "message": (
-                        f"{len(failed)}/{len(symbols)} symbols without a TDX route "
-                        f"failed to fetch from the fallback vendor "
-                        f"(e.g. {', '.join(failed[:5])})"
-                    ),
-                    "empty_symbols": len(empty),
-                }
-            ]
-        }
+        audit_findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "warning",
+                "check": "fallback_source_incomplete",
+                "message": (
+                    f"{len(failed)}/{len(symbols)} symbols without a TDX route "
+                    f"failed to fetch from the fallback vendor "
+                    f"(e.g. {', '.join(failed[:5])})"
+                ),
+                "empty_symbols": len(empty),
+            }
+        )
+    if audit_findings:
+        result["context_updates"] = {"audit_findings": audit_findings}
     return result
 
 

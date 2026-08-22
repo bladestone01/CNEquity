@@ -124,7 +124,7 @@
 | 频率 | compact 之后每日 |
 | 主键 | (symbol, trade_date, adjust_type) |
 | 说明 | 外部累计因子对齐 daily_bars；`adj_close = close * factor` |
-| **已知缺口** | 新浪**确实覆盖北交所**（`bj430017` 等都能取到）。过去曾出现过因 derive 只从水位向前追加而导致的 BJ 因子缺口；现已修复该路径。新上市未交易、已退市或源端无因子的标的仍可能缺失，具体数量以最新 `adj_factor_coverage` finding 和 `meta/quality/health-latest.json` 为准 |
+| **已知缺口** | 新浪**确实覆盖北交所**（`bj430017` 等都能取到）。过去曾出现过因 derive 只从水位向前追加而导致的 BJ 因子缺口；现已修复该路径。新上市未交易、已退市或源端无因子的标的仍可能缺失，具体数量以最新 `adj_factor_coverage` / `adj_factor_source_unavailable` finding 和 `meta/quality/health-latest.json` 为准。对正式退市且新浪明确返回空序列的标的，派生会写入 `meta/state/adj_factors.json.source_unavailable_symbols`，停止无效重试但不会伪造因子。 |
 | **查询侧后果** | `load(adjust="hfq")` 默认 `strict_adj=False`，缺因子的行按 `factor=1.0` 返回，即**未复权价出现在复权结果里**，只由 `adj_is_exact=False` 标记。实际不精确行数随查询窗口、标的范围和最新因子覆盖变化；请以结果中的 `adj_is_exact=False` 以及最新 `meta/quality/health-latest.json` 的 `adj_factor_coverage` finding 为准。|
 | **怎么办** | 要严格失败而不是静默降级：`load(..., strict_adj=True)`。**它不是默认值**：新上市的票在拿到第一个因子前必然缺，所以严格模式会让 `universe="all_a"` 的 hfq 查询长期抛错。默认容忍 + `adj_is_exact` 标记 + 审计告警，是在「不静默污染」和「查询可用」之间的取舍 |
 | **自愈** | `derive_adj_factors` 每次增量运行都会找出「有 bar 但因子够不到」的标的并重排其完整历史，单次上限 500 只。所以 `cne backfill daily_bars` 补的历史会在随后的日更里自动补上因子，无需 `--full` |
@@ -245,6 +245,7 @@
 |--------|----------|-----------|--------|---------|
 | tdx_protocol | TCP | bars、instruments、calendar | eastmoney clist（tip 路由）/ kline（多日） | tip 缺口进 curated（ADR-0005）；snapshot 供 diff |
 | sina | HTTP | adj_factors（qfq/hfq） | — | 跳过该标的 + quality finding |
+| bse | HTTP | BJ 日线 tip 成交额 | — | 仅在与 Sina OHLCV 精确一致时补 amount；否则保留 null + quality finding |
 | eastmoney | HTTP | 公司行为备源、资金面 | — | 跳过 + quality finding |
 | cninfo | HTTP | announcement_index | — | 仅按需 |
 | baostock | TCP | 退市标的、历史 ST、估值回补 | — | 仅 `--backfill` |

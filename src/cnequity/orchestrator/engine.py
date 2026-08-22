@@ -130,6 +130,7 @@ class JobEngine:
                 "eastmoney_bj_repair": bool(
                     getattr(self.config, "_corporate_actions_eastmoney_bj_repair", False)
                 ),
+                "bse_tip_repair": bool(getattr(self.config, "_bse_tip_repair", False)),
             }
         lock_name = DAILY_INGESTION_LOCK if job_name.startswith("daily") else None
         with self._optional_job_lock(lock_name):
@@ -521,6 +522,7 @@ class JobEngine:
         self.config._corporate_actions_eastmoney_bj_repair = bool(
             scope.get("eastmoney_bj_repair", False)
         )
+        self.config._bse_tip_repair = bool(scope.get("bse_tip_repair", False))
         timeout = self.manifest.advance_batch_timeouts(
             run_id,
             stale_after_seconds=self.config.batch_stale_seconds,
