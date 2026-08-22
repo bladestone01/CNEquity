@@ -6,16 +6,20 @@ positive facts to the lake's own traded dates and emits explicit ``normal``
 rows for every other traded date.  A missing or malformed source response is
 retryable; it never becomes negative evidence.
 
-The endpoint documents a history floor of 2017-01-01.  Symbols with persisted
-bars before that date are returned as failed so the coverage receipt cannot
-claim a pre-floor window.  Legacy 43/83/87xxx and current 920xxx BJ codes are
-queried as aliases because the exchange migrated code identities.
+The direct ``stock_st`` endpoint starts at 2017-01-01.  For the 2016 slice,
+the adapter uses Tushare's historical ``bak_basic`` daily stock list and treats
+the exchange's ``ST``/``*ST`` name prefix as the label; every requested symbol
+must be present on every requested day or it is returned as failed.  Symbols
+with persisted bars before 2016 are still returned as failed. Legacy
+43/83/87xxx and current 920xxx BJ codes are queried as aliases because the
+exchange migrated code identities.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping
 from datetime import date, datetime
 from functools import lru_cache
 
@@ -27,13 +31,15 @@ from cnequity.config import Config
 from cnequity.domain.symbols import parse_symbol
 from cnequity.query.parquet_scan import scan_parquet_root
 
-__all__ = ["TUSHARE_ST_HISTORY_FLOOR", "fetch_st_history"]
+__all__ = ["TUSHARE_ST_DIRECT_FLOOR", "TUSHARE_ST_HISTORY_FLOOR", "fetch_st_history"]
 
 logger = logging.getLogger(__name__)
 
 TUSHARE_API_URL = "https://api.tushare.pro"
-TUSHARE_ST_HISTORY_FLOOR = date(2017, 1, 1)
+TUSHARE_ST_HISTORY_FLOOR = date(2016, 1, 1)
+TUSHARE_ST_DIRECT_FLOOR = date(2017, 1, 1)
 _PAGE_SIZE = 1000
+_BAK_BASIC_PAGE_SIZE = 7000
 _MAX_PAGES = 1000
 
 _OUTPUT_SCHEMA = {
@@ -42,6 +48,46 @@ _OUTPUT_SCHEMA = {
     "is_trading": pl.Boolean,
     "status": pl.Utf8,
 }
+
+
+def _post_json(
+    client: httpx.Client,
+    payload: dict,
+    *,
+    config: Config | None,
+    sleep: Callable[[float], None],
+) -> object:
+    """POST once, retrying only transient transport/provider failures.
+
+    Tushare errors in a successful HTTP response (for example insufficient
+    points or an invalid token) are deliberately left to the endpoint parser;
+    retrying those only delays a deterministic failure.  A timeout, malformed
+    JSON response, HTTP 408/429, or HTTP 5xx is different: retrying the same
+    request can recover without forcing the caller to replay the whole symbol
+    batch.  Exhaustion still raises so the caller records the symbol/day as
+    unresolved rather than manufacturing a normal row.
+    """
+    attempts = max(1, int(config.max_retries)) if config is not None else 1
+    backoff = float(config.retry_backoff_seconds) if config is not None else 0.0
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        if config is not None:
+            config.rate_limit("tushare")
+        try:
+            response = client.post(TUSHARE_API_URL, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status not in {408, 429} and not (status is not None and 500 <= status <= 599):
+                raise
+            last_error = exc
+        except (httpx.RequestError, ValueError) as exc:
+            last_error = exc
+        if attempt + 1 < attempts:
+            sleep(max(0.0, backoff) * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 @lru_cache(maxsize=1)
@@ -116,35 +162,31 @@ def _request_rows(
     end: date,
     *,
     config: Config | None,
+    sleep: Callable[[float], None],
 ) -> list[dict]:
     rows: list[dict] = []
     for page in range(_MAX_PAGES):
-        if config is not None:
-            config.rate_limit("tushare")
-        response = client.post(
-            TUSHARE_API_URL,
-            json={
-                "api_name": "stock_st",
-                "token": token,
-                "params": {
-                    "ts_code": ts_code,
-                    "start_date": start.strftime("%Y%m%d"),
-                    "end_date": end.strftime("%Y%m%d"),
-                    "limit": _PAGE_SIZE,
-                    "offset": page * _PAGE_SIZE,
-                },
-                "fields": "ts_code,name,trade_date,type,type_name",
+        payload = {
+            "api_name": "stock_st",
+            "token": token,
+            "params": {
+                "ts_code": ts_code,
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+                "limit": _PAGE_SIZE,
+                "offset": page * _PAGE_SIZE,
             },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
+            "fields": "ts_code,name,trade_date,type,type_name",
+        }
+        response_payload = _post_json(client, payload, config=config, sleep=sleep)
+        if not isinstance(response_payload, dict):
             raise RuntimeError("Tushare stock_st response is not an object")
-        if payload.get("code") not in (0, "0"):
+        if response_payload.get("code") not in (0, "0"):
             raise RuntimeError(
-                f"Tushare stock_st failed: {payload.get('msg') or payload.get('message') or payload.get('code')}"
+                "Tushare stock_st failed: "
+                f"{response_payload.get('msg') or response_payload.get('message') or response_payload.get('code')}"
             )
-        data = payload.get("data")
+        data = response_payload.get("data")
         if not isinstance(data, dict):
             raise RuntimeError("Tushare stock_st response has no data object")
         fields = data.get("fields")
@@ -165,6 +207,57 @@ def _request_rows(
     return rows
 
 
+def _request_bak_basic_rows(
+    client: httpx.Client,
+    token: str,
+    trade_date: date,
+    *,
+    config: Config | None,
+    sleep: Callable[[float], None],
+) -> list[dict]:
+    """Fetch one complete historical daily stock-list page set."""
+    rows: list[dict] = []
+    for page in range(_MAX_PAGES):
+        payload = {
+            "api_name": "bak_basic",
+            "token": token,
+            "params": {
+                "trade_date": trade_date.strftime("%Y%m%d"),
+                "limit": _BAK_BASIC_PAGE_SIZE,
+                "offset": page * _BAK_BASIC_PAGE_SIZE,
+            },
+            "fields": "ts_code,name,trade_date",
+        }
+        response_payload = _post_json(client, payload, config=config, sleep=sleep)
+        if not isinstance(response_payload, dict) or response_payload.get("code") not in (0, "0"):
+            message = response_payload.get("msg") if isinstance(response_payload, dict) else None
+            raise RuntimeError(f"Tushare bak_basic failed: {message or response_payload!r}")
+        data = response_payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("Tushare bak_basic response has no data object")
+        fields = data.get("fields")
+        items = data.get("items")
+        if not isinstance(fields, list) or not isinstance(items, list):
+            raise RuntimeError("Tushare bak_basic response has invalid fields/items")
+        page_rows: list[dict] = []
+        for item in items:
+            if not isinstance(item, list) or len(item) != len(fields):
+                raise RuntimeError("Tushare bak_basic response contains a malformed row")
+            page_rows.append(dict(zip((str(field) for field in fields), item, strict=True)))
+        rows.extend(page_rows)
+        if len(page_rows) < _BAK_BASIC_PAGE_SIZE:
+            break
+    else:
+        raise RuntimeError("Tushare bak_basic pagination exceeded the safety limit")
+    return rows
+
+
+def _is_st_name(value: object) -> bool:
+    """Recognize the exchange's ST/*ST prefix in the historical name field."""
+    name = str(value or "").strip().upper()
+    return name.startswith(("ST", "*ST", "S*ST", "SST"))
+
+
 def _empty() -> pl.DataFrame:
     return pl.DataFrame(schema=_OUTPUT_SCHEMA)
 
@@ -178,6 +271,7 @@ def fetch_st_history(
     client: httpx.Client | None = None,
     config: Config | None = None,
     trading_dates: Mapping[str, Iterable[date]] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Fetch complete traded-day ST/normal evidence for BJ symbols.
 
@@ -214,35 +308,85 @@ def fetch_st_history(
     rows: list[dict] = []
     failed: list[str] = []
     try:
+        pre_floor_symbols = {
+            symbol
+            for symbol in symbols
+            if any(d < TUSHARE_ST_HISTORY_FLOOR for d in dates_by_symbol.get(symbol, []))
+        }
+        pre_direct_dates = {
+            symbol: [d for d in dates_by_symbol.get(symbol, []) if d < TUSHARE_ST_DIRECT_FLOOR]
+            for symbol in symbols
+            if symbol not in pre_floor_symbols
+        }
+        pre_direct_symbols = {symbol for symbol, dates in pre_direct_dates.items() if dates}
+        pre_st_dates: dict[str, set[date]] = {symbol: set() for symbol in symbols}
+        pre_failed: set[str] = set()
+        if pre_direct_symbols:
+            alias_to_symbol = {
+                alias: symbol
+                for symbol in sorted(pre_direct_symbols)
+                for alias in _source_codes(symbol)
+            }
+            try:
+                for trade_date in sorted({d for dates in pre_direct_dates.values() for d in dates}):
+                    found: set[str] = set()
+                    for item in _request_bak_basic_rows(
+                        client,
+                        token,
+                        trade_date,
+                        config=config,
+                        sleep=sleep,
+                    ):
+                        source_code = str(item.get("ts_code") or "").strip().upper()
+                        symbol = alias_to_symbol.get(source_code)
+                        if symbol is None or _parse_date(item.get("trade_date")) != trade_date:
+                            continue
+                        found.add(symbol)
+                        if _is_st_name(item.get("name")):
+                            pre_st_dates[symbol].add(trade_date)
+                    required = {
+                        symbol for symbol, dates in pre_direct_dates.items() if trade_date in dates
+                    }
+                    pre_failed.update(required - found)
+            except Exception as exc:  # noqa: BLE001 — no incomplete day becomes normal
+                logger.warning("tushare bak_basic: failed for %s: %s", trade_date, exc)
+                pre_failed.update(pre_direct_symbols)
+
         for symbol in symbols:
             traded_dates = dates_by_symbol.get(symbol, [])
-            if any(d < TUSHARE_ST_HISTORY_FLOOR for d in traded_dates):
+            if symbol in pre_floor_symbols:
+                failed.append(symbol)
+                continue
+            if symbol in pre_failed:
                 failed.append(symbol)
                 continue
             try:
-                st_dates: set[date] = set()
+                st_dates = pre_st_dates[symbol]
                 aliases = set(_source_codes(symbol))
-                for source_code in sorted(aliases):
-                    for item in _request_rows(
-                        client,
-                        token,
-                        source_code,
-                        max(start, TUSHARE_ST_HISTORY_FLOOR),
-                        end,
-                        config=config,
-                    ):
-                        returned_code = str(item.get("ts_code") or "").strip().upper()
-                        if returned_code and returned_code not in aliases:
-                            raise RuntimeError(
-                                f"Tushare stock_st returned {returned_code} while querying {symbol}"
-                            )
-                        trade_date = _parse_date(item.get("trade_date"))
-                        if trade_date is None or not (start <= trade_date <= end):
-                            continue
-                        kind = str(item.get("type") or "").strip().upper()
-                        if kind not in {"ST", "*ST"}:
-                            raise RuntimeError(f"unknown Tushare ST type {kind!r} for {symbol}")
-                        st_dates.add(trade_date)
+                post_direct_dates = [d for d in traded_dates if d >= TUSHARE_ST_DIRECT_FLOOR]
+                if post_direct_dates:
+                    for source_code in sorted(aliases):
+                        for item in _request_rows(
+                            client,
+                            token,
+                            source_code,
+                            max(start, TUSHARE_ST_DIRECT_FLOOR),
+                            end,
+                            config=config,
+                            sleep=sleep,
+                        ):
+                            returned_code = str(item.get("ts_code") or "").strip().upper()
+                            if returned_code and returned_code not in aliases:
+                                raise RuntimeError(
+                                    f"Tushare stock_st returned {returned_code} while querying {symbol}"
+                                )
+                            trade_date = _parse_date(item.get("trade_date"))
+                            if trade_date is None or not (start <= trade_date <= end):
+                                continue
+                            kind = str(item.get("type") or "").strip().upper()
+                            if kind not in {"ST", "*ST"}:
+                                raise RuntimeError(f"unknown Tushare ST type {kind!r} for {symbol}")
+                            st_dates.add(trade_date)
                 rows.extend(
                     {
                         "symbol": symbol,

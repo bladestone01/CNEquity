@@ -138,9 +138,9 @@ batch_size = 20
 batch_rest_seconds = 120
 
 # Optional Tushare Pro — historical BJ ST evidence (stock_st).
-# The endpoint starts at 2017-01-01 and requires a token; the backfill keeps
-# older BJ bars unresolved instead of certifying them as normal. Prefer the
-# environment variable TUSHARE_TOKEN so the credential never enters config.
+# stock_st starts at 2017-01-01; 2016 uses bak_basic name evidence. Both need a
+# token; older BJ bars remain unresolved instead of certifying them as normal.
+# Prefer the environment variable TUSHARE_TOKEN so the credential never enters config.
 [sources.tushare]
 enabled = false
 min_interval_seconds = 1.0

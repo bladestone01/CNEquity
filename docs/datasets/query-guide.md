@@ -92,9 +92,9 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a_sh_sz")
 
 ### 历史 ST 限制
 
-日更只抓当天 `trading_status`。停牌可由 `cne derive trading_status --start/--end` 按年重建，覆盖可与 `daily_bars` 同起点（约 2001）。**ST 标签**依赖 Baostock 的逐标的 `isST` 历史回补；只有生成了完整、版本化的 `historical_st_evidence` 收据，才能把对应窗口用于研究。部分回补（例如仅从 2016 年开始）不能证明 2001 年起的历史 ST 已剔除。
+日更只抓当天 `trading_status`。停牌可由 `cne derive trading_status --start/--end` 按年重建，覆盖可与 `daily_bars` 同起点（约 2001）。**ST 标签**由 Baostock 的逐标的 `isST` 历史与可选 Tushare BJ 历史源共同提供；只有生成了完整、版本化的 `historical_st_evidence` 收据，才能把对应窗口用于研究。部分回补（例如仅从 2016 年开始）不能证明 2001 年起的历史 ST 已剔除。
 
-收据可通过重叠的深历史范围与较新尾段范围合并，但新增标的必须有首个交易日证据。北交所（BJ）可通过显式配置的 Tushare Pro `stock_st` 回补 2017-01-01 起的 ST 历史；该接口需要 token，且 2016 年及更早的 BJ 行情仍会作为源端能力限制阻塞，不能把接口空结果当成 normal。未配置 Tushare 时，BJ 仍会显式阻塞。审计项 `trading_status_coverage_start` 区分总覆盖与 `st_coverage_start`，历史研究应使用 `cne audit --full --research-start ...` 复核。
+收据可通过重叠的深历史范围与较新尾段范围合并，但新增标的必须有首个交易日证据。北交所（BJ）可通过显式配置的 Tushare Pro 回补：2016 年使用 `bak_basic` 历史简称，2017-01-01 起使用 `stock_st`；接口需要 token，2016 年以前仍会作为源端能力限制阻塞，不能把接口空结果当成 normal。未配置 Tushare 时，BJ 仍会显式阻塞。审计项 `trading_status_coverage_start` 区分总覆盖与 `st_coverage_start`，历史研究应使用 `cne audit --full --research-start ...` 复核。
 
 需要让读取路径本身 fail-closed 时，加 `strict_universe=True`：除了逐日
 `trading_status` 覆盖，还会校验请求 symbol 范围的版本化 ST 证据收据；`all_a` 缺收据或

@@ -54,6 +54,10 @@ _CACHED_TRADING_STATUS_MAX_AGE = timedelta(days=5)
 # paid the request cost. Keeping this at the provider batch size preserves the
 # required cooldown while limiting resumable loss to one batch.
 _ST_BACKFILL_CHUNK = 20
+# Tushare's 2016 ``bak_basic`` query is market-wide. Keeping BJ symbols in a
+# large batch avoids replaying the same 2016 date list once per 20-symbol
+# Baostock batch; the adapter still fails and checkpoints individual symbols.
+_TUSHARE_ST_BACKFILL_CHUNK = 500
 
 
 @register_step("instruments", group="core", requires_workers=False)
@@ -491,8 +495,9 @@ def _backfill_trading_status_st_source(
     rows_read = 0
     rows_written = 0
     manifest = Manifest(config.manifest_path) if batch_id else None
-    for offset in range(0, len(todo), _ST_BACKFILL_CHUNK):
-        batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
+    chunk_size = _TUSHARE_ST_BACKFILL_CHUNK if source == "tushare" else _ST_BACKFILL_CHUNK
+    for offset in range(0, len(todo), chunk_size):
+        batch = todo[offset : offset + chunk_size]
         is_last_batch = offset + len(batch) >= len(todo)
         if manifest is not None:
             manifest.touch_batch_heartbeat(run_id, batch_id)

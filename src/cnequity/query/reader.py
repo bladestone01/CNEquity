@@ -426,10 +426,10 @@ def load(
         without a universe if needed. Only valid for ``daily_bars``; passing it
         to any other dataset raises ``ReaderError``.
 
-        **Limitation:** ``trading_status`` is daily-only (no historical ST
-        backfill). Dates before the curated coverage start (see audit check
-        ``trading_status_coverage_start``) are **not** ST/suspended-filtered;
-        long backtests may include ST names in early windows.
+        **Limitation:** ST/suspension filtering is only research-safe when the
+        requested window has complete ``trading_status`` rows and a versioned
+        historical ST evidence receipt. Dates before that evidence coverage
+        are not filtered in permissive mode; strict research reads fail closed.
     as_of:
         Point-in-time date for ``financial_statement_items``. Keeps only facts
         announced on or before this date, and — because a restatement stores a

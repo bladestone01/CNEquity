@@ -36,6 +36,8 @@ ST_COVERAGE_CLAIM = "historical_st_evidence"
 # then presenting a partial receipt as if it covered the full all-A universe.
 ST_EVIDENCE_UNSUPPORTED_EXCHANGES = frozenset({"BJ"})
 ST_EVIDENCE_COMPATIBLE_UNIVERSES = frozenset({"all_a", "all_a_sz", "all_a_sh_sz"})
+_RECEIPT_INTEGRITY_CACHE_LIMIT = 64
+_receipt_integrity_cache: dict[tuple[str, str, str, str], bool] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,27 @@ def _canonical_hash(value: Any) -> str:
 
 def symbol_scope_hash(symbols: list[str]) -> str:
     return _canonical_hash(sorted(set(symbols)))
+
+
+def _trading_status_fingerprint(config: Config) -> str:
+    """Fingerprint Parquet layout metadata for receipt-cache invalidation."""
+    root = config.curated_root / "trading_status"
+    if not root.exists():
+        return "missing"
+    entries: list[tuple[str, int, int]] = []
+    for path in sorted(root.rglob("*.parquet")):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append(
+            (
+                path.relative_to(root).as_posix(),
+                int(stat.st_size),
+                int(stat.st_mtime_ns),
+            )
+        )
+    return _canonical_hash(entries)
 
 
 def current_st_universe(
@@ -188,8 +211,9 @@ def st_evidence_unsupported_symbols(
     securities and must not be deleted from instruments or daily bars; they
     are reported as an explicit research limitation until an independent BJ
     historical ST source is configured.  Tushare, when explicitly enabled with
-    a token, covers BJ from its documented 2017-01-01 floor; older persisted BJ
-    bars remain unsupported instead of being silently certified.
+    a token, covers BJ from its documented 2016 floor (``bak_basic`` name
+    evidence for 2016 and ``stock_st`` from 2017); older persisted BJ bars
+    remain unsupported instead of being silently certified.
     """
     unsupported: list[str] = []
     tushare_enabled = _tushare_st_enabled(config)
@@ -471,6 +495,9 @@ def publish_st_coverage_receipt(config: Config, checkpoint: dict[str, Any]) -> P
         "completed_symbols_count": len(completed),
         "completed_symbols_sha256": symbol_scope_hash(sorted(completed)),
         "evidence_rows": sum(int(value) for value in expected_counts.values()),
+        "evidence_rows_by_symbol": {
+            symbol: int(expected_counts[symbol]) for symbol in sorted(expected)
+        },
         "published_at": datetime.now(timezone.utc).isoformat(),
     }
     path = _receipt_path(config, str(scope["scope_id"]))
@@ -591,8 +618,27 @@ def _valid_receipt_scope(receipt: dict[str, Any]) -> tuple[dict[str, Any], date,
         return None
     if not all(isinstance(symbol, str) for symbol in completed):
         return None
+    # The scope hash intentionally ignores ordering. Check uniqueness
+    # separately so a duplicated symbol cannot preserve the same hash while
+    # inflating the receipt count and weakening the scope integrity check.
+    if len(set(completed)) != len(completed):
+        return None
     if receipt.get("completed_symbols_count") != len(completed):
         return None
+    evidence_rows = receipt.get("evidence_rows")
+    if not isinstance(evidence_rows, int) or isinstance(evidence_rows, bool) or evidence_rows < 0:
+        return None
+    row_counts = receipt.get("evidence_rows_by_symbol")
+    if row_counts is not None:
+        if not isinstance(row_counts, dict) or set(row_counts) != set(completed):
+            return None
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in row_counts.values()
+        ):
+            return None
+        if sum(row_counts.values()) != evidence_rows:
+            return None
     if scope.get("expected_symbols_count") != len(completed):
         return None
     if receipt.get("completed_symbols_sha256") != symbol_scope_hash(completed):
@@ -615,6 +661,59 @@ def _valid_receipt_scope(receipt: dict[str, Any]) -> tuple[dict[str, Any], date,
     if scope_start > scope_end:
         return None
     return scope, scope_start, scope_end
+
+
+def _receipt_rows_intact(
+    config: Config,
+    receipt: dict[str, Any],
+    scope: dict[str, Any],
+    symbols: set[str],
+) -> bool:
+    """Check that persisted source facts still back a valid receipt.
+
+    Receipts are immutable metadata, but curated Parquet can be compacted,
+    repaired, or damaged after publication. New receipts carry per-symbol
+    counts; legacy receipts carry only an aggregate, which is still checked so
+    deletion of material evidence cannot silently leave research certified.
+    """
+    status_fingerprint = _trading_status_fingerprint(config)
+    receipt_fingerprint = _canonical_hash(
+        {
+            "completed_symbols_sha256": receipt.get("completed_symbols_sha256"),
+            "evidence_rows": receipt.get("evidence_rows"),
+            "evidence_rows_by_symbol": receipt.get("evidence_rows_by_symbol"),
+        }
+    )
+    cache_key = (
+        str(config.data_root),
+        str(scope.get("scope_id")),
+        symbol_scope_hash(sorted(symbols)),
+        f"{status_fingerprint}:{receipt_fingerprint}",
+    )
+    cached = _receipt_integrity_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        persisted = _st_row_counts(config, scope, symbols)
+        expected_by_symbol = receipt.get("evidence_rows_by_symbol")
+        if isinstance(expected_by_symbol, dict):
+            intact = all(
+                persisted.get(symbol, 0) >= int(expected_by_symbol[symbol])
+                for symbol in symbols
+            )
+        else:
+            intact = sum(persisted.values()) >= int(receipt["evidence_rows"])
+    except (KeyError, OSError, ValueError, pl.exceptions.PolarsError) as exc:
+        logger.warning(
+            "ST coverage: could not revalidate receipt %s: %s",
+            scope.get("scope_id"),
+            exc,
+        )
+        intact = False
+    if len(_receipt_integrity_cache) >= _RECEIPT_INTEGRITY_CACHE_LIMIT:
+        _receipt_integrity_cache.pop(next(iter(_receipt_integrity_cache)))
+    _receipt_integrity_cache[cache_key] = intact
+    return intact
 
 
 def _first_traded_dates(
@@ -748,6 +847,7 @@ def compose_st_coverage_receipt(
         "completed_symbols_count": len(extension_symbols),
         "completed_symbols_sha256": symbol_scope_hash(sorted(extension_symbols)),
         "evidence_rows": sum(merged_counts.values()),
+        "evidence_rows_by_symbol": dict(sorted(merged_counts.items())),
         "composition": {
             "type": "overlapping_receipts",
             "base_scope_id": base_scope["scope_id"],
@@ -801,6 +901,7 @@ def st_evidence_coverage_report(
     }
 
     best_by_source: dict[str, dict[str, Any]] = {}
+    receipt_integrity_failures: set[str] = set()
     for source, source_symbols in source_groups.items():
         if not source_symbols:
             continue
@@ -825,14 +926,18 @@ def st_evidence_coverage_report(
             if end is not None and scope_end < end:
                 continue
             candidates.append(receipt)
-        best = min(
+        best = None
+        for candidate in sorted(
             candidates,
             key=lambda item: (
                 date.fromisoformat(item["scope"]["start"]),
                 -date.fromisoformat(item["scope"]["end"]).toordinal(),
             ),
-            default=None,
-        )
+        ):
+            if _receipt_rows_intact(config, candidate, candidate["scope"], set(source_symbols)):
+                best = candidate
+                break
+            receipt_integrity_failures.add(source)
         if best is not None:
             best_by_source[source] = best
 
@@ -864,7 +969,11 @@ def st_evidence_coverage_report(
             "reason": (
                 "unsupported_exchange_symbols"
                 if unsupported_symbols
-                else ("no_current_universe" if not symbols else "no_matching_complete_receipt")
+                else (
+                    "receipt_data_drift"
+                    if receipt_integrity_failures
+                    else ("no_current_universe" if not symbols else "no_matching_complete_receipt")
+                )
             ),
             "source_coverage": {
                 source: {
@@ -874,6 +983,9 @@ def st_evidence_coverage_report(
                         best_by_source[source].get("scope", {}).get("scope_id")
                         if source in best_by_source
                         else None
+                    ),
+                    "reason": (
+                        "receipt_data_drift" if source in receipt_integrity_failures else None
                     ),
                 }
                 for source in source_groups

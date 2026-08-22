@@ -42,7 +42,7 @@
 | 备源 | eastmoney |
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
-| 历史 ST 回补 | Baostock 覆盖 SH/SZ；可选 Tushare Pro `stock_st` 覆盖 BJ（2017-01-01 起，需 token）；缺少源端覆盖时审计保持 warning |
+| 历史 ST 回补 | Baostock 覆盖 SH/SZ；可选 Tushare Pro `bak_basic`（2016）+ `stock_st`（2017-01-01 起）覆盖 BJ，需 token；缺少源端覆盖时审计保持 warning |
 
 #### daily_bars
 

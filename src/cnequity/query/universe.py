@@ -215,8 +215,9 @@ def trading_status_coverage_start(config: Config) -> date | None:
 def st_coverage_start(config: Config) -> date | None:
     """First trade_date with an ``st``/``*st`` label in trading_status.
 
-    Suspension is reconstructed from bar gaps (whole history), but ST labels
-    come only from live ST snapshots, so this is the real ST-history boundary.
+    Suspension is reconstructed from bar gaps (whole history). This is only a
+    descriptive positive-label boundary; strict historical research must use a
+    complete versioned ST evidence receipt instead of this minimum date.
     """
     root = config.curated_root / "trading_status"
     if not root.exists():
@@ -246,8 +247,8 @@ def tradable_symbols_on_date(
     """Return ``symbol`` rows tradable on *trade_date* for the given universe rule.
 
     Applies list/delist dates from ``instruments``. ST/suspended filtering uses
-    ``trading_status`` only when rows exist for *trade_date*; dates before
-    :func:`trading_status_coverage_start` are not ST-filtered.
+    ``trading_status`` only when rows exist for *trade_date*; strict historical
+    research additionally requires a complete ST evidence receipt.
     """
     if universe not in SUPPORTED_UNIVERSES:
         raise ValueError(
@@ -306,8 +307,8 @@ def apply_universe_filter(
     """Filter bar-like frames to tradable universe rows per *date_col*.
 
     ``instruments`` list/delist rules always apply. ST/suspended removal via
-    ``trading_status`` only affects dates with status rows; earlier history
-    passes through unchanged (see :func:`trading_status_coverage_start`).
+    ``trading_status`` only affects dates with status rows; strict historical
+    reads also require a complete ST evidence receipt.
     """
     if universe not in SUPPORTED_UNIVERSES:
         raise ValueError(

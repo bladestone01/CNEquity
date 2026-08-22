@@ -7,11 +7,14 @@ import pytest
 from cnequity.config import Config
 from cnequity.quality.audit import run_audit
 from cnequity.quality.st_coverage import (
+    _canonical_hash,
+    _valid_receipt_scope,
     build_st_scope,
     compose_st_coverage_receipt,
     current_st_universe,
     publish_st_coverage_receipt,
     st_evidence_coverage_report,
+    symbol_scope_hash,
     write_st_checkpoint,
 )
 from cnequity.query.universe import (
@@ -245,7 +248,7 @@ def test_tushare_receipt_can_cover_post_2017_bj_scope(tmp_path):
     assert set(report["source_coverage"]) == {"baostock", "tushare"}
 
 
-def test_tushare_floor_keeps_pre_2017_bj_symbol_blocked(tmp_path):
+def test_tushare_without_receipt_keeps_bj_symbol_unverified(tmp_path):
     cfg = Config(
         data_root=tmp_path / "data",
         sources={"tushare": True},
@@ -263,8 +266,8 @@ def test_tushare_floor_keeps_pre_2017_bj_symbol_blocked(tmp_path):
     report = st_evidence_coverage_report(cfg, date(2016, 1, 1), date(2017, 1, 5))
 
     assert report["verified"] is False
-    assert report["unsupported_symbols"] == 1
-    assert report["reason"] == "unsupported_exchange_symbols"
+    assert report["unsupported_symbols"] == 0
+    assert report["reason"] == "no_matching_complete_receipt"
 
 
 def test_st_coverage_names_unsupported_bj_without_receipt(tmp_path):
@@ -387,6 +390,78 @@ def test_st_coverage_ignores_tampered_receipt(tmp_path):
     report = st_evidence_coverage_report(cfg, start, end)
     assert report["verified"] is False
     assert report["reason"] == "no_matching_complete_receipt"
+
+
+def test_st_coverage_rejects_duplicate_completed_symbols():
+    completed = ["600519.SH", "600519.SH"]
+    scope = build_st_scope(
+        ["600519.SH"], date(2024, 6, 27), date(2024, 6, 27), universe="all_a"
+    )
+    scope["expected_symbols_count"] = len(completed)
+    scope["symbols_sha256"] = symbol_scope_hash(completed)
+    identity = {
+        key: value
+        for key, value in scope.items()
+        if key not in {"scope_id", "expected_symbols_count"}
+    }
+    scope["scope_id"] = _canonical_hash(identity)
+    receipt = {
+        "schema_version": 1,
+        "claim": "historical_st_evidence",
+        "status": "complete",
+        "scope": {key: value for key, value in scope.items() if key != "expected_symbols"},
+        "completed_symbols": completed,
+        "completed_symbols_count": len(completed),
+        "completed_symbols_sha256": symbol_scope_hash(completed),
+        "evidence_rows": 0,
+    }
+
+    assert _valid_receipt_scope(receipt) is None
+
+
+def test_st_coverage_rejects_receipt_when_curated_rows_are_removed(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    day = date(2024, 6, 27)
+    _write_status_partition(cfg, day, source="baostock")
+    _write_st_receipt(cfg, day, day)
+
+    status_path = cfg.curated_root / "trading_status" / f"trade_date={day.isoformat()}" / "part-0.parquet"
+    status_path.unlink()
+
+    report = st_evidence_coverage_report(cfg, day, day)
+
+    assert report["verified"] is False
+    assert report["reason"] == "receipt_data_drift"
+    assert report["source_coverage"]["baostock"]["reason"] == "receipt_data_drift"
+
+
+def test_st_coverage_revalidation_cache_invalidates_on_file_change(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    day = date(2024, 6, 27)
+    _write_status_partition(cfg, day, source="baostock")
+    _write_st_receipt(cfg, day, day)
+
+    from cnequity.quality import st_coverage as coverage_module
+
+    calls = 0
+    original = coverage_module._st_row_counts
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(coverage_module, "_st_row_counts", counted)
+    assert st_evidence_coverage_report(cfg, day, day)["verified"] is True
+    assert st_evidence_coverage_report(cfg, day, day)["verified"] is True
+    assert calls == 1
+
+    status_path = cfg.curated_root / "trading_status" / f"trade_date={day.isoformat()}" / "part-0.parquet"
+    frame = pl.read_parquet(status_path).with_columns(pl.lit("changed").alias("marker"))
+    frame.write_parquet(status_path)
+
+    assert st_evidence_coverage_report(cfg, day, day)["verified"] is True
+    assert calls == 2
 
 
 def test_st_coverage_reports_matching_pending_checkpoint_progress(tmp_path):

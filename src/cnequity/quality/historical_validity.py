@@ -189,11 +189,23 @@ def historical_universe_validity(
                 f"{unsupported} {universe} symbol(s) belong to an exchange not served by "
                 "the configured historical source"
             )
-            remediation = (
-                "Configure an independent historical BJ ST source (for example a "
-                "licensed ST-history feed), or explicitly exclude BJ symbols from "
-                "the research universe; do not treat them as normal."
+            tushare_ready = bool(
+                config.sources.get("tushare", False) and config.tushare_token
             )
+            if tushare_ready:
+                remediation = (
+                    "Tushare is enabled and covers BJ from 2016; symbols with bars "
+                    "before 2016 still require a deeper historical ST source, or "
+                    "BJ must be excluded from the research universe. Do not treat "
+                    "unresolved symbols as normal."
+                )
+            else:
+                remediation = (
+                    "Enable [sources.tushare] and provide TUSHARE_TOKEN to cover BJ "
+                    "from 2016; symbols with bars before 2016 still require a deeper "
+                    "historical ST source. Alternatively exclude BJ from the research "
+                    "universe; do not treat unresolved symbols as normal."
+                )
         else:
             message = "historical ST evidence has no complete, current scope receipt " \
                 f"for the requested window ({st_evidence['reason']})"

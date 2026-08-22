@@ -633,7 +633,12 @@ def test_audit_full_research_window_is_a_strict_independent_gate(cfg_path, monke
             "historical_universe_validity": {
                 "window": {"start": "2020-01-01", "end": "2024-06-28"},
                 "universe_ready": False,
-                "blockers": [{"message": "delisted coverage is unverified"}],
+                "blockers": [
+                    {
+                        "message": "delisted coverage is unverified",
+                        "remediation": "run cne delisted coverage",
+                    }
+                ],
             },
             "healthy": True,
         },
@@ -647,6 +652,7 @@ def test_audit_full_research_window_is_a_strict_independent_gate(cfg_path, monke
     assert result.exit_code == 1
     assert "historical all-A" in result.output
     assert "BLOCKED" in result.output
+    assert "remediation: run cne delisted coverage" in result.output
     assert "HEALTHY (operational; research BLOCKED)" in result.output
 
 

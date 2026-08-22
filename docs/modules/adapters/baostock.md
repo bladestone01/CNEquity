@@ -33,8 +33,8 @@
 - 从 baostock 日 K 的 `isST` 字段推断历史 ST
 - 由 `reference` / trading_status 相关 step 在 backfill 模式调用
 
-BJ 历史 ST 不由 Baostock 提供；可选的 Tushare Pro `stock_st` 适配器位于
-`adapters/tushare/st_history.py`，其历史起点是 2017-01-01。两者都必须输出显式的
+BJ 历史 ST 不由 Baostock 提供；可选的 Tushare Pro `bak_basic`（2016）+ `stock_st`
+（2017-01-01 起）适配器位于 `adapters/tushare/st_history.py`。两者都必须输出显式的
 `normal` 负证据，空响应不能直接视作非 ST。
 - 补充 EastMoney 无法提供的历史 ST
 

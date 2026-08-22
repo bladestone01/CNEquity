@@ -1378,6 +1378,8 @@ def audit(
         )
         for blocker in validity["blockers"]:
             click.echo(f"  [research] {blocker['message']}")
+            if blocker.get("remediation"):
+                click.echo(f"              remediation: {blocker['remediation']}")
         if not health["healthy"]:
             click.echo("UNHEALTHY")
         elif research_start and not validity["universe_ready"]:

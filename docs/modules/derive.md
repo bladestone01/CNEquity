@@ -54,7 +54,7 @@
 - 按 `DATASETS["trading_status"].partition_for`（月分区 `trade_date=YYYY-MM`）合并写入 `trading_status`（`status="suspended"`）
 - `start` / `end` 限制日历窗口（按年分块重建，避免全历史 cross-join OOM）
 
-覆盖可与 `daily_bars` 同起点（约 2001）。与 Baostock ST 历史回填互补；显式配置 Tushare Pro `stock_st` 后，还可覆盖 2017-01-01 起的 BJ。实际 ST 证据起止范围以 `historical_st_evidence` 收据和 `cne audit --full` 为准，两者都不替代 EastMoney 当日 ST 列表。
+覆盖可与 `daily_bars` 同起点（约 2001）。与 Baostock ST 历史回填互补；显式配置 Tushare Pro 后，可用 `bak_basic` 覆盖 2016、`stock_st` 覆盖 2017-01-01 起的 BJ。实际 ST 证据起止范围以 `historical_st_evidence` 收据和 `cne audit --full` 为准，两者都不替代 EastMoney 当日 ST 列表。
 
 ---
 
