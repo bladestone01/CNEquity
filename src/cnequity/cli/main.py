@@ -764,6 +764,16 @@ def run_catchup(
     is_flag=True,
     help="For corporate_actions only: explicitly repair delisted SH/SZ symbols via Baostock.",
 )
+@click.option(
+    "--ths-repair",
+    is_flag=True,
+    help="For corporate_actions only: explicitly repair delisted BJ symbols via Tonghuashun.",
+)
+@click.option(
+    "--eastmoney-bj-repair",
+    is_flag=True,
+    help="For corporate_actions only: repair legacy BJ symbols through current 920xxx EastMoney codes.",
+)
 def backfill(
     dataset: str,
     config_path: str,
@@ -774,6 +784,8 @@ def backfill(
     symbols_str: str | None,
     workers: int,
     baostock_repair: bool,
+    ths_repair: bool,
+    eastmoney_bj_repair: bool,
 ):
     """Backfill a dataset."""
     _progress_logging()
@@ -786,8 +798,16 @@ def backfill(
     cfg = _cfg(config_path)
     if baostock_repair and dataset != "corporate_actions":
         raise click.ClickException("--baostock-repair only applies to corporate_actions")
+    if ths_repair and dataset != "corporate_actions":
+        raise click.ClickException("--ths-repair only applies to corporate_actions")
+    if eastmoney_bj_repair and dataset != "corporate_actions":
+        raise click.ClickException("--eastmoney-bj-repair only applies to corporate_actions")
     if baostock_repair:
         cfg._corporate_actions_baostock_repair = True
+    if ths_repair:
+        cfg._corporate_actions_ths_repair = True
+    if eastmoney_bj_repair:
+        cfg._corporate_actions_eastmoney_bj_repair = True
     if dataset == "sector_bars":
         if retry_failed and force:
             raise click.ClickException("Use either --retry-failed or --force, not both.")
@@ -1358,7 +1378,15 @@ def audit(
         )
         for blocker in validity["blockers"]:
             click.echo(f"  [research] {blocker['message']}")
-        click.echo("HEALTHY" if health["healthy"] else "UNHEALTHY")
+        if not health["healthy"]:
+            click.echo("UNHEALTHY")
+        elif research_start and not validity["universe_ready"]:
+            # Operational freshness and research readiness are separate
+            # contracts. Keep the former visible, but never let a green lake
+            # label hide the strict research gate printed immediately above.
+            click.echo("HEALTHY (operational; research BLOCKED)")
+        else:
+            click.echo("HEALTHY")
         if not health["healthy"] or (research_start and not validity["universe_ready"]):
             raise SystemExit(1)
         return

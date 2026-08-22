@@ -31,7 +31,7 @@ from cnequity.quality.st_coverage import (
     current_st_universe,
     load_st_checkpoint,
     reusable_st_checkpoint_symbols,
-    st_evidence_supported_symbols,
+    st_evidence_source_symbols,
     st_evidence_unsupported_symbols,
     write_st_checkpoint,
 )
@@ -310,9 +310,7 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
             )
 
         known = {
-            row["symbol"]: row
-            for row in cached_snapshot.iter_rows(named=True)
-            if row.get("symbol")
+            row["symbol"]: row for row in cached_snapshot.iter_rows(named=True) if row.get("symbol")
         }
         rows = []
         for symbol in symbols:
@@ -431,50 +429,40 @@ def _resolve_explicit_st_symbols(config: Config, raw: list[str]) -> list[str]:
     return sorted(set(resolved))
 
 
-def _backfill_trading_status_st(
+def _resolve_st_backfill_universe(config: Config, start: date, end: date) -> tuple[list[str], str]:
+    explicit = getattr(config, "_backfill_symbols", None)
+    if explicit is not None:
+        return _resolve_explicit_st_symbols(config, explicit), "explicit"
+    universe = current_st_universe(config, start=start, end=end)
+    if not universe:
+        universe = [symbol for symbol in load_symbols(config) if _is_all_a(symbol)]
+        bars = load_bar_universe(config)
+        if bars:
+            universe = [symbol for symbol in universe if symbol in bars]
+    return universe, "all_a"
+
+
+def _backfill_trading_status_st_source(
     config: Config,
     trade_date: date,
     run_id: str,
     *,
+    universe: list[str],
+    universe_name: str,
+    source: str,
     batch_id: str | None = None,
 ) -> dict:
-    """Persist complete historical ST/normal evidence from Baostock.
-
-    Completion is an exact versioned scope, not inferred from row presence. The
-    old sparse-ST checkpoint is deliberately ignored because it marked never-ST
-    names complete without storing their negative evidence.
-    """
-    from cnequity.adapters.baostock.st_history import fetch_st_history
+    """Backfill one source-owned slice of the historical ST evidence scope."""
+    if source == "baostock":
+        from cnequity.adapters.baostock.st_history import fetch_st_history
+    elif source == "tushare":
+        from cnequity.adapters.tushare.st_history import fetch_st_history
+    else:
+        raise ValueError(f"unknown historical ST source: {source}")
 
     start = getattr(config, "_backfill_start", None) or BACKFILL_START
     end = getattr(config, "_backfill_end", None) or trade_date
-    explicit = getattr(config, "_backfill_symbols", None)
-    if explicit is not None:
-        universe = _resolve_explicit_st_symbols(config, explicit)
-        universe_name = "explicit"
-    else:
-        universe = current_st_universe(config)
-        if not universe:
-            universe = [symbol for symbol in load_symbols(config) if _is_all_a(symbol)]
-            bars = load_bar_universe(config)
-            if bars:
-                universe = [symbol for symbol in universe if symbol in bars]
-        universe_name = "all_a"
-
-    # Baostock has no BJ historical ST series. Do not spend a full retry cycle
-    # on a known provider capability gap; the coverage report still keeps those
-    # valid all-A symbols visible as an explicit unsupported-exchange blocker.
-    unsupported_symbols = st_evidence_unsupported_symbols(universe)
-    if explicit is not None and unsupported_symbols:
-        preview = ", ".join(unsupported_symbols[:10])
-        suffix = "..." if len(unsupported_symbols) > 10 else ""
-        raise ValueError(
-            "trading_status ST backfill cannot query BJ symbols with Baostock: "
-            f"{preview}{suffix}"
-        )
-    universe = st_evidence_supported_symbols(universe)
-
-    scope = build_st_scope(universe, start, end, universe=universe_name)
+    scope = build_st_scope(universe, start, end, universe=universe_name, source=source)
     checkpoint = load_st_checkpoint(config, scope)
     completed = reusable_st_checkpoint_symbols(config, checkpoint, run_id)
     evidence_rows = {
@@ -489,18 +477,16 @@ def _backfill_trading_status_st(
         checkpoint["unresolved_symbols"] = []
         checkpoint["completion_run_id"] = run_id
         write_st_checkpoint(config, checkpoint)
-        result = {
+        return {
             "rows_read": 0,
             "rows_written": 0,
             "scope_id": scope["scope_id"],
             "evidence_version": ST_EVIDENCE_VERSION,
             "coverage_pending_compact": True,
+            "completed_symbols": len(completed),
+            "expected_symbols": len(universe),
             "note": "all symbols already have ST evidence for this exact scope",
         }
-        if unsupported_symbols:
-            result["unsupported_symbols"] = len(unsupported_symbols)
-            result["unsupported_exchanges"] = ["BJ"]
-        return result
 
     rows_read = 0
     rows_written = 0
@@ -509,25 +495,19 @@ def _backfill_trading_status_st(
         batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
         is_last_batch = offset + len(batch) >= len(todo)
         if manifest is not None:
-            # This step can run for hours under the provider's cooldown. Keep
-            # the manifest alive before each provider batch so recovery does
-            # not mistake an active sweep for an orphaned run.
             manifest.touch_batch_heartbeat(run_id, batch_id)
-        df, failed = fetch_st_history(
-            batch,
-            start,
-            end,
-            config=config,
-            rest_after_batch=not is_last_batch,
-        )
+        kwargs = {"config": config, "rest_after_batch": not is_last_batch}
+        if source == "tushare":
+            kwargs.pop("rest_after_batch")
+        df, failed = fetch_st_history(batch, start, end, **kwargs)
         if not df.is_empty():
             chunk = write_fetched(
                 config,
                 run_id,
                 "trading_status",
                 df,
-                source="baostock",
-                batch_id=f"batch-{offset:05d}",
+                source=source,
+                batch_id=f"{source}-batch-{offset:05d}",
             )
             rows_read += int(chunk.get("rows_read", 0))
             rows_written += int(chunk.get("rows_written", 0))
@@ -573,10 +553,8 @@ def _backfill_trading_status_st(
         "checkpoint": str(checkpoint_path),
         "completed_symbols": len(completed),
         "expected_symbols": len(universe),
+        "source": source,
     }
-    if unsupported_symbols:
-        result["unsupported_symbols"] = len(unsupported_symbols)
-        result["unsupported_exchanges"] = ["BJ"]
     if complete:
         result["coverage_pending_compact"] = True
     else:
@@ -585,11 +563,87 @@ def _backfill_trading_status_st(
         finding = {
             "dataset": "trading_status",
             "severity": "warning",
-            "code": "baostock_st_backfill_incomplete",
+            "code": f"{source}_st_backfill_incomplete",
             "message": (
                 f"{len(unresolved)}/{len(universe)} symbols remain unresolved in "
-                "Baostock ST evidence; re-run the same scoped backfill to resume."
+                f"{source} ST evidence; re-run the same scoped backfill to resume."
             ),
         }
         result.setdefault("context_updates", {})["audit_findings"] = [finding]
+    return result
+
+
+def _backfill_trading_status_st(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    *,
+    batch_id: str | None = None,
+) -> dict:
+    start = getattr(config, "_backfill_start", None) or BACKFILL_START
+    end = getattr(config, "_backfill_end", None) or trade_date
+    explicit = getattr(config, "_backfill_symbols", None)
+    universe, universe_name = _resolve_st_backfill_universe(config, start, end)
+
+    # Baostock has no BJ historical ST series. Do not spend a full retry cycle
+    # on a known provider capability gap; the coverage report still keeps those
+    # valid all-A symbols visible as an explicit unsupported-exchange blocker.
+    unsupported_symbols = st_evidence_unsupported_symbols(
+        universe,
+        config=config,
+        start=start,
+        end=end,
+    )
+    if explicit is not None and unsupported_symbols:
+        preview = ", ".join(unsupported_symbols[:10])
+        suffix = "..." if len(unsupported_symbols) > 10 else ""
+        raise ValueError(
+            f"trading_status ST backfill cannot query BJ symbols with Baostock: {preview}{suffix}"
+        )
+    results: list[dict] = []
+    for source in ("baostock", "tushare"):
+        source_symbols = st_evidence_source_symbols(
+            universe,
+            source,
+            config=config,
+            start=start,
+            end=end,
+        )
+        if not source_symbols:
+            continue
+        results.append(
+            _backfill_trading_status_st_source(
+                config,
+                trade_date,
+                run_id,
+                universe=source_symbols,
+                universe_name=universe_name,
+                source=source,
+                batch_id=batch_id,
+            )
+        )
+    if not results:
+        raise RuntimeError("trading_status ST backfill has no configured historical source")
+    result: dict = {
+        "rows_read": sum(int(item.get("rows_read", 0)) for item in results),
+        "rows_written": sum(int(item.get("rows_written", 0)) for item in results),
+        "completed_symbols": sum(int(item.get("completed_symbols", 0)) for item in results),
+        "expected_symbols": sum(int(item.get("expected_symbols", 0)) for item in results),
+        "source_results": results,
+    }
+    if unsupported_symbols:
+        result["unsupported_symbols"] = len(unsupported_symbols)
+        result["unsupported_exchanges"] = ["BJ"]
+    if any(item.get("status") == "warning" for item in results):
+        result["status"] = "warning"
+        result["failed_symbols"] = sum(int(item.get("failed_symbols", 0)) for item in results)
+        result["context_updates"] = {
+            "audit_findings": [
+                finding
+                for item in results
+                for finding in item.get("context_updates", {}).get("audit_findings", [])
+            ]
+        }
+    else:
+        result["coverage_pending_compact"] = True
     return result

@@ -647,7 +647,7 @@ def test_audit_full_research_window_is_a_strict_independent_gate(cfg_path, monke
     assert result.exit_code == 1
     assert "historical all-A" in result.output
     assert "BLOCKED" in result.output
-    assert "HEALTHY" in result.output
+    assert "HEALTHY (operational; research BLOCKED)" in result.output
 
 
 def test_audit_full_can_select_scoped_research_universe(cfg_path, monkeypatch):

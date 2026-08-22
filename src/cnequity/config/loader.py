@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -68,6 +69,11 @@ class Config:
     # baostock free-API pacing (full-market history sweeps).
     baostock_batch_size: int = 20
     baostock_batch_rest_seconds: float = 120.0
+    # Optional Tushare Pro token for historical BJ ST evidence.  The token is
+    # read from [sources.tushare].token or TUSHARE_TOKEN and is never written
+    # to manifests, checkpoints, or provenance.
+    tushare_token: str | None = field(default=None, repr=False)
+    tushare_timeout_sec: float = 30.0
     universe_default: str = "all_a"
     daily_waves: list[WaveConfig] = field(default_factory=list)
     schedule_groups: dict[str, ScheduleGroup] = field(default_factory=dict)
@@ -121,6 +127,8 @@ class Config:
     _backfill: bool = False
     _backfill_symbols: list[str] | None = None
     _corporate_actions_baostock_repair: bool = False
+    _corporate_actions_ths_repair: bool = False
+    _corporate_actions_eastmoney_bj_repair: bool = False
     _sector_bars_force: bool = False
     _rate_limiters: object | None = field(default=None, repr=False)
 
@@ -202,6 +210,8 @@ def load_config(path: str | Path) -> Config:
     eastmoney_timeout_sec = 15.0
     baostock_batch_size = 20
     baostock_batch_rest_seconds = 120.0
+    tushare_token: str | None = os.environ.get("TUSHARE_TOKEN") or None
+    tushare_timeout_sec = 30.0
     for name, val in sources_raw.items():
         if isinstance(val, dict):
             sources[name] = bool(val.get("enabled", True))
@@ -220,6 +230,11 @@ def load_config(path: str | Path) -> Config:
                     baostock_batch_size = int(val["batch_size"])
                 if val.get("batch_rest_seconds") is not None:
                     baostock_batch_rest_seconds = float(val["batch_rest_seconds"])
+            if name == "tushare":
+                if val.get("token"):
+                    tushare_token = str(val["token"]).strip() or None
+                if val.get("timeout_sec") is not None:
+                    tushare_timeout_sec = float(val["timeout_sec"])
         else:
             sources[name] = bool(val)
 
@@ -291,6 +306,8 @@ def load_config(path: str | Path) -> Config:
         eastmoney_timeout_sec=eastmoney_timeout_sec,
         baostock_batch_size=baostock_batch_size,
         baostock_batch_rest_seconds=baostock_batch_rest_seconds,
+        tushare_token=tushare_token,
+        tushare_timeout_sec=tushare_timeout_sec,
         universe_default=str(raw.get("universe", {}).get("default", "all_a")),
         daily_waves=daily_waves,
         schedule_groups=schedule_groups,
@@ -354,8 +371,7 @@ def validate_config(cfg: Config) -> list[str]:
     for spec in cfg.failover_datasets:
         if spec.snapshot_cadence not in {"on_demand", "daily"}:
             errors.append(
-                f"failover dataset {spec.name!r}: snapshot_cadence must be "
-                "'on_demand' or 'daily'"
+                f"failover dataset {spec.name!r}: snapshot_cadence must be 'on_demand' or 'daily'"
             )
 
     # Each frequency must have a dataset to land in, or its rows would have

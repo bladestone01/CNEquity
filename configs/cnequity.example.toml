@@ -96,6 +96,11 @@ min_interval_seconds = 1.0
 enabled = true
 min_interval_seconds = 3.0
 
+[sources.ths_bonus]
+# 同花顺个股历史分红页（显式 BJ corporate_actions repair）。与目录页分开限速。
+enabled = true
+min_interval_seconds = 3.0
+
 [sources.cninfo]
 enabled = true
 min_interval_seconds = 1.0
@@ -131,6 +136,15 @@ enabled = true
 min_interval_seconds = 1.0
 batch_size = 20
 batch_rest_seconds = 120
+
+# Optional Tushare Pro — historical BJ ST evidence (stock_st).
+# The endpoint starts at 2017-01-01 and requires a token; the backfill keeps
+# older BJ bars unresolved instead of certifying them as normal. Prefer the
+# environment variable TUSHARE_TOKEN so the credential never enters config.
+[sources.tushare]
+enabled = false
+min_interval_seconds = 1.0
+# token = "..."
 
 [adj_factors]
 source = "sina"

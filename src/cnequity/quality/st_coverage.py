@@ -118,9 +118,7 @@ def current_st_universe(
         resolved_symbols = [symbol for symbol in resolved_symbols if symbol in requested_symbols]
     if universe in {"all_a_sh_sz", "all_a_sz"}:
         resolved_symbols = [
-            symbol
-            for symbol in resolved_symbols
-            if parse_symbol(symbol).exchange in {"SH", "SZ"}
+            symbol for symbol in resolved_symbols if parse_symbol(symbol).exchange in {"SH", "SZ"}
         ]
 
     bars_root = config.curated_root / "daily_bars"
@@ -151,28 +149,103 @@ def current_st_universe(
     return sorted(set(resolved_symbols))
 
 
-def st_evidence_unsupported_symbols(symbols: list[str]) -> list[str]:
+def _tushare_st_enabled(config: Config | None) -> bool:
+    return bool(
+        config is not None and config.sources.get("tushare", False) and config.tushare_token
+    )
+
+
+def _tushare_floor_symbols(
+    config: Config | None,
+    symbols: list[str],
+    start: date | None,
+    end: date | None,
+) -> set[str]:
+    if not _tushare_st_enabled(config) or start is None or end is None:
+        return set()
+    from cnequity.adapters.tushare.st_history import TUSHARE_ST_HISTORY_FLOOR
+
+    if start >= TUSHARE_ST_HISTORY_FLOOR:
+        return set()
+    first_dates = _first_traded_dates(config, set(symbols), start, end)
+    return {
+        symbol
+        for symbol, first_date in first_dates.items()
+        if first_date < TUSHARE_ST_HISTORY_FLOOR
+    }
+
+
+def st_evidence_unsupported_symbols(
+    symbols: list[str],
+    *,
+    config: Config | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
     """Symbols the configured historical ST source cannot query.
 
     This is intentionally source-specific.  The symbols remain valid all-A
     securities and must not be deleted from instruments or daily bars; they
     are reported as an explicit research limitation until an independent BJ
-    historical ST source is configured.
+    historical ST source is configured.  Tushare, when explicitly enabled with
+    a token, covers BJ from its documented 2017-01-01 floor; older persisted BJ
+    bars remain unsupported instead of being silently certified.
     """
     unsupported: list[str] = []
+    tushare_enabled = _tushare_st_enabled(config)
+    floor_symbols = _tushare_floor_symbols(config, symbols, start, end)
     for symbol in symbols:
         try:
-            if parse_symbol(symbol).exchange in ST_EVIDENCE_UNSUPPORTED_EXCHANGES:
+            parsed = parse_symbol(symbol)
+            if parsed.exchange in ST_EVIDENCE_UNSUPPORTED_EXCHANGES and (
+                not tushare_enabled or symbol in floor_symbols
+            ):
                 unsupported.append(symbol)
         except ValueError:
             continue
     return sorted(set(unsupported))
 
 
-def st_evidence_supported_symbols(symbols: list[str]) -> list[str]:
+def st_evidence_supported_symbols(
+    symbols: list[str],
+    *,
+    config: Config | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
     """Symbols that Baostock can serve for the historical ST sweep."""
-    unsupported = set(st_evidence_unsupported_symbols(symbols))
+    unsupported = set(st_evidence_unsupported_symbols(symbols, config=config, start=start, end=end))
     return sorted(set(symbols) - unsupported)
+
+
+def st_evidence_source_symbols(
+    symbols: list[str],
+    source: str,
+    *,
+    config: Config | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
+    """Return the portion of a scope owned by one historical ST source."""
+    if source == "baostock":
+        return sorted(
+            symbol
+            for symbol in symbols
+            if parse_symbol(symbol).exchange not in ST_EVIDENCE_UNSUPPORTED_EXCHANGES
+        )
+    if source == "tushare":
+        if not _tushare_st_enabled(config):
+            return []
+        unsupported = set(
+            st_evidence_unsupported_symbols(symbols, config=config, start=start, end=end)
+        )
+        return sorted(
+            symbol
+            for symbol in symbols
+            if parse_symbol(symbol).exchange in ST_EVIDENCE_UNSUPPORTED_EXCHANGES
+            and symbol not in unsupported
+        )
+    raise ValueError(f"unknown historical ST evidence source: {source}")
 
 
 def build_st_scope(
@@ -181,13 +254,14 @@ def build_st_scope(
     end: date,
     *,
     universe: str,
+    source: str = "baostock",
 ) -> dict[str, Any]:
     if start > end:
         raise ValueError(f"ST evidence window is inverted: {start} > {end}")
     resolved = sorted(set(symbols))
     identity = {
         "evidence_version": ST_EVIDENCE_VERSION,
-        "source": "baostock",
+        "source": source,
         "universe": universe,
         "start": start.isoformat(),
         "end": end.isoformat(),
@@ -323,10 +397,11 @@ def _st_row_counts(
         ),
     )
     if "source" in schema:
-        frame = frame.filter(pl.col("source") == "baostock")
-    # Count only distinct Baostock facts. Filter the evidence owner first: a
-    # same-PK EastMoney snapshot must not erase the Baostock row from this
-    # source-specific coverage claim before canonicalization.
+        source = str(scope.get("source") or "baostock")
+        frame = frame.filter(pl.col("source") == source)
+    # Count only distinct facts from the evidence owner. Filter the source
+    # first: a same-PK daily snapshot must not erase the historical source row
+    # before canonicalization.
     frame = dedupe_lazy_by_primary_key(frame, "trading_status")
     counts = frame.group_by("symbol").len().collect(engine="streaming")
     return {row["symbol"]: int(row["len"]) for row in counts.iter_rows(named=True)}
@@ -542,7 +617,9 @@ def _valid_receipt_scope(receipt: dict[str, Any]) -> tuple[dict[str, Any], date,
     return scope, scope_start, scope_end
 
 
-def _first_traded_dates(config: Config, symbols: set[str], start: date, end: date) -> dict[str, date]:
+def _first_traded_dates(
+    config: Config, symbols: set[str], start: date, end: date
+) -> dict[str, date]:
     """Return first persisted traded bar for each symbol in a set."""
     if not symbols:
         return {}
@@ -590,7 +667,8 @@ def compose_st_coverage_receipt(
     if parsed_extension is None:
         return None
     extension_scope, extension_start, extension_end = parsed_extension
-    if extension_scope.get("source") != "baostock":
+    extension_source = extension_scope.get("source")
+    if extension_source not in {"baostock", "tushare"}:
         return None
     extension_symbols = set(extension_receipt["completed_symbols"])
 
@@ -602,7 +680,7 @@ def compose_st_coverage_receipt(
         base_scope, base_start, base_end = parsed_base
         if base_scope.get("scope_id") == extension_scope.get("scope_id"):
             continue
-        if base_scope.get("source") != "baostock":
+        if base_scope.get("source") != extension_source:
             continue
         base_symbols = set(candidate["completed_symbols"])
         if not base_symbols <= extension_symbols:
@@ -615,7 +693,9 @@ def compose_st_coverage_receipt(
     if not candidates:
         return None
 
-    _, _, base_receipt, base_scope = min(candidates, key=lambda item: (item[0], -item[1].toordinal()))
+    _, _, base_receipt, base_scope = min(
+        candidates, key=lambda item: (item[0], -item[1].toordinal())
+    )
     base_symbols = set(base_receipt["completed_symbols"])
 
     # The old receipt schema predates per-symbol counts. Its aggregate count
@@ -628,8 +708,7 @@ def compose_st_coverage_receipt(
     )
     if sum(base_counts.values()) != int(base_receipt.get("evidence_rows", -1)):
         logger.warning(
-            "ST coverage: refusing receipt composition; base row total changed "
-            "(%d != %s)",
+            "ST coverage: refusing receipt composition; base row total changed (%d != %s)",
             sum(base_counts.values()),
             base_receipt.get("evidence_rows"),
         )
@@ -657,6 +736,7 @@ def compose_st_coverage_receipt(
         base_start,
         extension_end,
         universe=str(extension_scope.get("universe", "all_a")),
+        source=str(extension_source),
     )
     merged_counts = _st_row_counts(config, merged_scope, extension_symbols)
     receipt = {
@@ -702,39 +782,64 @@ def st_evidence_coverage_report(
         symbols=symbols,
         universe=universe,
     )
-    unsupported_symbols = st_evidence_unsupported_symbols(symbols)
-    supported_symbols = st_evidence_supported_symbols(symbols)
-    candidates: list[dict[str, Any]] = []
-    for receipt in _receipts(config):
-        parsed = _valid_receipt_scope(receipt)
-        if parsed is None:
-            continue
-        scope, scope_start, scope_end = parsed
-        if scope.get("evidence_version") != ST_EVIDENCE_VERSION:
-            continue
-        if (
-            scope.get("source") != "baostock"
-            or scope.get("universe") not in ST_EVIDENCE_COMPATIBLE_UNIVERSES
-        ):
-            continue
-        covered_symbols = set(receipt.get("completed_symbols", []))
-        if not supported_symbols or not set(supported_symbols) <= covered_symbols:
-            continue
-        if start is not None and scope_start > start:
-            continue
-        if end is not None and scope_end < end:
-            continue
-        candidates.append(receipt)
-
-    best = min(
-        candidates,
-        key=lambda item: (
-            date.fromisoformat(item["scope"]["start"]),
-            -date.fromisoformat(item["scope"]["end"]).toordinal(),
-        ),
-        default=None,
+    unsupported_symbols = st_evidence_unsupported_symbols(
+        symbols,
+        config=config,
+        start=start,
+        end=end,
     )
-    if best is None:
+    supported_symbols = sorted(set(symbols) - set(unsupported_symbols))
+    source_groups = {
+        source: st_evidence_source_symbols(
+            symbols,
+            source,
+            config=config,
+            start=start,
+            end=end,
+        )
+        for source in ("baostock", "tushare")
+    }
+
+    best_by_source: dict[str, dict[str, Any]] = {}
+    for source, source_symbols in source_groups.items():
+        if not source_symbols:
+            continue
+        candidates: list[dict[str, Any]] = []
+        for receipt in _receipts(config):
+            parsed = _valid_receipt_scope(receipt)
+            if parsed is None:
+                continue
+            scope, scope_start, scope_end = parsed
+            if scope.get("evidence_version") != ST_EVIDENCE_VERSION:
+                continue
+            if (
+                scope.get("source") != source
+                or scope.get("universe") not in ST_EVIDENCE_COMPATIBLE_UNIVERSES
+            ):
+                continue
+            covered_symbols = set(receipt.get("completed_symbols", []))
+            if not set(source_symbols) <= covered_symbols:
+                continue
+            if start is not None and scope_start > start:
+                continue
+            if end is not None and scope_end < end:
+                continue
+            candidates.append(receipt)
+        best = min(
+            candidates,
+            key=lambda item: (
+                date.fromisoformat(item["scope"]["start"]),
+                -date.fromisoformat(item["scope"]["end"]).toordinal(),
+            ),
+            default=None,
+        )
+        if best is not None:
+            best_by_source[source] = best
+
+    required_sources = {source for source, group in source_groups.items() if group}
+    missing_sources = required_sources - set(best_by_source)
+    receipts_complete = not missing_sources and bool(required_sources)
+    if not receipts_complete:
         report = {
             "verified": False,
             "claim": ST_COVERAGE_CLAIM,
@@ -747,9 +852,7 @@ def st_evidence_coverage_report(
             "unsupported_symbols": len(unsupported_symbols),
             "unsupported_exchange_counts": {
                 exchange: sum(
-                    1
-                    for symbol in unsupported_symbols
-                    if parse_symbol(symbol).exchange == exchange
+                    1 for symbol in unsupported_symbols if parse_symbol(symbol).exchange == exchange
                 )
                 for exchange in sorted(ST_EVIDENCE_UNSUPPORTED_EXCHANGES)
                 if any(parse_symbol(symbol).exchange == exchange for symbol in unsupported_symbols)
@@ -763,35 +866,61 @@ def st_evidence_coverage_report(
                 if unsupported_symbols
                 else ("no_current_universe" if not symbols else "no_matching_complete_receipt")
             ),
+            "source_coverage": {
+                source: {
+                    "required_symbols": len(source_groups[source]),
+                    "verified": source in best_by_source,
+                    "scope_id": (
+                        best_by_source[source].get("scope", {}).get("scope_id")
+                        if source in best_by_source
+                        else None
+                    ),
+                }
+                for source in source_groups
+                if source_groups[source]
+            },
         }
-        report.update(_pending_checkpoint_progress(config, start, end, supported_symbols))
+        report.update(_pending_checkpoint_progress(config, start, end, source_groups["baostock"]))
         return report
-    scope = best["scope"]
     unsupported = bool(unsupported_symbols)
+    scopes = {source: receipt["scope"] for source, receipt in best_by_source.items()}
+    coverage_start = min(scope["start"] for scope in scopes.values())
+    coverage_end = max(scope["end"] for scope in scopes.values())
+    scope_id = (
+        next(iter(scopes.values()))["scope_id"]
+        if len(scopes) == 1
+        else _canonical_hash({source: scope["scope_id"] for source, scope in scopes.items()})
+    )
     return {
-        # A partial source receipt is useful evidence, but it cannot certify
-        # the full all-A research universe while unsupported exchanges remain.
-        "verified": not unsupported,
+        "verified": not unsupported and receipts_complete,
         "claim": ST_COVERAGE_CLAIM,
         "evidence_version": ST_EVIDENCE_VERSION,
         "requested_start": start.isoformat() if start else None,
         "requested_end": end.isoformat() if end else None,
         "requested_universe": universe,
-        "coverage_start": scope["start"],
-        "coverage_end": scope["end"],
+        "coverage_start": coverage_start,
+        "coverage_end": coverage_end,
         "current_symbols": len(symbols),
         "supported_symbols": len(supported_symbols),
         "unsupported_symbols": len(unsupported_symbols),
         "unsupported_exchange_counts": {
             exchange: sum(
-                1
-                for symbol in unsupported_symbols
-                if parse_symbol(symbol).exchange == exchange
+                1 for symbol in unsupported_symbols if parse_symbol(symbol).exchange == exchange
             )
             for exchange in sorted(ST_EVIDENCE_UNSUPPORTED_EXCHANGES)
             if any(parse_symbol(symbol).exchange == exchange for symbol in unsupported_symbols)
         },
-        "supported_coverage_verified": True,
+        "supported_coverage_verified": receipts_complete,
         "reason": "unsupported_exchange_symbols" if unsupported else None,
-        "scope_id": scope["scope_id"],
+        "scope_id": scope_id,
+        "source_coverage": {
+            source: {
+                "required_symbols": len(source_groups[source]),
+                "verified": True,
+                "scope_id": receipt["scope"]["scope_id"],
+                "coverage_start": receipt["scope"]["start"],
+                "coverage_end": receipt["scope"]["end"],
+            }
+            for source, receipt in best_by_source.items()
+        },
     }

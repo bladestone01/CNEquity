@@ -201,6 +201,72 @@ def test_st_coverage_reports_unsupported_bj_separately(tmp_path):
     assert scoped["unsupported_symbols"] == 0
 
 
+def test_tushare_receipt_can_cover_post_2017_bj_scope(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"tushare": True},
+        tushare_token="secret",
+    )
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH", "920001.BJ"]}).write_parquet(
+        instruments / "part-merged.parquet"
+    )
+    bars = cfg.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "920001.BJ"],
+            "trade_date": [date(2024, 6, 27)] * 2,
+            "volume": [100, 100],
+        }
+    ).write_parquet(bars / "part-0.parquet")
+
+    for source, symbol in (("baostock", "600519.SH"), ("tushare", "920001.BJ")):
+        scope = build_st_scope(
+            [symbol], date(2024, 6, 27), date(2024, 6, 27), universe="all_a", source=source
+        )
+        checkpoint = {
+            "schema_version": 1,
+            "claim": "historical_st_evidence",
+            "scope": scope,
+            "status": "complete",
+            "completed_symbols": [symbol],
+            "evidence_rows_by_symbol": {symbol: 0},
+            "unresolved_symbols": [],
+        }
+        write_st_checkpoint(cfg, checkpoint)
+        publish_st_coverage_receipt(cfg, checkpoint)
+
+    report = st_evidence_coverage_report(cfg, date(2024, 6, 27), date(2024, 6, 27))
+
+    assert report["verified"] is True
+    assert report["unsupported_symbols"] == 0
+    assert set(report["source_coverage"]) == {"baostock", "tushare"}
+
+
+def test_tushare_floor_keeps_pre_2017_bj_symbol_blocked(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"tushare": True},
+        tushare_token="secret",
+    )
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["920001.BJ"]}).write_parquet(instruments / "part-merged.parquet")
+    bars = cfg.curated_root / "daily_bars" / "trade_date=2016-12-30"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["920001.BJ"], "trade_date": [date(2016, 12, 30)], "volume": [100]}
+    ).write_parquet(bars / "part-0.parquet")
+
+    report = st_evidence_coverage_report(cfg, date(2016, 1, 1), date(2017, 1, 5))
+
+    assert report["verified"] is False
+    assert report["unsupported_symbols"] == 1
+    assert report["reason"] == "unsupported_exchange_symbols"
+
+
 def test_st_coverage_names_unsupported_bj_without_receipt(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     instruments = cfg.curated_root / "instruments"
@@ -236,9 +302,7 @@ def test_current_st_universe_can_prune_bars_to_requested_window(tmp_path):
         }
     ).write_parquet(bars / "part-0.parquet")
 
-    assert current_st_universe(cfg, start=date(2024, 6, 27), end=date(2024, 6, 27)) == [
-        "600519.SH"
-    ]
+    assert current_st_universe(cfg, start=date(2024, 6, 27), end=date(2024, 6, 27)) == ["600519.SH"]
 
 
 def test_current_st_universe_ignores_zero_volume_placeholders(tmp_path):

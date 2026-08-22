@@ -42,6 +42,7 @@
 | 备源 | eastmoney |
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
+| 历史 ST 回补 | Baostock 覆盖 SH/SZ；可选 Tushare Pro `stock_st` 覆盖 BJ（2017-01-01 起，需 token）；缺少源端覆盖时审计保持 warning |
 
 #### daily_bars
 
@@ -107,11 +108,11 @@
 |------|-------|
 | 波次 | `corporate_actions`（Wave 1，先于 daily_bars） |
 | 主源 | eastmoney datacenter（日更） |
-| 备源 / 回填 | tdx_protocol 除权（按标的历史回补） |
+| 备源 / 回填 | tdx_protocol 除权（按标的历史回补）；显式 repair：同花顺历史分红页（BJ）；旧码迁移补抓：EastMoney 920xxx 定向报告 |
 | 频率 | 每日 |
 | 主键 | (symbol, ex_date, action_type) |
 | 输出 | manifest 元数据 `symbols_to_rebackfill` |
-| **已知缺口** | 已退市标的的历史除权除息仍可能缺失。缺口数量随湖中退市标的、复权因子和审计窗口变化，**以最新 `meta/quality/health-latest.json` 的 `missing_corporate_action_delisted` finding 为准，不在文档固化样本数量**。**两个默认源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对已退市标的仍可能返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里同样可能没有记录。两源都不会对已从其在线标的列表里消失的证券稳定提供完整历史。现在可用显式 `cne backfill corporate_actions --baostock-repair` 对已退市 SH/SZ 标的补抓 Baostock 的分红、送股、转股事件；该源按 symbol/year 请求，默认不参与日更或普通回填，且直接拒绝北交所代码（`股票代码未标识sh或sz`），所以 BJ 仍是源限制。不是限流导致的默认缺口，而是各源的历史保留范围不同。`cne audit` 将未修复批次单独归为 `missing_corporate_action_delisted`（info 级），不与仍在交易标的的 `missing_corporate_action`（warning 级）混在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
+| **已知缺口** | 已退市标的的历史除权除息仍可能缺失。缺口数量随湖中退市标的、复权因子和审计窗口变化，**以最新 `meta/quality/health-latest.json` 的 `missing_corporate_action_delisted` finding 为准，不在文档固化样本数量**。**两个默认源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对已退市标的仍可能返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里同样可能没有记录。两源都不会对已从其在线标的列表里消失的证券稳定提供完整历史。现在可用显式 `cne backfill corporate_actions --baostock-repair` 对已退市 SH/SZ 标的补抓 Baostock 的分红、送股、转股事件，并用 `--ths-repair` 对已退市 BJ 标的补抓同花顺历史分红页；对同花顺旧码页没有历史记录的迁移标的，再用 `--eastmoney-bj-repair` 按随代码库保存的北交所旧码→920xxx 映射定向查询 EastMoney。三者默认都不参与日更或普通回填，所有修复行保留独立 `source` provenance。不是限流导致的默认缺口，而是各源的历史保留范围不同。`cne audit` 将未修复批次单独归为 `missing_corporate_action_delisted`（info 级），不与仍在交易标的的 `missing_corporate_action`（warning 级）混在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
 
 #### adj_factors（derived）
 

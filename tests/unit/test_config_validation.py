@@ -88,6 +88,7 @@ def test_example_config_validates(monkeypatch):
     assert cfg.source_intervals["baostock"] == 1.0
     assert cfg.baostock_batch_size == 20
     assert cfg.baostock_batch_rest_seconds == 120.0
+    assert cfg.source_intervals["tushare"] == 1.0
     assert cfg.failover_backfill_snapshots is False
     # EastMoney pacing is a floor, not a fixed value. The example targets a
     # mainland route, where 0.5s sweeps ~991 sector boards in ~10min; overseas

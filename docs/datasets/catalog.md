@@ -57,7 +57,7 @@ cnequity 交付 **42 个注册数据集**（39 curated + 3 derived：`adj_factor
 | `snapshot_with_backfill` | 日更是快照，但有专用历史源 | `valuation_metrics`→baostock；`index_constituents`→cni；`industry_members`→sw；`sector_bars`→ths |
 | `snapshot_only` | **永远没有诚实历史序列**（只有 tip） | `analyst_consensus`、`fund_flow`、`sector_members`、`hot_rank`、`sector_fund_flow`、`news_headlines`、`flash_news_wire`、`economic_calendar` |
 
-`trading_status` 的停牌覆盖可从 `daily_bars` 起点派生；ST 覆盖必须以完整的 `historical_st_evidence` 收据为准。没有覆盖请求窗口的收据时，**不要**假定 2001 起 `universe="all_a"` 已剔除历史 ST；北交所还需要独立的历史 ST 数据源。
+`trading_status` 的停牌覆盖可从 `daily_bars` 起点派生；ST 覆盖必须以完整的 `historical_st_evidence` 收据为准。没有覆盖请求窗口的收据时，**不要**假定 2001 起 `universe="all_a"` 已剔除历史 ST。BJ 可选用 Tushare Pro `stock_st` 补齐 2017-01-01 起的历史，但 2016 年及更早仍需独立的更深历史源。
 
 ### `trade_ticks` 是什么，不是什么
 
