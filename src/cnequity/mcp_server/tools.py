@@ -33,6 +33,7 @@ from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS, TIER_LABELS
 from cnequity.mcp_server import live
 from cnequity.query.reader import ReaderError, load
+from cnequity.query.universe import UniverseCoverageError
 
 # What a tool returns before the caller says otherwise. Low enough that a
 # careless call cannot blow the context window, and every truncated response
@@ -142,7 +143,7 @@ def _read(config: Config, dataset: str, **kwargs: Any) -> pl.DataFrame:
     # and answers confidently from it.
     try:
         return load(dataset, config=config, **kwargs)
-    except ReaderError as exc:
+    except (ReaderError, UniverseCoverageError) as exc:
         if "no parquet data" in str(exc):
             raise LakeEmpty(str(exc)) from exc
         raise ToolError(str(exc)) from exc
@@ -186,8 +187,9 @@ _CONTRACT = [
     "history_horizon_days, when set, is the vendor's retention, not this "
     "lake's backlog: an earlier window returns nothing and cannot be filled.",
     "universe='all_a' drops unlisted/delisted names per day and ST/suspended "
-    "ones where trading_status covers that day. Without it, a cross-sectional "
-    "screen includes names that were not tradable.",
+    "ones where trading_status covers that day. `all_a_sh_sz` is the explicit "
+    "SH/SZ-only subset for research that excludes BJ. Without a universe, a "
+    "cross-sectional screen includes names that were not tradable.",
     "coverage_start is where THIS lake's data begins, which is usually later "
     "than the source's history. An empty result inside coverage is a real gap; "
     "outside it just means nothing was backfilled that far.",
@@ -342,8 +344,10 @@ def query_bars(
         )
     if adjust not in (None, "qfq", "hfq"):
         raise ToolError(f"adjust must be 'qfq', 'hfq' or omitted, got {adjust!r}")
-    if universe not in (None, "all_a"):
-        raise ToolError(f"universe must be 'all_a' or omitted, got {universe!r}")
+    if universe not in (None, "all_a", "all_a_sh_sz"):
+        raise ToolError(
+            f"universe must be 'all_a', 'all_a_sh_sz' or omitted, got {universe!r}"
+        )
 
     origin = "lake"
     try:
@@ -355,6 +359,10 @@ def query_bars(
             symbols=_symbols(symbols),
             adjust=adjust,
             universe=universe,
+            # MCP is an agent-facing research surface: opting into all-A must
+            # fail closed when the lake cannot prove historical ST coverage.
+            # The Python API keeps its permissive default for exploratory use.
+            strict_universe=universe in {"all_a", "all_a_sh_sz"},
         )
     except LakeEmpty:
         if not live.enabled(config):
@@ -379,6 +387,7 @@ def query_bars(
     )
     payload["dataset"] = dataset
     payload["adjust"] = adjust
+    payload["universe"] = universe
     payload["origin"] = origin
     if origin == "live":
         payload["warning"] = live.LIVE_WARNING

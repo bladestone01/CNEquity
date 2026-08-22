@@ -74,6 +74,16 @@ bars = load("daily_bars", start="2024-01-01", adjust="hfq", strict_adj=True)
 bars = load("daily_bars", start="2024-01-01", universe="all_a")
 ```
 
+如果研究范围明确只包含沪深两市，可使用：
+
+```python
+bars = load("daily_bars", start="2024-01-01", universe="all_a_sh_sz")
+```
+
+`all_a_sh_sz` 是显式的 SH/SZ 子集，不是“暂时忽略北交所”；研究记录中必须保留
+这个 universe 名称。它适用于北交所历史 ST 数据源尚未配置的阶段，不能据此宣称结果
+覆盖沪深北全 A。
+
 `all_a` 规则（`query/universe.py`）：
 
 1. **instruments**：`list_date <= trade_date`，且未退市或 `delist_date > trade_date`
@@ -85,6 +95,12 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a")
 日更只抓当天 `trading_status`。停牌可由 `cne derive trading_status --start/--end` 按年重建，覆盖可与 `daily_bars` 同起点（约 2001）。**ST 标签**依赖 Baostock 的逐标的 `isST` 历史回补；只有生成了完整、版本化的 `historical_st_evidence` 收据，才能把对应窗口用于研究。部分回补（例如仅从 2016 年开始）不能证明 2001 年起的历史 ST 已剔除。
 
 收据可通过重叠的深历史范围与较新尾段范围合并，但新增标的必须有首个交易日证据；北交所（BJ）不在 Baostock 历史 ST 能力范围内，仍会作为历史研究阻塞项显式报告。审计项 `trading_status_coverage_start` 区分总覆盖与 `st_coverage_start`，历史研究应使用 `cne audit --full --research-start ...` 复核。
+
+需要让读取路径本身 fail-closed 时，加 `strict_universe=True`：除了逐日
+`trading_status` 覆盖，还会校验请求 symbol 范围的版本化 ST 证据收据；`all_a` 缺收据或
+包含无历史 ST 来源的 BJ 标的会抛出 `UniverseCoverageError`，而明确使用
+`all_a_sh_sz` 时只校验沪深子集。默认的
+`strict_universe=False` 仍适合探索性查询，但不应直接作为长历史回测输入。
 
 ### 交易所覆盖
 

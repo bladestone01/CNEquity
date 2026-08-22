@@ -31,7 +31,7 @@ from cnequity.query.universe import apply_universe_filter
 logger = logging.getLogger(__name__)
 
 AdjustType = Literal["qfq", "hfq"]
-UniverseType = Literal["all_a"]
+UniverseType = Literal["all_a", "all_a_sh_sz"]
 
 # All derived from the DatasetSpec registry (domain/datasets.py).
 CURATED_DATASETS = curated_dataset_names()
@@ -417,10 +417,14 @@ def load(
     universe:
         ``all_a`` — drop unlisted/delisted rows per day via ``instruments``, and
         drop ST/suspended rows when ``trading_status`` has data for that day.
+        ``all_a_sh_sz`` applies the same rules to the explicitly named
+        Shanghai/Shenzhen subset and excludes North Exchange symbols; use it
+        only when that scope is intentional and record the exclusion in the
+        research manifest.
         CDRs (SH 689xxx, e.g. 689009.SH) are excluded: they are depositary
         receipts with no adj-factor source coverage; query them via ``symbols=``
-        without a universe if needed. Only valid for ``daily_bars`` (not
-        ``index_bars``).
+        without a universe if needed. Only valid for ``daily_bars``; passing it
+        to any other dataset raises ``ReaderError``.
 
         **Limitation:** ``trading_status`` is daily-only (no historical ST
         backfill). Dates before the curated coverage start (see audit check
@@ -441,8 +445,10 @@ def load(
     symbols:
         Restrict to these symbols when the dataset has a ``symbol`` column.
     strict_universe:
-        If true, ``universe="all_a"`` raises when instruments or trading-status
-        coverage is missing for requested dates.
+        If true, a supported ``universe`` raises when instruments, daily
+        trading-status coverage, or versioned historical ST evidence is missing
+        for the requested scope. Use it for research reads; the default remains
+        permissive for exploratory queries.
     config, data_root:
         Lake location; auto-detects ``configs/cnequity.toml`` when omitted.
         Raises ``ReaderError`` if config or dataset parquet files are missing.
@@ -451,9 +457,10 @@ def load(
     if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
         raise ReaderError(f"unknown dataset {dataset!r}")
 
-    if universe and dataset == "index_bars":
+    if universe and dataset != "daily_bars":
         raise ReaderError(
-            "universe filter applies to daily_bars only; index symbols are not in all_a"
+            "universe filter applies to daily_bars only; it is not supported for "
+            f"{dataset}"
         )
     if adjust and dataset == "index_bars":
         raise ReaderError(

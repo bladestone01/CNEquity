@@ -212,6 +212,43 @@ def test_symbols_accept_a_comma_string(lake):
     assert payload["total"] == 2
 
 
+def test_mcp_all_a_query_fails_closed_without_historical_st_evidence(lake):
+    """MCP must not bypass the strict universe contract through its wrapper."""
+    status_dir = lake.curated_root / "trading_status" / "trade_date=2024-06-27"
+    status_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "trade_date": [date(2024, 6, 27)] * 2,
+            "is_trading": [True, True],
+            "status": ["normal", "normal"],
+            **_prov("eastmoney"),
+        }
+    ).write_parquet(status_dir / "part-0.parquet")
+
+    with pytest.raises(tools.ToolError, match="historical ST evidence"):
+        tools.query_bars(lake, universe="all_a")
+
+
+def test_mcp_rejects_universe_for_intraday_bars(lake):
+    with pytest.raises(tools.ToolError, match="universe filter applies to daily_bars only"):
+        tools.query_bars(lake, dataset="minute_bars", universe="all_a")
+
+
+def test_mcp_catalog_exposes_explicit_sh_sz_universe():
+    query_bars = next(tool for tool in DESCRIPTORS if tool["name"] == "query_bars")
+    assert query_bars["inputSchema"]["properties"]["universe"]["enum"] == [
+        "all_a",
+        "all_a_sh_sz",
+    ]
+
+
+def test_query_bars_echoes_universe_semantics(lake):
+    payload = tools.query_bars(lake, symbols=["600519.SH"], universe=None)
+
+    assert payload["universe"] is None
+
+
 # --- query_fundamentals ----------------------------------------------------
 
 

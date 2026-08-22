@@ -22,13 +22,19 @@ from cnequity.query.parquet_scan import (
 )
 
 EXCLUDED_STATUSES = frozenset({"st", "*st", "suspended"})
+SUPPORTED_UNIVERSES = frozenset({"all_a", "all_a_sh_sz"})
 
 
 class UniverseCoverageError(ValueError):
     """Raised when a strict universe query lacks required coverage."""
 
 
-def _all_a_symbol_expr(symbol_col: str = "symbol") -> pl.Expr:
+def _all_a_symbol_expr(symbol_col: str = "symbol", *, universe: str = "all_a") -> pl.Expr:
+    if universe not in SUPPORTED_UNIVERSES:
+        raise ValueError(
+            f"unsupported universe: {universe!r} "
+            f"(supported: {', '.join(sorted(SUPPORTED_UNIVERSES))})"
+        )
     code = pl.col(symbol_col).str.split(".").list.first()
     exchange = pl.col(symbol_col).str.split(".").list.last()
     excluded = pl.lit(False)
@@ -48,6 +54,8 @@ def _all_a_symbol_expr(symbol_col: str = "symbol") -> pl.Expr:
     for exch, prefixes in PREFIX_WHITELIST.items():
         for prefix in prefixes:
             allowed = allowed | ((exchange == exch) & code.str.starts_with(prefix))
+    if universe == "all_a_sh_sz":
+        allowed = allowed & exchange.is_in(["SH", "SZ"])
     return (~excluded) & allowed
 
 
@@ -230,17 +238,20 @@ def tradable_symbols_on_date(
     ``trading_status`` only when rows exist for *trade_date*; dates before
     :func:`trading_status_coverage_start` are not ST-filtered.
     """
-    if universe != "all_a":
-        raise ValueError(f"unsupported universe: {universe!r} (supported: 'all_a')")
+    if universe not in SUPPORTED_UNIVERSES:
+        raise ValueError(
+            f"unsupported universe: {universe!r} "
+            f"(supported: {', '.join(sorted(SUPPORTED_UNIVERSES))})"
+        )
 
     instruments = _load_instruments(config)
     if instruments.is_empty():
         if strict:
-            raise UniverseCoverageError("all_a universe requires curated instruments")
+            raise UniverseCoverageError(f"{universe} universe requires curated instruments")
         return None
 
     out = (
-        instruments.filter(_all_a_symbol_expr())
+        instruments.filter(_all_a_symbol_expr(universe=universe))
         .filter(pl.col("list_date").is_null() | (pl.col("list_date") <= trade_date))
         .filter(pl.col("delist_date").is_null() | (pl.col("delist_date") >= trade_date))
         .select("symbol")
@@ -252,7 +263,7 @@ def tradable_symbols_on_date(
     if status.is_empty():
         if strict:
             raise UniverseCoverageError(
-                f"all_a universe has no trading_status coverage for {trade_date.isoformat()}"
+                f"{universe} universe has no trading_status coverage for {trade_date.isoformat()}"
             )
         return out
 
@@ -261,7 +272,7 @@ def tradable_symbols_on_date(
         missing_symbols = sorted(set(out.get_column("symbol").to_list()) - covered_symbols)
         if missing_symbols:
             raise UniverseCoverageError(
-                f"all_a universe trading_status is missing {len(missing_symbols)} "
+                f"{universe} universe trading_status is missing {len(missing_symbols)} "
                 f"symbol(s) for {trade_date.isoformat()}, first={missing_symbols[0]}"
             )
 
@@ -287,20 +298,30 @@ def apply_universe_filter(
     ``trading_status`` only affects dates with status rows; earlier history
     passes through unchanged (see :func:`trading_status_coverage_start`).
     """
-    if df.is_empty() or universe != "all_a":
-        return df
+    if universe not in SUPPORTED_UNIVERSES:
+        raise ValueError(
+            f"unsupported universe: {universe!r} "
+            f"(supported: {', '.join(sorted(SUPPORTED_UNIVERSES))})"
+        )
     if date_col not in df.columns:
         raise ValueError(
             f"apply_universe_filter requires date column {date_col!r} for universe filtering"
         )
+    if df.is_empty():
+        if strict:
+            raise UniverseCoverageError(
+                f"{universe} universe cannot prove coverage because the requested daily_bars "
+                "scope returned no rows"
+            )
+        return df
 
     instruments = _load_instruments(config)
     if instruments.is_empty():
         if strict:
-            raise UniverseCoverageError("all_a universe requires curated instruments")
+            raise UniverseCoverageError(f"{universe} universe requires curated instruments")
         return df
 
-    valid_symbols = instruments.filter(_all_a_symbol_expr())["symbol"]
+    valid_symbols = instruments.filter(_all_a_symbol_expr(universe=universe))["symbol"]
     inst = instruments.select(["symbol", "list_date", "delist_date"])
     df = df.join(inst, on="symbol", how="left")
     df = df.filter(
@@ -321,7 +342,9 @@ def apply_universe_filter(
         )
     except FileNotFoundError:
         if strict:
-            raise UniverseCoverageError("all_a universe requires curated trading_status") from None
+            raise UniverseCoverageError(
+                f"{universe} universe requires curated trading_status"
+            ) from None
         return df.drop(["list_date", "delist_date"], strict=False)
 
     if strict and not df.is_empty():
@@ -332,9 +355,44 @@ def apply_universe_filter(
             missing_dates = sorted(missing[date_col].unique().to_list())
             missing_symbols = sorted(missing["symbol"].unique().to_list())
             raise UniverseCoverageError(
-                f"all_a universe trading_status missing {missing.height} "
+                f"{universe} universe trading_status missing {missing.height} "
                 f"symbol-date row(s) across {len(missing_dates)} date(s), "
                 f"first={missing_symbols[0]}@{missing_dates[0].isoformat()}"
+            )
+
+        # Presence of a trading_status row proves that a row was written, not
+        # that an historical ST sweep checked the whole requested scope. A
+        # strict all-A read must also have a versioned evidence receipt; this
+        # is what prevents a backtest from silently treating an unobserved
+        # historical symbol as normal. The receipt check is opt-in through
+        # ``strict_universe`` because ordinary exploratory loads retain their
+        # documented permissive semantics.
+        from cnequity.quality.st_coverage import st_evidence_coverage_report
+
+        evidence = st_evidence_coverage_report(
+            config,
+            start=requested[date_col].min(),
+            end=requested[date_col].max(),
+            symbols=sorted(requested["symbol"].drop_nulls().unique().to_list()),
+            universe=universe,
+        )
+        if not evidence["verified"]:
+            unsupported = int(evidence.get("unsupported_symbols", 0) or 0)
+            if evidence.get("reason") == "unsupported_exchange_symbols":
+                exchange_counts = evidence.get("unsupported_exchange_counts") or {}
+                detail = ", ".join(
+                    f"{exchange}={count}" for exchange, count in sorted(exchange_counts.items())
+                )
+                raise UniverseCoverageError(
+                    f"{universe} universe requires historical ST evidence, but the requested "
+                    f"scope contains {unsupported} symbol(s) on unsupported exchange(s) "
+                    f"({detail or 'unknown'})"
+                )
+            raise UniverseCoverageError(
+                f"{universe} universe requires a complete historical ST evidence receipt for "
+                f"{requested[date_col].min().isoformat()}.."
+                f"{requested[date_col].max().isoformat()} "
+                f"({evidence.get('reason') or 'no_matching_complete_receipt'})"
             )
 
     bad = (

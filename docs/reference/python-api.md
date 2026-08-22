@@ -17,7 +17,7 @@ def load(
     start: str | date | None = None,
     end: str | date | None = None,
     adjust: Literal["qfq", "hfq"] | None = None,
-    universe: Literal["all_a"] | None = None,
+    universe: Literal["all_a", "all_a_sh_sz"] | None = None,
     as_of: str | date | None = None,
     items: list[str] | None = None,
     symbols: list[str] | None = None,
@@ -36,12 +36,12 @@ def load(
 | `dataset` | 注册数据集名 |
 | `start`, `end` | 含边界日期窗口（数据集主日期列） |
 | `adjust` | `hfq` / `qfq`；适用于 `daily_bars`、`minute_bars`、`minute_bars_5m` 等价量数据集 |
-| `universe` | `"all_a"` 可交易过滤 |
+| `universe` | `"all_a"` 沪深北全 A；`"all_a_sh_sz"` 明确限定沪深子集并排除北交所 |
 | `as_of` | PIT 截止日：过滤 `announce_date <= as_of`，并对同一科目取当时生效的那一版 |
 | `items` | 财报科目 code 列表 |
 | `symbols` | symbol 白名单 |
 | `strict_adj` | True 时缺复权因子抛 `ReaderError` |
-| `strict_universe` | True 时 `all_a` 缺少 instruments 或 trading_status 覆盖会抛错 |
+| `strict_universe` | True 时支持的 universe 缺少 instruments、逐日 trading_status 覆盖或版本化历史 ST 证据收据会抛错；适合研究读取 |
 | `all_vintages` | True 时返回 `as_of` 前的**全部**版本（研究财报修订用）；截面选股勿开，会重复计同一事实 |
 | `config` / `data_root` | 湖位置；默认读 `configs/cnequity.toml` |
 

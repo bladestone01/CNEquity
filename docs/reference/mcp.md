@@ -72,7 +72,7 @@ agent 每轮都要从一个平铺列表里选工具。按数据集给工具会�
 模型不会去读 `docs/`。所以三条最容易产生「自信的错误答案」的规则直接放进返回值：
 
 - `describe_lake` 的 `contract` 字段列出复权、PIT、`snapshot_only`、`history_horizon_days`、`universe` 的含义。
-- `query_bars` 不带 `adjust` 时返回 `warning`；带了但有行缺因子时，报出「N/M 行 `adj_is_exact=false`」。
+- `query_bars` 不带 `adjust` 时返回 `warning`；带了但有行缺因子时，报出「N/M 行 `adj_is_exact=false`」。响应同时回显 `adjust` 与 `universe`，使显式的 `all_a_sh_sz` 沪深子集口径不会在分页或下游处理时丢失。
 - `query_fundamentals` 不给 `as_of` 直接报错并解释为什么没有默认值——默认成今天，等于用今天的信息回答历史问题，而 agent 无从察觉。
 
 ### 分页永远说实话

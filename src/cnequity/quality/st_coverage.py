@@ -69,12 +69,20 @@ def current_st_universe(
     *,
     start: date | None = None,
     end: date | None = None,
+    symbols: list[str] | None = None,
+    universe: str = "all_a",
 ) -> list[str]:
     """All-A instruments whose price history makes ST evidence relevant.
 
     This is deliberately disk-only.  A coverage check must never make a
     provider call merely to decide whether an existing receipt is trustworthy.
     """
+    if universe not in ST_EVIDENCE_COMPATIBLE_UNIVERSES:
+        raise ValueError(
+            f"unsupported ST evidence universe: {universe!r} "
+            f"(supported: {', '.join(sorted(ST_EVIDENCE_COMPATIBLE_UNIVERSES))})"
+        )
+    requested_symbols = set(symbols) if symbols is not None else None
     root = config.curated_root / "instruments"
     if not root.exists():
         return []
@@ -91,7 +99,7 @@ def current_st_universe(
         return []
     if "symbol" not in frame.columns:
         return []
-    symbols: list[str] = []
+    resolved_symbols: list[str] = []
     for raw in frame["symbol"].to_list():
         try:
             parsed = parse_symbol(str(raw))
@@ -105,7 +113,16 @@ def current_st_universe(
         if is_all_a_symbol(parsed.code, parsed.exchange) and not is_cdr_symbol(
             parsed.code, parsed.exchange
         ):
-            symbols.append(str(raw))
+            resolved_symbols.append(str(raw))
+    if requested_symbols is not None:
+        resolved_symbols = [symbol for symbol in resolved_symbols if symbol in requested_symbols]
+    if universe in {"all_a_sh_sz", "all_a_sz"}:
+        resolved_symbols = [
+            symbol
+            for symbol in resolved_symbols
+            if parse_symbol(symbol).exchange in {"SH", "SZ"}
+        ]
+
     bars_root = config.curated_root / "daily_bars"
     if bars_root.exists() and any(bars_root.rglob("*.parquet")):
         try:
@@ -130,8 +147,8 @@ def current_st_universe(
         except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
             logger.warning("ST coverage: daily_bars scan is not readable: %s", exc)
             return []
-        symbols = [symbol for symbol in symbols if symbol in bars]
-    return sorted(set(symbols))
+        resolved_symbols = [symbol for symbol in resolved_symbols if symbol in bars]
+    return sorted(set(resolved_symbols))
 
 
 def st_evidence_unsupported_symbols(symbols: list[str]) -> list[str]:
@@ -668,9 +685,23 @@ def st_evidence_coverage_report(
     config: Config,
     start: date | None = None,
     end: date | None = None,
+    *,
+    symbols: list[str] | None = None,
+    universe: str = "all_a",
 ) -> dict[str, Any]:
-    """Return whether a complete, current all-A receipt covers the window."""
-    symbols = current_st_universe(config, start=start, end=end)
+    """Return whether a complete, current all-A receipt covers the window.
+
+    ``symbols`` narrows the evidence scope for a strict query that explicitly
+    selected a subset of all-A names. The default remains the complete current
+    all-A scope used by the lake-level research gate.
+    """
+    symbols = current_st_universe(
+        config,
+        start=start,
+        end=end,
+        symbols=symbols,
+        universe=universe,
+    )
     unsupported_symbols = st_evidence_unsupported_symbols(symbols)
     supported_symbols = st_evidence_supported_symbols(symbols)
     candidates: list[dict[str, Any]] = []
@@ -710,6 +741,7 @@ def st_evidence_coverage_report(
             "evidence_version": ST_EVIDENCE_VERSION,
             "requested_start": start.isoformat() if start else None,
             "requested_end": end.isoformat() if end else None,
+            "requested_universe": universe,
             "current_symbols": len(symbols),
             "supported_symbols": len(supported_symbols),
             "unsupported_symbols": len(unsupported_symbols),
@@ -722,7 +754,15 @@ def st_evidence_coverage_report(
                 for exchange in sorted(ST_EVIDENCE_UNSUPPORTED_EXCHANGES)
                 if any(parse_symbol(symbol).exchange == exchange for symbol in unsupported_symbols)
             },
-            "reason": "no_current_universe" if not symbols else "no_matching_complete_receipt",
+            # Unsupported exchanges are a source-capability blocker even when
+            # there is no compatible receipt at all. Preserve that fact in the
+            # reason so strict readers and the historical validity contract do
+            # not reduce BJ to a generic missing-cache message.
+            "reason": (
+                "unsupported_exchange_symbols"
+                if unsupported_symbols
+                else ("no_current_universe" if not symbols else "no_matching_complete_receipt")
+            ),
         }
         report.update(_pending_checkpoint_progress(config, start, end, supported_symbols))
         return report
@@ -736,6 +776,7 @@ def st_evidence_coverage_report(
         "evidence_version": ST_EVIDENCE_VERSION,
         "requested_start": start.isoformat() if start else None,
         "requested_end": end.isoformat() if end else None,
+        "requested_universe": universe,
         "coverage_start": scope["start"],
         "coverage_end": scope["end"],
         "current_symbols": len(symbols),

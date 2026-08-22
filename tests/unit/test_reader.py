@@ -262,6 +262,30 @@ def test_all_a_filter_does_not_bypass_empty_valid_catalog(tmp_path):
     assert out.is_empty()
 
 
+def test_sh_sz_universe_explicitly_excludes_bj_symbols(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ", "920001.BJ"],
+            "list_date": [date(2001, 1, 1)] * 3,
+            "delist_date": [None] * 3,
+        }
+    ).write_parquet(instruments / "part-merged.parquet")
+    frame = pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ", "920001.BJ"],
+            "trade_date": [date(2024, 6, 28)] * 3,
+            "close": [10.0, 20.0, 30.0],
+        }
+    )
+
+    out = apply_universe_filter(frame, cfg, universe="all_a_sh_sz")
+
+    assert set(out["symbol"].to_list()) == {"600519.SH", "000001.SZ"}
+
+
 def test_all_a_filter_rejects_missing_date_column(tmp_path):
     with pytest.raises(ValueError, match="requires date column 'trade_date'"):
         apply_universe_filter(
@@ -287,6 +311,19 @@ def test_strict_all_a_filter_rejects_partial_status_coverage(lake):
     ).write_parquet(status_dir / "part-partial.parquet")
 
     with pytest.raises(ValueError, match="missing 1 symbol-date row"):
+        load(
+            "daily_bars",
+            start="2024-06-27",
+            end="2024-06-27",
+            universe="all_a",
+            strict_universe=True,
+            config=lake,
+        )
+
+
+def test_strict_all_a_filter_requires_historical_st_evidence(lake):
+    """Rows alone are not proof that an historical ST sweep was complete."""
+    with pytest.raises(ValueError, match="historical ST evidence"):
         load(
             "daily_bars",
             start="2024-06-27",
@@ -428,8 +465,26 @@ def test_load_raises_when_data_root_has_no_dataset(tmp_path):
 
 
 def test_load_index_bars_rejects_universe_filter(lake):
-    with pytest.raises(ReaderError, match="index symbols are not in all_a"):
+    with pytest.raises(ReaderError, match="universe filter applies to daily_bars only"):
         load("index_bars", universe="all_a", config=lake)
+
+
+@pytest.mark.parametrize("dataset", ["minute_bars", "minute_bars_5m", "fund_flow"])
+def test_load_rejects_universe_filter_for_non_daily_datasets(lake, dataset):
+    with pytest.raises(ReaderError, match="universe filter applies to daily_bars only"):
+        load(dataset, universe="all_a", config=lake)
+
+
+def test_strict_all_a_filter_rejects_empty_bar_scope(lake):
+    with pytest.raises(ValueError, match="cannot prove coverage.*returned no rows"):
+        load(
+            "daily_bars",
+            start="2024-06-28",
+            end="2024-06-28",
+            universe="all_a",
+            strict_universe=True,
+            config=lake,
+        )
 
 
 def test_load_index_bars_rejects_stock_adjustment(lake):

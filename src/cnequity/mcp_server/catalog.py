@@ -89,7 +89,7 @@ TOOLS: list[dict] = [
             "drawdowns) or a split reads as a crash. Use adjust='qfq' when the "
             "levels must match what a quote screen shows today. Pass "
             "universe='all_a' for cross-sectional work to drop names that were "
-            "not tradable that day. datasets: daily_bars, index_bars, "
+                "not tradable that day. datasets: daily_bars, index_bars, "
             "minute_bars (1m), minute_bars_5m (5m). Every response carries "
             "`origin`: 'lake' is stored and validated; 'live' was fetched just now "
             "and cannot be adjusted or universe-filtered — read its warning before "
@@ -115,9 +115,13 @@ TOOLS: list[dict] = [
                 },
                 "universe": {
                     "type": "string",
-                    "enum": ["all_a"],
+                    "enum": ["all_a", "all_a_sh_sz"],
                     "description": "Drop rows for names unlisted/delisted that day, and "
-                    "ST/suspended ones where trading_status covers it. daily_bars only.",
+                    "ST/suspended ones where trading_status covers it. `all_a` includes "
+                    "SH/SZ/BJ; `all_a_sh_sz` is an explicit SH/SZ-only research subset "
+                    "that excludes BJ. The lake path also requires versioned historical "
+                    "ST evidence; incomplete research fails instead of treating unknown "
+                    "names as normal. daily_bars only.",
                 },
                 "limit": _LIMIT,
                 "offset": _OFFSET,

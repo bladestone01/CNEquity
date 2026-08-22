@@ -153,6 +153,34 @@ def test_st_coverage_reports_unsupported_bj_separately(tmp_path):
     assert report["unsupported_exchange_counts"] == {"BJ": 1}
     assert report["reason"] == "unsupported_exchange_symbols"
 
+    scoped = st_evidence_coverage_report(
+        cfg,
+        date(2024, 6, 27),
+        date(2024, 6, 27),
+        universe="all_a_sh_sz",
+    )
+    assert scoped["verified"] is True
+    assert scoped["current_symbols"] == 1
+    assert scoped["unsupported_symbols"] == 0
+
+
+def test_st_coverage_names_unsupported_bj_without_receipt(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["920001.BJ"]}).write_parquet(instruments / "part-merged.parquet")
+    bars = cfg.curated_root / "daily_bars" / "trade_date=2024-06-27"
+    bars.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["920001.BJ"], "trade_date": [date(2024, 6, 27)], "volume": [100]}
+    ).write_parquet(bars / "part-0.parquet")
+
+    report = st_evidence_coverage_report(cfg, date(2024, 6, 27), date(2024, 6, 27))
+
+    assert report["verified"] is False
+    assert report["reason"] == "unsupported_exchange_symbols"
+    assert report["unsupported_exchange_counts"] == {"BJ": 1}
+
 
 def test_current_st_universe_can_prune_bars_to_requested_window(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
