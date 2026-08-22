@@ -131,7 +131,7 @@ items = load(
 )
 ```
 
-- 过滤 `announce_date <= as_of`
+- 过滤 `announce_date <= as_of`，且只使用在 `as_of` 当日或之前已写入湖的财报行（`fetched_at.date() <= as_of`）
 - 同一 `(symbol, report_period, item)` 取 `announce_date` 最新一行
 - 禁止用 `end=` 代替 `as_of` 做财报对齐
 
@@ -153,8 +153,10 @@ load(
 ).select("report_period", "announce_date", "item_value")
 ```
 
-注意：只有日更逐日累积的版本是严格 PIT；回填拿到的是东财*当前*版本配首发日，
-早期期间只有一版（见 [schema](schema.md#financial_statement_items)）。
+注意：回填行以 `source=eastmoney_backfill` 标记，并按实际 `fetched_at`
+设定可见起点；因此当前/重述值不会因为首发日较早而泄漏到采集之前的历史回测。
+日更逐日累积的版本同时满足公告日与采集日边界（见
+[schema](schema.md#financial_statement_items)）。
 回填默认自 2001 起（东财）；`list_datasets()` 的 `coverage_start` 为盘上实际起点。
 
 ---

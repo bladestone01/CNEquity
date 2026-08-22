@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 from cnequity.adapters.sina.adj_factors import (
+    SinaAdjFactorUnavailableError,
     _parse_sina_factor_payload,
     fetch_adj_factor_series,
     to_sina_symbol,
@@ -38,6 +39,12 @@ def test_parse_sina_qfq_payload():
 def test_parse_sina_factor_payload_rejects_non_list_data():
     text = 'var foo = {"data": {"date": "2024-06-28"}};'
     with pytest.raises(ValueError, match="data is not a list"):
+        _parse_sina_factor_payload(text)
+
+
+def test_parse_sina_factor_payload_classifies_empty_series_as_unavailable():
+    text = 'var foo = {"data": []};'
+    with pytest.raises(SinaAdjFactorUnavailableError, match="empty data"):
         _parse_sina_factor_payload(text)
 
 
@@ -440,6 +447,76 @@ def test_compute_adj_factors_fetches_uncached_beijing_symbols(adj_config, monkey
         adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
     )
     assert set(out["symbol"].to_list()) == {"600519.SH", "920001.BJ"}
+
+
+def test_compute_adj_factors_persists_delisted_source_gap_without_retrying(
+    adj_config, monkeypatch
+):
+    from cnequity.storage.state import StateStore
+
+    _write_bar(adj_config, "830799.BJ", date(2024, 6, 28))
+    inst_dir = adj_config.curated_root / "instruments"
+    inst_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "830799.BJ"],
+            "asset_type": ["stock", "stock"],
+            "list_date": [date(2001, 1, 1), date(2016, 1, 1)],
+            "delist_date": [None, date(2025, 4, 30)],
+        }
+    ).write_parquet(inst_dir / "part-0.parquet")
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        if symbol == "830799.BJ":
+            raise SinaAdjFactorUnavailableError("Sina adj factor response has empty data")
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.5]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    first = compute_adj_factors(adj_config)
+    assert first.failed == []
+    assert [finding["check"] for finding in first.findings] == [
+        "adj_factor_source_unavailable"
+    ]
+    assert StateStore(adj_config.meta_root).get_string_set(
+        "adj_factors", "retry_symbols"
+    ) == set()
+    assert StateStore(adj_config.meta_root).get_string_set(
+        "adj_factors", "source_unavailable_symbols"
+    ) == {"830799.BJ"}
+
+    calls.clear()
+    second = compute_adj_factors(adj_config)
+    assert second.failed == []
+    assert calls == []
+
+
+def test_compute_adj_factors_parallel_tracks_success_by_future_symbol(adj_config, monkeypatch):
+    from cnequity.storage.state import StateStore
+
+    adj_config.workers = 2
+    _write_bar(adj_config, "000001.SZ", date(2024, 6, 28))
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        if symbol == "600519.SH":
+            raise RuntimeError("sina temporarily unavailable")
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.8]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+    result = compute_adj_factors(adj_config)
+
+    assert result.failed == ["600519.SH:hfq"]
+    assert StateStore(adj_config.meta_root).get_string_set(
+        "adj_factors", "retry_symbols"
+    ) == {"600519.SH"}
 
 
 def test_compute_adj_factors_reuses_cache_on_non_event_day(adj_config, monkeypatch):

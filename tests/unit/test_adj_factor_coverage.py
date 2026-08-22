@@ -16,6 +16,7 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.quality.cross_checks import adj_factor_coverage_findings
+from cnequity.storage.state import StateStore
 
 
 def _lake(tmp_path, *, stocks, priced, factored, etfs=(), no_trade=(), factor_type="hfq"):
@@ -159,6 +160,21 @@ def test_a_few_missing_names_stay_below_the_threshold(tmp_path):
     sh = [f"6000{i:02d}.SH" for i in range(100)]
     cfg = _lake(tmp_path, stocks=sh, priced=sh, factored=sh[:99])
     assert adj_factor_coverage_findings(cfg, date(2026, 8, 7)) == []
+
+
+def test_known_source_unavailable_names_are_visible_below_warning_threshold(tmp_path):
+    sh = [f"6000{i:02d}.SH" for i in range(100)]
+    cfg = _lake(tmp_path, stocks=sh, priced=sh, factored=sh[:99])
+    StateStore(cfg.meta_root).set_string_set(
+        "adj_factors", "source_unavailable_symbols", {sh[-1]}
+    )
+
+    findings = adj_factor_coverage_findings(cfg, date(2026, 8, 7))
+
+    assert len(findings) == 1
+    assert findings[0]["check"] == "adj_factor_source_unavailable"
+    assert findings[0]["severity"] == "info"
+    assert findings[0]["symbols_unavailable"] == 1
 
 
 def test_etfs_do_not_count_against_coverage(tmp_path):

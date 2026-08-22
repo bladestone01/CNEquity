@@ -370,6 +370,14 @@ def _apply_pit_filters(
     if "announce_date" not in df.columns:
         raise ReaderError(f"{dataset} requires announce_date column (PIT contract)")
     df = df.filter(pl.col("announce_date") <= as_of)
+    # A historical backfill can only prove that its current/restated value was
+    # available when the lake fetched it, not on the original announcement date.
+    # The collection cutoff is applied to every FSI row, including legacy rows
+    # whose source marker predates the backfill marker. This is conservative for
+    # a late-ingested daily disclosure, but never lets an unversioned value leak
+    # into an earlier PIT slice.
+    if dataset == "financial_statement_items" and {"source", "fetched_at"} <= set(df.columns):
+        df = df.filter(pl.col("fetched_at").dt.date() <= as_of)
     if items and "item_code" in df.columns:
         df = df.filter(pl.col("item_code").is_in(items))
     if all_vintages or df.is_empty():

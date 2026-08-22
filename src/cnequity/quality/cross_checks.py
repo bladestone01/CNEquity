@@ -721,16 +721,17 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
             symbols=sorted(stocks),
         )
     ).select("symbol", "trade_date")
-    bar_span = (
+    bar_summary = (
         bar_dates
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("bar_first"),
             pl.col("trade_date").max().alias("bar_last"),
+            pl.col("trade_date").unique().alias("_bar_dates"),
         )
         .collect(engine="streaming")
     )
-    if bar_span.is_empty():
+    if bar_summary.is_empty():
         return []
     factor_rows = dedupe_lazy_by_primary_key(
         scan_parquet_root(
@@ -755,27 +756,35 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
             & (pl.col("factor") > 0)
         )
     factor_dates = factor_rows.select("symbol", "trade_date").unique()
-    factor_span = (
+    factor_summary = (
         factor_dates
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("factor_first"),
             pl.col("trade_date").max().alias("factor_last"),
+            pl.col("trade_date").unique().alias("_factor_dates"),
         )
         .collect(engine="streaming")
     )
-    missing_days = (
-        bar_dates.join(factor_dates, on=["symbol", "trade_date"], how="anti")
-        .group_by("symbol")
-        .agg(pl.len().alias("missing_factor_days"))
-        .collect(engine="streaming")
-    )
     spans = (
-        bar_span.join(factor_span, on="symbol", how="left")
-        .join(missing_days, on="symbol", how="left")
-        .with_columns(pl.col("missing_factor_days").fill_null(0))
+        bar_summary.join(factor_summary, on="symbol", how="left")
+        .with_columns(
+            pl.when(pl.col("_factor_dates").is_null())
+            .then(pl.col("_bar_dates").list.len())
+            .otherwise(
+                pl.col("_bar_dates")
+                .list.set_difference(pl.col("_factor_dates"))
+                .list.len()
+            )
+            .alias("missing_factor_days")
+        )
     )
 
+    from cnequity.storage.state import StateStore
+
+    source_unavailable = StateStore(config.meta_root).get_string_set(
+        "adj_factors", "source_unavailable_symbols"
+    )
     findings: list[dict] = []
     by_exchange: dict[str, list[str]] = {}
     for symbol in stocks & set(spans["symbol"].to_list()):
@@ -800,6 +809,25 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                 and row["missing_factor_days"] == 0
             )
         }
+        known_source_unavailable = sorted(
+            (set(symbols) - fully_covered) & source_unavailable
+        )
+        if known_source_unavailable:
+            findings.append(
+                {
+                    "dataset": "adj_factors",
+                    "severity": "info",
+                    "check": "adj_factor_source_unavailable",
+                    "exchange": exchange,
+                    "message": (
+                        f"{exchange}: {len(known_source_unavailable)} formally delisted "
+                        "stock(s) have an explicit source-unavailable factor evidence; "
+                        "no exact adjusted history is currently reconstructable"
+                    ),
+                    "symbols_unavailable": len(known_source_unavailable),
+                    "sample": known_source_unavailable[:_SAMPLE],
+                }
+            )
         covered = len(fully_covered)
         ratio = covered / total
         if ratio >= ADJ_COVERAGE_WARN_RATIO:

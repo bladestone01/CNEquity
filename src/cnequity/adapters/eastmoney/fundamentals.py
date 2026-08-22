@@ -19,12 +19,13 @@ its usable window. LICO's ``NOTICE_DATE`` is the real first-disclosure date
 back to the report's own NOTICE_DATE only when LICO has no matching row — a
 fallback that can only make data arrive *late*, never early.
 
-**Known limitation — restated values, original dates.** A backfill fetch returns
-whichever version of a figure EastMoney serves today, which for older periods is
-the restated one, paired with the original announcement date. That is the usual
-compromise for a free source, but it is a real (small) look-ahead: the restated
-number was not knowable on the original date. Only vintages accumulated by daily
-runs going forward are true point-in-time.
+**Backfill PIT boundary.** A backfill fetch returns whichever version of a figure
+EastMoney serves at collection time, which for older periods may be restated.
+The step marks those rows as ``eastmoney_backfill``; the reader permits them only
+for ``as_of`` dates on or after their actual ``fetched_at`` date. This keeps the
+historical table useful after collection without claiming that a current
+restatement was knowable on its original announcement date. Vintages accumulated
+by daily runs keep the ordinary announcement-date semantics.
 """
 
 from __future__ import annotations

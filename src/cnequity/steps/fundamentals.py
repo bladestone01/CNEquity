@@ -432,7 +432,11 @@ def step_financial_statement_items(
             result = {"rows_read": 0, "rows_written": 0}
         else:
             result = write_fetched(
-                config, run_id, "financial_statement_items", df, source="eastmoney"
+                config,
+                run_id,
+                "financial_statement_items",
+                df,
+                source="eastmoney_backfill",
             )
         result["status"] = "warning"
         if missing_periods:
@@ -443,7 +447,13 @@ def step_financial_statement_items(
         return result
     if df.is_empty():
         return {"rows_read": 0, "rows_written": 0}
-    return write_fetched(config, run_id, "financial_statement_items", df, source="eastmoney")
+    return write_fetched(
+        config,
+        run_id,
+        "financial_statement_items",
+        df,
+        source="eastmoney_backfill" if backfill else "eastmoney",
+    )
 
 
 # --- shareholder structure ---------------------------------------------------

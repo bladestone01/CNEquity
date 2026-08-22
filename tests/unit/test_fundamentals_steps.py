@@ -75,7 +75,9 @@ def test_financial_statement_items_writes_staging(cfg, monkeypatch):
     assert seen["backfill"] is True
     assert result["rows_written"] == 4
     assert result.get("status") is None
-    assert list(cfg.staging_root.glob("financial_statement_items/**/*.parquet"))
+    files = list(cfg.staging_root.glob("financial_statement_items/**/*.parquet"))
+    assert files
+    assert pl.read_parquet(files[0])["source"].unique().to_list() == ["eastmoney_backfill"]
 
 
 def test_financial_statement_items_backfill_surfaces_partial_report_families(cfg, monkeypatch):

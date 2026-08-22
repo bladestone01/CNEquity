@@ -37,7 +37,7 @@ def load(
 | `start`, `end` | 含边界日期窗口（数据集主日期列） |
 | `adjust` | `hfq` / `qfq`；适用于 `daily_bars`、`minute_bars`、`minute_bars_5m` 等价量数据集 |
 | `universe` | `"all_a"` 沪深北全 A；`"all_a_sh_sz"` 明确限定沪深子集并排除北交所 |
-| `as_of` | PIT 截止日：过滤 `announce_date <= as_of`，并对同一科目取当时生效的那一版 |
+| `as_of` | PIT 截止日：过滤 `announce_date` 与 `fetched_at.date()` 均不晚于截止日，并对同一科目取当时生效的那一版 |
 | `items` | 财报科目 code 列表 |
 | `symbols` | symbol 白名单 |
 | `strict_adj` | True 时缺复权因子抛 `ReaderError` |

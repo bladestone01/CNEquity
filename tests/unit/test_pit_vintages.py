@@ -107,6 +107,20 @@ def test_as_of_after_restatement_returns_the_revised_value_once(tmp_path):
     assert df["item_value"][0] == 90.0
 
 
+def test_backfill_vintage_is_hidden_before_its_collection_date(tmp_path):
+    """Current restated values must not be paired with an earlier PIT cutoff."""
+    cfg = Config(data_root=tmp_path / "data")
+    row = _row(_ORIGINAL, 90.0, "2026-08-22T09:00:00+00:00")
+    row["source"] = "eastmoney_backfill"
+    _write_curated(cfg, [row])
+
+    before_collection = load(_DATASET, as_of="2025-06-30", config=cfg)
+    after_collection = load(_DATASET, as_of="2026-08-22", config=cfg)
+
+    assert before_collection.is_empty()
+    assert after_collection["item_value"].to_list() == [90.0]
+
+
 def test_all_vintages_exposes_the_revision_history(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     _write_curated(

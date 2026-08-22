@@ -79,7 +79,12 @@ def lake(tmp_path):
             "item_code": ["roe", "revenue"],
             "item_value": [0.25, 1_000_000.0],
             "announce_date": [date(2024, 4, 28), date(2024, 5, 15)],
-            **_prov(),
+            "source": ["test", "test"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [
+                datetime(2024, 4, 28, tzinfo=timezone.utc),
+                datetime(2024, 5, 15, tzinfo=timezone.utc),
+            ],
         }
     ).write_parquet(fsi_dir / "part-0.parquet")
 

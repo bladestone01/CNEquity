@@ -8,7 +8,10 @@ from pathlib import Path
 import httpx
 import polars as pl
 
-from cnequity.adapters.sina.adj_factors import fetch_adj_factor_series
+from cnequity.adapters.sina.adj_factors import (
+    SinaAdjFactorUnavailableError,
+    fetch_adj_factor_series,
+)
 from cnequity.config import Config
 from cnequity.domain.canonical import dedupe_lazy_by_primary_key
 from cnequity.domain.rate_limit import wait_source
@@ -44,10 +47,15 @@ UNCOVERED_REFRESH_LIMIT = 500
 _EMPTY_BAR_DATES = pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
 _ADJ_PK = ["symbol", "trade_date", "adjust_type"]
 _RETRY_STATE_FIELD = "retry_symbols"
+_UNAVAILABLE_STATE_FIELD = "source_unavailable_symbols"
 
 
 class AdjFactorsFetchError(RuntimeError):
     """Raised when adj factor fetch fails and no cache is available."""
+
+
+class AdjFactorsSourceUnavailableError(AdjFactorsFetchError):
+    """Raised when the configured source explicitly has no series for a symbol."""
 
 
 class AdjFactorsDeriveError(RuntimeError):
@@ -102,6 +110,13 @@ def _retry_symbols(config: Config) -> set[str]:
     return StateStore(config.meta_root).get_string_set("adj_factors", _RETRY_STATE_FIELD)
 
 
+def _source_unavailable_symbols(config: Config) -> set[str]:
+    """Symbols with an explicit, permanent source-unavailable classification."""
+    return StateStore(config.meta_root).get_string_set(
+        "adj_factors", _UNAVAILABLE_STATE_FIELD
+    )
+
+
 def _update_retry_symbols(
     config: Config,
     *,
@@ -119,6 +134,22 @@ def _update_retry_symbols(
     StateStore(config.meta_root).set_string_set(
         "adj_factors",
         _RETRY_STATE_FIELD,
+        remaining,
+    )
+
+
+def _update_source_unavailable_symbols(
+    config: Config,
+    *,
+    previous: set[str],
+    succeeded: set[str],
+    newly_unavailable: set[str],
+) -> None:
+    """Persist explicit source gaps without turning them into retry storms."""
+    remaining = (previous - succeeded) | newly_unavailable
+    StateStore(config.meta_root).set_string_set(
+        "adj_factors",
+        _UNAVAILABLE_STATE_FIELD,
         remaining,
     )
 
@@ -274,6 +305,26 @@ def _new_listing_symbols_on(config: Config, trade_date: date) -> set[str]:
     return set(listed["symbol"].unique().to_list())
 
 
+def _delisted_symbols(config: Config) -> set[str]:
+    """Return symbols with a formal delist date in the canonical catalog."""
+    from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+
+    root = config.curated_root / "instruments"
+    if not dataset_has_parquet(root):
+        return set()
+    instruments = dedupe_lazy_by_primary_key(
+        scan_parquet_root(root), "instruments"
+    ).collect()
+    if "symbol" not in instruments.columns or "delist_date" not in instruments.columns:
+        return set()
+    return set(
+        instruments.filter(pl.col("delist_date").is_not_null())
+        .get_column("symbol")
+        .unique()
+        .to_list()
+    )
+
+
 def _uncovered_symbols(config: Config) -> set[str]:
     """Symbols with bars the factor table does not reach.
 
@@ -413,6 +464,13 @@ def _resolve_factors(
         factors = fetch_adj_factor_series(symbol, adjust_type, client=client)
         _save_cache(config, symbol, adjust_type, factors)
         return factors
+    except SinaAdjFactorUnavailableError as exc:
+        if cached is None or cached.is_empty():
+            raise AdjFactorsSourceUnavailableError(
+                f"No cached adj factors for {symbol} ({adjust_type}): {exc}"
+            ) from exc
+        logger.warning("External adj factors failed for %s (%s): %s", symbol, adjust_type, exc)
+        return cached
     except Exception as exc:
         if cached is None or cached.is_empty():
             raise AdjFactorsFetchError(
@@ -489,6 +547,24 @@ def _fetch_failure_finding(symbol: str, adjust_type: str, exc: Exception) -> dic
     }
 
 
+def _source_unavailable_finding(symbol: str, adjust_type: str, exc: Exception) -> dict:
+    return {
+        "dataset": "adj_factors",
+        "severity": "warning",
+        "check": "adj_factor_source_unavailable",
+        "message": (
+            f"{symbol} ({adjust_type}) is formally delisted and Sina returned an empty "
+            "factor series; no exact adjusted history can be reconstructed from the "
+            f"configured source ({exc}). Raw bars remain available; adjusted loads "
+            "must expose adj_is_exact=False unless strict_adj=True"
+        ),
+        "symbol": symbol,
+        "adjust_type": adjust_type,
+        "source": "sina",
+        "permanent": True,
+    }
+
+
 def _process_symbol_adj(
     config: Config,
     sym: str,
@@ -496,6 +572,7 @@ def _process_symbol_adj(
     sym_bars: pl.DataFrame,
     *,
     force: bool,
+    formally_delisted: bool = False,
     client: httpx.Client | None = None,
 ) -> tuple[pl.DataFrame | None, str | None, dict | None]:
     own_client = client is None
@@ -504,6 +581,10 @@ def _process_symbol_adj(
     try:
         try:
             factors = _resolve_factors(config, sym, adj, sym_bars, force=force, client=client)
+        except AdjFactorsSourceUnavailableError as exc:
+            if formally_delisted:
+                return None, None, _source_unavailable_finding(sym, adj, exc)
+            return None, f"{sym}:{adj}", _fetch_failure_finding(sym, adj, exc)
         except AdjFactorsFetchError as exc:
             return None, f"{sym}:{adj}", _fetch_failure_finding(sym, adj, exc)
         if factors is None or factors.is_empty():
@@ -605,7 +686,14 @@ def _compute_adj_factors_locked(
     latest_bar_date = coverage_end_date(config, "daily_bars")
 
     retry_symbols = _retry_symbols(config)
-    refresh_set = set(refresh_symbols or []) | retry_symbols
+    source_unavailable_symbols = _source_unavailable_symbols(config)
+    explicit_refresh = set(refresh_symbols or [])
+    refresh_set = explicit_refresh | retry_symbols
+    # An explicit empty response for a formally delisted symbol is a stable
+    # source limitation, not a transient fetch failure. Re-probe only when the
+    # caller explicitly asks for that symbol or requests a full derive.
+    if not full:
+        refresh_set -= source_unavailable_symbols - explicit_refresh
     if retry_symbols:
         logger.info(
             "adj_factors: retrying %d symbol(s) with a prior uncached fetch failure",
@@ -618,7 +706,9 @@ def _compute_adj_factors_locked(
         # `_uncovered_symbols`. Only meaningful when that path is in play:
         # `full`, and a lake with no watermark at all, already load every date,
         # and forcing a refresh there would only bypass a valid factor cache.
-        uncovered = sorted(_uncovered_symbols(config) - refresh_set)
+        uncovered = sorted(
+            _uncovered_symbols(config) - refresh_set - source_unavailable_symbols
+        )
         if uncovered:
             # Capped so a lake that has never derived does not turn one daily run
             # into a full-market sweep; the remainder is picked up next run, and
@@ -680,23 +770,39 @@ def _compute_adj_factors_locked(
     failed: list[str] = []
     findings: list[dict] = []
     succeeded: set[str] = set()
+    newly_unavailable: set[str] = set()
+    formally_delisted = _delisted_symbols(config)
+    skipped_source_unavailable = (
+        source_unavailable_symbols - explicit_refresh if not full else set()
+    )
 
     if workers <= 1 or len(tasks) == 1:
         with httpx.Client(timeout=20.0) as client:
             for sym, adj, sym_bars, force in tasks:
+                if sym in skipped_source_unavailable:
+                    continue
                 aligned, fail_key, finding = _process_symbol_adj(
-                    config, sym, adj, sym_bars, force=force, client=client
+                    config,
+                    sym,
+                    adj,
+                    sym_bars,
+                    force=force,
+                    formally_delisted=sym in formally_delisted,
+                    client=client,
                 )
                 if fail_key:
                     failed.append(fail_key)
                 if finding:
                     findings.append(finding)
+                    if finding.get("permanent"):
+                        newly_unavailable.add(sym)
+                        succeeded.add(sym)
                 if aligned is not None:
                     frames.append(aligned)
                     succeeded.add(sym)
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [
+            futures = {
                 pool.submit(
                     _process_symbol_adj,
                     config,
@@ -704,15 +810,21 @@ def _compute_adj_factors_locked(
                     adj,
                     sym_bars,
                     force=force,
-                )
+                    formally_delisted=sym in formally_delisted,
+                ): sym
                 for sym, adj, sym_bars, force in tasks
-            ]
+                if sym not in skipped_source_unavailable
+            }
             for fut in as_completed(futures):
+                sym = futures[fut]
                 aligned, fail_key, finding = fut.result()
                 if fail_key:
                     failed.append(fail_key)
                 if finding:
                     findings.append(finding)
+                    if finding.get("permanent"):
+                        newly_unavailable.add(sym)
+                        succeeded.add(sym)
                 if aligned is not None:
                     frames.append(aligned)
                     succeeded.add(sym)
@@ -723,6 +835,12 @@ def _compute_adj_factors_locked(
             previous=retry_symbols,
             succeeded=succeeded,
             failed={item.rsplit(":", 1)[0] for item in failed},
+        )
+        _update_source_unavailable_symbols(
+            config,
+            previous=source_unavailable_symbols,
+            succeeded=succeeded,
+            newly_unavailable=newly_unavailable,
         )
         return AdjFactorsResult(0, len(tasks), failed, findings)
 
@@ -736,5 +854,11 @@ def _compute_adj_factors_locked(
         previous=retry_symbols,
         succeeded=succeeded,
         failed={item.rsplit(":", 1)[0] for item in failed},
+    )
+    _update_source_unavailable_symbols(
+        config,
+        previous=source_unavailable_symbols,
+        succeeded=succeeded,
+        newly_unavailable=newly_unavailable,
     )
     return AdjFactorsResult(total, len(tasks), failed, findings)

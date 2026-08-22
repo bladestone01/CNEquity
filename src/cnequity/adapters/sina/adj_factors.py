@@ -21,6 +21,10 @@ _SINA_URLS = {
 _SINA_FACTOR_COLS = {"qfq": "qfq_factor", "hfq": "hfq_factor"}
 
 
+class SinaAdjFactorUnavailableError(ValueError):
+    """Raised when Sina explicitly returns no factor series for a symbol."""
+
+
 def to_sina_symbol(symbol: str) -> str:
     info = parse_symbol(symbol)
     prefix = {"SH": "sh", "SZ": "sz", "BJ": "bj"}.get(info.exchange, info.exchange.lower())
@@ -53,7 +57,7 @@ def _parse_sina_factor_payload(text: str) -> list[dict]:
         raise ValueError("Sina adj factor response payload is not an object")
     data = payload.get("data")
     if not data:
-        raise ValueError("Sina adj factor response has empty data")
+        raise SinaAdjFactorUnavailableError("Sina adj factor response has empty data")
     if not isinstance(data, list):
         raise ValueError("Sina adj factor response data is not a list")
     rows = _normalize_sina_rows(data)
