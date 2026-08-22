@@ -15,6 +15,13 @@ batch_size = 100
 max_retries = 3
 retry_backoff_seconds = 5
 batch_stale_seconds = 3600  # running batches without heartbeat for this long → stale (compact gate) / failed (retry)
+# daily_bars failure-attribution granularity ("symbol" | "batch").
+#   symbol (default): partially successful batches are staged immediately and
+#     only the genuine symbol×date gap is failed + precisely retried.
+#   batch: legacy strict all-or-nothing — any failure fails the whole batch,
+#     nothing is staged, retry refetches the whole batch.
+# Config-only on purpose: there is NO --granularity command-line option.
+daily_bars_granularity = "symbol"
 
 [tdx_protocol]
 enabled = true
@@ -222,6 +229,16 @@ primary = "eastmoney"
 backup = "tdx_protocol"
 compare_fields = ["cash_dividend", "bonus_ratio", "transfer_ratio"]
 price_tolerance_bps = 10
+
+# trading_status: EastMoney is the daily ST/suspension feed; the baostock
+# snapshot (`query_all_stock`) is its fallback. Removing this entry (or
+# disabling [failover] / [sources.baostock]) restores the pre-change behavior
+# where a primary failure fails the whole step. The entry is dataset-scoped:
+# it covers both the ST and the suspension facet of trading_status together.
+[[failover.datasets]]
+name = "trading_status"
+primary = "eastmoney"
+backup = "baostock"
 
 [universe]
 default = "all_a"

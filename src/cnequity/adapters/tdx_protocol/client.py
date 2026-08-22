@@ -483,6 +483,80 @@ def fetch_daily_bars(
     return _fail_or_mock("daily_bars", reason, allow_mock, _mock_bars(symbols, start, end))
 
 
+def fetch_daily_bars_tolerant(
+    symbols: list[str],
+    start: date,
+    end: date,
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    allow_mock: bool = False,
+    backfill: bool = False,
+    config: Config | None = None,
+    on_heartbeat: Callable[[], None] | None = None,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Like :func:`fetch_daily_bars` but per-symbol tolerant.
+
+    ``fetch_daily_bars`` shares one TDX session and any symbol's failure fails
+    the whole batch before anything is returned — symbol-mode attribution needs
+    the successes to survive the failures. Returns ``(frame, failed_symbols)``;
+    a symbol that raises, or returns no rows for the window, is recorded as
+    failed and the others still stage. A total failure (session dead, no usable
+    client, import missing) keeps today's loud behaviour: raise via
+    ``_fail_or_mock`` so the whole batch still fails rather than quietly staging
+    nothing.
+    """
+    if allow_mock:
+        return _fail_or_mock("daily_bars", _MOCK_SHORT_CIRCUIT, True, _mock_bars(symbols, start, end)), []
+    client = None
+    rows: list[dict] = []
+    failed: list[str] = []
+    try:
+        with TDX_SESSION_LOCK:
+            client = _quotes_client(config)
+            for sym in symbols:
+                if on_heartbeat is not None:
+                    on_heartbeat()
+                try:
+                    sym_rows = fetch_bars_paginated(
+                        client,
+                        sym,
+                        start,
+                        end,
+                        rate_limit=rate_limit,
+                        backfill=backfill,
+                        on_page=on_heartbeat,
+                    )
+                except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                    logger.warning("daily_bars fetch failed for %s: %s", sym, exc)
+                    failed.append(sym)
+                    continue
+                if not sym_rows:
+                    failed.append(sym)
+                    continue
+                rows.extend(sym_rows)
+    except ImportError:
+        failed = list(symbols)
+    finally:
+        _close_quotes_client(client)
+    if failed and not rows:
+        # Total failure: everything failed AND nothing was staged. Keep the
+        # loud whole-batch failure so batch-mode semantics and the failover
+        # path still trigger; drop the cached server so the next attempt
+        # re-probes a live host.
+        reset_tdx_server_cache()
+        return _fail_or_mock("daily_bars", f"TDX failed for all {len(symbols)} symbol(s)", allow_mock, _mock_bars(symbols, start, end)), list(symbols)
+    if failed:
+        # Drop the cached server once so the next batch re-probes instead of
+        # hammering whatever host just dropped these symbols.
+        reset_tdx_server_cache()
+    df = (
+        pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
+        if rows
+        else pl.DataFrame()
+    )
+    return df, failed
+
+
 def fetch_minute_bars(
     symbols: list[str],
     start: date,

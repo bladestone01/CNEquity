@@ -6,6 +6,48 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+**主要变更：`daily_bars` 失败归因细化（symbol 级）+ 处理粒度开关 + 豁免。**
+
+### Added
+
+- **`daily_bars` 失败归因到符号级（`symbol` 模式，默认）.** 一批内只有真正缺行的符号（信号×日期）被记为失败并精确重拉；健康的符号立即落盘，不再"一只毒倒一百只"。失败范围持久化到 manifest `failed_scope_json`（与原始 `symbols_json` 分离，保留审计），重试只重拉缺口（`cne run daily` 与 `cne backfill` 共用此路径）。
+- **`[orchestrator].daily_bars_granularity` 开关（`symbol` / `batch`，默认 `symbol`）.** 处理粒度以配置文件为**唯一入口**，`cne run daily` / `cne backfill` / `cne retry` **均无 `--granularity` 参数**；run 启动时把粒度写入 run metadata，`cne retry` 还原该 run 的粒度（重试永不更换语义）。`batch` 为 legacy 严格 all-or-nothing 的精确回退（含 ETF 时按整批失败的行为保留为配置项）。
+- **持久化证据豁免（无实时直连）.** 未上市（`list_date>end`）、退市早于窗口（`delist_date<start`）、上市首日无行情（`list_date==end` 且湖内无正量 bar）、整窗口停牌（curated `trading_status` 全窗口 `suspended`/`st`/`*st`，或 `daily_bars` 尾部 ≥20 全零占位串）的符号从"必有行"集合剔除、记 finding，不进 failover；豁免分类只读盘上数据，禁止在判定时直连厂商接口。
+- **重试 attempt 级文件 + 失败族 supersede.** 符号模式重试写 `{batch_id}-attempt-{n}` 新文件，绝不覆盖首次已落盘的部分行；成功后把原批及其 attempt 族标 `superseded` 以解锁 compact。
+- **daily_bars 扫批 universe 恒为股票.** 过滤 `asset_type=="stock"`（与 `daily_bars_history` 一致），且**无条件生效**——`batch` 模式同样不含基金/ETF/REIT。
+
+### Notes
+
+- 行为影响：默认从"整批 all-or-nothing"切到符号级归因，`100 symbols FAILED` 全批重拉消失；切换粒度 = 改配置文件并跑后改回（run metadata 留痕可审计）；已 compact 的数据不回放，重验旧窗口请显式 `cne backfill --start/--end`。
+
+## [0.7.2.1] — 2026-08-19
+
+**主要变更：修复 `trading_status`（ST / 停牌）数据获取，新增 baostock 备份数据源。**
+
+### Added
+
+- **`trading_status` runtime guards & diagnostics.** A rerun of an already-covered day reports "数据已补齐成功" and short-circuits without fetching; a current-trading-day capture before 16:00 Asia/Shanghai is skipped with an advisory (`before_cutoff`) instead of failing; and when the baostock backup declines, the raised error now names the decline reason (stale / not configured / threshold / fill-failure) instead of masking it behind the primary EastMoney error.
+- **`cne config validate` now rejects malformed `[[failover.datasets]]` entries.** Unknown dataset names, unrecognized primary/backup sources, and duplicate entries fail validation instead of silently disabling the trading_status failover.
+- **`trading_status` failover to a baostock daily snapshot.** When the EastMoney
+  ST/suspension fetching fails, SH/SZ fall back to `query_all_stock(day)`
+  (single-request snapshot) with a freshness gate, per-symbol fill
+  classification (a previously non-tradable name is never washed to `normal`),
+  counted BJ defaults, dynamic provenance, and `source_snapshots` audit trail.
+  Opt-in via `[[failover.datasets]] name = "trading_status"`; removing the entry
+  restores the previous behavior.
+- **EastMoney suspension fetch adapted to the 2026-08 datacenter contract.**
+  `RPT_CUSTOM_SUSPEND_DATA_INTERFACE` now requires a `DATETIME`/`MARKET`
+  filter (five markets, deduplicated) and the renamed
+  `SUSPEND_START_DATE`/`SUSPEND_END_TIME` columns; an all-market empty batch
+  fails loudly instead of masquerading as "no suspensions".
+
+### Fixed
+
+- **`trading_status` daily runs no longer fail end-to-end when EastMoney
+  push2/datacenter legs are unreachable** (IP throttle or contract drift):
+  with the failover entry configured the step degrades to the baostock
+  snapshot and is tagged `warning` with audit findings.
+
 ## [0.7.2] — 2026-08-16
 
 ### Fixed

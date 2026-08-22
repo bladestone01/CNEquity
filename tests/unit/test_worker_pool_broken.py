@@ -32,6 +32,9 @@ root = "{path_for_toml(tmp_path / "data")}"
 [orchestrator]
 workers = 4
 batch_size = 1
+# These legacy-seam tests pin the strict batch path; symbol-mode pool fallback
+# has its own coverage.
+daily_bars_granularity = "batch"
 
 [tdx_protocol]
 allow_mock = true

@@ -108,6 +108,10 @@ class JobEngine:
             }
 
         metadata = {"trade_date": trade_date.isoformat(), "backfill": backfill}
+        # Effective daily_bars granularity at run start is recorded so a later
+        # `cne retry` restores the same failure-attribution semantics
+        # (config-only switch: no CLI override exists).
+        metadata["daily_bars_granularity"] = self.config.daily_bars_granularity
         if backfill:
             metadata["backfill_scope"] = {
                 "start": (
@@ -465,20 +469,61 @@ class JobEngine:
     def _worker_batch_specs(
         self, batches: list, trade_date: date
     ) -> list[tuple[str, list[str], date, date]]:
+        """Build retry ``BatchSpec``s.
+
+        ``batch`` mode: one spec per failed batch using its full ``symbols_json``
+        (today's whole-batch refetch). ``symbol`` mode: when the batch carries a
+        persisted ``failed_scope_json``, one spec per distinct (recorded) window
+        covering only the failed symbols×dates; otherwise fall back to the full
+        batch scope (e.g. a crashed worker that never recorded a failure scope).
+        """
         specs: list[tuple[str, list[str], date, date]] = []
         for batch in batches:
+            batch_id = batch["batch_id"]
             symbols = json.loads(batch["symbols_json"] or "[]")
             window_start = batch["window_start"] or trade_date.isoformat()
             window_end = batch["window_end"] or trade_date.isoformat()
+            scope = self._batch_failed_scope(batch)
+            if self.config.daily_bars_granularity == "symbol" and scope:
+                by_window: dict[tuple[str, str], list[str]] = {}
+                for entry in scope:
+                    sym = entry.get("symbol")
+                    if not sym:
+                        continue
+                    wstart = entry.get("start") or window_start
+                    wend = entry.get("end") or window_end
+                    by_window.setdefault((wstart, wend), []).append(sym)
+                for (wstart, wend), syms in by_window.items():
+                    specs.append(
+                        (
+                            batch_id,
+                            syms,
+                            date.fromisoformat(wstart),
+                            date.fromisoformat(wend),
+                        )
+                    )
+                continue
             specs.append(
                 (
-                    batch["batch_id"],
+                    batch_id,
                     symbols,
                     date.fromisoformat(window_start),
                     date.fromisoformat(window_end),
                 )
             )
         return specs
+
+    @staticmethod
+    def _batch_failed_scope(batch) -> list[dict]:
+        """Read a batch row's persisted failure scope ([] when absent/legacy)."""
+        raw = batch["failed_scope_json"] if "failed_scope_json" in batch.keys() else None
+        if not raw:
+            return []
+        try:
+            scope = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        return scope if isinstance(scope, list) else []
 
     def _retry_run(
         self, run_id: str, trade_date: date, *, auto_finalize: bool = True
@@ -495,6 +540,12 @@ class JobEngine:
     ) -> dict[str, Any]:
         run_meta = self.manifest.get_run_metadata(run_id)
         self.config._backfill = bool(run_meta.get("backfill"))
+        # Restore the granularity recorded at run start (config-only: retry has
+        # no override entry). Runs that never recorded a value (created before
+        # the switch existed) keep the current config's value.
+        recorded_granularity = run_meta.get("daily_bars_granularity")
+        if recorded_granularity:
+            self.config.daily_bars_granularity = str(recorded_granularity)
         scope = run_meta.get("backfill_scope") or {}
         for attr, key in (
             ("_backfill_start", "start"),

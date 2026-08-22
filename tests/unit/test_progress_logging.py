@@ -35,6 +35,7 @@ def test_progress_is_logged_per_batch(caplog, config, monkeypatch):
 
     config.workers = 1
     config.batch_size = 1
+    config.daily_bars_granularity = "batch"
     with caplog.at_level(logging.INFO, logger="cnequity.orchestrator.worker_pool"):
         worker_pool.fetch_daily_bars_parallel(
             config,
@@ -59,6 +60,7 @@ def test_a_failed_batch_still_advances_the_counter(caplog, config, monkeypatch):
     monkeypatch.setattr(worker_pool, "fetch_daily_bars", _boom)
     config.workers = 1
     config.batch_size = 1
+    config.daily_bars_granularity = "batch"
     with caplog.at_level(logging.INFO, logger="cnequity.orchestrator.worker_pool"):
         out = worker_pool.fetch_daily_bars_parallel(
             config,

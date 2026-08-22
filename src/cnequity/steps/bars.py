@@ -189,6 +189,276 @@ def _merge_ownership_result(
     return out
 
 
+def _stock_only_symbols(config: Config, symbols: list[str]) -> list[str]:
+    """D1: restrict the daily sweep universe to instruments with ``asset_type="stock"``.
+
+    Matches the criterion already applied by ``step_daily_bars_history``. When
+    instruments are absent (no curated data yet) the full list is kept — the
+    same fallback the history path uses. This is applied **regardless** of
+    ``daily_bars_granularity``: the granularity switch controls failure
+    attribution/staging semantics, not which instruments are swept.
+    """
+    if not symbols:
+        return symbols
+    inst = load_curated_instruments(config)
+    if inst is None or "asset_type" not in inst.columns or "symbol" not in inst.columns:
+        return symbols
+    stock = set(inst.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
+    return [s for s in symbols if s in stock]
+
+
+def _positive_volume_bar_symbols(config: Config, symbols: list[str]) -> set[str]:
+    """Which of *symbols* already hold at least one positive-volume bar.
+
+    Only the requested symbols are scanned (this is the persisted evidence for
+    the first-trading-day exemption, and the candidate set ``list_date == end``
+    is normally empty or tiny, so a full-lake scan is not warranted).
+    """
+    wanted = [s for s in symbols if s]
+    if not wanted:
+        return set()
+    bars_root = config.curated_root / "daily_bars"
+    files = sorted(bars_root.rglob("*.parquet")) if bars_root.exists() else []
+    if not files:
+        return set()
+    scans: list[pl.LazyFrame] = []
+    for path in files:
+        scan = pl.scan_parquet(str(path)).filter(pl.col("symbol").is_in(wanted))
+        if "volume" in scan.collect_schema().names():
+            scan = scan.filter(pl.col("volume") > 0)
+        scans.append(scan.select("symbol"))
+    try:
+        return set(
+            pl.concat(scans, how="diagonal_relaxed")
+            .select("symbol")
+            .unique()
+            .collect()["symbol"]
+            .to_list()
+        )
+    except (OSError, pl.exceptions.PolarsError, ValueError):
+        return set()
+
+
+def _whole_window_suspended_symbols(
+    config: Config, symbols: list[str], start: date, end: date
+) -> set[str]:
+    """Symbols persisted evidence proves were suspended for the whole window.
+
+    Two on-disk evidence sources (persisted-evidence-only constraint; never a
+    live vendor call):
+    - curated ``trading_status``: every observed session in the window carries a
+      non-tradable status; a symbol with no such rows defers to evidence (b);
+    - ``daily_bars`` placeholder-run heuristic: a run of at least
+      ``delisted._ORPHAN_ACTIVE_PLACEHOLDER_MIN_ROWS`` all-zero rows after the
+      symbol's last positive-volume print and before ``end`` — the same
+      "still tracked as listed ⇒ halted, not delisted" tell the delisted
+      recovery path relies on.
+    """
+    from cnequity.quality.failover import _NON_TRADABLE_STATUSES
+    from cnequity.steps.delisted import _ORPHAN_ACTIVE_PLACEHOLDER_MIN_ROWS
+
+    wanted = set(symbols)
+    if not wanted:
+        return set()
+    suspended: set[str] = set()
+
+    ts_root = config.curated_root / "trading_status"
+    if ts_root.exists() and any(ts_root.rglob("*.parquet")):
+        try:
+            ts = (
+                pl.scan_parquet(list(ts_root.rglob("*.parquet")))
+                .select("symbol", "trade_date", "status")
+                .filter(
+                    pl.col("symbol").is_in(list(wanted))
+                    & (pl.col("trade_date") >= start)
+                    & (pl.col("trade_date") <= end)
+                )
+                .collect()
+            )
+        except (OSError, pl.exceptions.PolarsError, ValueError):
+            ts = pl.DataFrame()
+        if not ts.is_empty():
+            for sym in ts["symbol"].unique().to_list():
+                statuses = set(ts.filter(pl.col("symbol") == sym)["status"].to_list())
+                if statuses and statuses <= _NON_TRADABLE_STATUSES:
+                    suspended.add(sym)
+                    wanted.discard(sym)
+
+    if not wanted:
+        return suspended
+    bars_root = config.curated_root / "daily_bars"
+    if not bars_root.exists() or not any(bars_root.rglob("*.parquet")):
+        return suspended
+    try:
+        scan = (
+            pl.scan_parquet(list(bars_root.rglob("*.parquet")))
+            .select("symbol", "trade_date", "volume", "open", "high", "low", "close")
+            .filter(pl.col("symbol").is_in(list(wanted)))
+            .collect()
+        )
+    except (OSError, pl.exceptions.PolarsError, ValueError):
+        return suspended
+    if scan.is_empty():
+        return suspended
+    last_positive = scan.filter(
+        pl.col("volume").is_not_null() & (pl.col("volume") > 0)
+    ).group_by("symbol").agg(pl.col("trade_date").max().alias("lp"))
+    if last_positive.is_empty():
+        return suspended
+    placeholder = scan.filter(
+        (pl.col("open") == pl.col("close"))
+        & (pl.col("high") == pl.col("low"))
+        & (pl.col("open") == pl.col("high"))
+        & (pl.col("volume") == 0)
+    )
+    if placeholder.is_empty():
+        return suspended
+    # Trailing all-zero run after the symbol's last real print — the same
+    # "still tracked as listed ⇒ halted, not delisted" tell the delisted
+    # recovery path uses. Only symbols whose last print predates the window
+    # can be wholly suspended across it.
+    counts = placeholder.join(last_positive, on="symbol", how="inner").filter(
+        (pl.col("trade_date") > pl.col("lp")) & (pl.col("lp") < start)
+    ).group_by("symbol").agg(pl.col("trade_date").count().alias("n"))
+    for row in counts.iter_rows(named=True):
+        if row["n"] >= _ORPHAN_ACTIVE_PLACEHOLDER_MIN_ROWS:
+            suspended.add(row["symbol"])
+    return suspended
+
+
+def _persisted_exemptions(
+    config: Config,
+    generic: list[str],
+    start: date,
+    end: date,
+) -> tuple[list[str], list[dict]]:
+    """Symbols in *generic* that persisted evidence proves need no fetch.
+
+    Returns ``(exempt_symbols, audit_findings)``. Evidence is on-disk only
+    (constraint in spec ``daily-bars-processing-granularity``): list/delist dates
+    from instruments, the placeholder-run heuristic, and ``trading_status``.
+    A symbol that cannot be proven legitimate-empty stays a genuine gap (strict).
+    """
+    if not generic:
+        return [], []
+    exempt: set[str] = set()
+    reasons: dict[str, int] = {}
+
+    spans = instrument_metadata(config)
+    by_sym: dict[str, dict] = {}
+    if not spans.is_empty():
+        for row in spans.iter_rows(named=True):
+            by_sym[row["symbol"]] = row
+    first_day_candidates = [
+        sym
+        for sym in generic
+        if (row := by_sym.get(sym)) is not None
+        and row.get("list_date") is not None
+        and row["list_date"] == end
+    ]
+    if first_day_candidates:
+        traded_ever = _positive_volume_bar_symbols(config, first_day_candidates)
+        for sym in first_day_candidates:
+            if sym not in traded_ever:
+                exempt.add(sym)
+                reasons["first_trading_day_no_quote"] = (
+                    reasons.get("first_trading_day_no_quote", 0) + 1
+                )
+
+    suspended = _whole_window_suspended_symbols(config, list(set(generic) - exempt), start, end)
+    for sym in suspended:
+        exempt.add(sym)
+    if suspended:
+        reasons["whole_window_suspended"] = sum(1 for s in generic if s in suspended)
+
+    findings: list[dict] = []
+    if exempt:
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(reasons.items()))
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_persisted_exemptions",
+                "message": (
+                    f"daily_bars {start}..{end}: exempted {len(exempt)} symbol(s) by "
+                    f"persisted evidence ({detail}) — no fetch, no failover"
+                ),
+                "exempt_count": len(exempt),
+                "exempt_symbols": sorted(exempt),
+            }
+        )
+    return sorted(exempt), findings
+
+
+def _classify_with_exemptions(
+    config: Config,
+    symbols: list[str],
+    spans: dict[str, tuple[date | None, date | None]],
+    start: date,
+    end: date,
+) -> tuple[DailyBarOwnership, list[dict]]:
+    """Ownership classification plus persisted-evidence exemptions.
+
+    Exempted symbols move from ``generic`` into ``expected_no_data`` so they are
+    dropped from the required set, recorded (finding), and never trigger a
+    failover re-fetch — they are not failures.
+    """
+    ownership = classify_daily_bar_ownership(symbols, spans, start, end)
+    exempt, findings = _persisted_exemptions(config, ownership.generic, start, end)
+    if exempt:
+        exempt_set = set(exempt)
+        ownership.expected_no_data.extend(exempt)
+        ownership.generic = [s for s in ownership.generic if s not in exempt_set]
+    return ownership, findings
+
+
+def _attempt_batch_id(config: Config, run_id: str, batch_id: str) -> str:
+    """Next attempt-level batch id ``{base}-attempt-{n}`` for a symbol-mode retry.
+
+    Attempt-scoped ids mean the retry writes a fresh
+    ``part-{id}.parquet`` instead of overwriting the partial rows the
+    interrupted original attempt already staged under the deterministic
+    ``part-{batch_id}.parquet``.
+    """
+    from cnequity.orchestrator.manifest import Manifest
+
+    manifest = Manifest(config.manifest_path)
+    base = batch_id.split("-attempt-")[0]
+    prefix = f"{base}-attempt-"
+    n = 0
+    for row in manifest.get_batches_for_run(run_id):
+        if row["batch_id"].startswith(prefix):
+            try:
+                n = max(n, int(row["batch_id"][len(prefix):]))
+            except ValueError:
+                continue
+    return f"{prefix}{n + 1}"
+
+
+def _supersede_resolved_attempts(config: Config, run_id: str, attempt_map: dict[str, str]) -> None:
+    """Mark the resolved failure-attempt family superseded once a retry succeeded.
+
+    The family is the original base batch plus every ``-attempt-*`` row of the
+    same base: a confirmed successful retry means the whole family's concerns
+    are resolved and compaction can proceed.
+    """
+    from cnequity.orchestrator.manifest import Manifest
+
+    manifest = Manifest(config.manifest_path)
+    for attempt_id, source_id in attempt_map.items():
+        row = manifest.get_batch(run_id, attempt_id)
+        if row is None or row["status"] != "success":
+            continue
+        base = source_id.split("-attempt-")[0]
+        family = [
+            r["batch_id"]
+            for r in manifest.get_batches_for_run(run_id)
+            if r["batch_id"] == base or r["batch_id"].startswith(base + "-attempt-")
+        ]
+        if family:
+            manifest.supersede_batches(run_id, family, superseded_by=attempt_id)
+
+
 @register_step(
     "daily_bars",
     group="core",
@@ -206,14 +476,26 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         _reject_unfinished_daily_bar_window(config, end)
         spans = _instrument_spans(config)
         remaining: list[tuple[str, list[str], date, date]] = []
+        exempt_findings: list[dict] = []
         ownership = DailyBarOwnership()
+        attempt_map: dict[str, str] = {}
+        symbol_mode = getattr(config, "daily_bars_granularity", "symbol") == "symbol"
         for batch_id, symbols, spec_start, spec_end in batch_specs:
-            routed = classify_daily_bar_ownership(symbols, spans, spec_start, spec_end)
+            routed, exempt = _classify_with_exemptions(
+                config, symbols, spans, spec_start, spec_end
+            )
+            exempt_findings.extend(exempt)
             ownership.generic.extend(routed.generic)
             ownership.delegated_delisted.extend(routed.delegated_delisted)
             ownership.expected_no_data.extend(routed.expected_no_data)
             if routed.generic:
-                remaining.append((batch_id, routed.generic, spec_start, spec_end))
+                write_batch_id = batch_id
+                if symbol_mode:
+                    # Attempt-level id: the retry must never overwrite the partial
+                    # rows of the interrupted attempt (part-{batch_id}.parquet).
+                    write_batch_id = _attempt_batch_id(config, run_id, batch_id)
+                    attempt_map[write_batch_id] = batch_id
+                remaining.append((write_batch_id, routed.generic, spec_start, spec_end))
             if routed.delegated_delisted:
                 delegated_id = f"{batch_id}-delegated" if routed.generic else batch_id
                 _record_delegated_ownership_batch(
@@ -257,7 +539,13 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
             tdx_result=result,
             sina_result=None,
         )
-        return _merge_ownership_result(out, config, ownership, start, end)
+        if attempt_map:
+            _supersede_resolved_attempts(config, run_id, attempt_map)
+        out = _merge_ownership_result(out, config, ownership, start, end)
+        if exempt_findings:
+            ctx = out.setdefault("context_updates", {})
+            ctx.setdefault("audit_findings", []).extend(exempt_findings)
+        return out
 
     if getattr(config, "_backfill", False):
         start, end = _backfill_window(config, trade_date)
@@ -270,8 +558,13 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
     rebackfill = context.get("symbols_to_rebackfill") or []
     if rebackfill:
         symbols = list(dict.fromkeys(rebackfill + symbols))
+    # D1: sweep only equity instruments (funds/ETF/REIT have no TDX daily bars and
+    # must not fail a symbol batch). Applied regardless of granularity mode.
+    symbols = _stock_only_symbols(config, symbols)
 
-    ownership = classify_daily_bar_ownership(symbols, _instrument_spans(config), start, end)
+    ownership, exempt_findings = _classify_with_exemptions(
+        config, symbols, _instrument_spans(config), start, end
+    )
     _record_delegated_ownership_batch(
         config,
         run_id,
@@ -309,7 +602,11 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         tdx_result=result,
         sina_result=sina_result,
     )
-    return _merge_ownership_result(out, config, ownership, start, end)
+    out = _merge_ownership_result(out, config, ownership, start, end)
+    if exempt_findings:
+        ctx = out.setdefault("context_updates", {})
+        ctx.setdefault("audit_findings", []).extend(exempt_findings)
+    return out
 
 
 def _finish_daily_bars(
@@ -1017,6 +1314,11 @@ def _validate_planned_stock_bars(
 def step_daily_bars_history(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     """Backfill pre-2016 unadjusted daily bars from 同花顺.
 
+    Granularity scope: this path runs per symbol and accumulates a ``failed``
+    list regardless of ``daily_bars_granularity``. The symbol/batch switch
+    governs only the worker-pool TDX tip/multi-day path
+    (``fetch_daily_bars_parallel``); it must never be made batch-strict.
+
     Writes into ``daily_bars`` like the daily step, so `compact` and every reader
     treat the older rows identically. Only raw prices are fetched — hfq stays
     derived from the Sina factors already in use, which reach back to listing, so
@@ -1214,6 +1516,10 @@ def _delisted_universe(config: Config, start: date, end: date) -> list[str]:
 )
 def step_daily_bars_delisted(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     """Recover bars for stocks that delisted inside the window.
+
+    Granularity scope: this dedicated recovery path is per-symbol and returns a
+    ``failed`` list; it is unaffected by the ``daily_bars_granularity`` switch
+    (which governs only the TDX worker-pool path, ``fetch_daily_bars_parallel``).
 
     The live vendors serve only what currently trades, so this is the one path
     that can close the survivorship gap; baostock keeps each delisted name

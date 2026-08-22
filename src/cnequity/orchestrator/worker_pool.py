@@ -10,7 +10,11 @@ from typing import Any
 
 import polars as pl
 
-from cnequity.adapters.tdx_protocol.client import fetch_daily_bars, normalize_with_source
+from cnequity.adapters.tdx_protocol.client import (
+    fetch_daily_bars,
+    fetch_daily_bars_tolerant,
+    normalize_with_source,
+)
 from cnequity.config import Config, load_config
 from cnequity.domain.rate_limit import RateLimitSpec
 from cnequity.orchestrator.manifest import Manifest
@@ -118,6 +122,87 @@ def _require_daily_bar_date_coverage(df, start: date, end: date) -> None:
         )
 
 
+def _stage_daily_bars_batch(
+    *,
+    config,
+    rate_limit,
+    symbols: list[str],
+    start: date,
+    end: date,
+    run_id: str,
+    batch_id: str,
+    dataset: str,
+    backfill: bool,
+    on_heartbeat,
+    manifest,
+    staging_root: Path,
+) -> dict[str, Any]:
+    """Fetch + stage one ``daily_bars`` batch under the configured granularity.
+
+    ``symbol`` mode (default): per-symbol tolerant fetch; healthy symbols are
+    staged immediately, failures are recorded in ``failed_scope_json`` and
+    returned. ``batch`` mode (legacy): any symbol failure or coverage gap raises
+    and nothing is staged, exactly as before.
+
+    Returns ``{"rows_read", "rows_written", "failed_symbols", "batch_id"}``.
+    Raises only in ``batch`` mode (or on total symbol-mode failure, via the
+    client), never for a partial symbol-mode result.
+    """
+    granularity = getattr(config, "daily_bars_granularity", "symbol")
+    if granularity == "symbol":
+        df, failed_symbols = fetch_daily_bars_tolerant(
+            symbols,
+            start,
+            end,
+            rate_limit=rate_limit,
+            allow_mock=config.tdx_allow_mock,
+            backfill=backfill,
+            config=config,
+            on_heartbeat=on_heartbeat,
+        )
+        df = normalize_with_source(df, dataset=dataset)
+        _require_daily_bar_date_coverage(df, start, end)
+        scope = [
+            {
+                "symbol": sym,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "missing_dates": [],
+            }
+            for sym in failed_symbols
+        ]
+        if manifest is not None:
+            manifest.set_failed_scope(run_id, batch_id, scope)
+        if df.height:
+            StagingWriter(staging_root).write_batch(dataset, run_id, batch_id, df)
+        return {
+            "rows_read": df.height,
+            "rows_written": df.height,
+            "batch_id": batch_id,
+            "failed_symbols": failed_symbols,
+        }
+    df = fetch_daily_bars(
+        symbols,
+        start,
+        end,
+        rate_limit=rate_limit,
+        allow_mock=config.tdx_allow_mock,
+        backfill=backfill,
+        config=config,
+        on_heartbeat=on_heartbeat,
+    )
+    df = normalize_with_source(df, dataset=dataset)
+    _require_daily_bar_symbol_coverage(df, symbols)
+    _require_daily_bar_date_coverage(df, start, end)
+    StagingWriter(staging_root).write_batch(dataset, run_id, batch_id, df)
+    return {
+        "rows_read": df.height,
+        "rows_written": df.height,
+        "batch_id": batch_id,
+        "failed_symbols": [],
+    }
+
+
 def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
     (
         symbols,
@@ -161,35 +246,36 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
 
     try:
         _heartbeat()
-        df = fetch_daily_bars(
-            symbols,
-            start,
-            end,
-            rate_limit=rl,
-            allow_mock=allow_mock,
-            backfill=backfill,
+        result = _stage_daily_bars_batch(
             config=tdx_cfg,
+            rate_limit=rl,
+            symbols=symbols,
+            start=start,
+            end=end,
+            run_id=run_id,
+            batch_id=batch_id,
+            dataset=dataset,
+            backfill=backfill,
             on_heartbeat=_heartbeat,
+            manifest=manifest,
+            staging_root=staging_root,
         )
-        df = normalize_with_source(df, dataset=dataset)
-        _require_daily_bar_symbol_coverage(df, symbols)
-        _require_daily_bar_date_coverage(df, start, end)
-        writer = StagingWriter(staging_root)
-        writer.write_batch(dataset, run_id, batch_id, df)
         if manifest:
+            failed = bool(result["failed_symbols"])
             manifest.finish_batch(
                 run_id,
                 batch_id,
-                "success",
-                rows_read=df.height,
-                rows_written=df.height,
+                "failed" if failed else "success",
+                rows_read=result["rows_read"],
+                rows_written=result["rows_written"],
+                error_message=(
+                    f"{len(result['failed_symbols'])} symbol(s) in failure scope "
+                    "(healthy symbols staged; retry refetches only the scope)"
+                    if failed
+                    else None
+                ),
             )
-        return {
-            "rows_read": df.height,
-            "rows_written": df.height,
-            "batch_id": batch_id,
-            "failed_symbols": [],
-        }
+        return result
     except Exception as exc:
         if manifest:
             manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
@@ -276,34 +362,35 @@ def fetch_daily_bars_parallel(
                 manifest.touch_batch_heartbeat(run_id, batch_id)
 
             _heartbeat()
-            df = fetch_daily_bars(
-                batch_symbols,
-                batch_start,
-                batch_end,
-                rate_limit=rl,
-                allow_mock=config.tdx_allow_mock,
-                backfill=backfill,
+            result = _stage_daily_bars_batch(
                 config=config,
+                rate_limit=rl,
+                symbols=batch_symbols,
+                start=batch_start,
+                end=batch_end,
+                run_id=run_id,
+                batch_id=batch_id,
+                dataset=dataset,
+                backfill=backfill,
                 on_heartbeat=_heartbeat,
+                manifest=manifest,
+                staging_root=staging_root,
             )
-            df = normalize_with_source(df, dataset=dataset)
-            _require_daily_bar_symbol_coverage(df, batch_symbols)
-            _require_daily_bar_date_coverage(df, batch_start, batch_end)
-            writer = StagingWriter(staging_root)
-            writer.write_batch(dataset, run_id, batch_id, df)
+            failed = bool(result["failed_symbols"])
             manifest.finish_batch(
                 run_id,
                 batch_id,
-                "success",
-                rows_read=df.height,
-                rows_written=df.height,
+                "failed" if failed else "success",
+                rows_read=result["rows_read"],
+                rows_written=result["rows_written"],
+                error_message=(
+                    f"{len(result['failed_symbols'])} symbol(s) in failure scope "
+                    "(healthy symbols staged; retry refetches only the scope)"
+                    if failed
+                    else None
+                ),
             )
-            return {
-                "rows_read": df.height,
-                "rows_written": df.height,
-                "batch_id": batch_id,
-                "failed_symbols": [],
-            }
+            return result
         except Exception as exc:
             manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
             if config.failover_enabled and dataset == "daily_bars":
@@ -356,6 +443,10 @@ def fetch_daily_bars_parallel(
                 result = _run_batch(batch_id, batch_symbols, batch_start, batch_end)
                 total_read += result["rows_read"]
                 total_written += result["rows_written"]
+                result_failed = list(result.get("failed_symbols") or [])
+                if result_failed:
+                    had_error = True
+                    failed_symbols.extend(result_failed)
                 _progress(batch_symbols)
             except Exception:
                 had_error = True
@@ -405,6 +496,10 @@ def fetch_daily_bars_parallel(
                     result = fut.result()
                     total_read += result["rows_read"]
                     total_written += result["rows_written"]
+                    result_failed = list(result.get("failed_symbols") or [])
+                    if result_failed:
+                        had_error = True
+                        failed_symbols.extend(result_failed)
                     batch = pending.pop(batch_id, None)
                     _progress(batch[1] if batch else [])
                 except BrokenProcessPool:

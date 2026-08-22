@@ -38,10 +38,11 @@
 | 项 | 值 |
 |------|-------|
 | 波次 | `trading_status`（Wave 0） |
-| 主源 | tdx_protocol |
-| 备源 | eastmoney |
+| 主源 | eastmoney（push2 clist 风险警示板 + datacenter `RPT_CUSTOM_SUSPEND_DATA_INTERFACE`） |
+| 备源 | baostock `query_all_stock(day)` 快照（配置 `[[failover.datasets]] name="trading_status"` 门控；东财失败时 SH/SZ 用 baostock，BJ 尽力走东财停牌腿否则记 `n_bj_defaulted` 默认 normal） |
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
+| 已知边界 | BJ 的 ST 标签两源均不覆盖；baostock 未包含当日数据时备份拒绝（宁缺勿假）；停牌接口自 2026-08 起需 `DATETIME`/`MARKET` filter 与 `SUSPEND_START_DATE/SUSPEND_END_TIME` 列 |
 
 #### daily_bars
 
@@ -54,6 +55,7 @@
 | 主键 | (symbol, trade_date) |
 | 重拉 | 当日 `corporate_actions` 的除权日对应标的 |
 | 已知限制 | TDX 限速；建议 workers ≤ 8；clist 只有当日快照，须用 run 的 `trade_date` 打戳（ADR-0005 routing） |
+| 失败归因 | `[orchestrator].daily_bars_granularity`（`symbol` 默认 / `batch`）控制抓取-落盘-重试粒度：`symbol` 部分成功立即落盘、失败只记符号×日期缺口并精确重拉（配置唯一入口，无 `--granularity` 参数）；`batch` 为 legacy 整批 all-or-nothing。扫批 universe 恒为股票（`asset_type=="stock"`），不受该开关影响 |
 
 #### index_bars
 

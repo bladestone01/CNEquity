@@ -26,6 +26,9 @@ root = "{path_for_toml(tmp_path / "data")}"
 [orchestrator]
 workers = 1
 batch_size = 1
+# These tests exercise the legacy strict fetch/staging path; symbol-mode
+# behavior is covered by their own dedicated tests.
+daily_bars_granularity = "batch"
 
 [tdx_protocol]
 allow_mock = true

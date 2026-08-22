@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 import polars as pl
 
@@ -16,6 +16,7 @@ from cnequity.adapters.tdx_protocol.client import (
     normalize_with_source,
 )
 from cnequity.config import Config
+from cnequity.domain.market_time import shanghai_now
 from cnequity.domain.schemas import with_provenance
 from cnequity.domain.symbols import (
     is_all_a_symbol,
@@ -24,6 +25,10 @@ from cnequity.domain.symbols import (
     parse_symbol,
 )
 from cnequity.orchestrator.registry import register_step
+from cnequity.quality.failover import (
+    fetch_trading_status_backup,
+    snapshot_trading_status_backup,
+)
 from cnequity.quality.st_coverage import (
     ST_EVIDENCE_VERSION,
     build_st_scope,
@@ -32,9 +37,11 @@ from cnequity.quality.st_coverage import (
     reusable_st_checkpoint_symbols,
     write_st_checkpoint,
 )
+from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.steps.common import (
     BACKFILL_START,
     fetch_incremental_daily,
+    is_trading_day,
     load_bar_universe,
     load_symbols,
     write_simple,
@@ -234,6 +241,48 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
     return write_simple(config, run_id, "trading_calendar", df)
 
 
+_TRADING_STATUS_FINAL_AT = time(16, 0)
+
+
+def _trading_status_covered(config: Config, trade_date: date, expected_symbols: set[str]) -> bool:
+    """True when curated already holds a complete snapshot for *trade_date*.
+
+    Strict superset check only: partial coverage must never short-circuit the
+    fetch, or a hole would be silently accepted as "already done".
+    """
+    root = config.curated_root / "trading_status"
+    if not dataset_has_parquet(root):
+        return False
+    observed = (
+        scan_parquet_root(root, partition_col="trade_date", end=trade_date)
+        .filter(pl.col("trade_date") == pl.lit(trade_date))
+        .select("symbol")
+        .unique()
+        .collect()
+    )
+    if observed.is_empty():
+        return False
+    return expected_symbols <= set(observed.get_column("symbol").to_list())
+
+
+def _trading_status_window_eligible(
+    config: Config, trade_date: date, *, now: datetime | None = None
+) -> bool:
+    """Whether a fresh *trade_date* snapshot may be fetched at this time.
+
+    The ST board and suspension list finalize after the close; before 16:00
+    Asia/Shanghai a current-trading-day snapshot is provisional at best and
+    baostock's backup has not settled it yet. Historical dates, non-trading
+    days, and the backfill path are unaffected.
+    """
+    local_now = shanghai_now(now)
+    if trade_date < local_now.date() or local_now.time() >= _TRADING_STATUS_FINAL_AT:
+        return True
+    if not is_trading_day(config, trade_date):
+        return True
+    return False
+
+
 @register_step("trading_status", group="core")
 def step_trading_status(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_backfill", False):
@@ -243,23 +292,68 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
     expected_symbols = set(symbols)
     rl = config.tdx_rate_limit_spec()
 
-    # EastMoney is the only daily ST feed. An AkShare union used to sit here as a
-    # "second source", but `ak.stock_zh_a_st_em` requests the same push2 clist
-    # endpoint with the same `fs=m:0+f:4,m:1+f:4` filter that
-    # adapters/eastmoney/trading_status.py already queries — same vendor, same
-    # board, same filter — so it could only ever repeat this answer or fail. The
-    # push2 → push2delay failover in the EastMoney client is the real robustness
-    # here. The one genuinely independent ST reading, baostock's per-day `isST`,
-    # is a per-symbol sweep and stays where it is affordable: the `--backfill`
-    # path below. See issue #3.
-    def _fetch(day: date):
-        frame = fetch_trading_status(
-            symbols,
-            day,
-            rate_limit=rl,
-            allow_mock=config.tdx_allow_mock,
-            config=config,
+    # EastMoney is the primary daily ST/suspension feed; the baostock snapshot
+    # is the failover when EastMoney's push2/datacenter legs fail (see
+    # [[failover.datasets]] name="trading_status"). BJ ST tags are not covered
+    # by either vendor; the coordinator counts BJ defaults explicitly.
+    degraded: dict = {}
+
+    if _trading_status_covered(config, trade_date, expected_symbols):
+        msg = f"trading_status {trade_date.isoformat()}: 当日数据已补齐成功，跳过重复拉取。"
+        logger.info(msg)
+        result = {"rows_read": 0, "rows_written": 0}
+        result["context_updates"] = {
+            "audit_findings": [
+                {
+                    "dataset": "trading_status",
+                    "check": "already_completed",
+                    "severity": "info",
+                    "detail": msg,
+                }
+            ]
+        }
+        return result
+
+    if not _trading_status_window_eligible(config, trade_date):
+        msg = (
+            f"trading_status {trade_date.isoformat()}: 非正常数据读取时间段——"
+            f"当前为交易时段（需 {_TRADING_STATUS_FINAL_AT.strftime('%H:%M')}+ 之后），"
+            "已跳过采集；等当日有效数据生成后再执行 cne run daily / cne retry。"
         )
+        logger.warning(msg)
+        result = {"rows_read": 0, "rows_written": 0}
+        result["status"] = "warning"
+        result["context_updates"] = {
+            "audit_findings": [
+                {
+                    "dataset": "trading_status",
+                    "check": "before_cutoff",
+                    "severity": "warning",
+                    "detail": msg,
+                }
+            ]
+        }
+        return result
+
+    def _fetch(day: date):
+        nonlocal degraded
+        try:
+            frame = fetch_trading_status(
+                symbols,
+                day,
+                rate_limit=rl,
+                allow_mock=config.tdx_allow_mock,
+                config=config,
+            )
+        except Exception as primary_exc:
+            backup, degraded = fetch_trading_status_backup(config, symbols, day)
+            if backup is None or backup.is_empty():
+                reason = degraded.get("reason")
+                raise RuntimeError(
+                    "trading_status: primary (eastmoney) failed; backup declined"
+                    + (f": {reason}" if reason else "")
+                ) from primary_exc
+            frame = backup
         if frame.is_empty():
             return frame
         if "symbol" not in frame.columns:
@@ -288,13 +382,31 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
         if _findings:
             result["context_updates"] = {"audit_findings": _findings}
         return result
-    # This adapter is an EastMoney current-state snapshot even though it is
-    # exposed through the TDX facade. Preserve the actual evidence owner so
-    # downstream PIT precedence never mistakes it for exchange history.
-    df = with_provenance(df.drop("source", strict=False), source="eastmoney", data_version="v1")
+    # The adapter is a current-state snapshot even when it is exposed through
+    # the TDX facade. Record the actual evidence owner so downstream PIT
+    # precedence never mistakes a degraded day for exchange history.
+    origin = degraded.get("source", "eastmoney")
+    df = with_provenance(df.drop("source", strict=False), source=origin, data_version="v1")
     result = write_simple(config, run_id, "trading_status", df)
-    if _findings:
-        result["context_updates"] = {"audit_findings": _findings}
+    findings = list(_findings)
+    if degraded.get("failover_used"):
+        snapshot_trading_status_backup(config, df=df, run_id=run_id, trade_date=trade_date)
+        findings.append(
+            {
+                "dataset": "trading_status",
+                "check": "failover_degraded",
+                "severity": "warning",
+                "detail": (
+                    "primary (eastmoney) failed; baostock backup used "
+                    f"(n_filled={degraded.get('n_filled', 0)}, "
+                    f"n_scope_defaults={degraded.get('n_scope_defaults', 0)}, "
+                    f"n_bj_defaulted={degraded.get('n_bj_defaulted', 0)})"
+                ),
+            }
+        )
+        result["status"] = "warning"
+    if findings:
+        result["context_updates"] = {"audit_findings": findings}
     return result
 
 

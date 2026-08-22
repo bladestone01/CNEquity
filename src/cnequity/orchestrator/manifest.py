@@ -43,6 +43,10 @@ class BatchRecord:
     finished_at: str | None = None
     error_message: str | None = None
     blocks_compaction: bool = True
+    # symbol-mode failure scope: list of {"symbol": ..., "missing_dates": [...], "start": ..., "end": ...}.
+    # Kept separate from symbols_json (original fetch scope) so audit can see the
+    # full requested scope while retry refetches only the failure scope.
+    failed_scope_json: str = "[]"
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -123,6 +127,10 @@ class Manifest:
             if "blocks_compaction" not in cols:
                 conn.execute(
                     "ALTER TABLE ingestion_batches ADD COLUMN blocks_compaction INTEGER DEFAULT 1"
+                )
+            if "failed_scope_json" not in cols:
+                conn.execute(
+                    "ALTER TABLE ingestion_batches ADD COLUMN failed_scope_json TEXT DEFAULT '[]'"
                 )
 
     @staticmethod
@@ -233,6 +241,46 @@ class Manifest:
                 """,
                 (json.dumps(symbols), run_id, batch_id),
             )
+
+    def set_failed_scope(
+        self, run_id: str, batch_id: str, scope: list[dict] | None
+    ) -> None:
+        """Persist the symbol-mode failure scope for a batch.
+
+        Kept separate from ``symbols_json`` (the original requested scope) so a
+        retry can refetch only the genuine gaps without losing the audit record
+        of what the batch originally covered. Deliberately no status guard:
+        written before ``finish_batch('failed', ...)`` so the failure record is
+        complete at the moment the batch is closed out, and readable by
+        ``engine._worker_batch_specs`` after the batch is marked failed.
+        """
+        payload = json.dumps(scope or [])
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_batches
+                SET failed_scope_json = ?
+                WHERE run_id = ? AND batch_id = ?
+                """,
+                (payload, run_id, batch_id),
+            )
+
+    def get_failed_scope(self, run_id: str, batch_id: str) -> list[dict]:
+        """Read the persisted failure scope ([] when none / legacy batches)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT failed_scope_json FROM ingestion_batches
+                WHERE run_id = ? AND batch_id = ?
+                """,
+                (run_id, batch_id),
+            ).fetchone()
+        if row is None or not row[0]:
+            return []
+        try:
+            return json.loads(row[0])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
 
     def finish_batch(
         self,

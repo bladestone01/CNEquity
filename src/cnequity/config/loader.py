@@ -41,6 +41,12 @@ class Config:
     max_retries: int = 3
     retry_backoff_seconds: int = 5
     batch_stale_seconds: int = 3600
+    # daily_bars failure-attribution granularity. "symbol" (default): partially
+    # successful batches are staged immediately and failures attributed to the
+    # genuine symbol×date gap; "batch": legacy strict all-or-nothing (any
+    # failure fails the whole batch, nothing staged, whole-batch retry).
+    # Deliberately config-only — there is NO --granularity CLI param.
+    daily_bars_granularity: str = "symbol"
     tdx_enabled: bool = True
     tdx_min_interval_ms: int = 50
     tdx_lock_timeout_sec: float = 15.0
@@ -266,6 +272,7 @@ def load_config(path: str | Path) -> Config:
         max_retries=int(orch.get("max_retries", 3)),
         retry_backoff_seconds=int(orch.get("retry_backoff_seconds", 5)),
         batch_stale_seconds=int(orch.get("batch_stale_seconds", 3600)),
+        daily_bars_granularity=str(orch.get("daily_bars_granularity", "symbol")),
         tdx_enabled=bool(tdx.get("enabled", True)),
         tdx_min_interval_ms=int(tdx.get("min_interval_ms", 50)),
         tdx_lock_timeout_sec=float(tdx.get("lock_timeout_sec", 15.0)),
@@ -327,6 +334,12 @@ def validate_config(cfg: Config) -> list[str]:
         )
     if cfg.batch_size < 1:
         errors.append("orchestrator.batch_size must be >= 1")
+    granularity = (cfg.daily_bars_granularity or "").strip().lower()
+    if granularity not in ("symbol", "batch"):
+        errors.append(
+            f"[orchestrator].daily_bars_granularity must be 'symbol' or 'batch', got "
+            f"{cfg.daily_bars_granularity!r}"
+        )
     servers = cfg.tdx_servers.strip()
     if servers.lower() != "auto" and ":" not in servers:
         errors.append("[tdx_protocol].servers must be 'auto' or host:port")
@@ -392,4 +405,50 @@ def validate_config(cfg: Config) -> list[str]:
         if step not in STEP_REGISTRY:
             errors.append(f"{location}: unknown step '{step}' (not registered)")
 
+    _validate_failover_datasets(cfg, errors)
+
     return errors
+
+
+def _failover_known_sources(cfg: Config) -> set[str]:
+    """Source names a [[failover.datasets]] entry may reference.
+
+    The typical values are the `[sources.*]` sections plus `tdx_protocol`
+    (configured outside `[sources]`). This mirrors the rate-limit declaration
+    check: a typo here silently disables the runtime gating in
+    `quality/failover.py::failover_spec`, so validation must catch it.
+    """
+    return set(cfg.sources) | {"tdx_protocol"}
+
+
+def _validate_failover_datasets(cfg: Config, errors: list[str]) -> None:
+    """Reject malformed [[failover.datasets]] entries before run time.
+
+    `failover_spec(config, dataset)` silently returns ``None`` when asked for
+    a dataset that has no entry — the exact failure mode a missing
+    ``trading_status`` entry caused (primary failure re-raised instead of
+    falling back). An unknowable ``name`` or an unrecognized ``primary`` /
+    ``backup`` source would otherwise degrade the same way, invisibly.
+    """
+    if not cfg.failover_datasets:
+        return
+    from cnequity.domain.datasets import DATASETS
+
+    known_sources = _failover_known_sources(cfg)
+    seen: set[str] = set()
+    for spec in cfg.failover_datasets:
+        if spec.name in seen:
+            errors.append(f"[[failover.datasets]] name {spec.name!r} is declared more than once")
+        seen.add(spec.name)
+        if spec.name not in DATASETS:
+            errors.append(
+                f"[[failover.datasets]] name {spec.name!r} is not a registered dataset "
+                f"(available: {', '.join(sorted(DATASETS))})"
+            )
+        for role in ("primary", "backup"):
+            source = getattr(spec, role)
+            if source not in known_sources:
+                errors.append(
+                    f"[[failover.datasets]] {spec.name}: {role}={source!r} is not a known "
+                    f"source (known: {', '.join(sorted(known_sources))})"
+                )
