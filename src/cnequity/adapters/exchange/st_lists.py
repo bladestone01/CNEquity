@@ -76,11 +76,14 @@ def is_st_name(name: str | None) -> bool:
     """True when an exchange short name carries the ST / *ST designation.
 
     Vendor feeds pad names with spaces and NUL bytes, so normalise before
-    testing rather than comparing raw.
+    testing rather than comparing raw.  The designation is a prefix: using
+    substring matching would classify an ordinary name such as ``公司ST`` or
+    ``CST`` as risk-warning.
     """
     if not name:
         return False
-    return "ST" in name.replace(" ", "").replace("\x00", "").upper()
+    normalized = name.replace(" ", "").replace("\x00", "").upper()
+    return normalized.startswith(("ST", "*ST", "S*ST", "SST"))
 
 
 def fetch_sse_names(*, config=None) -> dict[str, str]:

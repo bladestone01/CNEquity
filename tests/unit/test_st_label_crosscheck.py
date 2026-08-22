@@ -116,6 +116,12 @@ def test_star_st_names_count_as_st(tmp_path):
     assert st_label_crosscheck_findings(_lake(tmp_path, names=names, st_labeled=labeled), TD) == []
 
 
+def test_internal_st_letters_are_not_a_risk_warning_prefix(tmp_path):
+    names, labeled = _universe(20, st_named=1, st_labeled=1)
+    names["600001.SH"] = "公司ST1"
+    assert st_label_crosscheck_findings(_lake(tmp_path, names=names, st_labeled=labeled), TD) == []
+
+
 def test_superseded_st_label_is_not_reported(tmp_path):
     names = {"600000.SH": "公司0"}
     cfg = _lake(tmp_path, names=names, st_labeled=list(names))

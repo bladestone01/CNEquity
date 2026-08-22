@@ -89,6 +89,12 @@ def _parse_payload(text: str) -> list[dict] | None:
             logger.warning("Sina kline: skipping non-object payload row %s", index)
             continue
         rows.append(item)
+    if payload and not rows:
+        # An empty list is Sina's legitimate "never issued" response. A
+        # non-empty list with no usable row is different: treating it as empty
+        # would let delisted-code discovery permanently file a source-format
+        # failure as ``never_issued``.
+        raise SinaBarsError("Sina kline payload contains no object rows")
     return rows
 
 

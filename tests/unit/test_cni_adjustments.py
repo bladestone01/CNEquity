@@ -17,7 +17,7 @@ def test_member_symbol_filters_non_a():
     assert cni._member_symbol("999999") is None
 
 
-def test_fetch_cni_empty_payload_and_parse_error(monkeypatch):
+def test_fetch_cni_rejects_empty_payload_and_parse_error(monkeypatch):
     class Resp:
         content = b"x" * 10  # too short
 
@@ -25,9 +25,10 @@ def test_fetch_cni_empty_payload_and_parse_error(monkeypatch):
             return None
 
     client = SimpleNamespace(get=lambda *a, **k: Resp(), close=lambda: None)
-    empty = cni.fetch_cni_index_adjustments("399001.SZ", client=client)
-    assert empty.is_empty()
-    assert "index_symbol" in empty.schema
+    import pytest
+
+    with pytest.raises(cni.CniAdjustmentPayloadError, match="truncated"):
+        cni.fetch_cni_index_adjustments("399001.SZ", client=client)
 
     class BadResp:
         content = b"x" * 200
@@ -40,11 +41,22 @@ def test_fetch_cni_empty_payload_and_parse_error(monkeypatch):
     monkeypatch.setattr(
         pd, "read_excel", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad xlsx"))
     )
-    bad = cni.fetch_cni_index_adjustments(
-        "399001.SZ",
-        client=SimpleNamespace(get=lambda *a, **k: BadResp(), close=lambda: None),
+    with pytest.raises(cni.CniAdjustmentPayloadError, match="malformed"):
+        cni.fetch_cni_index_adjustments(
+            "399001.SZ",
+            client=SimpleNamespace(get=lambda *a, **k: BadResp(), close=lambda: None),
+        )
+
+
+def test_fetch_cni_unsupported_index_returns_typed_empty_without_fetching():
+    def fail(*_args, **_kwargs):
+        raise AssertionError("unsupported CNI index must not be fetched")
+
+    empty = cni.fetch_cni_index_adjustments(
+        "000300.SH", client=SimpleNamespace(get=fail, close=lambda: None)
     )
-    assert bad.is_empty()
+    assert empty.is_empty()
+    assert "index_symbol" in empty.schema
 
 
 def test_fetch_cni_parses_xlsx_rows(monkeypatch):

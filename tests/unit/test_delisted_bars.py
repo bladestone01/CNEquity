@@ -338,6 +338,49 @@ def test_fetch_skips_nonfinite_volume_rows():
     assert _fetch_one(_B(), "002450.SZ", date(2019, 1, 1), date(2019, 12, 31)) == []
 
 
+def test_fetch_does_not_turn_missing_volume_into_zero():
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Rs(
+                [
+                    [
+                        "2019-01-02",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "",
+                        "686428182.91",
+                        "1",
+                    ]
+                ]
+            )
+
+    assert _fetch_one(_B(), "002450.SZ", date(2019, 1, 1), date(2019, 12, 31)) == []
+
+
+def test_fetch_preserves_missing_amount_as_null():
+    class _B:
+        def query_history_k_data_plus(self, *a, **k):
+            return _Rs(
+                [
+                    [
+                        "2019-01-02",
+                        "7.60",
+                        "7.72",
+                        "7.19",
+                        "7.24",
+                        "100",
+                        "",
+                        "1",
+                    ]
+                ]
+            )
+
+    rows = _fetch_one(_B(), "002450.SZ", date(2019, 1, 1), date(2019, 12, 31))
+    assert rows and rows[0]["amount"] is None
+
+
 def test_query_error_is_retryable_not_an_empty_result():
     """`None` tells the session driver to relogin and retry; `[]` would record
     the symbol as legitimately having no data."""

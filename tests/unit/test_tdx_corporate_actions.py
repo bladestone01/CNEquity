@@ -91,6 +91,24 @@ def test_rows_from_xdxr_rejects_nonfinite_numeric_fields():
     assert allotment["allotment_price"] is None
 
 
+def test_rows_from_xdxr_does_not_turn_malformed_event_amount_into_zero():
+    pdf = pl.DataFrame(
+        [
+            {
+                "year": 2024,
+                "month": 6,
+                "day": 28,
+                "category": 1,
+                "fenhong": "not-a-number",
+                "songzhuangu": 0,
+                "peigu": 0,
+                "peigujia": 0,
+            }
+        ]
+    )
+    assert ca._rows_from_xdxr("600519.SH", pdf) == []
+
+
 def test_fetch_xdxr_for_symbol_empty_and_filter(monkeypatch):
     class Boom:
         def xdxr(self, symbol, market=None):

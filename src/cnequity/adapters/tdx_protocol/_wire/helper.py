@@ -162,19 +162,21 @@ def index_bytes(data, pos):
     return data[pos]
 
 
-# def get_security_coefficient(market, name):
-#     return SECURITY_COEFFICIENT[get_security_type(market, name)]
-
-
-# TODO 增加 get_coefficient 函数
 def get_security_coefficient(market=None, code=None):
+    """Return the wire price coefficient for a known SH/SZ security type.
+
+    An unknown code must not fall back to the A-share stock coefficient: the
+    decoded number can still look like a plausible price while being wrong by
+    10x or 100x for funds, bonds, or a newly introduced security type.
+    """
+    security_type = get_security_type(market=market, code=code)
     try:
-        security_type = get_security_type(market=market, code=code)
         coefficient = SECURITY_COEFFICIENT[security_type]
-        return coefficient[0]
-    except NotImplementedError:
-        logger.error("NotImplementedError")
-        return 0.01
+    except KeyError as exc:
+        raise NotImplementedError(
+            f"no price coefficient for security type {security_type!r}"
+        ) from exc
+    return coefficient[0]
 
 
 def get_security_type(market, code):

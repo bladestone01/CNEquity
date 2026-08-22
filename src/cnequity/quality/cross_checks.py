@@ -19,6 +19,7 @@ from datetime import date, timedelta
 import polars as pl
 
 from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
+from cnequity.adapters.exchange.st_lists import is_st_name
 from cnequity.config import Config
 from cnequity.domain.symbols import parse_symbol
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
@@ -1399,11 +1400,11 @@ def _st_from_names(instruments: pl.DataFrame) -> set[str] | None:
         named = named.filter(pl.col("asset_type") == "stock")
     if named.is_empty():
         return None
-    return set(
-        named.filter(pl.col("name").str.replace_all(" ", "").str.to_uppercase().str.contains("ST"))
-        .get_column("symbol")
-        .to_list()
-    )
+    return {
+        symbol
+        for symbol, name in named.select(["symbol", "name"]).iter_rows()
+        if is_st_name(name)
+    }
 
 
 def _active_instruments_on(instruments: pl.DataFrame, trade_date: date) -> pl.DataFrame:

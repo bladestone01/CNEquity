@@ -31,6 +31,19 @@ def _num(value: object) -> float:
     return parsed if math.isfinite(parsed) else 0.0
 
 
+def _event_num(value: object) -> float:
+    """Parse a core action amount without turning malformed data into zero."""
+    if value is None or value == "" or value == "-":
+        return 0.0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid corporate-action amount: {value!r}") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"invalid corporate-action amount: {value!r}")
+    return parsed
+
+
 def _rows_from_xdxr(symbol: str, pdf: pl.DataFrame) -> list[dict]:
     rows: list[dict] = []
     for record in pdf.iter_rows(named=True):
@@ -47,9 +60,17 @@ def _rows_from_xdxr(symbol: str, pdf: pl.DataFrame) -> list[dict]:
         if category != 1:
             continue
 
-        fenhong = _num(record.get("fenhong"))
-        songzhuangu = _num(record.get("songzhuangu"))
-        peigu = _num(record.get("peigu"))
+        try:
+            # These fields decide whether an event row exists. A malformed
+            # value must not quietly become 0 and erase a real action.
+            fenhong = _event_num(record.get("fenhong"))
+            songzhuangu = _event_num(record.get("songzhuangu"))
+            peigu = _event_num(record.get("peigu"))
+        except ValueError as exc:
+            logger.warning("TDX xdxr: skipping row with invalid event amount: %s", exc)
+            continue
+        # The allotment price is optional in the upstream payload; retain the
+        # action with a null price when it is absent or malformed.
         peigujia = _num(record.get("peigujia"))
 
         if fenhong > 0:

@@ -44,6 +44,19 @@ def _num(value: object) -> float:
     return parsed if math.isfinite(parsed) else 0.0
 
 
+def _strict_num(value: object, *, field: str) -> float | None:
+    """Parse an optional numeric report field without hiding malformed data."""
+    if value is None or (isinstance(value, str) and value.strip() in {"", "-"}):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"EastMoney corporate_actions invalid {field}: {value!r}") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"EastMoney corporate_actions invalid {field}: {value!r}")
+    return parsed
+
+
 def _map_action_type(row: dict) -> str | None:
     impl = str(row.get("IMPL_PLAN_PROFILE") or "").lower()
     if "配" in impl:
@@ -106,17 +119,28 @@ def _parse_rows(row: dict) -> list[dict]:
         return []
     symbol = format_symbol(code, exchange)
 
-    # EM values are per-10-shares; divide by 10 for the per-share contract.
-    cash = _num(row.get("PRETAX_BONUS_RMB")) / 10.0
-    bonus = _num(row.get("BONUS_RATIO")) / 10.0
-    transfer = _num(row.get("IT_RATIO")) / 10.0
+    try:
+        # EM values are per-10-shares; divide by 10 for the per-share contract.
+        cash_raw = _strict_num(row.get("PRETAX_BONUS_RMB"), field="PRETAX_BONUS_RMB")
+        bonus_raw = _strict_num(row.get("BONUS_RATIO"), field="BONUS_RATIO")
+        transfer_raw = _strict_num(row.get("IT_RATIO"), field="IT_RATIO")
+    except ValueError:
+        # A malformed numeric field must not become 0 and erase an event. Let
+        # the fetch step fail closed so the caller retries/surfaces the source
+        # drift instead of writing an incomplete corporate-action row.
+        raise
+    cash = (cash_raw or 0.0) / 10.0
+    bonus = (bonus_raw or 0.0) / 10.0
+    transfer = (transfer_raw or 0.0) / 10.0
     impl = str(row.get("IMPL_PLAN_PROFILE") or "").lower()
     combined_resolved = False
+    combined_raw: float | None = None
     if bonus == 0.0 and transfer == 0.0:
         # Older/alternate report shapes expose only the combined 送转 field.
         # Preserve the total multiplier; when the plan text identifies a pure
         # 转增 plan, keep its semantic type as transfer.
-        combined = _num(row.get("BONUS_IT_RATIO")) / 10.0
+        combined_raw = _strict_num(row.get("BONUS_IT_RATIO"), field="BONUS_IT_RATIO")
+        combined = (combined_raw or 0.0) / 10.0
         if combined > 0:
             combined_resolved = True
             if "转" in impl and "送" not in impl:
@@ -147,12 +171,24 @@ def _parse_rows(row: dict) -> list[dict]:
     # plan text has already done its job picking a side; falling back to it
     # again here would let the *other* type's shared "转"/"送" mention add a
     # second, phantom zero-ratio row for whichever type lost that split.
-    if cash > 0 or any(token in impl for token in ("派", "息", "现金")):
+    cash_text = any(token in impl for token in ("派", "息", "现金"))
+    if cash > 0:
         add("cash_dividend", cash_dividend=cash)
-    if bonus > 0 or (not combined_resolved and "送" in impl):
+    elif cash_text:
+        if cash_raw is None:
+            raise ValueError(
+                "EastMoney corporate_actions cash-dividend plan has no numeric amount"
+            )
+    if bonus > 0:
         add("bonus", bonus_ratio=bonus)
-    if transfer > 0 or (not combined_resolved and "转" in impl):
+    elif not combined_resolved and "送" in impl:
+        if bonus_raw is None and combined_raw is None:
+            raise ValueError("EastMoney corporate_actions bonus plan has no numeric ratio")
+    if transfer > 0:
         add("transfer", transfer_ratio=transfer)
+    elif not combined_resolved and "转" in impl:
+        if transfer_raw is None and combined_raw is None:
+            raise ValueError("EastMoney corporate_actions transfer plan has no numeric ratio")
     return rows
 
 

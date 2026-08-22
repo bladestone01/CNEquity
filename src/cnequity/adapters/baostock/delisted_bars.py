@@ -170,9 +170,20 @@ def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
             high = float(high_raw)
             low = float(low_raw)
             close = float(close_raw)
-            volume = finite_int64(float(volume_raw or 0), minimum=0)
-            amount = float(amount_raw or 0.0)
-            if not all(math.isfinite(value) for value in (open_, high, low, close, amount)):
+            # Volume is a required bar field: an empty value is unknown, not a
+            # zero-volume suspension. Turnover is nullable in the lake because
+            # some sources do not publish it; preserve an empty Baostock value
+            # as null instead of manufacturing zero turnover.
+            if volume_raw is None or str(volume_raw).strip() in {"", "-"}:
+                continue
+            volume = finite_int64(float(volume_raw), minimum=0)
+            if amount_raw is None or str(amount_raw).strip() in {"", "-"}:
+                amount = None
+            else:
+                amount = float(amount_raw)
+                if not math.isfinite(amount):
+                    continue
+            if not all(math.isfinite(value) for value in (open_, high, low, close)):
                 continue
             rows.append(
                 {

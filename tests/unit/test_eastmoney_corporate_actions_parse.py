@@ -69,6 +69,7 @@ def test_parse_row_exchange_from_suffix_and_prefix_bands():
         "SECURITY_CODE": "430047",
         "EX_DIVIDEND_DATE": "2024-06-28",
         "IMPL_PLAN_PROFILE": "10派1元",
+        "PRETAX_BONUS_RMB": "1",
     }
     parsed = _parse_row(bj_row)
     assert parsed["symbol"] == "430047.BJ"
@@ -77,6 +78,7 @@ def test_parse_row_exchange_from_suffix_and_prefix_bands():
         "SECURITY_CODE": "601988",
         "EX_DIVIDEND_DATE": "2024-06-28",
         "IMPL_PLAN_PROFILE": "10派1元",
+        "PRETAX_BONUS_RMB": "1",
     }
     assert _parse_row(sh_by_prefix)["symbol"] == "601988.SH"
 
@@ -162,15 +164,36 @@ def test_parse_rows_combined_ratio_does_not_emit_phantom_sibling_row():
     assert by_type["bonus"]["bonus_ratio"] == pytest.approx(1.0)
 
 
-def test_parse_row_does_not_emit_nonfinite_amounts():
+def test_parse_row_rejects_nonfinite_amounts():
     row = {
         "SECURITY_CODE": "600519",
         "EX_DIVIDEND_DATE": "2024-06-28",
         "IMPL_PLAN_PROFILE": "10派1元",
         "PRETAX_BONUS_RMB": "nan",
     }
-    parsed = _parse_row(row)
-    assert parsed["cash_dividend"] == 0.0
+    with pytest.raises(ValueError, match="PRETAX_BONUS_RMB"):
+        _parse_row(row)
+
+
+def test_parse_row_rejects_missing_amount_for_cash_plan():
+    row = {
+        "SECURITY_CODE": "600519",
+        "EX_DIVIDEND_DATE": "2024-06-28",
+        "IMPL_PLAN_PROFILE": "10派1元",
+    }
+    with pytest.raises(ValueError, match="no numeric amount"):
+        _parse_row(row)
+
+
+def test_parse_row_rejects_malformed_ratio():
+    row = {
+        "SECURITY_CODE": "600519",
+        "EX_DIVIDEND_DATE": "2024-06-28",
+        "IMPL_PLAN_PROFILE": "10送1",
+        "BONUS_RATIO": "not-a-number",
+    }
+    with pytest.raises(ValueError, match="BONUS_RATIO"):
+        _parse_row(row)
 
 
 def test_parse_row_skips_invalid_equity_codes():

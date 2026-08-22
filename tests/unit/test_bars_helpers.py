@@ -227,6 +227,25 @@ def test_daily_bars_real_quantities_are_untouched_by_the_zero_snap():
     assert rows[0]["amount"] == 500_000.0
 
 
+def test_daily_bars_skip_missing_or_malformed_quantities():
+    from cnequity.adapters.tdx_protocol.bars import _parse_bar_rows
+
+    base = {
+        "date": date(2024, 6, 28),
+        "open": 12.5,
+        "high": 12.5,
+        "low": 12.5,
+        "close": 12.5,
+    }
+    pdf = pl.DataFrame(
+        [
+            {**base, "vol": None, "amount": 1_000.0},
+            {**base, "vol": 400, "amount": "not-a-number"},
+        ]
+    )
+    assert _parse_bar_rows(pdf, "600519.SH", date(2024, 6, 1), date(2024, 6, 30)) == []
+
+
 def test_daily_bars_skip_invalid_date_rows_without_losing_valid_rows():
     from cnequity.adapters.tdx_protocol.bars import _parse_bar_rows
 

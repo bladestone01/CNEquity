@@ -25,7 +25,7 @@ from datetime import date
 import polars as pl
 
 from cnequity.adapters.numeric import finite_int64
-from cnequity.adapters.tdx_protocol._decode import decoded_quantity
+from cnequity.adapters.tdx_protocol._decode import decoded_quantity_or_none
 from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
 from cnequity.domain.units import lots_to_shares
 
@@ -93,8 +93,10 @@ def _parse_bar_rows(
             high = float(row.get("high", 0))
             low = float(row.get("low", 0))
             close = float(row.get("close", 0))
-            volume = decoded_quantity(row.get("volume", row.get("vol", 0)))
-            amount = decoded_quantity(row.get("amount", 0))
+            volume = decoded_quantity_or_none(row.get("volume", row.get("vol")))
+            amount = decoded_quantity_or_none(row.get("amount"))
+            if volume is None or amount is None:
+                continue
         except (TypeError, ValueError, OverflowError):
             continue
         if not all(math.isfinite(value) for value in (open_, high, low, close, volume, amount)):

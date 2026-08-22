@@ -1,4 +1,8 @@
-from cnequity.adapters.tdx_protocol._decode import DECODED_ZERO, decoded_quantity
+from cnequity.adapters.tdx_protocol._decode import (
+    DECODED_ZERO,
+    decoded_quantity,
+    decoded_quantity_or_none,
+)
 
 
 def test_denormal_zero_is_snapped_to_zero():
@@ -20,6 +24,13 @@ def test_unparseable_value_falls_back_to_zero():
     # row; the decoder's job is to make sense of wire noise, not to propagate it.
     assert decoded_quantity("not-a-number") == 0.0
     assert decoded_quantity(object()) == 0.0
+
+
+def test_strict_quantity_decoder_preserves_missing_or_malformed_values():
+    assert decoded_quantity_or_none(None) is None
+    assert decoded_quantity_or_none("not-a-number") is None
+    assert decoded_quantity_or_none(float("inf")) is None
+    assert decoded_quantity_or_none(2.0**-127) == 0.0
 
 
 def test_threshold_is_far_below_any_genuine_quantity():

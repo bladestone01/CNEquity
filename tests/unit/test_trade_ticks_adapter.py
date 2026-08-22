@@ -3,6 +3,7 @@ from datetime import date, datetime, time
 import pytest
 
 from cnequity.adapters.tdx_protocol._wire import MAX_TICK_PAGE
+from cnequity.adapters.tdx_protocol._wire.helper import get_security_coefficient
 from cnequity.adapters.tdx_protocol.trade_ticks import (
     AFTER_HOURS,
     DIRECTIONS,
@@ -103,6 +104,13 @@ def test_price_divisor_follows_the_instrument(symbol, divisor):
 def test_price_divisor_refuses_to_guess():
     with pytest.raises(TdxTradeTicksError, match="no known price coefficient"):
         price_divisor("777777.SH")
+
+
+def test_wire_security_coefficient_refuses_unknown_types():
+    assert get_security_coefficient(1, "600519") == 0.01
+    assert get_security_coefficient(0, "159915") == 0.001
+    with pytest.raises(NotImplementedError):
+        get_security_coefficient(1, "777777")
 
 
 def test_price_divides_exactly():

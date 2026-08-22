@@ -22,6 +22,11 @@ def test_parse_payload_skips_non_object_rows():
     assert sina._parse_payload('[null,{"day":"2024-01-02"}]') == [{"day": "2024-01-02"}]
 
 
+def test_parse_payload_rejects_nonempty_all_malformed_rows():
+    with pytest.raises(sina.SinaBarsError, match="no object rows"):
+        sina._parse_payload("[null, 1, \"bad\"]")
+
+
 def test_parse_payload_rejects_non_list_json():
     with pytest.raises(sina.SinaBarsError, match="not a list"):
         sina._parse_payload('{"data": []}')

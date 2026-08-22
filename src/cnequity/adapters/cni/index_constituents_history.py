@@ -9,7 +9,6 @@ reconstruct membership for 399001/399006 (and peers) from late 2021.
 from __future__ import annotations
 
 import io
-import logging
 from datetime import date
 
 import httpx
@@ -18,11 +17,10 @@ import polars as pl
 from cnequity.adapters.sw.industry_history import exchange_from_code
 from cnequity.domain.symbols import format_symbol, is_all_a_symbol
 
-logger = logging.getLogger(__name__)
-
 __all__ = [
     "CNI_ADJUST_URL",
     "CNI_BACKFILL_INDICES",
+    "CniAdjustmentPayloadError",
     "fetch_cni_index_adjustments",
     "expand_cni_constituents_as_of",
 ]
@@ -33,6 +31,10 @@ CNI_ADJUST_URL = "https://www.cnindex.com.cn/sample-detail/download-adjustment"
 CNI_BACKFILL_INDICES: tuple[str, ...] = ("399001.SZ", "399006.SZ")
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; cnequity/0.1)"}
+
+
+class CniAdjustmentPayloadError(RuntimeError):
+    """Raised when a supported CNI workbook is empty or malformed."""
 
 
 def _index_code(index_symbol: str) -> str:
@@ -47,12 +49,34 @@ def _member_symbol(code: str) -> str | None:
     return format_symbol(code, exchange)
 
 
+def _empty_adjustments() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "index_symbol": pl.Utf8,
+            "symbol": pl.Utf8,
+            "start_date": pl.Date,
+            "end_date": pl.Date,
+            "adjust_type": pl.Utf8,
+        }
+    )
+
+
 def fetch_cni_index_adjustments(
     index_symbol: str,
     *,
     client: httpx.Client | None = None,
 ) -> pl.DataFrame:
-    """Download CNI adjustment history for one index; empty if unsupported."""
+    """Download CNI adjustment history for one index.
+
+    Unsupported indices are represented by an empty frame because this endpoint
+    is intentionally a narrow CNI backfill.  For an index we explicitly support,
+    an empty or malformed workbook is a source failure, not an empty history;
+    returning an empty frame there would let the caller advance with incomplete
+    historical membership.
+    """
+    if index_symbol not in CNI_BACKFILL_INDICES:
+        return _empty_adjustments()
+
     try:
         import pandas as pd  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover
@@ -72,42 +96,27 @@ def fetch_cni_index_adjustments(
             headers=_HEADERS,
         )
         resp.raise_for_status()
-        if not resp.content or len(resp.content) < 100:
-            return pl.DataFrame(
-                schema={
-                    "index_symbol": pl.Utf8,
-                    "symbol": pl.Utf8,
-                    "start_date": pl.Date,
-                    "end_date": pl.Date,
-                    "adjust_type": pl.Utf8,
-                }
+        if not resp.content:
+            raise CniAdjustmentPayloadError(
+                f"CNI adjustment response for {index_symbol} is empty"
+            )
+        if len(resp.content) < 100:
+            raise CniAdjustmentPayloadError(
+                f"CNI adjustment response for {index_symbol} is truncated"
             )
         try:
             pdf = pd.read_excel(io.BytesIO(resp.content), engine="openpyxl")
         except Exception as exc:  # noqa: BLE001 — empty/corrupt payload
-            logger.warning("CNI adjust parse failed for %s: %s", index_symbol, exc)
-            return pl.DataFrame(
-                schema={
-                    "index_symbol": pl.Utf8,
-                    "symbol": pl.Utf8,
-                    "start_date": pl.Date,
-                    "end_date": pl.Date,
-                    "adjust_type": pl.Utf8,
-                }
-            )
+            raise CniAdjustmentPayloadError(
+                f"CNI adjustment workbook for {index_symbol} is malformed"
+            ) from exc
     finally:
         if owns:
             client.close()
 
     if pdf.empty:
-        return pl.DataFrame(
-            schema={
-                "index_symbol": pl.Utf8,
-                "symbol": pl.Utf8,
-                "start_date": pl.Date,
-                "end_date": pl.Date,
-                "adjust_type": pl.Utf8,
-            }
+        raise CniAdjustmentPayloadError(
+            f"CNI adjustment workbook for {index_symbol} has no rows"
         )
 
     rename = {
@@ -140,14 +149,8 @@ def fetch_cni_index_adjustments(
             }
         )
     if not rows:
-        return pl.DataFrame(
-            schema={
-                "index_symbol": pl.Utf8,
-                "symbol": pl.Utf8,
-                "start_date": pl.Date,
-                "end_date": pl.Date,
-                "adjust_type": pl.Utf8,
-            }
+        raise CniAdjustmentPayloadError(
+            f"CNI adjustment workbook for {index_symbol} has no valid rows"
         )
     return pl.DataFrame(rows).unique(
         subset=["index_symbol", "symbol", "start_date", "end_date", "adjust_type"],

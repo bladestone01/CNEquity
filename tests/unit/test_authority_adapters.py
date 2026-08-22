@@ -71,6 +71,8 @@ def test_non_pmi_releases_are_ignored():
         ("*ST康佳A", True),
         ("ST 思科瑞", True),  # vendor padding
         ("*ST联翔\x00", True),  # TDX NUL padding
+        ("公司ST", False),  # ST is a designation prefix, not a substring
+        ("CST科技", False),
         ("平安银行", False),
         ("", False),
         (None, False),

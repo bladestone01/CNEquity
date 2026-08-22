@@ -254,6 +254,17 @@ def test_real_quantities_survive_the_zero_snap():
     assert rows[0]["amount"] == 91_450_000.0
 
 
+def test_missing_or_malformed_quantities_are_not_treated_as_no_trade():
+    page = [
+        _bar(datetime(2026, 7, 31, 9, 31), volume=None, vol=None, amount=1_000.0),
+        _bar(datetime(2026, 7, 31, 9, 32), volume=100, vol=100, amount="bad"),
+    ]
+    rows = fetch_minute_bars_paginated(
+        FakeClient([page]), "600519.SH", date(2026, 7, 31), date(2026, 7, 31)
+    )
+    assert rows == []
+
+
 def test_nonfinite_wire_values_are_skipped():
     page = [
         _bar(datetime(2026, 7, 31, 9, 31), close=float("nan")),

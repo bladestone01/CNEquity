@@ -2,12 +2,14 @@
 
 from cnequity.adapters.cni.index_constituents_history import (
     CNI_BACKFILL_INDICES,
+    CniAdjustmentPayloadError,
     expand_cni_constituents_as_of,
     fetch_cni_index_adjustments,
 )
 
 __all__ = [
     "CNI_BACKFILL_INDICES",
+    "CniAdjustmentPayloadError",
     "expand_cni_constituents_as_of",
     "fetch_cni_index_adjustments",
 ]

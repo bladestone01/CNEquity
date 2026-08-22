@@ -20,7 +20,9 @@ genuine.
 
 from __future__ import annotations
 
-__all__ = ["DECODED_ZERO", "decoded_quantity"]
+import math
+
+__all__ = ["DECODED_ZERO", "decoded_quantity", "decoded_quantity_or_none"]
 
 DECODED_ZERO = 1e-6
 
@@ -32,3 +34,22 @@ def decoded_quantity(value) -> float:
     except (TypeError, ValueError):
         return 0.0
     return 0.0 if abs(number) < DECODED_ZERO else number
+
+
+def decoded_quantity_or_none(value) -> float | None:
+    """Decode a present wire quantity, preserving malformed input as unknown.
+
+    ``decoded_quantity`` keeps the historical convenience contract that a
+    missing value means the protocol's numeric zero. Row parsers need a
+    stricter boundary: a missing or non-numeric volume/amount must not become
+    a valid-looking suspended bar and hide a source schema change.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return decoded_quantity(number)
