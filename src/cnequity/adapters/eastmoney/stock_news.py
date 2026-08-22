@@ -34,7 +34,11 @@ def _normalize_item(item: dict, *, use_snownlp: bool) -> dict | None:
     publish_raw = item.get("showtime") or item.get("NOTICE_DATE") or item.get("publish_time")
     pub_date = _parse_publish_date(publish_raw)
     score, method = score_text(title, use_snownlp=use_snownlp)
-    news_id = str(item.get("art_code") or item.get("uniqueUrl") or item.get("url") or title)
+    raw_news_id = item.get("art_code") or item.get("uniqueUrl") or item.get("url")
+    news_id = str(raw_news_id or "").strip()
+    if not news_id:
+        logger.warning("EastMoney stock_news: skipping item without a stable news id")
+        return None
     return {
         "news_id": news_id,
         "title": title,

@@ -50,7 +50,7 @@ _MAX_RETRIES = 3
 # The first component is usually written as ``10送3股`` while subsequent
 # components omit the repeated base, e.g. ``10转4股派4.50元``. Make the
 # ``10`` prefix optional after the first match so both forms are expanded.
-_PLAN_RE = re.compile(r"(?:10\s*股?\s*)?(送|转|派|配)\s*([0-9]+(?:\.[0-9]+)?)")
+_PLAN_RE = re.compile(r"(?:10\s*股?\s*)?(送|转增?|派|配)\s*([0-9]+(?:\.[0-9]+)?)")
 _ALLOTMENT_PRICE_RE = re.compile(r"配股(?:价|价格)\s*([0-9]+(?:\.[0-9]+)?)\s*元?")
 
 
@@ -120,6 +120,7 @@ def _parse_plan(plan: str) -> dict[str, float | None]:
         "派": "cash_dividend",
         "送": "bonus_ratio",
         "转": "transfer_ratio",
+        "转增": "transfer_ratio",
         "配": "allotment_ratio",
     }
     for token, raw_value in _PLAN_RE.findall(plan or ""):

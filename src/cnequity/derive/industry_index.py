@@ -115,11 +115,11 @@ def _hfq_returns(config: Config, start: date, end: date, symbols: list[str]) -> 
     "does this name have a factor at all", while ``strict_adj=True`` asks for
     one on every single row — so a name that is priced for years but missing the
     newest session slipped through the first check and aborted the whole derive
-    on the second. That is not hypothetical: ``adj_factors`` comes from Sina,
-    whose series does not carry 北交所 names on the run date, so 45 BJ symbols
-    had bars and no factor for exactly the day being derived. It failed the
-    daily `core` group every run, which is the opposite of what putting this
-    step on the daily path was for.
+    on the second. That is not hypothetical: an append-only factor derive can
+    temporarily leave BJ names without a factor for exactly the day being
+    derived, even though Sina serves the exchange. It failed the daily `core`
+    group every run, which is the opposite of what putting this step on the
+    daily path was for.
 
     So the gap is handled where it actually lives — per row. ``adj_is_exact``
     marks the rows the reader could not adjust; they are dropped rather than

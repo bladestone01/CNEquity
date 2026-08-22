@@ -417,6 +417,31 @@ def test_compute_adj_factors_skips_cdr(adj_config, monkeypatch):
     assert set(df["symbol"].to_list()) == {"600519.SH"}
 
 
+def test_compute_adj_factors_fetches_uncached_beijing_symbols(adj_config, monkeypatch):
+    """Sina serves BJ factors; an absent local cache is not source coverage."""
+    _write_bar(adj_config, "920001.BJ", date(2024, 6, 28))
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.5]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+
+    assert result.failed == []
+    assert set(calls) == {"600519.SH", "920001.BJ"}
+    assert result.findings == []
+    out = pl.read_parquet(
+        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
+    )
+    assert set(out["symbol"].to_list()) == {"600519.SH", "920001.BJ"}
+
+
 def test_compute_adj_factors_reuses_cache_on_non_event_day(adj_config, monkeypatch):
     _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28))
     _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
@@ -681,7 +706,8 @@ def test_failed_symbol_is_retried_after_global_watermark_advances(adj_config, mo
 # The derive is append-only from its watermark, so `cne backfill daily_bars`
 # lands history *behind* the watermark and never gets a factor. On a real lake
 # that left 260 stocks with none at all and ~220k unadjusted rows, which read as
-# "Sina does not cover 北交所" until a targeted re-derive filled them from 2016.
+# an append-only derive did not revisit history until a targeted re-derive filled
+# them from 2016.
 
 
 def test_uncovered_symbols_finds_history_behind_the_watermark(adj_config):
@@ -739,3 +765,15 @@ def test_todays_bar_alone_does_not_mark_a_symbol_uncovered(adj_config):
     _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
     _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
     assert _uncovered_symbols(adj_config) == set()
+
+
+def test_uncovered_symbols_detects_a_middle_factor_gap(adj_config):
+    from cnequity.derive.adj_factors import _uncovered_symbols
+
+    days = [date(2024, 6, 26), date(2024, 6, 27), date(2024, 6, 28)]
+    for day in days:
+        _write_bar(adj_config, "600519.SH", day)
+    _write_adj_partition(adj_config, "600519.SH", days[0])
+    _write_adj_partition(adj_config, "600519.SH", days[2])
+
+    assert _uncovered_symbols(adj_config) == {"600519.SH"}

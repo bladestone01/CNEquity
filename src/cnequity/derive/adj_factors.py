@@ -281,15 +281,15 @@ def _uncovered_symbols(config: Config) -> set[str]:
     misses everything else. `cne backfill daily_bars` adds *old* dates, and old
     dates are behind the watermark by definition, so the history it lands never
     gets a factor — silently, because `load(adjust=…)` fills factor=1.0 and only
-    marks `adj_is_exact`. Measured on a real lake: 260 stocks with no factor at
-    all and ~220k unadjusted bar rows, which read as "Sina does not cover
-    北交所" until a targeted re-derive filled three of them going back to 2016.
+    marks `adj_is_exact`. An append-only derive can leave historical BJ
+    bars temporarily unadjusted until a targeted re-derive visits their full
+    history; the self-heal below schedules those symbols for refresh.
 
     Compared per symbol rather than per row: a (symbol, trade_date) anti-join
     against a 338M-row daily_bars on every run would cost more than the derive.
-    Min/max per symbol catches both a symbol with no factors and one whose
-    coverage stops short, and a refreshed symbol realigns its whole history
-    anyway.
+    Min/max per symbol catches endpoint gaps; when the factor span reaches the
+    latest bar, distinct-day counts also catch a deleted middle partition.
+    A refreshed symbol realigns its whole history anyway.
     """
     from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
@@ -302,6 +302,7 @@ def _uncovered_symbols(config: Config) -> set[str]:
         .agg(
             pl.col("trade_date").min().alias("bar_first"),
             pl.col("trade_date").max().alias("bar_last"),
+            pl.col("trade_date").n_unique().alias("bar_days"),
         )
         .collect()
     )
@@ -311,12 +312,24 @@ def _uncovered_symbols(config: Config) -> set[str]:
     fac_root = config.derived_root / "adj_factors"
     if not dataset_has_parquet(fac_root):
         return set(bar_span["symbol"].to_list())
+    factor_rows = scan_parquet_root(fac_root)
+    factor_schema = set(factor_rows.collect_schema().names())
+    if "adjust_type" in factor_schema:
+        factor_rows = factor_rows.filter(pl.col("adjust_type") == STORED_ADJUST_TYPE)
+    if "factor" in factor_schema:
+        factor_rows = factor_rows.filter(
+            pl.col("factor").is_not_null()
+            & pl.col("factor").is_finite()
+            & (pl.col("factor") > 0)
+        )
     fac_span = (
-        scan_parquet_root(fac_root)
+        factor_rows
+        .select("symbol", "trade_date")
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("fac_first"),
             pl.col("trade_date").max().alias("fac_last"),
+            pl.col("trade_date").n_unique().alias("fac_days"),
         )
         .collect()
     )
@@ -325,8 +338,18 @@ def _uncovered_symbols(config: Config) -> set[str]:
     # including it would force a full-history realign of the entire market
     # daily. New sessions are precisely what the incremental path is for.
     joined = bar_span.join(fac_span, on="symbol", how="left")
+    # A missing middle factor is another uncovered history, but do not count
+    # the expected terminal lag: today's bar can be written before Sina's
+    # factor is available. Only enforce exact day counts when the factor span
+    # already reaches the latest bar; endpoint gaps remain covered by the first
+    # condition above.
     uncovered = joined.filter(
-        pl.col("fac_first").is_null() | (pl.col("fac_first") > pl.col("bar_first"))
+        pl.col("fac_first").is_null()
+        | (pl.col("fac_first") > pl.col("bar_first"))
+        | (
+            (pl.col("fac_last") >= pl.col("bar_last"))
+            & (pl.col("fac_days") < pl.col("bar_days"))
+        )
     )
     # Only stocks. ETFs and LOFs have no hfq factor series to fetch — 91 of the
     # 103 names left after the first self-heal run were ETFs, and without this
@@ -636,7 +659,6 @@ def _compute_adj_factors_locked(
 
     tasks: list[tuple[str, str, pl.DataFrame, bool]] = []
     skipped_cdr: list[str] = []
-    skipped_unsupported: set[str] = set()
     for group in bars.partition_by("symbol"):
         sym = group["symbol"][0]
         if _is_cdr(sym):
@@ -645,17 +667,6 @@ def _compute_adj_factors_locked(
         sym_bars = group.select("trade_date").sort("trade_date")
         force = sym in refresh_set
         for adj in adjust_types:
-            # Sina does not publish adjustment-factor history for the Beijing
-            # segment.  If no cache exists, this is expected source coverage
-            # rather than a transient fetch failure; retrying it every day
-            # only turns a small, known gap into a run-level failure.
-            try:
-                exchange = parse_symbol(sym).exchange
-            except ValueError:
-                exchange = ""
-            if exchange == "BJ" and (_load_cache(config, sym, adj) is None):
-                skipped_unsupported.add(sym)
-                continue
             tasks.append((sym, adj, sym_bars, force))
     if skipped_cdr:
         logger.info(
@@ -668,26 +679,7 @@ def _compute_adj_factors_locked(
     frames: list[pl.DataFrame] = []
     failed: list[str] = []
     findings: list[dict] = []
-    # Treat known source-unsupported symbols as resolved for retry-state
-    # purposes. Their bars remain usable as raw data, while adjusted consumers
-    # already mark rows without an exact factor and exclude them from derived
-    # return series.
-    succeeded: set[str] = set(skipped_unsupported)
-    if skipped_unsupported:
-        findings.append(
-            {
-                "dataset": "adj_factors",
-                "severity": "warning",
-                "check": "adj_factor_expected_no_data",
-                "message": (
-                    f"Sina has no adjustment-factor coverage for "
-                    f"{len(skipped_unsupported)} uncached Beijing symbol(s); "
-                    "raw bars remain available and adjusted consumers will exclude "
-                    "rows without an exact factor"
-                ),
-                "symbols": sorted(skipped_unsupported),
-            }
-        )
+    succeeded: set[str] = set()
 
     if workers <= 1 or len(tasks) == 1:
         with httpx.Client(timeout=20.0) as client:

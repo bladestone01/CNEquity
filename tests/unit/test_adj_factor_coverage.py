@@ -18,7 +18,7 @@ from cnequity.config import Config
 from cnequity.quality.cross_checks import adj_factor_coverage_findings
 
 
-def _lake(tmp_path, *, stocks, priced, factored, etfs=(), no_trade=()):
+def _lake(tmp_path, *, stocks, priced, factored, etfs=(), no_trade=(), factor_type="hfq"):
     cfg = Config(data_root=tmp_path / "lake")
     for root in (cfg.curated_root, cfg.derived_root):
         root.mkdir(parents=True, exist_ok=True)
@@ -45,7 +45,12 @@ def _lake(tmp_path, *, stocks, priced, factored, etfs=(), no_trade=()):
     fac = cfg.derived_root / "adj_factors" / "trade_date=2026-08-07"
     fac.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
-        {"symbol": list(factored), "trade_date": [date(2026, 8, 7)] * len(factored)}
+        {
+            "symbol": list(factored),
+            "trade_date": [date(2026, 8, 7)] * len(factored),
+            "adjust_type": [factor_type] * len(factored),
+            "factor": [1.0] * len(factored),
+        }
     ).write_parquet(fac / "part-0.parquet")
     return cfg
 
@@ -68,6 +73,60 @@ def test_fully_covered_exchange_is_silent(tmp_path):
     sh = [f"6000{i:02d}.SH" for i in range(20)]
     cfg = _lake(tmp_path, stocks=sh, priced=sh, factored=sh)
     assert adj_factor_coverage_findings(cfg, date(2026, 8, 7)) == []
+
+
+def test_internal_factor_gap_is_reported_even_when_endpoints_match(tmp_path):
+    sh = [f"6000{i:02d}.SH" for i in range(20)]
+    cfg = _lake(tmp_path, stocks=sh, priced=sh, factored=sh)
+    middle = cfg.curated_root / "daily_bars" / "trade_date=2026-08-06"
+    middle.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": sh,
+            "trade_date": [date(2026, 8, 6)] * len(sh),
+            "volume": [100] * len(sh),
+        }
+    ).write_parquet(middle / "part-0.parquet")
+    # The factor has the first and last dates, but not the middle trading day
+    # for one symbol. A min/max-only check would incorrectly call this covered.
+    first = cfg.derived_root / "adj_factors" / "trade_date=2026-08-05"
+    first.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": sh,
+            "trade_date": [date(2026, 8, 5)] * len(sh),
+            "adjust_type": ["hfq"] * len(sh),
+            "factor": [1.0] * len(sh),
+        }
+    ).write_parquet(first / "part-0.parquet")
+    # Remove the one symbol's middle factor by leaving the other endpoint rows
+    # intact; its span still equals its bar span.
+    middle_factor = cfg.derived_root / "adj_factors" / "trade_date=2026-08-06"
+    middle_factor.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": sh[1:],
+            "trade_date": [date(2026, 8, 6)] * (len(sh) - 1),
+            "adjust_type": ["hfq"] * (len(sh) - 1),
+            "factor": [1.0] * (len(sh) - 1),
+        }
+    ).write_parquet(middle_factor / "part-0.parquet")
+
+    findings = adj_factor_coverage_findings(cfg, date(2026, 8, 7))
+
+    assert len(findings) == 1
+    assert findings[0]["symbols_internal_gaps"] == 1
+    assert findings[0]["symbols_partial"] == 1
+
+
+def test_qfq_only_rows_do_not_count_as_hfq_coverage(tmp_path):
+    sh = [f"6000{i:02d}.SH" for i in range(20)]
+    cfg = _lake(tmp_path, stocks=sh, priced=sh, factored=sh, factor_type="qfq")
+
+    findings = adj_factor_coverage_findings(cfg, date(2026, 8, 7))
+
+    assert len(findings) == 1
+    assert findings[0]["symbols_without_factor"] == len(sh)
 
 
 def test_partial_factor_span_is_reported_as_incomplete(tmp_path):

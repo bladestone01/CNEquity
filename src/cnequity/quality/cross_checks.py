@@ -56,9 +56,10 @@ _MAX_RECON_FINDINGS = 50
 ADJ_RECON_LOOKBACK_DAYS = 30
 
 # --- adjustment-factor coverage ---------------------------------------------
-# adj_factors comes from Sina, daily_bars from TDX, and the two do not cover the
-# same market: Sina's factor series essentially skips 北交所. `load(adjust=…)`
-# defaults to strict_adj=False, so a bar with no factor is returned at
+# adj_factors comes from Sina, daily_bars from TDX, and an append-only derive can
+# leave the two at different coverage dates. Sina does serve 北交所, so a bar
+# with no factor is an ingest gap rather than an expected exchange limitation.
+# `load(adjust=…)` defaults to strict_adj=False, so that bar is returned at
 # factor=1.0 — a raw price inside a result the caller asked to have adjusted,
 # marked only by an `adj_is_exact` column most callers never select.
 #
@@ -712,9 +713,16 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     if not stocks:
         return []
 
+    bar_dates = _canonical_traded_bars(
+        scan_parquet_root(
+            bars_root,
+            partition_col="trade_date",
+            end=trade_date,
+            symbols=sorted(stocks),
+        )
+    ).select("symbol", "trade_date")
     bar_span = (
-        _canonical_traded_bars(scan_parquet_root(bars_root))
-        .select("symbol", "trade_date")
+        bar_dates
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("bar_first"),
@@ -724,9 +732,31 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     )
     if bar_span.is_empty():
         return []
+    factor_rows = dedupe_lazy_by_primary_key(
+        scan_parquet_root(
+            fac_root,
+            partition_col="trade_date",
+            end=trade_date,
+            symbols=sorted(stocks),
+        ),
+        "adj_factors",
+    )
+    factor_schema = set(factor_rows.collect_schema().names())
+    # Only hfq is persisted and used by the reader. A qfq-only or malformed
+    # factor row must not make the coverage check claim that an adjusted bar
+    # has an exact factor. Older test/fixture lakes may lack the newer columns;
+    # retain their historical row-presence semantics in that compatibility path.
+    if "adjust_type" in factor_schema:
+        factor_rows = factor_rows.filter(pl.col("adjust_type") == "hfq")
+    if "factor" in factor_schema:
+        factor_rows = factor_rows.filter(
+            pl.col("factor").is_not_null()
+            & pl.col("factor").is_finite()
+            & (pl.col("factor") > 0)
+        )
+    factor_dates = factor_rows.select("symbol", "trade_date").unique()
     factor_span = (
-        scan_parquet_root(fac_root)
-        .select("symbol", "trade_date")
+        factor_dates
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("factor_first"),
@@ -734,7 +764,17 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
         )
         .collect(engine="streaming")
     )
-    spans = bar_span.join(factor_span, on="symbol", how="left")
+    missing_days = (
+        bar_dates.join(factor_dates, on=["symbol", "trade_date"], how="anti")
+        .group_by("symbol")
+        .agg(pl.len().alias("missing_factor_days"))
+        .collect(engine="streaming")
+    )
+    spans = (
+        bar_span.join(factor_span, on="symbol", how="left")
+        .join(missing_days, on="symbol", how="left")
+        .with_columns(pl.col("missing_factor_days").fill_null(0))
+    )
 
     findings: list[dict] = []
     by_exchange: dict[str, list[str]] = {}
@@ -757,6 +797,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                 and row["factor_last"] is not None
                 and row["factor_first"] <= row["bar_first"]
                 and row["factor_last"] >= row["bar_last"]
+                and row["missing_factor_days"] == 0
             )
         }
         covered = len(fully_covered)
@@ -768,6 +809,17 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
             1 for symbol in symbols if span_by_symbol[symbol]["factor_first"] is None
         )
         partial = missing - without_factor
+        internal_gaps = sum(
+            1
+            for symbol in symbols
+            if (
+                span_by_symbol[symbol]["missing_factor_days"] > 0
+                and span_by_symbol[symbol]["factor_first"] is not None
+                and span_by_symbol[symbol]["factor_first"] <= span_by_symbol[symbol]["bar_first"]
+                and span_by_symbol[symbol]["factor_last"] is not None
+                and span_by_symbol[symbol]["factor_last"] >= span_by_symbol[symbol]["bar_last"]
+            )
+        )
         findings.append(
             {
                 "dataset": "adj_factors",
@@ -777,7 +829,8 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                 "message": (
                     f"{exchange}: {missing} of {total} priced stocks lack a complete "
                     f"adjustment-factor span ({ratio:.0%} covered; "
-                    f"{without_factor} with no factor, {partial} partial). "
+                    f"{without_factor} with no factor, {partial} partial, "
+                    f"{internal_gaps} with internal gaps). "
                     "load(adjust='hfq') returns uncovered bars unadjusted at factor=1.0 "
                     "unless strict_adj=True — check adj_is_exact"
                 ),
@@ -786,6 +839,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                 "symbols_missing": missing,
                 "symbols_without_factor": without_factor,
                 "symbols_partial": partial,
+                "symbols_internal_gaps": internal_gaps,
                 "coverage_ratio": round(ratio, 4),
                 "sample": sorted(set(symbols) - fully_covered)[:_SAMPLE],
             }

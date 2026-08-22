@@ -114,6 +114,27 @@ def test_fetch_stock_news_date_filter_drops_undated_items():
     assert payload["items"][0]["news_id"] == "dated"
 
 
+def test_fetch_stock_news_drops_items_without_stable_identity():
+    client = FakeNewsClient(
+        [
+            {"title": "重复标题", "showtime": "2024-06-28 15:00:00"},
+            {
+                "title": "有效新闻",
+                "showtime": "2024-06-28 15:01:00",
+                "art_code": "dated",
+            },
+        ]
+    )
+    payload = fetch_stock_news(
+        "600519.SH",
+        on_date=date(2024, 6, 28),
+        use_snownlp=False,
+        client=client,  # type: ignore[arg-type]
+    )
+    assert payload["headline_count"] == 1
+    assert payload["items"][0]["news_id"] == "dated"
+
+
 def test_fetch_stock_news_date_filter_walks_older_pages():
     pages = [
         [

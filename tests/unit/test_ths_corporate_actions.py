@@ -40,6 +40,12 @@ def test_parse_plan_uses_per_share_units_and_keeps_combined_actions():
     }
 
 
+def test_parse_plan_accepts_transfer_increase_wording():
+    values = ca._parse_plan("10股转增3股派0.5元")
+    assert values["transfer_ratio"] == 0.3
+    assert values["cash_dividend"] == 0.05
+
+
 def test_rows_from_page_requires_completed_plan_and_filters_window():
     rows = ca._rows_from_page("430090.BJ", _PAGE, date(2022, 1, 1), date(2022, 12, 31))
     assert len(rows) == 2
