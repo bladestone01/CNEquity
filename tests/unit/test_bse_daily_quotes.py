@@ -75,9 +75,7 @@ def test_fetches_current_bse_quote_and_paginates(tmp_path):
     assert client.posted == [0, 1]
     assert out.height == 2
     assert set(out["symbol"].to_list()) == {"920571.BJ", "920572.BJ"}
-    assert out.filter(out["symbol"] == "920571.BJ")["amount"].item() == pytest.approx(
-        322779288.68
-    )
+    assert out.filter(out["symbol"] == "920571.BJ")["amount"].item() == pytest.approx(322779288.68)
 
 
 def test_rejects_other_sessions_and_malformed_payload(tmp_path):

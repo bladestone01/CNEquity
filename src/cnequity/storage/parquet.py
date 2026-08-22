@@ -111,7 +111,10 @@ def compact_dataset(
     # Re-validate on read: staging/curated written before a schema change
     # (e.g. fetched_at str → timestamp) must be normalized before concat.
     combined = pl.concat(
-        [sanitize_dataset_rows(validate_dataframe(pl.read_parquet(f), dataset), dataset) for f in files],
+        [
+            sanitize_dataset_rows(validate_dataframe(pl.read_parquet(f), dataset), dataset)
+            for f in files
+        ],
         how="diagonal_relaxed",
     )
     pk = PRIMARY_KEYS.get(dataset, [])
@@ -125,7 +128,9 @@ def compact_dataset(
         if existing_files:
             existing = pl.concat(
                 [
-                    sanitize_dataset_rows(validate_dataframe(pl.read_parquet(path), dataset), dataset)
+                    sanitize_dataset_rows(
+                        validate_dataframe(pl.read_parquet(path), dataset), dataset
+                    )
                     for path in existing_files
                 ],
                 how="diagonal_relaxed",
@@ -154,7 +159,9 @@ def compact_dataset(
         if existing_dir.exists():
             for existing in existing_dir.rglob("*.parquet"):
                 frames.append(
-                    sanitize_dataset_rows(validate_dataframe(pl.read_parquet(existing), dataset), dataset)
+                    sanitize_dataset_rows(
+                        validate_dataframe(pl.read_parquet(existing), dataset), dataset
+                    )
                 )
         merged = pl.concat(frames, how="diagonal_relaxed")
         if pk:

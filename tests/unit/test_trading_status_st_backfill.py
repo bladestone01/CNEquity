@@ -106,12 +106,14 @@ def test_backfill_skips_provider_unsupported_bj_symbols(tmp_path, monkeypatch):
 
     def fake_fetch(symbols, start, end, **kwargs):
         calls.append(list(symbols))
-        return pl.DataFrame(schema={
-            "symbol": pl.Utf8,
-            "trade_date": pl.Date,
-            "is_trading": pl.Boolean,
-            "status": pl.Utf8,
-        }), []
+        return pl.DataFrame(
+            schema={
+                "symbol": pl.Utf8,
+                "trade_date": pl.Date,
+                "is_trading": pl.Boolean,
+                "status": pl.Utf8,
+            }
+        ), []
 
     monkeypatch.setattr("cnequity.adapters.baostock.st_history.fetch_st_history", fake_fetch)
     result = _backfill_trading_status_st(cfg, date(2026, 7, 1), "run1")

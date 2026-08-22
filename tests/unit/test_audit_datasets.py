@@ -371,7 +371,9 @@ def test_lake_health_keeps_all_a_st_baseline_when_research_is_scoped(tmp_path, m
         "st_evidence_unsupported_exchange_counts": {"BJ": 580},
         "st_evidence_receipt_reason": "unsupported_exchange_symbols",
     }
-    monkeypatch.setattr(audit_module, "_collect_lake_findings", lambda *args, **kwargs: [st_finding])
+    monkeypatch.setattr(
+        audit_module, "_collect_lake_findings", lambda *args, **kwargs: [st_finding]
+    )
     monkeypatch.setattr(audit_module, "run_source_diffs", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         "cnequity.quality.historical_validity.historical_universe_validity",
@@ -561,15 +563,13 @@ def test_full_health_anchors_observations_to_last_trading_day(tmp_path, monkeypa
     )
     monkeypatch.setattr(
         "cnequity.quality.audit._collect_lake_findings",
-        lambda _config, trade_date, *_args, **_kwargs: observed.setdefault(
-            "findings", trade_date
-        )
-        and [],
+        lambda _config, trade_date, *_args, **_kwargs: (
+            observed.setdefault("findings", trade_date) and []
+        ),
     )
     monkeypatch.setattr(
         "cnequity.quality.audit.run_source_diffs",
-        lambda _config, _run_id, trade_date: observed.setdefault("source_diff", trade_date)
-        and [],
+        lambda _config, _run_id, trade_date: observed.setdefault("source_diff", trade_date) and [],
     )
     monkeypatch.setattr(
         "cnequity.quality.historical_validity.historical_universe_validity",

@@ -175,11 +175,15 @@ def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
         covered = set(cal.get_column("trade_date").drop_nulls().to_list())
         expected_days = (end - start).days + 1
         if len(covered) == expected_days:
-            out = cal.filter(
-                pl.col("is_trading")
-                & (pl.col("trade_date").dt.weekday() <= 5)
-                & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
-            )["trade_date"].sort().to_list()
+            out = (
+                cal.filter(
+                    pl.col("is_trading")
+                    & (pl.col("trade_date").dt.weekday() <= 5)
+                    & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+                )["trade_date"]
+                .sort()
+                .to_list()
+            )
             if out:
                 return out
         else:
@@ -204,11 +208,15 @@ def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
         seed_path=effective_seed,
         curated_root=config.curated_root if config.curated_root.exists() else None,
     )
-    return calendar.filter(
-        pl.col("is_trading")
-        & (pl.col("trade_date").dt.weekday() <= 5)
-        & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
-    )["trade_date"].sort().to_list()
+    return (
+        calendar.filter(
+            pl.col("is_trading")
+            & (pl.col("trade_date").dt.weekday() <= 5)
+            & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+        )["trade_date"]
+        .sort()
+        .to_list()
+    )
 
 
 def incremental_trade_dates(config: Config, dataset: str, trade_date: date) -> list[date]:
@@ -520,12 +528,7 @@ def load_bar_universe(config: Config) -> set[str]:
         partition_col="trade_date",
         traded_only=True,
     )
-    return set(
-        scan.select("symbol")
-        .unique()
-        .collect()["symbol"]
-        .to_list()
-    )
+    return set(scan.select("symbol").unique().collect()["symbol"].to_list())
 
 
 def _existing_dates(config: Config, dataset: str, date_col: str) -> set[date]:

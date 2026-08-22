@@ -94,7 +94,7 @@ def off_session_findings(lf: pl.LazyFrame, dataset: str, start: date, end: date)
             "severity": "error",
             "check": "minute_bars_off_session",
             "message": (
-            f"{bad_rows} bar(s) in {start}..{end} fall outside continuous trading "
+                f"{bad_rows} bar(s) in {start}..{end} fall outside continuous trading "
                 f"(09:31-11:30, 13:01-15:00); e.g. {examples}"
             ),
             "rows": bad_rows,
@@ -110,8 +110,8 @@ def trade_date_mismatch_findings(
     total = int(mismatched.select(pl.len()).collect(engine="streaming").item())
     if not total:
         return []
-    sample = mismatched.select("symbol", "trade_date", "bar_time").head(3).collect(
-        engine="streaming"
+    sample = (
+        mismatched.select("symbol", "trade_date", "bar_time").head(3).collect(engine="streaming")
     )
     examples = ", ".join(
         f"{r['symbol']} trade_date={r['trade_date']} bar_time={r['bar_time']}"

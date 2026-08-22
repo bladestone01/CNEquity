@@ -132,7 +132,9 @@ def test_fetch_daily_bars_opens_circuit_after_repeated_transport_failures(monkey
             "0.000005",
         }
     )
-    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.is_transport_fail_fast", lambda _exc: True)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.is_transport_fail_fast", lambda _exc: True
+    )
 
     df = fetch_daily_bars(
         ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ", "000005.SZ"],

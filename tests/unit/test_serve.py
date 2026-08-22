@@ -641,9 +641,7 @@ def test_health_exposes_historical_research_gate(lake):
         "start": "2001-01-02",
         "end": "2026-07-31",
     }
-    assert body["historical_universe_blockers"] == [
-        "BJ historical ST evidence unavailable"
-    ]
+    assert body["historical_universe_blockers"] == ["BJ historical ST evidence unavailable"]
     assert body["source_limitations"] == [
         "BJ historical ST source does not cover 580 symbols",
         "399001.SZ has 18 known source gaps",

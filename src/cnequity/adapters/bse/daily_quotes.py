@@ -51,7 +51,9 @@ def _parse_jsonp(text: str) -> Any:
     try:
         return json.loads(payload)
     except json.JSONDecodeError as exc:
-        raise BseMarketDataError(f"BSE quotation response is not valid JSON/JSONP: {text[:120]!r}") from exc
+        raise BseMarketDataError(
+            f"BSE quotation response is not valid JSON/JSONP: {text[:120]!r}"
+        ) from exc
 
 
 def _parse_page(text: str) -> tuple[list[dict[str, Any]], int]:
@@ -198,8 +200,10 @@ def fetch_daily_quotes(
                 "amount": pl.Float64,
             }
         )
-    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last").sort(
-        ["trade_date", "symbol"]
+    return (
+        pl.DataFrame(rows)
+        .unique(subset=["symbol", "trade_date"], keep="last")
+        .sort(["trade_date", "symbol"])
     )
 
 

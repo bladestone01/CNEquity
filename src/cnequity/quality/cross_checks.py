@@ -150,9 +150,7 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
     if date_stats.is_empty():
         return findings
     bars_dates = set(date_stats["trade_date"].to_list())
-    traded_dates = set(
-        date_stats.filter(pl.col("_traded_rows") > 0)["trade_date"].to_list()
-    )
+    traded_dates = set(date_stats.filter(pl.col("_traded_rows") > 0)["trade_date"].to_list())
 
     # Bars on a closed calendar day.
     orphan = sorted(bars_dates - trading_days)
@@ -357,13 +355,10 @@ def _unique_symbols_and_dates(lf: pl.LazyFrame) -> tuple[set[str], set[date]]:
     columns = set(lf.collect_schema().names())
     if "symbol" not in columns or "trade_date" not in columns:
         return set(), set()
-    stats = (
-        lf.select(
-            pl.col("symbol").drop_nulls().unique().implode().alias("_symbols"),
-            pl.col("trade_date").drop_nulls().unique().implode().alias("_dates"),
-        )
-        .collect(engine="streaming")
-    )
+    stats = lf.select(
+        pl.col("symbol").drop_nulls().unique().implode().alias("_symbols"),
+        pl.col("trade_date").drop_nulls().unique().implode().alias("_dates"),
+    ).collect(engine="streaming")
     if stats.is_empty():
         return set(), set()
     symbols = stats["_symbols"][0]
@@ -722,8 +717,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
         )
     ).select("symbol", "trade_date")
     bar_summary = (
-        bar_dates
-        .group_by("symbol")
+        bar_dates.group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("bar_first"),
             pl.col("trade_date").max().alias("bar_last"),
@@ -751,14 +745,11 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
         factor_rows = factor_rows.filter(pl.col("adjust_type") == "hfq")
     if "factor" in factor_schema:
         factor_rows = factor_rows.filter(
-            pl.col("factor").is_not_null()
-            & pl.col("factor").is_finite()
-            & (pl.col("factor") > 0)
+            pl.col("factor").is_not_null() & pl.col("factor").is_finite() & (pl.col("factor") > 0)
         )
     factor_dates = factor_rows.select("symbol", "trade_date").unique()
     factor_summary = (
-        factor_dates
-        .group_by("symbol")
+        factor_dates.group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("factor_first"),
             pl.col("trade_date").max().alias("factor_last"),
@@ -766,18 +757,11 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
         )
         .collect(engine="streaming")
     )
-    spans = (
-        bar_summary.join(factor_summary, on="symbol", how="left")
-        .with_columns(
-            pl.when(pl.col("_factor_dates").is_null())
-            .then(pl.col("_bar_dates").list.len())
-            .otherwise(
-                pl.col("_bar_dates")
-                .list.set_difference(pl.col("_factor_dates"))
-                .list.len()
-            )
-            .alias("missing_factor_days")
-        )
+    spans = bar_summary.join(factor_summary, on="symbol", how="left").with_columns(
+        pl.when(pl.col("_factor_dates").is_null())
+        .then(pl.col("_bar_dates").list.len())
+        .otherwise(pl.col("_bar_dates").list.set_difference(pl.col("_factor_dates")).list.len())
+        .alias("missing_factor_days")
     )
 
     from cnequity.storage.state import StateStore
@@ -809,9 +793,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                 and row["missing_factor_days"] == 0
             )
         }
-        known_source_unavailable = sorted(
-            (set(symbols) - fully_covered) & source_unavailable
-        )
+        known_source_unavailable = sorted((set(symbols) - fully_covered) & source_unavailable)
         if known_source_unavailable:
             findings.append(
                 {
@@ -1106,17 +1088,13 @@ def adj_factor_reconciliation_findings(
         )
         remediation_parts: list[str] = []
         if baostock_repairable:
-            remediation_parts.append(
-                "Run a scoped Baostock repair for SH/SZ symbols"
-            )
+            remediation_parts.append("Run a scoped Baostock repair for SH/SZ symbols")
         if unsupported_exchange_counts:
             remediation_parts.append(
-                "obtain an independent historical corporate-action source for "
-                "unsupported exchanges"
+                "obtain an independent historical corporate-action source for unsupported exchanges"
             )
         remediation = "; ".join(remediation_parts) or (
-            "Review the delisted symbols against an independent historical "
-            "corporate-action source"
+            "Review the delisted symbols against an independent historical corporate-action source"
         )
         findings.append(
             {
@@ -1483,9 +1461,7 @@ def _st_from_names(instruments: pl.DataFrame) -> set[str] | None:
     if named.is_empty():
         return None
     return {
-        symbol
-        for symbol, name in named.select(["symbol", "name"]).iter_rows()
-        if is_st_name(name)
+        symbol for symbol, name in named.select(["symbol", "name"]).iter_rows() if is_st_name(name)
     }
 
 

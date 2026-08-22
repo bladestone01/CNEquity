@@ -124,7 +124,9 @@ def test_sh_sz_validity_excludes_unsupported_bj_scope(tmp_path, monkeypatch):
 
     assert all_a["universe_ready"] is False
     st_blocker = next(
-        blocker for blocker in all_a["blockers"] if blocker["code"] == "historical_st_labels_incomplete"
+        blocker
+        for blocker in all_a["blockers"]
+        if blocker["code"] == "historical_st_labels_incomplete"
     )
     assert "TUSHARE_TOKEN" in st_blocker["remediation"]
     assert sh_sz["universe_ready"] is True

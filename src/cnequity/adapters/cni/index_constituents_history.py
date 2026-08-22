@@ -97,9 +97,7 @@ def fetch_cni_index_adjustments(
         )
         resp.raise_for_status()
         if not resp.content:
-            raise CniAdjustmentPayloadError(
-                f"CNI adjustment response for {index_symbol} is empty"
-            )
+            raise CniAdjustmentPayloadError(f"CNI adjustment response for {index_symbol} is empty")
         if len(resp.content) < 100:
             raise CniAdjustmentPayloadError(
                 f"CNI adjustment response for {index_symbol} is truncated"
@@ -115,9 +113,7 @@ def fetch_cni_index_adjustments(
             client.close()
 
     if pdf.empty:
-        raise CniAdjustmentPayloadError(
-            f"CNI adjustment workbook for {index_symbol} has no rows"
-        )
+        raise CniAdjustmentPayloadError(f"CNI adjustment workbook for {index_symbol} has no rows")
 
     rename = {
         "开始日期": "start_date",

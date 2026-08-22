@@ -449,9 +449,7 @@ def test_compute_adj_factors_fetches_uncached_beijing_symbols(adj_config, monkey
     assert set(out["symbol"].to_list()) == {"600519.SH", "920001.BJ"}
 
 
-def test_compute_adj_factors_persists_delisted_source_gap_without_retrying(
-    adj_config, monkeypatch
-):
+def test_compute_adj_factors_persists_delisted_source_gap_without_retrying(adj_config, monkeypatch):
     from cnequity.storage.state import StateStore
 
     _write_bar(adj_config, "830799.BJ", date(2024, 6, 28))
@@ -480,12 +478,8 @@ def test_compute_adj_factors_persists_delisted_source_gap_without_retrying(
 
     first = compute_adj_factors(adj_config)
     assert first.failed == []
-    assert [finding["check"] for finding in first.findings] == [
-        "adj_factor_source_unavailable"
-    ]
-    assert StateStore(adj_config.meta_root).get_string_set(
-        "adj_factors", "retry_symbols"
-    ) == set()
+    assert [finding["check"] for finding in first.findings] == ["adj_factor_source_unavailable"]
+    assert StateStore(adj_config.meta_root).get_string_set("adj_factors", "retry_symbols") == set()
     assert StateStore(adj_config.meta_root).get_string_set(
         "adj_factors", "source_unavailable_symbols"
     ) == {"830799.BJ"}
@@ -514,9 +508,9 @@ def test_compute_adj_factors_parallel_tracks_success_by_future_symbol(adj_config
     result = compute_adj_factors(adj_config)
 
     assert result.failed == ["600519.SH:hfq"]
-    assert StateStore(adj_config.meta_root).get_string_set(
-        "adj_factors", "retry_symbols"
-    ) == {"600519.SH"}
+    assert StateStore(adj_config.meta_root).get_string_set("adj_factors", "retry_symbols") == {
+        "600519.SH"
+    }
 
 
 def test_compute_adj_factors_reuses_cache_on_non_event_day(adj_config, monkeypatch):

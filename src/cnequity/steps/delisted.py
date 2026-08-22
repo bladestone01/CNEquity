@@ -380,9 +380,7 @@ def _in_historical_universe(symbol: str, universe: str) -> bool:
         info = parse_symbol(symbol)
     except ValueError:
         return False
-    if not is_all_a_symbol(info.code, info.exchange) or is_cdr_symbol(
-        info.code, info.exchange
-    ):
+    if not is_all_a_symbol(info.code, info.exchange) or is_cdr_symbol(info.code, info.exchange):
         return False
     return universe == "all_a" or info.exchange in {"SH", "SZ"}
 

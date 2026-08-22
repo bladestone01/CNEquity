@@ -136,9 +136,7 @@ def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict
         if unexpected_missing:
             parts.append(f"{len(unexpected_missing)} calendar trading day(s) with no bar")
         if known_missing:
-            parts.append(
-                f"{len(known_missing)} known source-limited trading day(s) with no bar"
-            )
+            parts.append(f"{len(known_missing)} known source-limited trading day(s) with no bar")
         if orphan:
             parts.append(f"{len(orphan)} bar(s) on non-trading days")
         source_limited = bool(known_missing) and not unexpected_missing and not orphan
@@ -417,10 +415,7 @@ def _optional_intraday_findings(config: Config, trade_date: date) -> list[dict]:
     inspection path.
     """
     findings: list[dict] = []
-    if any(
-        is_dataset_enabled(dataset, config)
-        for dataset in ("minute_bars", "minute_bars_5m")
-    ):
+    if any(is_dataset_enabled(dataset, config) for dataset in ("minute_bars", "minute_bars_5m")):
         findings.extend(minute_bars_findings(config, trade_date))
     if is_dataset_enabled("trade_ticks", config):
         findings.extend(trade_ticks_findings(config, trade_date))
@@ -458,11 +453,7 @@ def _all_a_st_evidence_summary(findings: list[dict]) -> dict | None:
     READY result from hiding an unresolved BJ source limitation.
     """
     finding = next(
-        (
-            item
-            for item in findings
-            if item.get("check") == "trading_status_coverage_start"
-        ),
+        (item for item in findings if item.get("check") == "trading_status_coverage_start"),
         None,
     )
     if finding is None:
@@ -473,9 +464,7 @@ def _all_a_st_evidence_summary(findings: list[dict]) -> dict | None:
         "coverage_end": finding.get("st_evidence_coverage_end"),
         "supported_symbols": finding.get("st_evidence_supported_symbols"),
         "unsupported_symbols": finding.get("st_evidence_unsupported_symbols", 0),
-        "unsupported_exchange_counts": finding.get(
-            "st_evidence_unsupported_exchange_counts", {}
-        ),
+        "unsupported_exchange_counts": finding.get("st_evidence_unsupported_exchange_counts", {}),
         "reason": finding.get("st_evidence_receipt_reason"),
     }
 

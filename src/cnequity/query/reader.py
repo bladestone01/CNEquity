@@ -467,8 +467,7 @@ def load(
 
     if universe and dataset != "daily_bars":
         raise ReaderError(
-            "universe filter applies to daily_bars only; it is not supported for "
-            f"{dataset}"
+            f"universe filter applies to daily_bars only; it is not supported for {dataset}"
         )
     if adjust and dataset == "index_bars":
         raise ReaderError(

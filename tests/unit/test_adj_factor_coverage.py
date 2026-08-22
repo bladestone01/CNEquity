@@ -166,9 +166,7 @@ def test_a_few_missing_names_stay_below_the_threshold(tmp_path):
 def test_known_source_unavailable_names_are_visible_below_warning_threshold(tmp_path):
     sh = [f"6000{i:02d}.SH" for i in range(100)]
     cfg = _lake(tmp_path, stocks=sh, priced=sh, factored=sh[:99])
-    StateStore(cfg.meta_root).set_string_set(
-        "adj_factors", "source_unavailable_symbols", {sh[-1]}
-    )
+    StateStore(cfg.meta_root).set_string_set("adj_factors", "source_unavailable_symbols", {sh[-1]})
 
     findings = adj_factor_coverage_findings(cfg, date(2026, 8, 7))
 

@@ -176,9 +176,7 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
             "history_end": history_end.isoformat(),
             "orphan_purge": purge_summary,
         }
-    todo = _symbols_needing_backfill(
-        config, universe, start=history_start, end=history_end
-    )
+    todo = _symbols_needing_backfill(config, universe, start=history_start, end=history_end)
     if not todo:
         return {
             "rows_read": 0,
@@ -195,9 +193,7 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
     for offset in range(0, len(todo), _VALUATION_BACKFILL_CHUNK):
         batch = todo[offset : offset + _VALUATION_BACKFILL_CHUNK]
         try:
-            df, failed = fetch_valuation_history(
-                batch, history_start, history_end, config=config
-            )
+            df, failed = fetch_valuation_history(batch, history_start, history_end, config=config)
         except RuntimeError as exc:
             # Ban / login death mid-sweep: keep prior chunks, surface remainder.
             aborted_reason = str(exc)
@@ -206,9 +202,7 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
             break
         all_failed.extend(failed)
         if not df.is_empty():
-            df = _validate_valuation_history_batch(
-                df, batch, history_start, history_end
-            )
+            df = _validate_valuation_history_batch(df, batch, history_start, history_end)
             # Unique part name per chunk — write_simple's default batch-0 would
             # overwrite prior chunks in the same run_id before compact.
             chunk = write_fetched(

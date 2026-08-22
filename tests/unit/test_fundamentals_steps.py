@@ -324,7 +324,9 @@ def test_backfill_valuation_locked_honors_requested_window(cfg, monkeypatch):
         "_symbols_needing_backfill",
         lambda config, universe, **kwargs: ["600519.SH"],
     )
-    monkeypatch.setattr(fund, "_valuation_history_end", lambda config, trade_date: date(2024, 6, 28))
+    monkeypatch.setattr(
+        fund, "_valuation_history_end", lambda config, trade_date: date(2024, 6, 28)
+    )
     calls = []
 
     def fake_history(batch, start, end, config=None):

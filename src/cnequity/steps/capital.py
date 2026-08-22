@@ -494,9 +494,7 @@ def step_margin_trading(config: Config, trade_date: date, run_id: str, context: 
             raise RuntimeError(f"margin_trading: no rows returned for {day.isoformat()}")
         return _validate_margin_snapshot(frame, day)
 
-    return _run_capital_step(
-        config, trade_date, run_id, "margin_trading", _fetch, allow_empty=True
-    )
+    return _run_capital_step(config, trade_date, run_id, "margin_trading", _fetch, allow_empty=True)
 
 
 def _backfill_daily_report(

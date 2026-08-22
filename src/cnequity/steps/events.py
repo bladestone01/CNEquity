@@ -323,12 +323,14 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                         rows_read=repair_df.height,
                         rows_written=repair_df.height,
                     )
-                df = repair_df if df.is_empty() else pl.concat([df, repair_df], how="diagonal_relaxed")
+                df = (
+                    repair_df
+                    if df.is_empty()
+                    else pl.concat([df, repair_df], how="diagonal_relaxed")
+                )
         if getattr(config, "_corporate_actions_ths_repair", False):
             if not config.sources.get("ths_bonus", False):
-                raise RuntimeError(
-                    "corporate_actions: --ths-repair requires the ths_bonus source"
-                )
+                raise RuntimeError("corporate_actions: --ths-repair requires the ths_bonus source")
             repair_start = (
                 getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
             )
@@ -378,7 +380,11 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                         rows_read=repair_df.height,
                         rows_written=repair_df.height,
                     )
-                df = repair_df if df.is_empty() else pl.concat([df, repair_df], how="diagonal_relaxed")
+                df = (
+                    repair_df
+                    if df.is_empty()
+                    else pl.concat([df, repair_df], how="diagonal_relaxed")
+                )
         if getattr(config, "_corporate_actions_eastmoney_bj_repair", False):
             if not config.sources.get("eastmoney", False):
                 raise RuntimeError(
@@ -435,7 +441,11 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                         rows_read=repair_df.height,
                         rows_written=repair_df.height,
                     )
-                df = repair_df if df.is_empty() else pl.concat([df, repair_df], how="diagonal_relaxed")
+                df = (
+                    repair_df
+                    if df.is_empty()
+                    else pl.concat([df, repair_df], how="diagonal_relaxed")
+                )
         if failed_symbols:
             failed_symbols = list(dict.fromkeys(failed_symbols))
         if failed_symbols:
@@ -470,9 +480,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 )
 
     if backfill and not df.is_empty():
-        start = (
-            getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
-        )
+        start = getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
         end = getattr(config, "_backfill_end", None) or trade_date
         if "ex_date" not in df.columns:
             raise RuntimeError("corporate_actions: backfill response has no ex_date column")

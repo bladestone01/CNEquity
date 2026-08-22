@@ -27,7 +27,11 @@ def _source_rank_expr(dataset: str, columns: set[str]) -> pl.Expr | None:
 
 def _sort_for_canonical(frame, dataset: str):
     """Order freshest rows, then source priority, before PK collapse."""
-    columns = set(frame.collect_schema().names()) if isinstance(frame, pl.LazyFrame) else set(frame.columns)
+    columns = (
+        set(frame.collect_schema().names())
+        if isinstance(frame, pl.LazyFrame)
+        else set(frame.columns)
+    )
     sort_cols: list[str] = []
     descending: list[bool] = []
     if "fetched_at" in columns:

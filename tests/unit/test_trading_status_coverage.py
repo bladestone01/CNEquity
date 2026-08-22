@@ -394,9 +394,7 @@ def test_st_coverage_ignores_tampered_receipt(tmp_path):
 
 def test_st_coverage_rejects_duplicate_completed_symbols():
     completed = ["600519.SH", "600519.SH"]
-    scope = build_st_scope(
-        ["600519.SH"], date(2024, 6, 27), date(2024, 6, 27), universe="all_a"
-    )
+    scope = build_st_scope(["600519.SH"], date(2024, 6, 27), date(2024, 6, 27), universe="all_a")
     scope["expected_symbols_count"] = len(completed)
     scope["symbols_sha256"] = symbol_scope_hash(completed)
     identity = {
@@ -425,7 +423,9 @@ def test_st_coverage_rejects_receipt_when_curated_rows_are_removed(tmp_path):
     _write_status_partition(cfg, day, source="baostock")
     _write_st_receipt(cfg, day, day)
 
-    status_path = cfg.curated_root / "trading_status" / f"trade_date={day.isoformat()}" / "part-0.parquet"
+    status_path = (
+        cfg.curated_root / "trading_status" / f"trade_date={day.isoformat()}" / "part-0.parquet"
+    )
     status_path.unlink()
 
     report = st_evidence_coverage_report(cfg, day, day)
@@ -456,7 +456,9 @@ def test_st_coverage_revalidation_cache_invalidates_on_file_change(tmp_path, mon
     assert st_evidence_coverage_report(cfg, day, day)["verified"] is True
     assert calls == 1
 
-    status_path = cfg.curated_root / "trading_status" / f"trade_date={day.isoformat()}" / "part-0.parquet"
+    status_path = (
+        cfg.curated_root / "trading_status" / f"trade_date={day.isoformat()}" / "part-0.parquet"
+    )
     frame = pl.read_parquet(status_path).with_columns(pl.lit("changed").alias("marker"))
     frame.write_parquet(status_path)
 

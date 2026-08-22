@@ -214,8 +214,11 @@ def _reuse_successful_daily_bars(
 
     files = []
     for batch in batches:
-        path = config.staging_root / "daily_bars" / f"run_id={batch['run_id']}" / (
-            f"part-{batch['batch_id']}.parquet"
+        path = (
+            config.staging_root
+            / "daily_bars"
+            / f"run_id={batch['run_id']}"
+            / (f"part-{batch['batch_id']}.parquet")
         )
         if path.exists():
             files.append(path)
@@ -224,8 +227,7 @@ def _reuse_successful_daily_bars(
 
     frames = [pl.read_parquet(path) for path in files]
     reused = pl.concat(frames, how="diagonal_relaxed").filter(
-        pl.col("symbol").is_in(symbols)
-        & pl.col("trade_date").is_in(sessions)
+        pl.col("symbol").is_in(symbols) & pl.col("trade_date").is_in(sessions)
     )
     if reused.is_empty():
         return set()
@@ -275,7 +277,9 @@ def _merge_ownership_result(
 
 def _resolve_daily_bar_scope(config: Config, symbols: list[str]) -> list[str]:
     """Validate an explicit daily-bar repair scope against instruments."""
-    requested = list(dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()))
+    requested = list(
+        dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip())
+    )
     if not requested:
         raise RuntimeError("daily_bars backfill symbols must not be empty")
     known = set(load_symbols(config))
@@ -364,8 +368,7 @@ def repair_bse_tip_amounts_from_curated(
     if findings:
         result["context_updates"] = {"audit_findings": findings}
         if any(
-            f.get("severity") == "warning"
-            or f.get("check") == "daily_bars_bse_amount_unavailable"
+            f.get("severity") == "warning" or f.get("check") == "daily_bars_bse_amount_unavailable"
             for f in findings
         ):
             result["status"] = "warning"
@@ -455,15 +458,11 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
                 sina_result["rows_read"] += int(fallback.get("rows_read", 0))
                 sina_result["rows_written"] += int(fallback.get("rows_written", 0))
                 sina_result["failed_symbols"] += int(fallback.get("failed_symbols", 0))
-                sina_result["failed_symbol_names"].extend(
-                    fallback.get("failed_symbol_names") or []
-                )
-                sina_result["empty_symbol_names"].extend(
-                    fallback.get("empty_symbol_names") or []
-                )
-                fallback_findings = (
-                    fallback.get("context_updates") or {}
-                ).get("audit_findings") or []
+                sina_result["failed_symbol_names"].extend(fallback.get("failed_symbol_names") or [])
+                sina_result["empty_symbol_names"].extend(fallback.get("empty_symbol_names") or [])
+                fallback_findings = (fallback.get("context_updates") or {}).get(
+                    "audit_findings"
+                ) or []
                 if fallback_findings:
                     sina_result.setdefault("context_updates", {}).setdefault(
                         "audit_findings", []
@@ -500,7 +499,9 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
             raise RuntimeError("BSE tip repair requires an explicit symbol scope")
         return repair_bse_tip_amounts_from_curated(config, end, run_id, explicit_scope)
 
-    explicit_scope = getattr(config, "_backfill_symbols", None) if getattr(config, "_backfill", False) else None
+    explicit_scope = (
+        getattr(config, "_backfill_symbols", None) if getattr(config, "_backfill", False) else None
+    )
     symbols = (
         _resolve_daily_bar_scope(config, explicit_scope)
         if explicit_scope is not None
@@ -524,13 +525,9 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
     # arrive, which is exactly how the lake ended up with zero BJ coverage.
     # Tip gaps after TDX are a second routing case (ADR-0005): EastMoney clist.
     tdx_symbols, fallback_symbols = split_by_quote_source(ownership.generic)
-    reused_symbols = _reuse_successful_daily_bars(
-        config, run_id, ownership.generic, start, end
-    )
+    reused_symbols = _reuse_successful_daily_bars(config, run_id, ownership.generic, start, end)
     fetch_tdx_symbols = [symbol for symbol in tdx_symbols if symbol not in reused_symbols]
-    fetch_fallback_symbols = [
-        symbol for symbol in fallback_symbols if symbol not in reused_symbols
-    ]
+    fetch_fallback_symbols = [symbol for symbol in fallback_symbols if symbol not in reused_symbols]
     result = fetch_daily_bars_parallel(
         config,
         fetch_tdx_symbols,
@@ -631,9 +628,7 @@ def _finish_daily_bars(
                 gap.get("filled") or gap.get("expected_no_data_symbols")
             ):
                 had_error = False
-                _resolve_recovered_daily_batches(
-                    config, run_id, resolved_symbols=failed_set
-                )
+                _resolve_recovered_daily_batches(config, run_id, resolved_symbols=failed_set)
 
         partial_only = sorted(partial_symbols - failed_set)
         if partial_only:
@@ -791,9 +786,7 @@ def _staged_daily_bar_partial_symbols(
         list_date, delist_date = metadata.get(row["symbol"], (None, None))
         expected_start = max(start, list_date) if list_date is not None else start
         expected_end = min(end, delist_date) if delist_date is not None else end
-        expected = {
-            session for session in sessions if expected_start <= session <= expected_end
-        }
+        expected = {session for session in sessions if expected_start <= session <= expected_end}
         if expected - set(row["dates"]):
             partial.add(row["symbol"])
     return partial
@@ -985,9 +978,7 @@ def _gapfill_multiday_via_kline(
         sina_rows = int(sina.get("rows_written", 0))
         sina_failed = set(sina.get("failed_symbol_names") or [])
         sina_empty = set(sina.get("empty_symbol_names") or [])
-        sina_findings.extend(
-            (sina.get("context_updates") or {}).get("audit_findings") or []
-        )
+        sina_findings.extend((sina.get("context_updates") or {}).get("audit_findings") or [])
         if sina_empty:
             sina_findings.append(
                 {
@@ -1077,7 +1068,7 @@ def _gapfill_multiday_via_kline(
                         f"TDX/Sina coverage was incomplete for {len(symbols)} "
                         f"symbol(s) over {start}..{end}; EastMoney kline returned no rows"
                     ),
-                }
+                },
             ],
         }
 
@@ -1179,7 +1170,7 @@ def _gapfill_multiday_via_kline(
                 ),
                 "missing_keys": len(missing_keys),
                 "complete": not missing_keys,
-            }
+            },
         ],
     }
     if not require_complete and missing_keys:
@@ -1312,25 +1303,16 @@ def _supplement_bse_tip_amounts(
     mismatch = bse_present & ~exact_match
     supplemented = joined.filter(supplement)
     mismatched = joined.filter(mismatch)
-    updated = (
-        joined.with_columns(
-            pl.when(supplement)
-            .then(pl.col("_bse_amount"))
-            .otherwise(pl.col("amount"))
-            .alias("amount"),
-            pl.when(supplement)
-            .then(pl.lit("bse"))
-            .otherwise(pl.col("source"))
-            .alias("source"),
-        )
-        .drop(
-            "_bse_open",
-            "_bse_high",
-            "_bse_low",
-            "_bse_close",
-            "_bse_volume",
-            "_bse_amount",
-        )
+    updated = joined.with_columns(
+        pl.when(supplement).then(pl.col("_bse_amount")).otherwise(pl.col("amount")).alias("amount"),
+        pl.when(supplement).then(pl.lit("bse")).otherwise(pl.col("source")).alias("source"),
+    ).drop(
+        "_bse_open",
+        "_bse_high",
+        "_bse_low",
+        "_bse_close",
+        "_bse_volume",
+        "_bse_amount",
     )
     findings: list[dict] = []
     if supplemented.height:

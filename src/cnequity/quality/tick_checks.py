@@ -161,8 +161,8 @@ def trade_date_mismatch_findings(lf: pl.LazyFrame, start: date, end: date) -> li
     total = int(mismatched.select(pl.len()).collect(engine="streaming").item())
     if not total:
         return []
-    sample = mismatched.select("symbol", "trade_date", "trade_time").head(3).collect(
-        engine="streaming"
+    sample = (
+        mismatched.select("symbol", "trade_date", "trade_time").head(3).collect(engine="streaming")
     )
     examples = ", ".join(
         f"{r['symbol']} trade_date={r['trade_date']} trade_time={r['trade_time']}"

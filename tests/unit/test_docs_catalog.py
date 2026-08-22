@@ -67,7 +67,9 @@ def test_catalog_history_floor_table_has_no_duplicate_datasets():
     """The measured source-history table must not repeat a dataset row."""
     text = CATALOG.read_text(encoding="utf-8")
     history = text.split("### 历史视野", 1)[1].split("### `trade_ticks` 的容量", 1)[0]
-    names = [match.group(1) for match in re.finditer(r"^\|\s*([a-z][a-z0-9_]*)\s*\|", history, re.M)]
+    names = [
+        match.group(1) for match in re.finditer(r"^\|\s*([a-z][a-z0-9_]*)\s*\|", history, re.M)
+    ]
     assert len(names) == len(set(names)), f"duplicate history-floor rows: {names}"
 
 

@@ -40,16 +40,12 @@ def _em_date(value: object) -> date | None:
 
 def _suspension_covers(item: dict, trade_date: date) -> bool:
     stop_date = _em_date(
-        item.get("STOP_DATE")
-        or item.get("SUSPEND_START_DATE")
-        or item.get("SUSPEND_START_TIME")
+        item.get("STOP_DATE") or item.get("SUSPEND_START_DATE") or item.get("SUSPEND_START_TIME")
     )
     if stop_date is None or stop_date > trade_date:
         return False
 
-    resume_raw = str(
-        item.get("RESUME_DATE") or item.get("SUSPEND_END_TIME") or ""
-    ).strip().lower()
+    resume_raw = str(item.get("RESUME_DATE") or item.get("SUSPEND_END_TIME") or "").strip().lower()
     if not resume_raw or resume_raw == "null":
         return True
     resume_date = _em_date(resume_raw)

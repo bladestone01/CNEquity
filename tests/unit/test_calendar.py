@@ -129,9 +129,9 @@ def test_known_historical_holiday_overrides_bar_evidence(tmp_path):
     root = tmp_path / "curated" / "daily_bars"
     root.mkdir(parents=True)
     holiday = date(2001, 1, 1)
-    pl.DataFrame(
-        {"trade_date": [holiday], "symbol": ["000529.SZ"], "volume": [100]}
-    ).write_parquet(root / "part-000.parquet")
+    pl.DataFrame({"trade_date": [holiday], "symbol": ["000529.SZ"], "volume": [100]}).write_parquet(
+        root / "part-000.parquet"
+    )
 
     cal = build_trading_calendar(holiday, holiday, curated_root=tmp_path / "curated")
 

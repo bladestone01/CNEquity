@@ -1369,10 +1369,7 @@ def audit(
         if health["empty_datasets"]:
             click.echo(f"  empty datasets: {', '.join(health['empty_datasets'])}")
         if health.get("expected_empty_datasets"):
-            click.echo(
-                "  expected empty datasets: "
-                f"{', '.join(health['expected_empty_datasets'])}"
-            )
+            click.echo(f"  expected empty datasets: {', '.join(health['expected_empty_datasets'])}")
         if health["stale_datasets"]:
             click.echo(f"  STALE datasets: {', '.join(health['stale_datasets'])}")
         for f in health["error_findings"]:
@@ -1385,7 +1382,9 @@ def audit(
         validity = health["historical_universe_validity"]
         research_state = "READY" if validity["universe_ready"] else "BLOCKED"
         universe_label = (
-            "all-A" if validity.get("universe", research_universe) == "all_a" else validity.get("universe", research_universe)
+            "all-A"
+            if validity.get("universe", research_universe) == "all_a"
+            else validity.get("universe", research_universe)
         )
         click.echo(
             f"  historical {universe_label} "

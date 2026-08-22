@@ -205,12 +205,7 @@ def test_intraday_checks_use_one_canonical_bar_per_minute(cfg):
     good_rows = _minute_rows(symbols, [TRADE_DATE], 240, volume=100)
     _write_minute_bars(cfg, good_rows)
     stale = with_provenance(
-        pl.DataFrame(
-            [
-                {**row, "volume": 1000, "amount": 10_000.0}
-                for row in good_rows
-            ]
-        ),
+        pl.DataFrame([{**row, "volume": 1000, "amount": 10_000.0} for row in good_rows]),
         source="tdx_protocol",
         data_version="v1",
     ).with_columns(pl.lit(datetime(2020, 1, 1, tzinfo=timezone.utc)).alias("fetched_at"))

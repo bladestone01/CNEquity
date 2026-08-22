@@ -176,11 +176,15 @@ def _rows_from_page(symbol: str, html: str, start: date, end: date) -> list[dict
             "allotment_price": None,
         }
         if parsed["cash_dividend"] > 0:
-            rows.append({**common, "action_type": "cash_dividend", "cash_dividend": parsed["cash_dividend"]})
+            rows.append(
+                {**common, "action_type": "cash_dividend", "cash_dividend": parsed["cash_dividend"]}
+            )
         if parsed["bonus_ratio"] > 0:
             rows.append({**common, "action_type": "bonus", "bonus_ratio": parsed["bonus_ratio"]})
         if parsed["transfer_ratio"] > 0:
-            rows.append({**common, "action_type": "transfer", "transfer_ratio": parsed["transfer_ratio"]})
+            rows.append(
+                {**common, "action_type": "transfer", "transfer_ratio": parsed["transfer_ratio"]}
+            )
         if parsed["allotment_ratio"] > 0:
             rows.append(
                 {
@@ -262,8 +266,10 @@ def fetch_corporate_actions_ths(
         if window[0] > window[1]:
             continue
         try:
-            html = page_fetcher(info.code) if page_fetcher is not None else _fetch_page(
-                info.code, config=config
+            html = (
+                page_fetcher(info.code)
+                if page_fetcher is not None
+                else _fetch_page(info.code, config=config)
             )
             rows.extend(_rows_from_page(symbol, html, window[0], window[1]))
         except Exception as exc:  # noqa: BLE001 — preserve other symbols for retry

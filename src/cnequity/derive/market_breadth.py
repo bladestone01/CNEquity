@@ -81,9 +81,7 @@ def _read_trading_status(root: Path, trade_date: date) -> pl.DataFrame:
     if not required.issubset(df.columns):
         return pl.DataFrame()
     df = dedupe_by_primary_key(df, "trading_status")
-    return df.select(
-        ["symbol", "trade_date", "status"]
-    )
+    return df.select(["symbol", "trade_date", "status"])
 
 
 def _limit_threshold(symbol: str, status: str | None) -> float:

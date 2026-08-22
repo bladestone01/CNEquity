@@ -54,7 +54,9 @@ def _code_mapping() -> dict[str, str]:
     try:
         raw = json.loads(_MAPPING_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise RuntimeError(f"BSE legacy/current code mapping is unreadable: {_MAPPING_PATH}") from exc
+        raise RuntimeError(
+            f"BSE legacy/current code mapping is unreadable: {_MAPPING_PATH}"
+        ) from exc
     if not isinstance(raw, dict):
         raise RuntimeError(f"BSE legacy/current code mapping is not an object: {_MAPPING_PATH}")
     return {str(old): str(new) for old, new in raw.items()}

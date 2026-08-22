@@ -176,9 +176,7 @@ def _parse_rows(row: dict) -> list[dict]:
         add("cash_dividend", cash_dividend=cash)
     elif cash_text:
         if cash_raw is None:
-            raise ValueError(
-                "EastMoney corporate_actions cash-dividend plan has no numeric amount"
-            )
+            raise ValueError("EastMoney corporate_actions cash-dividend plan has no numeric amount")
     if bonus > 0:
         add("bonus", bonus_ratio=bonus)
     elif not combined_resolved and "送" in impl:

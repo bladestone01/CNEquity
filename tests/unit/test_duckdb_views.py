@@ -140,12 +140,8 @@ def test_canonical_dedupe_does_not_let_null_fetch_time_override_known_row():
     eager = dedupe_by_primary_key(frame, "daily_bars")
     lazy = dedupe_lazy_by_primary_key(frame.lazy(), "daily_bars").collect()
 
-    assert eager.select("source", "close").to_dicts() == [
-        {"source": "eastmoney", "close": 1800.0}
-    ]
-    assert lazy.select("source", "close").to_dicts() == [
-        {"source": "eastmoney", "close": 1800.0}
-    ]
+    assert eager.select("source", "close").to_dicts() == [{"source": "eastmoney", "close": 1800.0}]
+    assert lazy.select("source", "close").to_dicts() == [{"source": "eastmoney", "close": 1800.0}]
 
 
 def test_duckdb_views_dedupe_prefers_primary_source_on_same_timestamp(tmp_path):

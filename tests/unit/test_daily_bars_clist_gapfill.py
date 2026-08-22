@@ -372,16 +372,10 @@ def test_retry_routes_non_tdx_symbols_to_fallback(tmp_path, monkeypatch):
         cfg,
         date(2024, 6, 28),
         run_id,
-        {
-            "_retry_batch_specs": [
-                ("retry-0", ["920001.BJ"], date(2024, 6, 27), date(2024, 6, 28))
-            ]
-        },
+        {"_retry_batch_specs": [("retry-0", ["920001.BJ"], date(2024, 6, 27), date(2024, 6, 28))]},
     )
 
-    assert calls == [
-        (["920001.BJ"], date(2024, 6, 27), date(2024, 6, 28), "retry-0-sina")
-    ]
+    assert calls == [(["920001.BJ"], date(2024, 6, 27), date(2024, 6, 28), "retry-0-sina")]
     assert captured["expected_tdx_symbols"] == []
     assert captured["expected_fallback_symbols"] == ["920001.BJ"]
 

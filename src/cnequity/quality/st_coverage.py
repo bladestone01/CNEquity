@@ -698,8 +698,7 @@ def _receipt_rows_intact(
         expected_by_symbol = receipt.get("evidence_rows_by_symbol")
         if isinstance(expected_by_symbol, dict):
             intact = all(
-                persisted.get(symbol, 0) >= int(expected_by_symbol[symbol])
-                for symbol in symbols
+                persisted.get(symbol, 0) >= int(expected_by_symbol[symbol]) for symbol in symbols
             )
         else:
             intact = sum(persisted.values()) >= int(receipt["evidence_rows"])

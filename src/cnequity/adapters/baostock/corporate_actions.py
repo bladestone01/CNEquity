@@ -196,7 +196,9 @@ def _fetch_one_corporate_actions(
                 yearType="operate",
             )
         except Exception as exc:  # noqa: BLE001 - session helper retries it
-            logger.warning("baostock corporate_actions query failed for %s/%s: %s", symbol, year, exc)
+            logger.warning(
+                "baostock corporate_actions query failed for %s/%s: %s", symbol, year, exc
+            )
             return None
         if getattr(result, "error_code", "0") != "0":
             return None
@@ -225,6 +227,7 @@ def fetch_corporate_actions_baostock(
     dividend endpoint has no reliable allotment ratio/price fields.  Callers
     should preserve TDX/EastMoney rows for that event type.
     """
+
     def fetch_one(bs_session, symbol: str, window_start: date, window_end: date):
         if symbol_windows is not None:
             window_start, window_end = symbol_windows.get(symbol, (window_start, window_end))

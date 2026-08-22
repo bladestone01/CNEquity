@@ -138,9 +138,7 @@ def test_unknown_st_type_fails_closed():
 
 
 def test_missing_stock_st_identity_fails_closed():
-    client = _Client(
-        {"920001.BJ": [[None, "*ST测试", "20170104", "ST", "风险警示板"]]}
-    )
+    client = _Client({"920001.BJ": [[None, "*ST测试", "20170104", "ST", "风险警示板"]]})
     df, failed = fetch_st_history(
         ["920001.BJ"],
         date(2017, 1, 1),
@@ -155,9 +153,7 @@ def test_missing_stock_st_identity_fails_closed():
 
 
 def test_invalid_stock_st_date_fails_closed():
-    client = _Client(
-        {"920001.BJ": [_row("920001.BJ", "not-a-date")]}
-    )
+    client = _Client({"920001.BJ": [_row("920001.BJ", "not-a-date")]})
     df, failed = fetch_st_history(
         ["920001.BJ"],
         date(2017, 1, 1),

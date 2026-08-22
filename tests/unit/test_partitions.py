@@ -293,9 +293,13 @@ def test_compact_prefers_primary_source_on_same_timestamp(tmp_path):
 
     compact_dataset(cfg.staging_root, cfg.curated_root, "daily_bars", "run-1")
 
-    rows = pl.read_parquet(
-        cfg.curated_root / "daily_bars" / "trade_date=2024-06-03" / "part-merged.parquet"
-    ).select("source", "close").to_dicts()
+    rows = (
+        pl.read_parquet(
+            cfg.curated_root / "daily_bars" / "trade_date=2024-06-03" / "part-merged.parquet"
+        )
+        .select("source", "close")
+        .to_dicts()
+    )
     assert rows == [{"source": "tdx_protocol", "close": 20.0}]
 
 
@@ -303,9 +307,7 @@ def test_compact_removes_legacy_index_weekend_rows(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     root = cfg.curated_root / "index_bars" / "trade_date=1991"
     root.mkdir(parents=True, exist_ok=True)
-    _bar_frame([date(1991, 4, 5), date(1991, 4, 6)]).write_parquet(
-        root / "part-merged.parquet"
-    )
+    _bar_frame([date(1991, 4, 5), date(1991, 4, 6)]).write_parquet(root / "part-merged.parquet")
     _stage_bars(cfg, "index_bars", "run-clean", [date(1991, 4, 8)])
 
     compact_dataset(cfg.staging_root, cfg.curated_root, "index_bars", "run-clean")
@@ -357,9 +359,7 @@ def test_repartition_cleans_weekend_index_rows_in_current_layout(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     root = cfg.curated_root / "index_bars" / "trade_date=1991"
     root.mkdir(parents=True, exist_ok=True)
-    _bar_frame([date(1991, 4, 5), date(1991, 4, 6)]).write_parquet(
-        root / "part-merged.parquet"
-    )
+    _bar_frame([date(1991, 4, 5), date(1991, 4, 6)]).write_parquet(root / "part-merged.parquet")
 
     result = repartition_dataset(cfg, "index_bars")
 
@@ -380,9 +380,9 @@ def test_repartition_cleans_weekend_trading_calendar_flags(tmp_path):
             "data_version": ["v1", "v1"],
             "fetched_at": ["2026-07-21T00:00:00+00:00"] * 2,
         }
-    ).with_columns(pl.col("fetched_at").str.to_datetime(time_unit="us", time_zone="UTC")).write_parquet(
-        root / "part-merged.parquet"
-    )
+    ).with_columns(
+        pl.col("fetched_at").str.to_datetime(time_unit="us", time_zone="UTC")
+    ).write_parquet(root / "part-merged.parquet")
 
     result = repartition_dataset(cfg, "trading_calendar")
 

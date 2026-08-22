@@ -110,9 +110,8 @@ def macro_revision_findings(
     if not dataset_has_parquet(root):
         return []
 
-    existing = (
-        scan_parquet_root(root, partition_col="obs_date", end=trade_date)
-        .collect(engine="streaming")
+    existing = scan_parquet_root(root, partition_col="obs_date", end=trade_date).collect(
+        engine="streaming"
     )
     if existing.is_empty():
         return []

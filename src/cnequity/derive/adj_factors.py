@@ -112,9 +112,7 @@ def _retry_symbols(config: Config) -> set[str]:
 
 def _source_unavailable_symbols(config: Config) -> set[str]:
     """Symbols with an explicit, permanent source-unavailable classification."""
-    return StateStore(config.meta_root).get_string_set(
-        "adj_factors", _UNAVAILABLE_STATE_FIELD
-    )
+    return StateStore(config.meta_root).get_string_set("adj_factors", _UNAVAILABLE_STATE_FIELD)
 
 
 def _update_retry_symbols(
@@ -312,9 +310,7 @@ def _delisted_symbols(config: Config) -> set[str]:
     root = config.curated_root / "instruments"
     if not dataset_has_parquet(root):
         return set()
-    instruments = dedupe_lazy_by_primary_key(
-        scan_parquet_root(root), "instruments"
-    ).collect()
+    instruments = dedupe_lazy_by_primary_key(scan_parquet_root(root), "instruments").collect()
     if "symbol" not in instruments.columns or "delist_date" not in instruments.columns:
         return set()
     return set(
@@ -369,13 +365,10 @@ def _uncovered_symbols(config: Config) -> set[str]:
         factor_rows = factor_rows.filter(pl.col("adjust_type") == STORED_ADJUST_TYPE)
     if "factor" in factor_schema:
         factor_rows = factor_rows.filter(
-            pl.col("factor").is_not_null()
-            & pl.col("factor").is_finite()
-            & (pl.col("factor") > 0)
+            pl.col("factor").is_not_null() & pl.col("factor").is_finite() & (pl.col("factor") > 0)
         )
     fac_span = (
-        factor_rows
-        .select("symbol", "trade_date")
+        factor_rows.select("symbol", "trade_date")
         .group_by("symbol")
         .agg(
             pl.col("trade_date").min().alias("fac_first"),
@@ -397,10 +390,7 @@ def _uncovered_symbols(config: Config) -> set[str]:
     uncovered = joined.filter(
         pl.col("fac_first").is_null()
         | (pl.col("fac_first") > pl.col("bar_first"))
-        | (
-            (pl.col("fac_last") >= pl.col("bar_last"))
-            & (pl.col("fac_days") < pl.col("bar_days"))
-        )
+        | ((pl.col("fac_last") >= pl.col("bar_last")) & (pl.col("fac_days") < pl.col("bar_days")))
     )
     # Only stocks. ETFs and LOFs have no hfq factor series to fetch — 91 of the
     # 103 names left after the first self-heal run were ETFs, and without this
@@ -706,9 +696,7 @@ def _compute_adj_factors_locked(
         # `_uncovered_symbols`. Only meaningful when that path is in play:
         # `full`, and a lake with no watermark at all, already load every date,
         # and forcing a refresh there would only bypass a valid factor cache.
-        uncovered = sorted(
-            _uncovered_symbols(config) - refresh_set - source_unavailable_symbols
-        )
+        uncovered = sorted(_uncovered_symbols(config) - refresh_set - source_unavailable_symbols)
         if uncovered:
             # Capped so a lake that has never derived does not turn one daily run
             # into a full-market sweep; the remainder is picked up next run, and

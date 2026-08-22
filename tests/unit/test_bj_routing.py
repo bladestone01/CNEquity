@@ -91,7 +91,9 @@ def test_bse_tip_amount_requires_exact_sina_ohlcv(tmp_path, monkeypatch):
     )
     day = date(2026, 8, 21)
     bse = _bars("920000.BJ", [day]).with_columns(pl.lit(1234.5).alias("amount"))
-    monkeypatch.setattr("cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse)
+    monkeypatch.setattr(
+        "cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse
+    )
 
     result = fetch_bars_via_sina(
         cfg,
@@ -121,7 +123,9 @@ def test_bse_tip_mismatch_keeps_sina_amount_null(tmp_path, monkeypatch):
         pl.lit(2.0).alias("close"),
         pl.lit(1234.5).alias("amount"),
     )
-    monkeypatch.setattr("cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse)
+    monkeypatch.setattr(
+        "cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse
+    )
 
     result = fetch_bars_via_sina(
         cfg,
@@ -160,7 +164,9 @@ def test_bse_curated_repair_does_not_call_sina(tmp_path, monkeypatch):
     _bars("920000.BJ", [day]).write_parquet(part / "part-merged.parquet")
     bse = _bars("920000.BJ", [day]).with_columns(pl.lit(1234.5).alias("amount"))
     monkeypatch.setattr("cnequity.steps.bars.load_symbols", lambda config: ["920000.BJ"])
-    monkeypatch.setattr("cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse)
+    monkeypatch.setattr(
+        "cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *a, **k: bse
+    )
 
     result = repair_bse_tip_amounts_from_curated(cfg, day, "run-repair", ["920000.BJ"])
 

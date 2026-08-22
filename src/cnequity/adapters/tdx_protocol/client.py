@@ -417,8 +417,7 @@ def _fetch_symbol_bars_signal_bounded(
             )
         except _TdxSignalTimeout as exc:
             raise TdxSymbolRequestTimeout(
-                f"TDX bars timed out for {symbol} after "
-                f"{_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS:.1f}s"
+                f"TDX bars timed out for {symbol} after {_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS:.1f}s"
             ) from exc
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)
@@ -494,8 +493,7 @@ def _fetch_symbol_bars_bounded(
         kind, value = result.get(timeout=_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS)
     except queue.Empty as exc:
         raise TdxSymbolRequestTimeout(
-            f"TDX bars timed out for {symbol} after "
-            f"{_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS:.1f}s"
+            f"TDX bars timed out for {symbol} after {_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS:.1f}s"
         ) from exc
     if kind == "error":
         assert isinstance(value, Exception)

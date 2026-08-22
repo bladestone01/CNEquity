@@ -153,9 +153,7 @@ def test_backfill_reconciles_orphaned_running_staging_before_recovery(tmp_path):
     # Simulate a process that disappeared before it could finish the run.
     old = "2000-01-01T00:00:00+00:00"
     with manifest._connect() as conn:
-        conn.execute(
-            "UPDATE ingestion_runs SET started_at = ? WHERE run_id = ?", (old, run_id)
-        )
+        conn.execute("UPDATE ingestion_runs SET started_at = ? WHERE run_id = ?", (old, run_id))
         conn.execute(
             "UPDATE ingestion_batches SET started_at = ?, heartbeat_at = ? WHERE run_id = ?",
             (old, old, run_id),
