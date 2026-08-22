@@ -11,7 +11,7 @@
 | 文件 | 职责 |
 |------|------|
 | `audit.py` | `run_audit()`, `lake_health()` |
-| `historical_validity.py` | all-A 历史窗口的机器可读严格合同 |
+| `historical_validity.py` | 历史研究窗口的机器可读严格合同（默认 all-A，也支持 `all_a_sh_sz`） |
 | `dataset_checks.py` | PK 重复、mock、空集、行数突变 |
 | `cross_checks.py` | bars×calendar、valuation×bars、adj 对账、ST 标签对照 |
 | `macro_checks.py` | 宏观月度序列的陈旧检测与修订留痕 |
@@ -47,7 +47,8 @@
 | `stale_datasets` | 水位落后超过 `max_staleness_days` |
 | `findings_by_severity` | error / warning / info 计数 |
 | `info_findings` | 已持久化的非阻断质量证据，例如已核实的源端历史缺口；不会降低 `healthy`，但不会被丢弃 |
-| `historical_universe_validity` | 历史 all-A 研究门禁；通过 `/api/health` 暴露为 `historical_universe_ready`、窗口和 blockers |
+| `historical_universe_validity` | 历史研究门禁（默认 all-A，也支持 `all_a_sh_sz`）；通过 `/api/health` 暴露为 universe、ready、窗口和 blockers |
+| `historical_all_a_st_evidence` | 与选定研究口径并列保存的全 A ST 证据基线；用于防止 scoped READY 隐藏 BJ 来源限制 |
 | `index_bars_calendar_coverage` | 指数序列与交易日历对账；已核实的 399001.SZ 18 个共同源缺口为 `info`，未知缺口仍为 `warning` |
 | `adj_factor_reconciliation` | 复权收益极值 + 缺 corporate_actions；已记录的缩股/减资等股本重组由 `share_structure` 解释 |
 | `healthy` | 无 error 级 finding |
@@ -59,7 +60,7 @@ Parquet 文件逐文件执行 schema contract 检查，并对全历史范围执�
 NaN/Inf、非法 OHLC 关系等值。这样历史脏数据会进入 `error_findings`，而不是只在
 最新分区被发现。
 
-此外写入 `meta/quality/historical-validity-latest.json`。它把以下三项组合为独立的 `historical_all_a_universe_validity` 合同：
+此外写入 `meta/quality/historical-validity-latest.json`。它把以下三项组合为独立的 `historical_<universe>_universe_validity` 合同：
 
 - `daily_bars` 是否完整包住请求窗口
 - 历史 ST 标签覆盖是否早于窗口起点
@@ -69,6 +70,9 @@ NaN/Inf、非法 OHLC 关系等值。这样历史脏数据会进入 `error_findi
 
 ```bash
 cne audit --full --research-start 2020-01-01 --research-end 2024-12-31
+# 若使用沪深子集，显式记录研究口径：
+cne audit --full --research-universe all_a_sh_sz \
+  --research-start 2020-01-01 --research-end 2024-12-31
 ```
 
 该合同不替下游证明复权精确性、特征覆盖或财报 PIT 语义，这些由研究工作台继续组合门禁。

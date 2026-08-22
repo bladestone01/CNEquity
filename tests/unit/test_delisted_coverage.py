@@ -62,6 +62,32 @@ def test_coverage_verifies_definite_and_bar_proven_overlap(tmp_path, monkeypatch
     assert report["counts"]["proven_overlap"] == 2
 
 
+def test_coverage_can_scope_out_unsupported_bj_delistings(tmp_path, monkeypatch):
+    cfg = _cfg(
+        tmp_path,
+        {"600001.SH": "2020-01-03", "920001.BJ": "2020-01-03"},
+    )
+    for symbol in ("600001.SH", "920001.BJ"):
+        _write_bars(cfg, symbol, date(2019, 1, 2), date(2020, 1, 3))
+    _write_bars(cfg, "600519.SH", date(2026, 7, 24))
+    _write_instruments(
+        cfg,
+        [("600001.SH", date(2020, 1, 3)), ("920001.BJ", date(2020, 1, 3))],
+    )
+    monkeypatch.setattr("cnequity.steps.delisted.pending_codes", lambda cfg: [])
+
+    report = delisted_coverage_report(
+        cfg,
+        date(2019, 1, 1),
+        date(2024, 12, 31),
+        universe="all_a_sh_sz",
+    )
+
+    assert report["universe"] == "all_a_sh_sz"
+    assert report["counts"]["catalogue_candidates"] == 1
+    assert report["verified"] is True
+
+
 def test_coverage_separates_definite_unknown_terminal_and_identity_gaps(tmp_path, monkeypatch):
     cfg = _cfg(
         tmp_path,

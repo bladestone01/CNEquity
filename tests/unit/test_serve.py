@@ -609,6 +609,11 @@ def test_health_exposes_historical_research_gate(lake):
                     "universe_ready": False,
                     "blockers": [{"message": "BJ historical ST evidence unavailable"}],
                 },
+                "historical_all_a_st_evidence": {
+                    "verified": False,
+                    "unsupported_symbols": 580,
+                    "unsupported_exchange_counts": {"BJ": 580},
+                },
                 "info_findings": [
                     {
                         "source_limited": True,
@@ -624,6 +629,8 @@ def test_health_exposes_historical_research_gate(lake):
     body = TestClient(create_app(lake)).get("/api/health").json()
 
     assert body["historical_universe_ready"] is False
+    assert body["historical_universe"] == "all_a"
+    assert body["historical_all_a_st_evidence"]["unsupported_symbols"] == 580
     assert body["historical_universe_window"] == {
         "start": "2001-01-02",
         "end": "2026-07-31",

@@ -96,6 +96,39 @@ def test_manifest_is_ready_only_when_all_universe_checks_pass(tmp_path, monkeypa
     assert all(check["passed"] for check in report["checks"].values())
 
 
+def test_sh_sz_validity_excludes_unsupported_bj_scope(tmp_path, monkeypatch):
+    cfg = _lake(tmp_path)
+    instruments = cfg.curated_root / "instruments" / "part-bj.parquet"
+    pl.DataFrame({"symbol": ["920001.BJ"]}).write_parquet(instruments)
+    bars_path = cfg.curated_root / "daily_bars" / "part-0.parquet"
+    bars = pl.read_parquet(bars_path)
+    pl.concat(
+        [
+            bars,
+            bars.with_columns(pl.lit("920001.BJ").alias("symbol")),
+        ],
+        how="diagonal_relaxed",
+    ).write_parquet(bars_path)
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.delisted_coverage_report",
+        lambda *args, **kwargs: _survivorship(verified=True),
+    )
+
+    all_a = historical_universe_validity(cfg, date(2020, 1, 2), date(2024, 12, 31))
+    sh_sz = historical_universe_validity(
+        cfg,
+        date(2020, 1, 2),
+        date(2024, 12, 31),
+        universe="all_a_sh_sz",
+    )
+
+    assert all_a["universe_ready"] is False
+    assert any(blocker["code"] == "historical_st_labels_incomplete" for blocker in all_a["blockers"])
+    assert sh_sz["universe_ready"] is True
+    assert sh_sz["universe"] == "all_a_sh_sz"
+    assert sh_sz["claim"] == "historical_all_a_sh_sz_universe_validity"
+
+
 def test_manifest_explains_each_blocking_boundary(tmp_path, monkeypatch):
     cfg = _lake(tmp_path)
     monkeypatch.setattr(

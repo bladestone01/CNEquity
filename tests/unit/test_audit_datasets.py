@@ -297,6 +297,114 @@ def test_lake_health_persists_informational_findings(tmp_path, monkeypatch):
     assert saved["info_findings"] == [info]
 
 
+def test_lake_health_persists_selected_research_universe(tmp_path, monkeypatch):
+    from cnequity.quality import audit as audit_module
+
+    cfg = Config(data_root=tmp_path / "data")
+    observed: dict[str, str] = {}
+    monkeypatch.setattr(audit_module, "_collect_lake_findings", lambda *args, **kwargs: [])
+    monkeypatch.setattr(audit_module, "run_source_diffs", lambda *args, **kwargs: [])
+
+    def _validity(*args, **kwargs):
+        observed["universe"] = kwargs["universe"]
+        return {
+            "universe": kwargs["universe"],
+            "window": {"start": None, "end": None},
+            "universe_ready": True,
+            "blockers": [],
+        }
+
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.historical_universe_validity", _validity
+    )
+
+    health = audit_module.lake_health(cfg, date(2024, 6, 28), research_universe="all_a_sh_sz")
+
+    assert observed == {"universe": "all_a_sh_sz"}
+    assert health["historical_universe"] == "all_a_sh_sz"
+    assert health["historical_universe_validity"]["universe"] == "all_a_sh_sz"
+
+
+def test_lake_health_keeps_all_a_st_baseline_when_research_is_scoped(tmp_path, monkeypatch):
+    from cnequity.quality import audit as audit_module
+
+    cfg = Config(data_root=tmp_path / "data")
+    st_finding = {
+        "dataset": "trading_status",
+        "check": "trading_status_coverage_start",
+        "severity": "warning",
+        "st_evidence_verified": False,
+        "st_evidence_coverage_start": "2001-01-01",
+        "st_evidence_coverage_end": "2026-08-21",
+        "st_evidence_supported_symbols": 5547,
+        "st_evidence_unsupported_symbols": 580,
+        "st_evidence_unsupported_exchange_counts": {"BJ": 580},
+        "st_evidence_receipt_reason": "unsupported_exchange_symbols",
+    }
+    monkeypatch.setattr(audit_module, "_collect_lake_findings", lambda *args, **kwargs: [st_finding])
+    monkeypatch.setattr(audit_module, "run_source_diffs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.historical_universe_validity",
+        lambda *args, **kwargs: {
+            "universe": kwargs["universe"],
+            "window": {"start": None, "end": None},
+            "universe_ready": True,
+            "blockers": [],
+        },
+    )
+
+    health = audit_module.lake_health(cfg, date(2024, 6, 28), research_universe="all_a_sh_sz")
+
+    baseline = health["historical_all_a_st_evidence"]
+    assert baseline["verified"] is False
+    assert baseline["unsupported_symbols"] == 580
+    assert baseline["unsupported_exchange_counts"] == {"BJ": 580}
+
+
+def test_disabled_intraday_captures_do_not_audit_historical_files(tmp_path, monkeypatch):
+    from cnequity.quality import audit as audit_module
+
+    cfg = Config(data_root=tmp_path / "data")
+    cfg.minute_bars_enabled = False
+    cfg.trade_ticks_enabled = False
+    monkeypatch.setattr(
+        audit_module,
+        "minute_bars_findings",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled minute scan")),
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "trade_ticks_findings",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled tick scan")),
+    )
+
+    assert audit_module._optional_intraday_findings(cfg, date(2024, 6, 28)) == []
+
+
+def test_enabled_intraday_captures_keep_their_quality_checks(tmp_path, monkeypatch):
+    from cnequity.quality import audit as audit_module
+
+    cfg = Config(data_root=tmp_path / "data")
+    cfg.minute_bars_enabled = True
+    cfg.minute_bars_frequencies = ("1m",)
+    cfg.trade_ticks_enabled = True
+    monkeypatch.setattr(
+        audit_module,
+        "minute_bars_findings",
+        lambda *args, **kwargs: [{"check": "minute"}],
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "trade_ticks_findings",
+        lambda *args, **kwargs: [{"check": "ticks"}],
+    )
+
+    assert audit_module._optional_intraday_findings(cfg, date(2024, 6, 28)) == [
+        {"check": "minute"},
+        {"check": "ticks"},
+    ]
+
+
 def test_run_audit_reports_unreadable_historical_parquet_before_scans(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     current_date = date(2024, 6, 28)

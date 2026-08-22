@@ -66,20 +66,31 @@ class Health(BaseModel):
     bytes: int
     findings_by_severity: dict[str, int]
     audit_trade_date: str | None
+    historical_universe: str = Field(
+        default="all_a",
+        description="Historical research universe checked by the last audit.",
+    )
     historical_universe_ready: bool | None = Field(
         default=None,
         description=(
-            "Whether the last audit's historical all-A validity contract passed; "
+            "Whether the last audit's historical validity contract passed; "
             "null when no audit snapshot contains that contract."
         ),
     )
     historical_universe_window: dict[str, str | None] | None = Field(
         default=None,
-        description="Inclusive historical all-A window checked by the last audit.",
+        description="Inclusive historical window checked by the last audit.",
+    )
+    historical_all_a_st_evidence: dict[str, object] | None = Field(
+        default=None,
+        description=(
+            "All-A historical ST evidence baseline from the operational audit; "
+            "independent of the selected research universe."
+        ),
     )
     historical_universe_blockers: list[str] = Field(
         default_factory=list,
-        description="Human-readable reasons the historical all-A contract is blocked.",
+        description="Human-readable reasons the historical contract is blocked.",
     )
     source_limitations: list[str] = Field(
         default_factory=list,

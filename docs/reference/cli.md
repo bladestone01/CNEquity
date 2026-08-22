@@ -201,7 +201,7 @@ cne backfill sector_bars --config configs/cnequity.toml --retry-failed
 cne delisted status
 cne delisted reconcile
 cne delisted reconcile --apply   # 仅在没有 active ingestion run 时执行
-cne delisted coverage --start 2016-01-01 --end 2025-12-31
+cne delisted coverage --start 2016-01-01 --end 2025-12-31 --universe all_a_sh_sz
 cne delisted repair
 cne delisted backfill --since 2016-01-01
 cne delisted discover --limit 500   # 扩大 band 后的续扫
@@ -259,10 +259,11 @@ cne derive trading_status --start 2001-01-01 --end 2001-12-31
 |------|------|
 | `--run-id` | 指定 run 的 findings（默认最近 run） |
 | `--full` | 湖级健康快照（非 per-run 文件） |
-| `--research-start YYYY-MM-DD` | 与 `--full` 合用；严格验证 all-A 历史宇宙，未通过时退出 1 |
+| `--research-start YYYY-MM-DD` | 与 `--full` 合用；严格验证所选历史宇宙，未通过时退出 1 |
 | `--research-end YYYY-MM-DD` | 研究窗口末日；默认取 `daily_bars` 最新分区 |
+| `--research-universe all_a\|all_a_sh_sz` | 历史研究口径；默认 `all_a`，`all_a_sh_sz` 排除 BJ 的来源能力缺口 |
 
-`--full` 且 UNHEALTHY 退出 1。未显式传 `--research-start` 时，历史宇宙状态仍写入 health 与 `historical-validity-latest.json`，但不会改变运维健康的退出码。
+`--full` 且 UNHEALTHY 退出 1。未显式传 `--research-start` 时，历史宇宙状态仍写入 health 与 `historical-validity-latest.json`，但不会改变运维健康的退出码。快照同时记录 `historical_universe`，避免把 scoped 结果误读成全 A。
 
 ---
 

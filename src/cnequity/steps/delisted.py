@@ -38,7 +38,7 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.canonical import dedupe_lazy_by_primary_key
-from cnequity.domain.symbols import issued_code_space
+from cnequity.domain.symbols import is_all_a_symbol, is_cdr_symbol, issued_code_space, parse_symbol
 from cnequity.query.universe import coverage_end_date
 from cnequity.steps.common import (
     instrument_metadata,
@@ -334,6 +334,21 @@ def _asset_type(symbol: str) -> str:
     if is_cdr_symbol(info.code, info.exchange):
         return "cdr"
     return "stock"
+
+
+def _in_historical_universe(symbol: str, universe: str) -> bool:
+    """Whether *symbol* belongs to a supported historical research universe."""
+    if universe not in {"all_a", "all_a_sh_sz"}:
+        raise ValueError(f"unsupported historical universe: {universe!r}")
+    try:
+        info = parse_symbol(symbol)
+    except ValueError:
+        return False
+    if not is_all_a_symbol(info.code, info.exchange) or is_cdr_symbol(
+        info.code, info.exchange
+    ):
+        return False
+    return universe == "all_a" or info.exchange in {"SH", "SZ"}
 
 
 def delisted_symbols_in_window(config: Config, start: date) -> list[str]:
@@ -727,6 +742,7 @@ def delisted_coverage_report(
     end: date | None = None,
     *,
     sample: int = 15,
+    universe: str = "all_a",
 ) -> dict:
     """Verify catalogued-delisting coverage for a research window, read-only.
 
@@ -746,11 +762,25 @@ def delisted_coverage_report(
         raise ValueError("start must be on or before end")
     if sample < 0:
         raise ValueError("sample must be non-negative")
+    if universe not in {"all_a", "all_a_sh_sz"}:
+        raise ValueError(f"unsupported historical universe: {universe!r}")
 
-    catalog = load_delisted_catalog(config)
-    recent = load_live_missing(config)
+    catalog = {
+        symbol: last
+        for symbol, last in load_delisted_catalog(config).items()
+        if _in_historical_universe(symbol, universe)
+    }
+    recent = {
+        symbol: terminal
+        for symbol, terminal in load_live_missing(config).items()
+        if _in_historical_universe(symbol, universe)
+    }
     candidates = {symbol: last for symbol, last in catalog.items() if last >= start}
-    formal = known_delisted_instruments(config, end)
+    formal = {
+        symbol: delist_date
+        for symbol, delist_date in known_delisted_instruments(config, end).items()
+        if _in_historical_universe(symbol, universe)
+    }
     formal_in_window = {symbol: value for symbol, value in formal.items() if value >= start}
     recent_in_window = {
         symbol: terminal for symbol, terminal in recent.items() if start <= terminal <= end
@@ -867,6 +897,7 @@ def delisted_coverage_report(
     raw_catalog = {
         symbol: date.fromisoformat(value)
         for symbol, value in _read_catalog(config)["delisted"].items()
+        if _in_historical_universe(symbol, universe)
     }
     recent_quarantined = [
         {"symbol": symbol, "probe_last_traded": terminal.isoformat()}
@@ -917,7 +948,9 @@ def delisted_coverage_report(
                 }
             )
 
-    pending = pending_codes(config)
+    pending = [
+        symbol for symbol in pending_codes(config) if _in_historical_universe(symbol, universe)
+    ]
     known_coverage_complete = not any(
         (
             missing_bars,
@@ -937,6 +970,7 @@ def delisted_coverage_report(
     return {
         "window": {"start": start.isoformat(), "end": end.isoformat()},
         "claim": "catalog_terminal_survivorship_coverage",
+        "universe": universe,
         "discovery_complete": discovery_complete,
         "known_coverage_complete": known_coverage_complete,
         "verified": discovery_complete and known_coverage_complete,

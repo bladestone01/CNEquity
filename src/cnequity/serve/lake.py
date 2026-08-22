@@ -307,8 +307,10 @@ class LakeView:
             # the research gate in the read-only API so clients do not have to
             # open the audit artifact themselves (or mistake `healthy=true`
             # for research readiness).
+            "historical_universe": historical.get("universe", "all_a"),
             "historical_universe_ready": historical.get("universe_ready"),
             "historical_universe_window": historical.get("window"),
+            "historical_all_a_st_evidence": findings.get("historical_all_a_st_evidence"),
             "historical_universe_blockers": [
                 str(blocker["message"])
                 for blocker in blockers

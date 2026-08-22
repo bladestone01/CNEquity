@@ -1,4 +1,4 @@
-"""Machine-readable validity contract for historical all-A universes."""
+"""Machine-readable validity contract for historical research universes."""
 
 from __future__ import annotations
 
@@ -9,7 +9,12 @@ import polars as pl
 from cnequity.config import Config
 from cnequity.quality.st_coverage import st_evidence_coverage_report
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
-from cnequity.query.universe import coverage_end_date, coverage_start_date, st_coverage_start
+from cnequity.query.universe import (
+    SUPPORTED_UNIVERSES,
+    coverage_end_date,
+    coverage_start_date,
+    st_coverage_start,
+)
 from cnequity.steps.delisted import delisted_coverage_report
 
 
@@ -17,6 +22,8 @@ def _daily_bar_missing_sessions(
     config: Config,
     start: date,
     end: date,
+    *,
+    symbols: list[str] | None = None,
 ) -> list[date]:
     """Return whole-market trading sessions absent from daily_bars.
 
@@ -26,6 +33,8 @@ def _daily_bar_missing_sessions(
     yet a backtest spanning it would silently bridge the missing session.
     """
     if start > end or not dataset_has_parquet(config.curated_root / "daily_bars"):
+        return []
+    if symbols is not None and not symbols:
         return []
 
     from cnequity.steps.common import list_trading_dates
@@ -38,6 +47,7 @@ def _daily_bar_missing_sessions(
         partition_col="trade_date",
         start=start,
         end=end,
+        symbols=symbols,
         traded_only=True,
     )
     actual = bars.select("trade_date").unique().collect(engine="streaming")
@@ -49,23 +59,55 @@ def _bars_end(config: Config) -> date | None:
     return coverage_end_date(config, "daily_bars")
 
 
+def _scoped_bar_bounds(config: Config, universe: str) -> tuple[date | None, date | None]:
+    """Return daily-bar bounds for the requested research universe."""
+    if universe == "all_a":
+        return coverage_start_date(config, "daily_bars"), _bars_end(config)
+
+    from cnequity.quality.st_coverage import current_st_universe
+
+    symbols = current_st_universe(config, universe=universe)
+    if not symbols or not dataset_has_parquet(config.curated_root / "daily_bars"):
+        return None, None
+    bounds = (
+        scan_parquet_root(
+            config.curated_root / "daily_bars",
+            partition_col="trade_date",
+            symbols=symbols,
+            traded_only=True,
+        )
+        .select(
+            pl.col("trade_date").min().alias("start"),
+            pl.col("trade_date").max().alias("end"),
+        )
+        .collect(engine="streaming")
+        .row(0)
+    )
+    return bounds[0], bounds[1]
+
+
 def historical_universe_validity(
     config: Config,
     start: date | None = None,
     end: date | None = None,
     *,
     sample: int = 15,
+    universe: str = "all_a",
 ) -> dict:
-    """Return a strict, read-only all-A universe validity manifest.
+    """Return a strict, read-only historical-universe validity manifest.
 
     The contract covers the price-window boundary, historical ST filtering and
     catalogued delistings. Adjustment-factor exactness, PIT fundamentals and
     strategy-specific feature coverage remain downstream responsibilities.
     """
+    if universe not in SUPPORTED_UNIVERSES:
+        raise ValueError(
+            f"unsupported historical universe: {universe!r} "
+            f"(supported: {', '.join(sorted(SUPPORTED_UNIVERSES))})"
+        )
     bars_read_error: str | None = None
     try:
-        observed_start = coverage_start_date(config, "daily_bars")
-        observed_end = _bars_end(config)
+        observed_start, observed_end = _scoped_bar_bounds(config, universe)
     except (OSError, pl.exceptions.PolarsError, ValueError) as exc:
         # The structural lake audit reports the exact bad file. Keep this
         # machine-readable research gate usable as a standalone API too:
@@ -132,14 +174,19 @@ def historical_universe_validity(
         )
 
     observed_positive_st_start = st_coverage_start(config)
-    st_evidence = st_evidence_coverage_report(config, requested_start, requested_end)
+    st_evidence = st_evidence_coverage_report(
+        config,
+        requested_start,
+        requested_end,
+        universe=universe,
+    )
     st_valid = bool(st_evidence["verified"])
     if not st_valid:
         unsupported = int(st_evidence.get("unsupported_symbols", 0) or 0)
         if st_evidence.get("reason") == "unsupported_exchange_symbols":
             message = (
                 "historical ST evidence covers the supported exchanges, but "
-                f"{unsupported} all-A symbol(s) belong to an exchange not served by "
+                f"{unsupported} {universe} symbol(s) belong to an exchange not served by "
                 "the configured historical source"
             )
             remediation = (
@@ -171,7 +218,24 @@ def historical_universe_validity(
         and requested_start is not None
         and requested_end is not None
     ):
-        daily_bar_missing = _daily_bar_missing_sessions(config, requested_start, requested_end)
+        from cnequity.quality.st_coverage import current_st_universe
+
+        scoped_symbols = (
+            None
+            if universe == "all_a"
+            else current_st_universe(
+                config,
+                start=requested_start,
+                end=requested_end,
+                universe=universe,
+            )
+        )
+        daily_bar_missing = _daily_bar_missing_sessions(
+            config,
+            requested_start,
+            requested_end,
+            symbols=scoped_symbols,
+        )
         if daily_bar_missing:
             blockers.append(
                 {
@@ -201,7 +265,11 @@ def historical_universe_validity(
     ):
         try:
             survivorship = delisted_coverage_report(
-                config, requested_start, requested_end, sample=sample
+                config,
+                requested_start,
+                requested_end,
+                sample=sample,
+                universe=universe,
             )
         except (OSError, pl.exceptions.PolarsError, ValueError) as exc:
             survivorship = {
@@ -255,7 +323,8 @@ def historical_universe_validity(
     universe_ready = window_valid and not daily_bar_missing and st_valid and survivorship_valid
     return {
         "schema_version": 1,
-        "claim": "historical_all_a_universe_validity",
+        "claim": f"historical_{universe}_universe_validity",
+        "universe": universe,
         "window": {
             "start": requested_start.isoformat() if requested_start else None,
             "end": requested_end.isoformat() if requested_end else None,

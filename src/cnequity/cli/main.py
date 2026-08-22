@@ -1269,12 +1269,19 @@ def derive(name: str, config_path: str, full: bool, start_str: str | None, end_s
 @click.option(
     "--research-start",
     default=None,
-    help="Strictly validate an all-A research window starting here (requires --full).",
+    help="Strictly validate a research window starting here (requires --full).",
 )
 @click.option(
     "--research-end",
     default=None,
     help="Research window end (default: latest daily_bars; requires --research-start).",
+)
+@click.option(
+    "--research-universe",
+    type=click.Choice(["all_a", "all_a_sh_sz"]),
+    default="all_a",
+    show_default=True,
+    help="Historical research universe checked by --full.",
 )
 def audit(
     config_path: str,
@@ -1282,6 +1289,7 @@ def audit(
     full: bool,
     research_start: str | None,
     research_end: str | None,
+    research_universe: str,
 ):
     """Run quality audit, or --full for a current whole-lake health snapshot."""
     cfg = _cfg(config_path)
@@ -1303,6 +1311,7 @@ def audit(
             shanghai_today(),
             research_start=start_date,
             research_end=end_date,
+            research_universe=research_universe,
         )
         sev = health["findings_by_severity"]
         click.echo(f"Lake health @ last trading day {health['last_trading_day']}")
@@ -1328,8 +1337,12 @@ def audit(
                 click.echo(f"  [info]    {f.get('dataset', ''):22} {f.get('message', '')}")
         validity = health["historical_universe_validity"]
         research_state = "READY" if validity["universe_ready"] else "BLOCKED"
+        universe_label = (
+            "all-A" if validity.get("universe", research_universe) == "all_a" else validity.get("universe", research_universe)
+        )
         click.echo(
-            f"  historical all-A {validity['window']['start']}.."
+            f"  historical {universe_label} "
+            f"{validity['window']['start']}.."
             f"{validity['window']['end']}: {research_state}"
         )
         for blocker in validity["blockers"]:
@@ -2116,7 +2129,20 @@ def delisted_status(config_path: str, since: str, sample: int):
 @click.option("--start", default="2016-01-01", show_default=True, help="Research window start.")
 @click.option("--end", default=None, help="Research window end (default: latest lake session).")
 @click.option("--sample", default=15, show_default=True, type=click.IntRange(min=0))
-def delisted_coverage(config_path: str, start: str, end: str | None, sample: int):
+@click.option(
+    "--universe",
+    type=click.Choice(["all_a", "all_a_sh_sz"]),
+    default="all_a",
+    show_default=True,
+    help="Historical research universe checked by the coverage report.",
+)
+def delisted_coverage(
+    config_path: str,
+    start: str,
+    end: str | None,
+    sample: int,
+    universe: str,
+):
     """Fail unless the requested window has verified delisting coverage.
 
     Read-only. The JSON separates incomplete discovery, definite missing bars,
@@ -2128,7 +2154,9 @@ def delisted_coverage(config_path: str, start: str, end: str | None, sample: int
     end_date = date.fromisoformat(end) if end else None
     if end_date is not None and start_date > end_date:
         raise click.ClickException("--start must be on or before --end")
-    report = delisted_coverage_report(_cfg(config_path), start_date, end_date, sample=sample)
+    report = delisted_coverage_report(
+        _cfg(config_path), start_date, end_date, sample=sample, universe=universe
+    )
     click.echo(json.dumps(report, indent=2))
     if not report["verified"]:
         raise SystemExit(1)

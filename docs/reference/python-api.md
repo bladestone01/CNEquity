@@ -58,11 +58,25 @@ def load(
 
 ## scan()
 
-与 `load()` 参数相同，返回 `pl.LazyFrame`。大窗口推荐 lazy 管道。
+返回原始 `pl.LazyFrame`，适合大窗口的自定义 lazy 管道。它只做日期分区和
+symbol 过滤，不执行 `load()` 的复权、universe、PIT 或严格覆盖语义；需要这些
+语义时应使用 `load()`。当前参数如下：
 
 ```python
-lf = scan("daily_bars", start="2020-01-01", adjust="hfq")
-df = lf.filter(pl.col("symbol") == "600519.SH").collect()
+def scan(
+    dataset: str,
+    *,
+    start: str | date | None = None,
+    end: str | date | None = None,
+    symbols: list[str] | None = None,
+    config: Config | None = None,
+    data_root: str | Path | None = None,
+) -> pl.LazyFrame
+```
+
+```python
+lf = scan("daily_bars", start="2020-01-01", symbols=["600519.SH"])
+df = lf.filter(pl.col("close") > 0).collect()
 ```
 
 ---
@@ -80,6 +94,27 @@ def list_datasets(
 列：`dataset`, `layer`, `date_col`, `fetch_semantics`, `history_mode`, `backfill_source`, `pit`, `has_data`, `coverage_start`, `coverage_end`, `watermarked`, `watermark`
 
 `history_mode` ∈ `by_date` / `snapshot_with_backfill` / `snapshot_only`；与 `coverage_*` 一起构成可用起点合同。
+
+## historical_universe_validity()
+
+历史研究门禁位于 `cnequity.quality.historical_validity`，默认验证沪深北全 A：
+
+```python
+from cnequity.quality.historical_validity import historical_universe_validity
+from datetime import date
+
+report = historical_universe_validity(
+    cfg,
+    start=date(2020, 1, 1),
+    end=date(2024, 12, 31),
+    universe="all_a_sh_sz",
+)
+assert report["universe_ready"]
+```
+
+`universe="all_a_sh_sz"` 会让日线区间、历史 ST 证据和退市覆盖都只按沪深
+子集核验；它不会把全 A (`all_a`) 的 BJ 历史证据缺口隐藏掉。`universe_ready`
+为真才表示该明确口径可以进入历史研究。
 
 ---
 

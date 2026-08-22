@@ -650,6 +650,72 @@ def test_audit_full_research_window_is_a_strict_independent_gate(cfg_path, monke
     assert "HEALTHY" in result.output
 
 
+def test_audit_full_can_select_scoped_research_universe(cfg_path, monkeypatch):
+    observed: dict[str, object] = {}
+
+    def _health(_cfg, _trade_date, **kwargs):
+        observed.update(kwargs)
+        return {
+            "last_trading_day": "2024-06-28",
+            "findings_by_severity": {"error": 0, "warning": 0, "info": 0},
+            "empty_datasets": [],
+            "stale_datasets": [],
+            "error_findings": [],
+            "warning_findings": [],
+            "historical_universe_validity": {
+                "universe": "all_a_sh_sz",
+                "window": {"start": "2020-01-01", "end": "2024-06-28"},
+                "universe_ready": True,
+                "blockers": [],
+            },
+            "healthy": True,
+        }
+
+    monkeypatch.setattr("cnequity.quality.audit.lake_health", _health)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "audit",
+            "--full",
+            "--config",
+            cfg_path,
+            "--research-universe",
+            "all_a_sh_sz",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert observed["research_universe"] == "all_a_sh_sz"
+    assert "historical all_a_sh_sz" in result.output
+
+
+def test_delisted_coverage_can_select_scoped_research_universe(cfg_path, monkeypatch):
+    observed: dict[str, object] = {}
+
+    def _coverage(_cfg, start, end, *, sample, universe):
+        observed.update(start=start, end=end, sample=sample, universe=universe)
+        return {"verified": True, "universe": universe}
+
+    monkeypatch.setattr("cnequity.steps.delisted.delisted_coverage_report", _coverage)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "delisted",
+            "coverage",
+            "--config",
+            cfg_path,
+            "--start",
+            "2020-01-01",
+            "--universe",
+            "all_a_sh_sz",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert observed["universe"] == "all_a_sh_sz"
+    assert '"universe": "all_a_sh_sz"' in result.output
+
+
 def test_derive_trading_status_and_orphans(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "cnequity.derive.trading_status_history.derive_suspension_history",
@@ -721,7 +787,7 @@ def test_delisted_coverage_uses_exit_status_as_a_strict_gate(cfg_path, monkeypat
     }
     monkeypatch.setattr(
         "cnequity.steps.delisted.delisted_coverage_report",
-        lambda cfg, start, end, sample=15: report,
+        lambda cfg, start, end, sample=15, **kwargs: report,
     )
 
     result = CliRunner().invoke(

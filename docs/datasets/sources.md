@@ -111,7 +111,7 @@
 | 频率 | 每日 |
 | 主键 | (symbol, ex_date, action_type) |
 | 输出 | manifest 元数据 `symbols_to_rebackfill` |
-| **已知缺口** | 已退市标的的历史除权除息几乎全缺——2026-08 实测 109/111 个「原始收益率与 hfq 复权收益率不符」的审计发现都是已退市标的（北交所 106 个 + 非北交所 3 个）。**两个源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对这批标的仍返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里这批标的同样一条没有。是两个源都不再对已从其在线标的列表里消失的证券提供除权除息历史，跟标的所在市场、代码前缀无关（92xxxx 前缀里未退市的 328 只覆盖率 96%，同样是 92 前缀但已退市的 1 只覆盖率 0）。baostock 的 `query_dividend_data` 直接拒绝北交所代码（`股票代码未标识sh或sz`），不能顶上。不是本项目的代码缺陷，也不是限流——是这两个源本身对已退市证券的历史除权数据保留策略。`cne audit` 把这批发现单独归为 `missing_corporate_action_delisted`（info 级，一条汇总），不再对仍在交易的标的发出的 `missing_corporate_action`（warning 级）掺在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
+| **已知缺口** | 已退市标的的历史除权除息几乎全缺。缺口数量随湖中退市标的、复权因子和审计窗口变化，**以最新 `meta/quality/health-latest.json` 的 `missing_corporate_action_delisted` finding 为准，不在文档固化样本数量**。**两个源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对已退市标的仍可能返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里同样可能没有记录。两源都不会对已从其在线标的列表里消失的证券稳定提供完整除权除息历史，不能把该限制简化为某个市场或代码前缀的问题。baostock 的 `query_dividend_data` 直接拒绝北交所代码（`股票代码未标识sh或sz`），不能顶上。不是本项目的代码缺陷，也不是限流——是这两个源本身对已退市证券的历史除权数据保留策略。`cne audit` 把这批发现单独归为 `missing_corporate_action_delisted`（info 级，一条汇总），不再对仍在交易的标的发出的 `missing_corporate_action`（warning 级）掺在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
 
 #### adj_factors（derived）
 
@@ -123,7 +123,7 @@
 | 频率 | compact 之后每日 |
 | 主键 | (symbol, trade_date, adjust_type) |
 | 说明 | 外部累计因子对齐 daily_bars；`adj_close = close * factor` |
-| **已知缺口** | 新浪**确实覆盖北交所**（`bj430017` 等都能取到）。此前 260 只股票没有因子并非源的问题，而是本 derive 是**从水位向前追加**的：`cne backfill daily_bars` 补进来的历史日期在水位之后方，永远轮不到。现已自愈（见下），残留 12 只：5 只 2025-04-30 退市的北交所标的 + 7 只已上市未交易的新股，两者新浪都取不到 |
+| **已知缺口** | 新浪**确实覆盖北交所**（`bj430017` 等都能取到）。过去曾出现过因 derive 只从水位向前追加而导致的 BJ 因子缺口；现已修复该路径。新上市未交易、已退市或源端无因子的标的仍可能缺失，具体数量以最新 `adj_factor_coverage` finding 和 `meta/quality/health-latest.json` 为准 |
 | **查询侧后果** | `load(adjust="hfq")` 默认 `strict_adj=False`，缺因子的行按 `factor=1.0` 返回，即**未复权价出现在复权结果里**，只由 `adj_is_exact=False` 标记。自愈后实测一年窗口 + `universe="all_a"`：**65 行（0.005%）**，其中 46 行 `close>0`——修复前是 10,480 行（0.77%）|
 | **怎么办** | 要严格失败而不是静默降级：`load(..., strict_adj=True)`。**它不是默认值**：新上市的票在拿到第一个因子前必然缺，所以严格模式会让 `universe="all_a"` 的 hfq 查询长期抛错。默认容忍 + `adj_is_exact` 标记 + 审计告警，是在「不静默污染」和「查询可用」之间的取舍 |
 | **自愈** | `derive_adj_factors` 每次增量运行都会找出「有 bar 但因子够不到」的标的并重排其完整历史，单次上限 500 只。所以 `cne backfill daily_bars` 补的历史会在随后的日更里自动补上因子，无需 `--full` |

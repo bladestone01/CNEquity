@@ -11,7 +11,7 @@ from cnequity.adapters.calendar.exchange_calendar import (
 )
 from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 from cnequity.config import Config
-from cnequity.domain.datasets import PARTITION_COLS, curated_dataset_names
+from cnequity.domain.datasets import PARTITION_COLS, curated_dataset_names, is_dataset_enabled
 from cnequity.domain.market_time import is_session_final
 from cnequity.quality.authority_checks import run_authority_checks
 from cnequity.quality.cross_checks import (
@@ -380,9 +380,7 @@ def _collect_lake_findings(
     findings.extend(trading_calendar_horizon_findings(config, trade_date))
     findings.extend(daily_bars_volume_unit_findings(config, trade_date))
     findings.extend(daily_bars_amount_completeness_findings(config, trade_date))
-    # No-ops on a lake that never enabled intraday capture.
-    findings.extend(minute_bars_findings(config, trade_date))
-    findings.extend(trade_ticks_findings(config, trade_date))
+    findings.extend(_optional_intraday_findings(config, trade_date))
     # Reaches an external vendor for ~12 quotes; gated on [sources.sina] so a
     # lake without it (and every unit test) stays offline.
     findings.extend(
@@ -408,6 +406,26 @@ def _collect_lake_findings(
     return findings
 
 
+def _optional_intraday_findings(config: Config, trade_date: date) -> list[dict]:
+    """Run quality checks only for optional intraday captures in use.
+
+    Historical Parquet can outlive the configuration that created it. That is
+    useful for manual inspection, but a disabled optional capture must not
+    produce freshness or comparability findings in the routine lake audit.
+    The lower-level check functions remain callable directly for that manual
+    inspection path.
+    """
+    findings: list[dict] = []
+    if any(
+        is_dataset_enabled(dataset, config)
+        for dataset in ("minute_bars", "minute_bars_5m")
+    ):
+        findings.extend(minute_bars_findings(config, trade_date))
+    if is_dataset_enabled("trade_ticks", config):
+        findings.extend(trade_ticks_findings(config, trade_date))
+    return findings
+
+
 def run_audit(config: Config, run_id: str, trade_date: date, context: dict | None = None) -> int:
     findings = _collect_lake_findings(config, trade_date, context)
     # Keep the dedicated source-diff artifact, but also include its findings in
@@ -430,12 +448,44 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
     return len(findings)
 
 
+def _all_a_st_evidence_summary(findings: list[dict]) -> dict | None:
+    """Extract the all-A ST evidence baseline from the lake audit findings.
+
+    ``lake_health`` may validate a narrower research universe, but the
+    operational trading-status audit intentionally remains all-A. Persisting
+    this baseline beside the selected research contract prevents a scoped
+    READY result from hiding an unresolved BJ source limitation.
+    """
+    finding = next(
+        (
+            item
+            for item in findings
+            if item.get("check") == "trading_status_coverage_start"
+        ),
+        None,
+    )
+    if finding is None:
+        return None
+    return {
+        "verified": bool(finding.get("st_evidence_verified")),
+        "coverage_start": finding.get("st_evidence_coverage_start"),
+        "coverage_end": finding.get("st_evidence_coverage_end"),
+        "supported_symbols": finding.get("st_evidence_supported_symbols"),
+        "unsupported_symbols": finding.get("st_evidence_unsupported_symbols", 0),
+        "unsupported_exchange_counts": finding.get(
+            "st_evidence_unsupported_exchange_counts", {}
+        ),
+        "reason": finding.get("st_evidence_receipt_reason"),
+    }
+
+
 def lake_health(
     config: Config,
     trade_date: date,
     *,
     research_start: date | None = None,
     research_end: date | None = None,
+    research_universe: str = "all_a",
 ) -> dict:
     """Lake health: findings + freshness → ``meta/quality/health-latest.json``."""
     from cnequity.domain.datasets import DATASETS, is_dataset_enabled, is_stale
@@ -478,7 +528,9 @@ def lake_health(
         config,
         start=research_start,
         end=research_end,
+        universe=research_universe,
     )
+    all_a_st_evidence = _all_a_st_evidence_summary(findings)
     health = {
         "trade_date": trade_date.isoformat(),
         "last_trading_day": anchor.isoformat(),
@@ -497,6 +549,8 @@ def lake_health(
         # health. A fresh lake can still be unsafe for a long backtest, while a
         # stale optional dataset need not invalidate a closed historical study.
         "historical_universe_validity": historical_validity,
+        "historical_universe": historical_validity.get("universe", research_universe),
+        "historical_all_a_st_evidence": all_a_st_evidence,
         "healthy": by_severity.get("error", 0) == 0 and not stale,
     }
 
