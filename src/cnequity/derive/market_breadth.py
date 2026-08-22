@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.query.parquet_scan import collect_parquet_root
 
 MARKET_BREADTH_METRICS = (
@@ -36,9 +37,7 @@ def _read_bars(root: Path, trade_date: date) -> pl.DataFrame:
     except FileNotFoundError:
         return pl.DataFrame()
     if all(col in df.columns for col in ("symbol", "trade_date")):
-        if "fetched_at" in df.columns:
-            df = df.sort("fetched_at")
-        df = df.unique(subset=["symbol", "trade_date"], keep="last")
+        df = dedupe_by_primary_key(df, "daily_bars")
     return df.filter(pl.col("trade_date") == trade_date)
 
 
@@ -56,9 +55,7 @@ def _prev_trading_date(config: Config, trade_date: date) -> date | None:
         return None
     if cal.is_empty() or not {"trade_date", "is_trading"}.issubset(cal.columns):
         return None
-    if "fetched_at" in cal.columns:
-        cal = cal.sort("fetched_at")
-    cal = cal.unique(subset=["trade_date"], keep="last")
+    cal = dedupe_by_primary_key(cal, "trading_calendar")
     prior = cal.filter((pl.col("trade_date") < trade_date) & pl.col("is_trading")).sort(
         "trade_date", descending=True
     )
@@ -83,9 +80,8 @@ def _read_trading_status(root: Path, trade_date: date) -> pl.DataFrame:
     required = {"symbol", "trade_date", "status"}
     if not required.issubset(df.columns):
         return pl.DataFrame()
-    if "fetched_at" in df.columns:
-        df = df.sort("fetched_at")
-    return df.unique(subset=["symbol", "trade_date"], keep="last").select(
+    df = dedupe_by_primary_key(df, "trading_status")
+    return df.select(
         ["symbol", "trade_date", "status"]
     )
 

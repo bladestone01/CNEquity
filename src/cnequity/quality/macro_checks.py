@@ -28,6 +28,7 @@ from datetime import date
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
 _SAMPLE = 8
@@ -111,14 +112,15 @@ def macro_revision_findings(
 
     existing = (
         scan_parquet_root(root, partition_col="obs_date", end=trade_date)
-        .select("indicator_id", "obs_date", "value")
         .collect(engine="streaming")
     )
     if existing.is_empty():
         return []
 
     # Latest stored value per key — curated may still hold pre-compact duplicates.
-    existing = existing.unique(subset=["indicator_id", "obs_date"], keep="last")
+    existing = dedupe_by_primary_key(existing, "macro_indicators").select(
+        "indicator_id", "obs_date", "value"
+    )
     joined = incoming.select("indicator_id", "obs_date", "value").join(
         existing,
         on=["indicator_id", "obs_date"],

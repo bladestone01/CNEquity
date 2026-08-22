@@ -12,6 +12,7 @@ import polars as pl
 
 from cnequity.adapters.tdx_protocol.client import fetch_daily_bars, normalize_with_source
 from cnequity.config import Config, load_config
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.rate_limit import RateLimitSpec
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.steps.common import BACKFILL_START
@@ -156,10 +157,7 @@ def _stage_daily_bar_rows(
     if path.exists():
         previous = pl.read_parquet(path)
         df = pl.concat([previous, df], how="diagonal_relaxed")
-        df = df.sort("fetched_at").unique(
-            subset=["symbol", "trade_date"],
-            keep="last",
-        )
+        df = dedupe_by_primary_key(df, "daily_bars")
     writer.write_batch("daily_bars", run_id, batch_id, df)
 
 

@@ -122,7 +122,10 @@ SQL 连接还会被限制为只允许访问 `curated/` 和 `derived/` 两个 lak
 
 被拒绝的例子：多语句、`DROP`、`CREATE`、`ATTACH`、`COPY ... TO`。
 
-`daily_bars_adj` 是现成视图，带 `hfq_*` / `qfq_*` 与 `adj_is_exact`，优先用它而不是自己 join `adj_factors`。
+`daily_bars_adj` 是现成视图，带 `hfq_*` / qfq 与 `adj_is_exact`；它的 qfq anchor
+是每个标的在整个湖内的最新 bar。做有明确历史窗口的 qfq 聚合时，使用
+`daily_bars_qfq(DATE '2020-01-01', DATE '2020-12-31')`，该宏会按窗口 anchor，
+优先于自己 join `adj_factors`。
 
 ---
 

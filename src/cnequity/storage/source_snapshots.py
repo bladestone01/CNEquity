@@ -11,8 +11,8 @@ from pathlib import Path
 
 import polars as pl
 
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.schemas import validate_dataframe
-from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.storage.atomic import write_json_atomic, write_parquet_atomic
 
 logger = logging.getLogger(__name__)

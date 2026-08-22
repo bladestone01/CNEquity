@@ -9,6 +9,7 @@ from pathlib import Path
 
 import polars as pl
 
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.schemas import INSTRUMENTS_SCHEMA, validate_dataframe
 from cnequity.domain.symbols import is_subscription_placeholder
 from cnequity.storage.atomic import write_parquet_atomic
@@ -74,7 +75,7 @@ def compact_instruments(
         how="diagonal_relaxed",
     )
     incoming = _strip_subscription_placeholders(incoming)
-    incoming = incoming.sort("fetched_at").unique(subset=["symbol"], keep="last")
+    incoming = dedupe_by_primary_key(incoming, "instruments")
 
     out_path = curated_root / "instruments" / "part-merged.parquet"
     curated_files = sorted(out_path.parent.rglob("*.parquet")) if out_path.parent.exists() else []
@@ -84,7 +85,7 @@ def compact_instruments(
             how="diagonal_relaxed",
         )
         existing = _strip_subscription_placeholders(existing)
-        existing = existing.sort("fetched_at").unique(subset=["symbol"], keep="last")
+        existing = dedupe_by_primary_key(existing, "instruments")
     else:
         existing = pl.DataFrame(schema=INSTRUMENTS_SCHEMA)
 
@@ -187,7 +188,7 @@ def compact_instruments(
         preserved = pl.DataFrame(schema=INSTRUMENTS_SCHEMA)
 
     merged = pl.concat([incoming, preserved], how="diagonal_relaxed")
-    merged = merged.sort("fetched_at").unique(subset=["symbol"], keep="last")
+    merged = dedupe_by_primary_key(merged, "instruments")
 
     write_parquet_atomic(out_path, merged, compression="zstd")
     # Instruments is merge-style, so there is no partition writer to clean up

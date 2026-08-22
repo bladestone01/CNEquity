@@ -227,8 +227,28 @@ def derive_suspension_history(
             pl.struct(["source", "trade_date", "fetched_at"])
             .map_elements(status_evidence_rank, return_dtype=pl.Int64)
             .alias("_evidence_rank")
-        ).sort("_evidence_rank")
-        merged = merged.unique(subset=["symbol", "trade_date"], keep="first").drop("_evidence_rank")
+        )
+        # Keep the best evidence, but make ties independent of filesystem
+        # traversal order.  Within one evidence class the newest observation
+        # wins; source and version then provide a stable final tie-breaker.
+        # Null provenance is sorted first so a known timestamp is retained by
+        # ``keep="last"`` instead of a legacy row silently winning.
+        sort_cols = ["_evidence_rank"]
+        descending = [True]
+        for column in ("fetched_at", "source", "data_version"):
+            if column in merged.columns:
+                sort_cols.append(column)
+                descending.append(False)
+        merged = (
+            merged.sort(
+                sort_cols,
+                descending=descending,
+                nulls_last=False,
+                maintain_order=True,
+            )
+            .unique(subset=["symbol", "trade_date"], keep="last")
+            .drop("_evidence_rank")
+        )
         # Reuse compact's filename so we overwrite the single canonical part
         # rather than adding a second file (which would double-count on read).
         writer.write_partition("trading_status", pcol, val, merged, "part-merged.parquet")

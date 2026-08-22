@@ -599,7 +599,8 @@ def run_sql(config: Config, *, sql: str, limit: int | None = None) -> dict:
     The tool the other five cannot replace: ranking, aggregation, and joins
     across datasets happen here rather than by paging rows into the agent's
     context and having it add them up. ``daily_bars_adj`` is a view with hfq_*
-    and qfq_* columns already computed.
+    and open-lake qfq_* columns already computed; for a bounded historical qfq
+    window use the ``daily_bars_qfq(start_date, end_date)`` table macro.
     """
     from cnequity.query.views import ensure_duckdb_views
 

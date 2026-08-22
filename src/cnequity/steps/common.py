@@ -113,11 +113,11 @@ def _load_trading_calendar_df(
     staging_root = config.staging_root / "trading_calendar"
     staging = sorted(staging_root.rglob("*.parquet")) if staging_root.exists() else []
     if staging:
+        from cnequity.query.canonical import dedupe_by_primary_key
+
         df = pl.concat([pl.read_parquet(path) for path in staging], how="diagonal_relaxed")
         if "trade_date" in df.columns:
-            if "fetched_at" in df.columns:
-                df = df.sort("fetched_at")
-            df = df.unique(subset=["trade_date"], keep="last", maintain_order=True)
+            df = dedupe_by_primary_key(df, "trading_calendar")
         if start is not None:
             df = df.filter(pl.col("trade_date") >= start)
         if end is not None:

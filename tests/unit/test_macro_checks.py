@@ -132,6 +132,29 @@ def test_restated_value_is_recorded_before_the_overwrite(tmp_path):
     assert "8.0" in f["message"] and "8.4" in f["message"]
 
 
+def test_revision_uses_latest_existing_duplicate(tmp_path):
+    root = tmp_path / "data"
+    part = root / "curated" / "macro_indicators" / "obs_date=2026-06-30"
+    part.mkdir(parents=True)
+    common = {
+        "indicator_id": ["m2_yoy"],
+        "obs_date": [date(2026, 6, 30)],
+        "frequency": ["monthly"],
+        "source": ["eastmoney"],
+        "data_version": ["v1"],
+    }
+    pl.DataFrame(
+        {**common, "value": [8.4], "fetched_at": [datetime(2026, 8, 2, tzinfo=timezone.utc)]}
+    ).write_parquet(part / "a-new.parquet")
+    pl.DataFrame(
+        {**common, "value": [8.0], "fetched_at": [datetime(2026, 8, 1, tzinfo=timezone.utc)]}
+    ).write_parquet(part / "z-old.parquet")
+    cfg = Config(data_root=root)
+
+    incoming = _incoming([("m2_yoy", date(2026, 6, 30), 8.4)])
+    assert macro_revision_findings(cfg, incoming, date(2026, 8, 1)) == []
+
+
 @pytest.mark.parametrize(
     ("old", "new", "severity"),
     [

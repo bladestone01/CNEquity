@@ -24,6 +24,7 @@ from pathlib import Path
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.datasets import DATASETS
 from cnequity.domain.partitions import partition_value
 from cnequity.domain.schemas import PRIMARY_KEYS, sanitize_dataset_rows, validate_dataframe
@@ -156,7 +157,7 @@ def _repartition_dataset_locked(
     pk = PRIMARY_KEYS.get(dataset, [])
     if pk and all(c in combined.columns for c in pk):
         before = combined.height
-        combined = combined.sort("fetched_at").unique(subset=pk, keep="last")
+        combined = dedupe_by_primary_key(combined, dataset)
         dropped = before - combined.height
         if dropped:
             logger.info(

@@ -7,9 +7,11 @@ from pathlib import Path
 
 import duckdb
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
+from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import parquet_glob
 from cnequity.query.views import _view_glob, ensure_duckdb_views
 
@@ -78,6 +80,57 @@ def test_duckdb_views_dedupe_duplicate_primary_keys(tmp_path):
     assert rows == [("600519.SH", 1900.0)]
 
 
+def test_canonical_dedupe_prefers_primary_source_on_same_timestamp():
+    frame = pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "trade_date": [date(2024, 6, 28)] * 2,
+            "close": [1800.0, 1900.0],
+            "source": ["eastmoney", "tdx_protocol"],
+            "data_version": ["v9", "v1"],
+            "fetched_at": [datetime(2024, 6, 28, tzinfo=timezone.utc)] * 2,
+        }
+    )
+
+    eager = dedupe_by_primary_key(frame, "daily_bars")
+    lazy = dedupe_lazy_by_primary_key(frame.lazy(), "daily_bars").collect()
+
+    assert eager.select("source", "close").to_dicts() == [
+        {"source": "tdx_protocol", "close": 1900.0}
+    ]
+    assert lazy.select("source", "close").to_dicts() == [
+        {"source": "tdx_protocol", "close": 1900.0}
+    ]
+
+
+def test_duckdb_views_dedupe_prefers_primary_source_on_same_timestamp(tmp_path):
+    data_root = tmp_path / "data"
+    partition = data_root / "curated" / "daily_bars" / "trade_date=2024-06-28"
+    partition.mkdir(parents=True)
+    common = {
+        "symbol": ["600519.SH"],
+        "trade_date": [date(2024, 6, 28)],
+        "open": [1790.0],
+        "high": [1810.0],
+        "low": [1780.0],
+        "volume": [1000],
+        "amount": [1_000_000.0],
+        "fetched_at": [datetime(2024, 6, 28, tzinfo=timezone.utc)],
+    }
+    pl.DataFrame(
+        {**common, "close": [1800.0], "source": ["eastmoney"], "data_version": ["v9"]}
+    ).write_parquet(partition / "part-backup.parquet")
+    pl.DataFrame(
+        {**common, "close": [1900.0], "source": ["tdx_protocol"], "data_version": ["v1"]}
+    ).write_parquet(partition / "part-primary.parquet")
+
+    db = ensure_duckdb_views(Config(data_root=data_root))
+    with duckdb.connect(str(db), read_only=True) as con:
+        rows = con.execute("SELECT source, close FROM daily_bars").fetchall()
+
+    assert rows == [("tdx_protocol", 1900.0)]
+
+
 def test_duckdb_views_merge_optional_columns_by_name(tmp_path):
     data_root = tmp_path / "data"
     partition = data_root / "curated" / "daily_bars" / "trade_date=2024-06-28"
@@ -104,3 +157,57 @@ def test_duckdb_views_merge_optional_columns_by_name(tmp_path):
     with duckdb.connect(str(db)) as con:
         rows = con.execute("SELECT symbol, amount FROM daily_bars ORDER BY symbol").fetchall()
     assert rows == [("000001.SZ", None), ("600519.SH", 1000.0)]
+
+
+def test_duckdb_qfq_views_use_the_correct_anchor(tmp_path):
+    data_root = tmp_path / "data"
+    (data_root / "curated" / "daily_bars").mkdir(parents=True)
+    (data_root / "derived" / "adj_factors").mkdir(parents=True)
+    day = [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"] * 3,
+            "trade_date": day,
+            "open": [9.0, 11.0, 13.0],
+            "high": [11.0, 13.0, 15.0],
+            "low": [8.0, 10.0, 12.0],
+            "close": [10.0, 12.0, 14.0],
+            "volume": [100, 100, 100],
+            "amount": [1000.0, 1200.0, 1400.0],
+            "source": ["test"] * 3,
+            "data_version": ["v1"] * 3,
+            "fetched_at": [datetime(2024, 1, 4, tzinfo=timezone.utc)] * 3,
+        }
+    ).write_parquet(data_root / "curated" / "daily_bars" / "part.parquet")
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"] * 3,
+            "trade_date": day,
+            "adjust_type": ["hfq"] * 3,
+            "factor": [2.0, 3.0, 4.0],
+            "source": ["test"] * 3,
+            "data_version": ["v1"] * 3,
+            "fetched_at": [datetime(2024, 1, 4, tzinfo=timezone.utc)] * 3,
+        }
+    ).write_parquet(data_root / "derived" / "adj_factors" / "part.parquet")
+
+    db = ensure_duckdb_views(Config(data_root=data_root))
+    with duckdb.connect(str(db), read_only=True) as con:
+        full = con.execute(
+            "SELECT trade_date, qfq_close FROM daily_bars_adj ORDER BY trade_date"
+        ).fetchall()
+        bounded = con.execute(
+            """
+            SELECT trade_date, qfq_close
+            FROM daily_bars_qfq(DATE '2024-01-01', DATE '2024-01-02')
+            ORDER BY trade_date
+            """
+        ).fetchall()
+
+    # The static view anchors to the latest bar in the lake (factor=4), while
+    # the macro anchors to the latest bar in its explicit two-day window
+    # (factor=3), matching load(..., adjust='qfq', end='2024-01-02').
+    assert [row[0] for row in full] == day
+    assert [row[1] for row in full] == pytest.approx([5.0, 9.0, 14.0])
+    assert [row[0] for row in bounded] == day[:2]
+    assert [row[1] for row in bounded] == pytest.approx([20.0 / 3.0, 12.0])

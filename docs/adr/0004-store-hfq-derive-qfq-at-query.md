@@ -61,7 +61,9 @@ That requirement is met at **query time**, not in `derived/adj_factors`.
 
 - `load(..., adjust="qfq")` requires hfq rows through the anchor date `T` per
   symbol (`adj_is_exact` / `strict_adj` apply as today).
-- DuckDB `daily_bars_adj` view uses hfq + window anchor (not a stored qfq join).
+- DuckDB `daily_bars_adj` uses the latest bar in the lake as its open-window
+  anchor. Bounded SQL windows must use the `daily_bars_qfq(start_date, end_date)`
+  table macro, which applies the same window-anchor rule as `load()`.
 - Lakes with only legacy `adjust_type='qfq'` partitions need
   `cne derive adj_factors` after config change.
 - External consumers reading `derived/adj_factors` parquet directly must apply

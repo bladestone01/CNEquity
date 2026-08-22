@@ -64,6 +64,28 @@ def _glob_has_files(pattern: str) -> bool:
     return any(p.rglob("*.parquet"))
 
 
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _canonical_order_sql(name: str, columns: set[str]) -> str:
+    """Return the DuckDB ordering used to select one canonical lake row."""
+    order_by = ["fetched_at DESC NULLS LAST"]
+    if "source" in columns:
+        spec = DATASETS.get(name)
+        cases: list[str] = []
+        if spec and spec.backup_source:
+            cases.append(f"WHEN source = {_sql_literal(spec.backup_source)} THEN 1")
+        if spec and spec.primary_source:
+            cases.append(f"WHEN source = {_sql_literal(spec.primary_source)} THEN 2")
+        if cases:
+            order_by.append("CASE " + " ".join(cases) + " ELSE 0 END DESC")
+        order_by.append("source DESC NULLS LAST")
+    if "data_version" in columns:
+        order_by.append("data_version DESC NULLS LAST")
+    return ", ".join(order_by)
+
+
 def _view_select_sql(
     name: str,
     glob_path: str,
@@ -91,11 +113,12 @@ def _view_select_sql(
     ):
         return f"SELECT * FROM {source}"
     partition_by = ", ".join(primary_key)
+    order_by = _canonical_order_sql(name, columns or set())
     return (
         "SELECT * FROM "
         f"{source} "
         "QUALIFY ROW_NUMBER() OVER ("
-        f"PARTITION BY {partition_by} ORDER BY fetched_at DESC NULLS LAST"
+        f"PARTITION BY {partition_by} ORDER BY {order_by}"
         ") = 1"
     )
 
@@ -130,7 +153,10 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
 
     # Adjusted bars per ADR-0004: only hfq factors are stored.
     #   hfq price = raw * factor
-    #   qfq price = raw * factor / anchor   (anchor = symbol's latest hfq factor)
+    #   qfq price = raw * factor / anchor   (anchor = latest factor on a bar date)
+    # The static view is anchored to each symbol's latest bar in the lake.  A
+    # bounded qfq query must use the table macro below, whose anchor is scoped
+    # to its explicit [start_date, end_date] window.
     # adj_* keeps its historical qfq meaning; adj_is_exact mirrors the Python API.
     con.execute(
         """
@@ -140,10 +166,17 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
             FROM adj_factors
             WHERE adjust_type = 'hfq'
         ),
+        bar_anchors AS (
+            SELECT symbol, MAX(trade_date) AS anchor_date
+            FROM daily_bars
+            GROUP BY symbol
+        ),
         anchors AS (
-            SELECT symbol, factor AS hfq_anchor
-            FROM hfq
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) = 1
+            SELECT h.symbol, h.factor AS hfq_anchor
+            FROM hfq h
+            JOIN bar_anchors b
+              ON h.symbol = b.symbol AND h.trade_date <= b.anchor_date
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY h.symbol ORDER BY h.trade_date DESC) = 1
         )
         SELECT
             b.*,
@@ -162,6 +195,57 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
           ON b.symbol = h.symbol AND b.trade_date = h.trade_date
         LEFT JOIN anchors a
           ON b.symbol = a.symbol
+        """
+    )
+    # DuckDB views cannot see the outer query's WHERE clause, so a static
+    # qfq column cannot be correct for a historical sub-window.  This macro
+    # is the SQL equivalent of load(..., adjust='qfq', start=..., end=...).
+    con.execute(
+        """
+        CREATE OR REPLACE MACRO daily_bars_qfq(start_date, end_date) AS TABLE (
+            WITH bars AS (
+                SELECT *
+                FROM daily_bars
+                WHERE (start_date IS NULL OR trade_date >= CAST(start_date AS DATE))
+                  AND (end_date IS NULL OR trade_date <= CAST(end_date AS DATE))
+            ),
+            bar_anchors AS (
+                SELECT symbol, MAX(trade_date) AS anchor_date
+                FROM bars
+                GROUP BY symbol
+            ),
+            hfq AS (
+                SELECT f.symbol, f.trade_date, f.factor
+                FROM adj_factors f
+                JOIN bar_anchors b
+                  ON f.symbol = b.symbol AND f.trade_date <= b.anchor_date
+                WHERE f.adjust_type = 'hfq'
+            ),
+            anchors AS (
+                SELECT h.symbol, h.factor AS hfq_anchor
+                FROM hfq h
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY h.symbol ORDER BY h.trade_date DESC
+                ) = 1
+            )
+            SELECT
+                b.*,
+                h.factor IS NOT NULL AS adj_is_exact,
+                b.open  * COALESCE(h.factor, 1.0) AS hfq_open,
+                b.high  * COALESCE(h.factor, 1.0) AS hfq_high,
+                b.low   * COALESCE(h.factor, 1.0) AS hfq_low,
+                b.close * COALESCE(h.factor, 1.0) AS hfq_close,
+                b.open  * COALESCE(h.factor / a.hfq_anchor, 1.0) AS qfq_open,
+                b.high  * COALESCE(h.factor / a.hfq_anchor, 1.0) AS qfq_high,
+                b.low   * COALESCE(h.factor / a.hfq_anchor, 1.0) AS qfq_low,
+                b.close * COALESCE(h.factor / a.hfq_anchor, 1.0) AS qfq_close,
+                b.close * COALESCE(h.factor / a.hfq_anchor, 1.0) AS adj_close
+            FROM bars b
+            LEFT JOIN hfq h
+              ON b.symbol = h.symbol AND b.trade_date = h.trade_date
+            LEFT JOIN anchors a
+              ON b.symbol = a.symbol
+        )
         """
     )
     con.close()

@@ -198,8 +198,10 @@ TOOLS: list[dict] = [
             "percentiles and joins across datasets — computing them here is both "
             "correct and far cheaper than paging thousands of rows back and "
             "adding them up. `daily_bars_adj` is a ready-made view carrying "
-            "hfq_open/high/low/close and qfq_* beside the raw columns; prefer it "
-            "over joining adj_factors yourself. Single SELECT only."
+            "hfq_open/high/low/close and open-lake qfq_* beside the raw columns; "
+            "for a bounded historical qfq window use `daily_bars_qfq(start_date, "
+            "end_date)` so the anchor matches that window. Prefer these over "
+            "joining adj_factors yourself. Single SELECT only."
         ),
         "inputSchema": {
             "type": "object",

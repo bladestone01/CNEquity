@@ -4,6 +4,7 @@ from pathlib import Path
 
 import polars as pl
 
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.datasets import granularity_for_dataset
 from cnequity.domain.partitions import Granularity
 from cnequity.domain.schemas import PRIMARY_KEYS, sanitize_dataset_rows, validate_dataframe
@@ -115,7 +116,7 @@ def compact_dataset(
     )
     pk = PRIMARY_KEYS.get(dataset, [])
     if pk:
-        combined = combined.sort("fetched_at").unique(subset=pk, keep="last")
+        combined = dedupe_by_primary_key(combined, dataset)
 
     if partition_col not in combined.columns:
         out_dir = curated.curated_root / dataset
@@ -131,7 +132,7 @@ def compact_dataset(
             )
             combined = pl.concat([existing, combined], how="diagonal_relaxed")
             if pk:
-                combined = combined.sort("fetched_at").unique(subset=pk, keep="last")
+                combined = dedupe_by_primary_key(combined, dataset)
         out_dir.mkdir(parents=True, exist_ok=True)
         write_parquet_atomic(out_path, combined, compression="zstd")
         for stale in out_dir.rglob("*.parquet"):
@@ -157,7 +158,7 @@ def compact_dataset(
                 )
         merged = pl.concat(frames, how="diagonal_relaxed")
         if pk:
-            merged = merged.sort("fetched_at").unique(subset=pk, keep="last")
+            merged = dedupe_by_primary_key(merged, dataset)
         curated.write_partition(dataset, partition_col, val_str, merged, "part-merged.parquet")
         total += merged.height
     return total

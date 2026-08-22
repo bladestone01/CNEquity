@@ -253,6 +253,26 @@ def test_compact_merges_into_an_existing_period_partition(tmp_path):
     assert sorted(df["trade_date"].to_list()) == [date(2024, 1, 4), date(2024, 6, 3)]
 
 
+def test_compact_prefers_primary_source_on_same_timestamp(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    frame = _bar_frame([date(2024, 6, 3), date(2024, 6, 3)]).with_columns(
+        pl.Series("source", ["eastmoney", "tdx_protocol"]),
+        pl.Series("open", [10.0, 20.0]),
+        pl.Series("high", [10.0, 20.0]),
+        pl.Series("low", [10.0, 20.0]),
+        pl.Series("close", [10.0, 20.0]),
+        pl.Series("data_version", ["v9", "v1"]),
+    )
+    StagingWriter(cfg.staging_root).write_batch("daily_bars", "run-1", "batch-0", frame)
+
+    compact_dataset(cfg.staging_root, cfg.curated_root, "daily_bars", "run-1")
+
+    rows = pl.read_parquet(
+        cfg.curated_root / "daily_bars" / "trade_date=2024-06-03" / "part-merged.parquet"
+    ).select("source", "close").to_dicts()
+    assert rows == [{"source": "tdx_protocol", "close": 20.0}]
+
+
 def test_compact_removes_legacy_index_weekend_rows(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     root = cfg.curated_root / "index_bars" / "trade_date=1991"

@@ -12,6 +12,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.stock_news import fetch_stock_news
 from cnequity.config import Config
 from cnequity.domain.sentiment import score_text
+from cnequity.query.canonical import dedupe_by_primary_key
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,7 @@ def _read_announcements(root: Path, trade_date: date) -> pl.DataFrame:
     if "announce_date" not in df.columns:
         return pl.DataFrame()
     if "announcement_id" in df.columns:
-        if "fetched_at" in df.columns:
-            df = df.sort("fetched_at")
-        df = df.unique(subset=["announcement_id"], keep="last")
+        df = dedupe_by_primary_key(df, "announcement_index")
     return df.filter(pl.col("announce_date") == trade_date)
 
 
@@ -87,9 +86,7 @@ def _read_news_headlines(root: Path, trade_date: date) -> pl.DataFrame:
     if "publish_date" not in df.columns or "title" not in df.columns:
         return pl.DataFrame()
     if "news_id" in df.columns:
-        if "fetched_at" in df.columns:
-            df = df.sort("fetched_at")
-        df = df.unique(subset=["news_id"], keep="last")
+        df = dedupe_by_primary_key(df, "news_headlines")
     return df.filter(pl.col("publish_date") == trade_date)
 
 

@@ -19,6 +19,7 @@ from cnequity.domain.market_time import A_SHARE_FINAL_AT, shanghai_now
 from cnequity.domain.symbols import split_by_quote_source
 from cnequity.orchestrator.registry import register_step
 from cnequity.orchestrator.worker_pool import fetch_daily_bars_parallel
+from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.steps.common import (
     BACKFILL_START,
     DailyBarOwnership,
@@ -36,6 +37,10 @@ logger = logging.getLogger(__name__)
 # The closing auction ends at 15:00. Leave a small settlement buffer before
 # trusting TDX's current daily bar; the default core schedule starts at 16:00.
 _DAILY_BAR_FINAL_AT = A_SHARE_FINAL_AT
+# A few halted or newly listed symbols can remain absent after both sources
+# have been tried. A large missing fraction, however, is a partial market
+# capture and must not be checkpointed as a successful tip.
+_DAILY_BAR_TIP_MAX_MISSING_RATIO = 0.05
 
 
 def _reject_unfinished_daily_bar_window(
@@ -221,9 +226,7 @@ def _reuse_successful_daily_bars(
     )
     if reused.is_empty():
         return set()
-    reused = reused.sort("fetched_at").unique(
-        subset=["symbol", "trade_date"], keep="last"
-    )
+    reused = dedupe_by_primary_key(reused, "daily_bars")
     reused_symbols = set(
         reused.group_by("symbol")
         .len()
@@ -284,14 +287,18 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         _reject_unfinished_daily_bar_window(config, end)
         spans = _instrument_spans(config)
         remaining: list[tuple[str, list[str], date, date]] = []
+        fallback_specs: list[tuple[str, list[str], date, date]] = []
         ownership = DailyBarOwnership()
         for batch_id, symbols, spec_start, spec_end in batch_specs:
             routed = classify_daily_bar_ownership(symbols, spans, spec_start, spec_end)
             ownership.generic.extend(routed.generic)
             ownership.delegated_delisted.extend(routed.delegated_delisted)
             ownership.expected_no_data.extend(routed.expected_no_data)
-            if routed.generic:
-                remaining.append((batch_id, routed.generic, spec_start, spec_end))
+            tdx_symbols, fallback_symbols = split_by_quote_source(routed.generic)
+            if tdx_symbols:
+                remaining.append((batch_id, tdx_symbols, spec_start, spec_end))
+            if fallback_symbols:
+                fallback_specs.append((batch_id, fallback_symbols, spec_start, spec_end))
             if routed.delegated_delisted:
                 delegated_id = f"{batch_id}-delegated" if routed.generic else batch_id
                 _record_delegated_ownership_batch(
@@ -325,15 +332,54 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
             if remaining
             else {"rows_read": 0, "rows_written": 0, "failed_symbols": []}
         )
+        sina_result = None
+        if fallback_specs:
+            sina_result = {
+                "rows_read": 0,
+                "rows_written": 0,
+                "failed_symbols": 0,
+                "failed_symbol_names": [],
+                "empty_symbol_names": [],
+            }
+            for batch_id, fallback_symbols, spec_start, spec_end in fallback_specs:
+                fallback = fetch_bars_via_sina(
+                    config,
+                    fallback_symbols,
+                    spec_start,
+                    spec_end,
+                    run_id,
+                    batch_prefix=f"{batch_id}-sina",
+                )
+                sina_result["rows_read"] += int(fallback.get("rows_read", 0))
+                sina_result["rows_written"] += int(fallback.get("rows_written", 0))
+                sina_result["failed_symbols"] += int(fallback.get("failed_symbols", 0))
+                sina_result["failed_symbol_names"].extend(
+                    fallback.get("failed_symbol_names") or []
+                )
+                sina_result["empty_symbol_names"].extend(
+                    fallback.get("empty_symbol_names") or []
+                )
+                fallback_findings = (
+                    fallback.get("context_updates") or {}
+                ).get("audit_findings") or []
+                if fallback_findings:
+                    sina_result.setdefault("context_updates", {}).setdefault(
+                        "audit_findings", []
+                    ).extend(fallback_findings)
         out = _finish_daily_bars(
             config,
             trade_date,
             run_id,
             start=start,
             end=end,
-            expected_tdx_symbols=list(dict.fromkeys(ownership.generic)),
+            expected_tdx_symbols=list(
+                dict.fromkeys(symbol for _, symbols, _, _ in remaining for symbol in symbols)
+            ),
+            expected_fallback_symbols=list(
+                dict.fromkeys(symbol for _, symbols, _, _ in fallback_specs for symbol in symbols)
+            ),
             tdx_result=result,
-            sina_result=None,
+            sina_result=sina_result,
         )
         return _merge_ownership_result(out, config, ownership, start, end)
 
@@ -514,6 +560,23 @@ def _finish_daily_bars(
                     ),
                     "missing_keys": len(missing_staged),
                 }
+            )
+            allowed_missing = max(
+                1,
+                int(len(expected_symbols) * _DAILY_BAR_TIP_MAX_MISSING_RATIO),
+            )
+            if len(missing_staged) > allowed_missing:
+                raise RuntimeError(
+                    f"daily_bars {trade_date}: {len(missing_staged)}/"
+                    f"{len(expected_symbols)} expected tip key(s) remain missing "
+                    f"after failover (allowed at most {allowed_missing}); refusing "
+                    "to checkpoint a partial market snapshot"
+                )
+        if expected_symbols and not missing_staged:
+            _resolve_recovered_daily_batches(
+                config,
+                run_id,
+                resolved_symbols=expected_symbols,
             )
         # A tip is usable once at least one expected key is staged; a handful
         # of legitimately-missing symbols must not fail the whole run — see

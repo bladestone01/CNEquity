@@ -268,8 +268,19 @@ def test_tip_gapfill_writes_only_missing_keys(tmp_path, monkeypatch):
 
 def test_tip_tdx_fail_clist_recovers_step(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core")
     tip = date(2026, 7, 24)
+    manifest.start_batch(
+        run_id,
+        "tdx-batch-0",
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=["600519.SH"],
+        window_start=tip.isoformat(),
+        window_end=tip.isoformat(),
+    )
+    manifest.finish_batch(run_id, "tdx-batch-0", "failed", error_message="TDX empty")
     monkeypatch.setattr(
         "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
         lambda trade_date, symbols=None, client=None, config=None: pl.DataFrame(
@@ -305,6 +316,46 @@ def test_tip_tdx_fail_clist_recovers_step(tmp_path, monkeypatch):
         f["check"] == "daily_bars_clist_gapfill"
         for f in result["context_updates"]["audit_findings"]
     )
+    assert manifest.get_batch(run_id, "tdx-batch-0")["status"] == "success"
+
+
+def test_retry_routes_non_tdx_symbols_to_fallback(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    calls: list[tuple[list[str], date, date, str]] = []
+    captured: dict = {}
+
+    def fake_fallback(config, symbols, start, end, run_id, *, batch_prefix):
+        calls.append((symbols, start, end, batch_prefix))
+        return {"rows_read": 0, "rows_written": 0, "failed_symbols": 0}
+
+    def fake_finish(*args, **kwargs):
+        captured.update(kwargs)
+        return {"rows_read": 0, "rows_written": 0}
+
+    monkeypatch.setattr("cnequity.steps.bars.fetch_bars_via_sina", fake_fallback)
+    monkeypatch.setattr("cnequity.steps.bars.fetch_daily_bars_parallel", pytest.fail)
+    monkeypatch.setattr("cnequity.steps.bars._finish_daily_bars", fake_finish)
+    monkeypatch.setattr("cnequity.steps.bars._merge_ownership_result", lambda out, *args: out)
+
+    from cnequity.steps.bars import step_daily_bars
+
+    step_daily_bars(
+        cfg,
+        date(2024, 6, 28),
+        run_id,
+        {
+            "_retry_batch_specs": [
+                ("retry-0", ["920001.BJ"], date(2024, 6, 27), date(2024, 6, 28))
+            ]
+        },
+    )
+
+    assert calls == [
+        (["920001.BJ"], date(2024, 6, 27), date(2024, 6, 28), "retry-0-sina")
+    ]
+    assert captured["expected_tdx_symbols"] == []
+    assert captured["expected_fallback_symbols"] == ["920001.BJ"]
 
 
 def test_tip_total_loss_still_raises(tmp_path, monkeypatch):
@@ -377,6 +428,44 @@ def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, 
         f["check"] == "daily_bars_tip_missing_symbols" and "000001.SZ" in f["message"]
         for f in findings
     )
+
+
+def test_tip_large_partial_miss_blocks_checkpoint(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 7, 24)
+    expected = [f"600{i:03d}.SH" for i in range(10)]
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
+        lambda trade_date, symbols=None, client=None, config=None: pl.DataFrame(
+            {
+                "symbol": [expected[0]],
+                "trade_date": [tip],
+                "open": [10.0],
+                "high": [11.0],
+                "low": [9.0],
+                "close": [10.5],
+                "volume": [100],
+                "amount": [1000.0],
+            }
+        ),
+    )
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            tip,
+            run_id,
+            start=tip,
+            end=tip,
+            expected_tdx_symbols=expected,
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": expected,
+            },
+            sina_result=None,
+        )
 
 
 def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):

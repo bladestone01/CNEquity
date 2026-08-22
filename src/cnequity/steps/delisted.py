@@ -1609,6 +1609,7 @@ def classify_ending(bars: pl.DataFrame) -> dict:
 def write_delisting_events(config: Config, events: list[dict]) -> int:
     """Merge *events* into ``derived/delisting_events`` (one row per symbol)."""
     from cnequity.domain.schemas import DELISTING_EVENTS_SCHEMA, with_provenance
+    from cnequity.query.canonical import dedupe_by_primary_key
     from cnequity.storage.atomic import write_parquet_atomic
 
     if not events:
@@ -1632,8 +1633,7 @@ def write_delisting_events(config: Config, events: list[dict]) -> int:
         frames.extend(pl.read_parquet(path) for path in sorted(out_dir.rglob("*.parquet")))
     merged = (
         pl.concat(frames, how="diagonal_relaxed")
-        .sort("fetched_at")
-        .unique(subset=["symbol"], keep="last")
+        .pipe(dedupe_by_primary_key, "delisting_events")
         .sort("last_trade_date", descending=True)
     )
     out_dir.mkdir(parents=True, exist_ok=True)
