@@ -275,6 +275,9 @@ class LakeView:
     def health(self) -> dict:
         rows = self._rows()
         findings = self._health_findings()
+        historical = findings.get("historical_universe_validity") or {}
+        blockers = historical.get("blockers") or []
+        info_findings = findings.get("info_findings") or []
         freshness = stats_freshness(self.config)
         counts: dict[str, int] = {}
         for row in rows:
@@ -299,6 +302,25 @@ class LakeView:
             "bytes": sum(r["bytes"] or 0 for r in rows),
             "findings_by_severity": findings.get("findings_by_severity", {}),
             "audit_trade_date": findings.get("trade_date"),
+            # Operational health and research readiness are separate contracts:
+            # a fresh lake can still be unsafe for a long all-A backtest. Keep
+            # the research gate in the read-only API so clients do not have to
+            # open the audit artifact themselves (or mistake `healthy=true`
+            # for research readiness).
+            "historical_universe_ready": historical.get("universe_ready"),
+            "historical_universe_window": historical.get("window"),
+            "historical_universe_blockers": [
+                str(blocker["message"])
+                for blocker in blockers
+                if isinstance(blocker, dict) and blocker.get("message")
+            ],
+            "source_limitations": [
+                str(finding["message"])
+                for finding in info_findings
+                if isinstance(finding, dict)
+                and finding.get("source_limited")
+                and finding.get("message")
+            ],
             "stats_stale": freshness.stale,
             "stats_reason": freshness.reason,
             "stats_generated_at": freshness.generated_at,

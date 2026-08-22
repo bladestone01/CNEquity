@@ -594,6 +594,46 @@ def test_dates_serialise_as_plain_iso_days(client):
     assert date.fromisoformat(body["anchor"])
 
 
+def test_health_exposes_historical_research_gate(lake):
+    """Operational healthy and research-ready are separate API contracts."""
+    import json
+
+    quality = lake.meta_root / "quality"
+    quality.mkdir(parents=True, exist_ok=True)
+    (quality / "health-latest.json").write_text(
+        json.dumps(
+            {
+                "trade_date": "2026-07-31",
+                "historical_universe_validity": {
+                    "window": {"start": "2001-01-02", "end": "2026-07-31"},
+                    "universe_ready": False,
+                    "blockers": [{"message": "BJ historical ST evidence unavailable"}],
+                },
+                "info_findings": [
+                    {
+                        "source_limited": True,
+                        "message": "399001.SZ has 18 known source gaps",
+                    },
+                    {"source_limited": False, "message": "row count"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    body = TestClient(create_app(lake)).get("/api/health").json()
+
+    assert body["historical_universe_ready"] is False
+    assert body["historical_universe_window"] == {
+        "start": "2001-01-02",
+        "end": "2026-07-31",
+    }
+    assert body["historical_universe_blockers"] == [
+        "BJ historical ST evidence unavailable"
+    ]
+    assert body["source_limitations"] == ["399001.SZ has 18 known source gaps"]
+
+
 def test_static_asset_urls_are_stamped_so_an_upgrade_is_not_served_from_cache(client):
     """StaticFiles sends no Cache-Control, so the URL has to change instead.
 

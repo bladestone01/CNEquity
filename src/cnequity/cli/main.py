@@ -1323,6 +1323,9 @@ def audit(
             click.echo(f"  [error]   {f.get('dataset', ''):22} {f.get('message', '')}")
         for f in health["warning_findings"]:
             click.echo(f"  [warning] {f.get('dataset', ''):22} {f.get('message', '')}")
+        for f in health.get("info_findings", []):
+            if f.get("source_limited"):
+                click.echo(f"  [info]    {f.get('dataset', ''):22} {f.get('message', '')}")
         validity = health["historical_universe_validity"]
         research_state = "READY" if validity["universe_ready"] else "BLOCKED"
         click.echo(

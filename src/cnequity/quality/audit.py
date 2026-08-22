@@ -53,6 +53,36 @@ from cnequity.storage.atomic import write_json_atomic
 # Sample missing/orphan dates surfaced in a coverage finding.
 _INDEX_COVERAGE_SAMPLE = 8
 
+# THS and TDX were both checked for these 399001.SZ dates; neither source
+# publishes a bar. Keep the dates explicit so a newly missing session cannot
+# be mistaken for the documented source limitation. The finding stays visible
+# as ``info`` when every missing date is in this allow-list.
+_KNOWN_INDEX_SOURCE_GAPS: dict[str, frozenset[date]] = {
+    "399001.SZ": frozenset(
+        date.fromisoformat(value)
+        for value in (
+            "1991-09-30",
+            "1991-11-11",
+            "1992-02-03",
+            "1992-02-07",
+            "1993-01-20",
+            "1993-01-21",
+            "1993-01-22",
+            "1993-01-27",
+            "1993-01-28",
+            "1993-01-29",
+            "1993-09-17",
+            "1995-02-06",
+            "1995-02-07",
+            "1995-02-08",
+            "1995-02-09",
+            "1995-02-10",
+            "1995-08-04",
+            "1995-09-01",
+        )
+    ),
+}
+
 
 def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict]:
     """index_bars vs trading_calendar within each symbol's covered span."""
@@ -95,16 +125,24 @@ def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict
         orphan = sorted(d for d in days if d not in trading_days)
         if not missing and not orphan:
             continue
+        known_source_gaps = _KNOWN_INDEX_SOURCE_GAPS.get(sym, frozenset())
+        known_missing = sorted(set(missing) & known_source_gaps)
+        unexpected_missing = sorted(set(missing) - known_source_gaps)
         parts = []
-        if missing:
-            parts.append(f"{len(missing)} calendar trading day(s) with no bar")
+        if unexpected_missing:
+            parts.append(f"{len(unexpected_missing)} calendar trading day(s) with no bar")
+        if known_missing:
+            parts.append(
+                f"{len(known_missing)} known source-limited trading day(s) with no bar"
+            )
         if orphan:
             parts.append(f"{len(orphan)} bar(s) on non-trading days")
+        source_limited = bool(known_missing) and not unexpected_missing and not orphan
         findings.append(
             {
                 "dataset": "index_bars",
                 "symbol": sym,
-                "severity": "warning",
+                "severity": "info" if source_limited else "warning",
                 "check": "index_bars_calendar_coverage",
                 "message": (
                     f"{sym}: " + "; ".join(parts) + f" over {first.isoformat()}..{last.isoformat()}"
@@ -112,6 +150,9 @@ def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict
                 "covered_days": len(have),
                 "expected_days": len(expected),
                 "missing_count": len(missing),
+                "known_source_gap_count": len(known_missing),
+                "unexpected_missing_count": len(unexpected_missing),
+                "source_limited": source_limited,
                 "orphan_count": len(orphan),
                 "missing_sample": [d.isoformat() for d in missing[:_INDEX_COVERAGE_SAMPLE]],
                 "orphan_sample": [d.isoformat() for d in orphan[:_INDEX_COVERAGE_SAMPLE]],
@@ -440,6 +481,11 @@ def lake_health(
         "findings_by_severity": by_severity,
         "error_findings": [f for f in findings if f.get("severity") == "error"],
         "warning_findings": [f for f in findings if f.get("severity") == "warning"],
+        # Keep informational evidence in the persisted full-health snapshot
+        # too.  It is intentionally separate from warnings so known source
+        # limitations do not make an operationally healthy lake look broken,
+        # but dropping the details would make the distinction undiscoverable.
+        "info_findings": [f for f in findings if f.get("severity") == "info"],
         "stale_datasets": sorted(stale),
         "empty_datasets": sorted(empty),
         "expected_empty_datasets": sorted(expected_empty),

@@ -181,13 +181,19 @@ def daily_bars_amount_completeness_findings(
         findings.append(
             {
                 "dataset": "daily_bars",
-                "severity": "warning",
+                # Sina's daily-kline contract has no turnover field. Keep the
+                # completeness finding visible for downstream liquidity
+                # consumers, but do not present a documented source limit as
+                # an operational ingest warning. Any other source remains a
+                # warning because its adapter is expected to supply amount.
+                "severity": "info" if source == "sina" else "warning",
                 "check": "daily_bars_amount_completeness",
                 "message": (
                     f"source={source}: {missing}/{rows} row(s) have null amount "
                     f"({ratio:.1%}) over {start.isoformat()}..{trade_date.isoformat()}; {expected}"
                 ),
                 "source": source,
+                "expected_missing": source == "sina",
                 "rows": rows,
                 "missing_amount": missing,
                 "missing_ratio": ratio,

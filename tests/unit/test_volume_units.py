@@ -290,6 +290,8 @@ def test_amount_completeness_surfaces_sina_null_turnover(config):
     assert len(findings) == 1
     assert findings[0]["check"] == "daily_bars_amount_completeness"
     assert findings[0]["source"] == "sina"
+    assert findings[0]["severity"] == "info"
+    assert findings[0]["expected_missing"] is True
     assert findings[0]["missing_amount"] == UNIT_CHECK_MIN_ROWS
 
 

@@ -53,6 +53,53 @@ def test_coverage_flags_missing_trading_day(tmp_path):
     assert f["missing_count"] == 1
     assert f["missing_sample"] == ["2024-06-04"]
     assert f["orphan_count"] == 0
+    assert f["known_source_gap_count"] == 0
+    assert f["unexpected_missing_count"] == 1
+    assert f["source_limited"] is False
+
+
+def test_coverage_classifies_verified_399001_source_gaps(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    days = [date(1991, 9, 27), date(1991, 9, 30), date(1991, 10, 1)]
+    _write_calendar(cfg.data_root, [(d, True) for d in days])
+    # 1991-09-30 is a verified common gap in both historical sources.
+    _write_index_bars(
+        cfg.data_root,
+        [("399001.SZ", days[0]), ("399001.SZ", days[2])],
+    )
+
+    findings = _index_bars_coverage_findings(cfg, date(1991, 10, 1))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["severity"] == "info"
+    assert finding["known_source_gap_count"] == 1
+    assert finding["unexpected_missing_count"] == 0
+    assert finding["source_limited"] is True
+
+
+def test_coverage_keeps_new_gap_as_warning_alongside_known_gap(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    days = [
+        date(1991, 9, 27),
+        date(1991, 9, 30),
+        date(1991, 10, 1),
+        date(1991, 10, 2),
+    ]
+    _write_calendar(cfg.data_root, [(d, True) for d in days])
+    _write_index_bars(
+        cfg.data_root,
+        [("399001.SZ", days[0]), ("399001.SZ", days[3])],
+    )
+
+    findings = _index_bars_coverage_findings(cfg, date(1991, 10, 2))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["severity"] == "warning"
+    assert finding["known_source_gap_count"] == 1
+    assert finding["unexpected_missing_count"] == 1
+    assert finding["source_limited"] is False
 
 
 def test_coverage_flags_orphan_bar_on_non_trading_day(tmp_path):

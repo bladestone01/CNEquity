@@ -263,6 +263,40 @@ def test_lake_health_reports_unreadable_parquet_without_aborting(tmp_path):
     )
 
 
+def test_lake_health_persists_informational_findings(tmp_path, monkeypatch):
+    from cnequity.quality import audit as audit_module
+
+    cfg = Config(data_root=tmp_path / "data")
+    info = {
+        "dataset": "index_bars",
+        "severity": "info",
+        "check": "index_bars_calendar_coverage",
+        "source_limited": True,
+        "message": "known source gap",
+    }
+    monkeypatch.setattr(audit_module, "_collect_lake_findings", lambda *args, **kwargs: [info])
+    monkeypatch.setattr(audit_module, "run_source_diffs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "cnequity.quality.historical_validity.historical_universe_validity",
+        lambda *args, **kwargs: {
+            "window": {"start": None, "end": None},
+            "universe_ready": False,
+            "blockers": [],
+        },
+    )
+
+    health = audit_module.lake_health(cfg, date(2024, 6, 28))
+
+    assert health["warning_findings"] == []
+    assert health["info_findings"] == [info]
+    import json
+
+    saved = json.loads(
+        (cfg.meta_root / "quality" / "health-latest.json").read_text(encoding="utf-8")
+    )
+    assert saved["info_findings"] == [info]
+
+
 def test_run_audit_reports_unreadable_historical_parquet_before_scans(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     current_date = date(2024, 6, 28)

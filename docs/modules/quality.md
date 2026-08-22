@@ -46,6 +46,9 @@
 | `empty_datasets` | 无 parquet 的注册数据集 |
 | `stale_datasets` | 水位落后超过 `max_staleness_days` |
 | `findings_by_severity` | error / warning / info 计数 |
+| `info_findings` | 已持久化的非阻断质量证据，例如已核实的源端历史缺口；不会降低 `healthy`，但不会被丢弃 |
+| `historical_universe_validity` | 历史 all-A 研究门禁；通过 `/api/health` 暴露为 `historical_universe_ready`、窗口和 blockers |
+| `index_bars_calendar_coverage` | 指数序列与交易日历对账；已核实的 399001.SZ 18 个共同源缺口为 `info`，未知缺口仍为 `warning` |
 | `adj_factor_reconciliation` | 复权收益极值 + 缺 corporate_actions；已记录的缩股/减资等股本重组由 `share_structure` 解释 |
 | `healthy` | 无 error 级 finding |
 
@@ -101,6 +104,7 @@ cne audit --full --research-start 2020-01-01 --research-end 2024-12-31
 |------|------|
 | daily_bars vs trading_calendar | 交易日无真实成交 bar（`volume=0` 的停牌占位行不算覆盖） |
 | valuation vs daily_bars | 估值有、真实成交行情无 |
+| `daily_bars_amount_completeness` | 按 source 检查成交额完整性；Sina 不发布 `amount`，记录为 `info`，其他源缺失记录为 `warning` |
 | adj_factor_reconciliation | 真实成交 bar-to-bar 复权收益 > 阈值；除权日缺 corporate_actions（缩股/减资等已在 `share_structure` 记录的股本重组除外） |
 | `st_label_crosscheck` | `trading_status` 的 ST 标签 vs `instruments` 简称里的 ST 前缀 |
 
