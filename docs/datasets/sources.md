@@ -111,7 +111,7 @@
 | 频率 | 每日 |
 | 主键 | (symbol, ex_date, action_type) |
 | 输出 | manifest 元数据 `symbols_to_rebackfill` |
-| **已知缺口** | 已退市标的的历史除权除息几乎全缺。缺口数量随湖中退市标的、复权因子和审计窗口变化，**以最新 `meta/quality/health-latest.json` 的 `missing_corporate_action_delisted` finding 为准，不在文档固化样本数量**。**两个源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对已退市标的仍可能返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里同样可能没有记录。两源都不会对已从其在线标的列表里消失的证券稳定提供完整除权除息历史，不能把该限制简化为某个市场或代码前缀的问题。baostock 的 `query_dividend_data` 直接拒绝北交所代码（`股票代码未标识sh或sz`），不能顶上。不是本项目的代码缺陷，也不是限流——是这两个源本身对已退市证券的历史除权数据保留策略。`cne audit` 把这批发现单独归为 `missing_corporate_action_delisted`（info 级，一条汇总），不再对仍在交易的标的发出的 `missing_corporate_action`（warning 级）掺在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
+| **已知缺口** | 已退市标的的历史除权除息仍可能缺失。缺口数量随湖中退市标的、复权因子和审计窗口变化，**以最新 `meta/quality/health-latest.json` 的 `missing_corporate_action_delisted` finding 为准，不在文档固化样本数量**。**两个默认源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对已退市标的仍可能返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里同样可能没有记录。两源都不会对已从其在线标的列表里消失的证券稳定提供完整历史。现在可用显式 `cne backfill corporate_actions --baostock-repair` 对已退市 SH/SZ 标的补抓 Baostock 的分红、送股、转股事件；该源按 symbol/year 请求，默认不参与日更或普通回填，且直接拒绝北交所代码（`股票代码未标识sh或sz`），所以 BJ 仍是源限制。不是限流导致的默认缺口，而是各源的历史保留范围不同。`cne audit` 将未修复批次单独归为 `missing_corporate_action_delisted`（info 级），不与仍在交易标的的 `missing_corporate_action`（warning 级）混在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
 
 #### adj_factors（derived）
 

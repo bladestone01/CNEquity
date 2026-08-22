@@ -121,6 +121,9 @@ class JobEngine:
                     else None
                 ),
                 "symbols": getattr(self.config, "_backfill_symbols", None),
+                "baostock_repair": bool(
+                    getattr(self.config, "_corporate_actions_baostock_repair", False)
+                ),
             }
         lock_name = DAILY_INGESTION_LOCK if job_name.startswith("daily") else None
         with self._optional_job_lock(lock_name):
@@ -505,6 +508,9 @@ class JobEngine:
             if key in ("start", "end") and value:
                 value = date.fromisoformat(value)
             setattr(self.config, attr, value)
+        self.config._corporate_actions_baostock_repair = bool(
+            scope.get("baostock_repair", False)
+        )
         timeout = self.manifest.advance_batch_timeouts(
             run_id,
             stale_after_seconds=self.config.batch_stale_seconds,

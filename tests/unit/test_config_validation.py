@@ -88,6 +88,7 @@ def test_example_config_validates(monkeypatch):
     assert cfg.source_intervals["baostock"] == 1.0
     assert cfg.baostock_batch_size == 20
     assert cfg.baostock_batch_rest_seconds == 120.0
+    assert cfg.failover_backfill_snapshots is False
     # EastMoney pacing is a floor, not a fixed value. The example targets a
     # mainland route, where 0.5s sweeps ~991 sector boards in ~10min; overseas
     # users raise it in their own config. What the floor guards is shipping a
@@ -118,6 +119,18 @@ def test_example_config_validates(monkeypatch):
         "ticks",
     }
     assert cfg.minute_bars_enabled is False
+
+
+def test_load_config_parses_optional_backfill_snapshots(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[data]\nroot = "{path_for_toml(tmp_path / "data")}"\n'
+        "[failover]\nbackfill_snapshots = true\n"
+    )
+
+    cfg = load_config(cfg_path)
+
+    assert cfg.failover_backfill_snapshots is True
     assert cfg.trade_ticks_enabled is False
 
 

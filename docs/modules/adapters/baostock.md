@@ -13,6 +13,7 @@
 | 文件 | 职责 |
 |------|------|
 | `_session.py` | 登录/重登、逐 symbol 拉取驱动 |
+| `corporate_actions.py` | 受控的沪深退市股分红除权修复 → corporate_actions |
 | `valuation.py` | 历史 PE/PB/PS 等 → valuation_metrics |
 | `st_history.py` | K 线 `isST` 标记 → trading_status ST 历史 |
 | `__init__.py` | 导出 |
@@ -32,6 +33,23 @@
 - 从 baostock 日 K 的 `isST` 字段推断历史 ST
 - 由 `reference` / trading_status 相关 step 在 backfill 模式调用
 - 补充 EastMoney 无法提供的历史 ST
+
+## corporate_actions.py
+
+- 不参与日更，也不改变默认 `cne backfill corporate_actions` 的 TDX 路径
+- 通过 `cne backfill corporate_actions --baostock-repair` 显式启用
+- 只对 instruments 中已退市的 SH/SZ 标的请求 `query_dividend_data`
+- 每票按 `list_date..delist_date` 裁剪年份窗口，避免查询上市前/退市后的无效年份
+- `yearType="operate"` 的 `dividOperateDate` 作为除权除息日；现金、送股、转股按每股单位拆成独立行
+- 北交所代码会被 Baostock 接口拒绝，因此继续作为 `missing_corporate_action_delisted` 的已知源限制
+- Baostock 该接口不提供可靠的配股比例/价格，配股仍依赖 TDX/EastMoney
+
+该开关建议与 `--symbols` 一起使用先做小范围修复，例如：
+
+```bash
+cne backfill corporate_actions --start 2020-01-01 --end 2020-12-31 \
+  --symbols 300114.SZ --baostock-repair
+```
 
 ---
 

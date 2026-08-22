@@ -550,9 +550,37 @@ def test_backup_snapshot_failure_does_not_abort_the_ca_backfill(tmp_path, monkey
     monkeypatch.setattr(events, "fetch_corporate_actions", _fake_tdx)
     monkeypatch.setattr(events, "write_simple", lambda *a, **k: {"rows_read": 1, "rows_written": 1})
 
-    cfg = Config(data_root=tmp_path / "lake")
+    cfg = Config(data_root=tmp_path / "lake", failover_backfill_snapshots=True)
     cfg._backfill = True
     out = events.step_corporate_actions(cfg, date(2024, 6, 28), "run-1", {})
 
     assert fetched.get("called") is True, "TDX must still be contacted"
     assert out["rows_written"] == 1
+
+
+def test_ca_backfill_skips_optional_backup_snapshot_by_default(tmp_path, monkeypatch):
+    """A stalled audit artifact must not sit on the canonical fetch path."""
+    from datetime import date
+
+    import polars as pl
+
+    from cnequity.steps import events
+
+    monkeypatch.setattr(events, "load_symbols", lambda cfg: ["600519.SH"])
+
+    def _unexpected(*a, **k):
+        raise AssertionError("optional backup snapshot should not be called")
+
+    monkeypatch.setattr(events, "snapshot_corporate_actions_backup", _unexpected)
+    monkeypatch.setattr(events, "fetch_corporate_actions", lambda *a, **k: pl.DataFrame())
+    monkeypatch.setattr(
+        events,
+        "write_simple",
+        lambda *a, **k: {"rows_read": 0, "rows_written": 0},
+    )
+
+    cfg = Config(data_root=tmp_path / "lake")
+    cfg._backfill = True
+    out = events.step_corporate_actions(cfg, date(2024, 6, 28), "run-1", {})
+
+    assert out["rows_written"] == 0

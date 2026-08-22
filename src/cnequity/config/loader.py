@@ -112,9 +112,15 @@ class Config:
     trade_ticks_max_symbols: int = 200
     trade_ticks_fetch_workers: int = 4
     failover_enabled: bool = True
+    # Backfill source snapshots are an optional audit artifact. Keeping them
+    # off the canonical backfill path prevents a slow backup vendor from
+    # blocking the primary historical fetch.
+    failover_backfill_snapshots: bool = False
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
     _backfill: bool = False
+    _backfill_symbols: list[str] | None = None
+    _corporate_actions_baostock_repair: bool = False
     _sector_bars_force: bool = False
     _rate_limiters: object | None = field(default=None, repr=False)
 
@@ -309,6 +315,7 @@ def load_config(path: str | Path) -> Config:
         trade_ticks_max_symbols=int(ticks_raw.get("max_symbols", 200)),
         trade_ticks_fetch_workers=int(ticks_raw.get("fetch_workers", 4)),
         failover_enabled=bool(failover_raw.get("enabled", True)),
+        failover_backfill_snapshots=bool(failover_raw.get("backfill_snapshots", False)),
         failover_datasets=failover_datasets,
         config_path=config_path,
     )

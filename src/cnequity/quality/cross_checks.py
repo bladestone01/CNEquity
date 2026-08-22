@@ -20,6 +20,7 @@ import polars as pl
 
 from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 from cnequity.config import Config
+from cnequity.domain.symbols import parse_symbol
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
@@ -978,6 +979,37 @@ def adj_factor_reconciliation_findings(
             noun="a raw move with no corporate action on record",
         )
     if not delisted.is_empty():
+        baostock_repairable = 0
+        unsupported_exchange_counts: dict[str, int] = {}
+        for symbol in delisted["symbol"].to_list():
+            try:
+                exchange = parse_symbol(str(symbol)).exchange
+            except ValueError:
+                continue
+            if exchange in {"SH", "SZ"}:
+                baostock_repairable += 1
+            else:
+                unsupported_exchange_counts[exchange] = (
+                    unsupported_exchange_counts.get(exchange, 0) + 1
+                )
+        repair_hint = (
+            " Explicit Baostock repair can cover "
+            f"{baostock_repairable} delisted SH/SZ symbol(s); run "
+            "`cne backfill corporate_actions --baostock-repair --symbols ...` "
+            "for a scoped repair."
+            if baostock_repairable
+            else ""
+        )
+        unsupported_hint = (
+            " Unsupported exchange counts: "
+            + ", ".join(
+                f"{exchange}={count}"
+                for exchange, count in sorted(unsupported_exchange_counts.items())
+            )
+            + "; those symbols need an independent historical source."
+            if unsupported_exchange_counts
+            else ""
+        )
         findings.append(
             {
                 "dataset": "corporate_actions",
@@ -989,10 +1021,17 @@ def adj_factor_reconciliation_findings(
                     "Verified live against both tdx_protocol and the eastmoney backup: "
                     "neither serves corporate-action history for a name once it is gone "
                     "from their live symbol list. Not a market-id or filter bug — see "
-                    "docs/datasets/sources.md#corporate_actions"
+                    "docs/datasets/sources.md#corporate_actions."
+                    f"{repair_hint}{unsupported_hint}"
                 ),
                 "symbols_total": delisted.height,
                 "sample": sorted(delisted["symbol"].to_list())[:_SAMPLE],
+                "baostock_repairable_symbols": baostock_repairable,
+                "unsupported_exchange_counts": unsupported_exchange_counts,
+                "remediation": (
+                    "Run a scoped Baostock repair for SH/SZ symbols; obtain an independent "
+                    "historical corporate-action source for unsupported exchanges."
+                ),
                 "source_limited": True,
             }
         )

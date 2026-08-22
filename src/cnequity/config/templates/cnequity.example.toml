@@ -208,6 +208,9 @@ fetch_workers = 4
 
 [failover]
 enabled = true
+# Optional audit artifact during historical backfills. Keep false so a slow
+# backup source cannot block the canonical TDX/Baostock historical fetch.
+backfill_snapshots = false
 
 [[failover.datasets]]
 name = "daily_bars"

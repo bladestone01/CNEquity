@@ -9,6 +9,7 @@ from datetime import date
 
 import polars as pl
 
+from cnequity.adapters.baostock.corporate_actions import fetch_corporate_actions_baostock
 from cnequity.adapters.cninfo.announcements import fetch_announcement_index
 from cnequity.adapters.eastmoney.corporate_actions import fetch_corporate_actions_eastmoney
 from cnequity.adapters.eastmoney.earnings_disclosure import (
@@ -27,6 +28,7 @@ from cnequity.quality.failover import (
 from cnequity.steps.common import (
     BACKFILL_START,
     fetch_incremental_daily,
+    instrument_metadata,
     load_symbols,
     write_simple,
 )
@@ -40,6 +42,30 @@ _MIN_EARNINGS_SCHEDULE_SYMBOLS_PER_PERIOD = 100
 
 
 logger = logging.getLogger(__name__)
+
+
+def _delisted_sh_sz_windows(
+    config: Config,
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> dict[str, tuple[date, date]]:
+    """Scope Baostock to delisted SH/SZ symbols and their listing windows."""
+    metadata = instrument_metadata(config)
+    if metadata.is_empty() or "delist_date" not in metadata.columns:
+        return {}
+    scoped = metadata.filter(
+        pl.col("symbol").is_in(symbols)
+        & pl.col("delist_date").is_not_null()
+        & (pl.col("symbol").str.ends_with(".SH") | pl.col("symbol").str.ends_with(".SZ"))
+    )
+    windows: dict[str, tuple[date, date]] = {}
+    for row in scoped.iter_rows(named=True):
+        symbol_start = max(start, row["list_date"]) if row.get("list_date") else start
+        symbol_end = min(end, row["delist_date"]) if row.get("delist_date") else end
+        if symbol_start <= symbol_end:
+            windows[str(row["symbol"])] = (symbol_start, symbol_end)
+    return windows
 
 
 def _validate_earnings_schedule_snapshot(df: pl.DataFrame) -> pl.DataFrame:
@@ -79,7 +105,11 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     failed_symbols: list[str] = []
 
     if backfill:
-        symbols = list(context.get("_retry_symbols") or load_symbols(config))
+        symbols = list(
+            context.get("_retry_symbols")
+            or getattr(config, "_backfill_symbols", None)
+            or load_symbols(config)
+        )
         batch_id = context.get("_batch_id")
         manifest = Manifest(config.manifest_path) if batch_id else None
 
@@ -106,7 +136,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                         exc,
                     )
 
-        if config.failover_enabled:
+        if config.failover_enabled and config.failover_backfill_snapshots:
             # Best-effort: this writes an EastMoney snapshot for cross-source
             # audit, not the canonical rows. It must never decide whether the
             # backfill runs — when EastMoney changed its filter grammar the
@@ -199,6 +229,70 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             df = pl.concat(frames, how="diagonal_relaxed")
         else:
             df = pl.DataFrame()
+        # Stamp the canonical TDX rows before optionally appending Baostock.
+        # ``with_provenance`` preserves an adapter-provided source column, so
+        # the two repair sources remain auditable after concatenation.
+        if not df.is_empty():
+            df = with_provenance(df, source=_CANONICAL_BACKFILL, data_version="v1")
+
+        if getattr(config, "_corporate_actions_baostock_repair", False):
+            if not config.sources.get("baostock", False):
+                raise RuntimeError(
+                    "corporate_actions: --baostock-repair requires the baostock source"
+                )
+            repair_start = getattr(config, "_backfill_start", None) or BACKFILL_START
+            repair_end = getattr(config, "_backfill_end", None) or trade_date
+            repair_windows = _delisted_sh_sz_windows(
+                config,
+                symbols,
+                repair_start,
+                repair_end,
+            )
+            repair_symbols = sorted(repair_windows)
+            logger.info(
+                "corporate_actions: Baostock repair scoped to %d delisted SH/SZ symbol(s)",
+                len(repair_symbols),
+            )
+            if repair_symbols:
+                repair_df, repair_failed = fetch_corporate_actions_baostock(
+                    repair_symbols,
+                    repair_start,
+                    repair_end,
+                    config=config,
+                    symbol_windows=repair_windows,
+                )
+            else:
+                repair_df, repair_failed = pl.DataFrame(), []
+            failed_symbols.extend(repair_failed)
+            if not repair_df.is_empty():
+                repair_df = with_provenance(repair_df, source="baostock", data_version="v1")
+                if manifest is not None:
+                    repair_batch_id = f"{batch_id or 'batch-0'}-baostock-repair"
+                    write_simple(
+                        config,
+                        run_id,
+                        "corporate_actions",
+                        repair_df,
+                        batch_id=repair_batch_id,
+                    )
+                    manifest.start_batch(
+                        run_id,
+                        repair_batch_id,
+                        task_id="corporate_actions_baostock_repair",
+                        dataset="corporate_actions",
+                        symbols=repair_symbols,
+                        window_start=repair_start.isoformat(),
+                        window_end=repair_end.isoformat(),
+                        blocks_compaction=False,
+                    )
+                    manifest.finish_batch(
+                        run_id,
+                        repair_batch_id,
+                        "success",
+                        rows_read=repair_df.height,
+                        rows_written=repair_df.height,
+                    )
+                df = repair_df if df.is_empty() else pl.concat([df, repair_df], how="diagonal_relaxed")
         if failed_symbols:
             failed_symbols = list(dict.fromkeys(failed_symbols))
         if failed_symbols:

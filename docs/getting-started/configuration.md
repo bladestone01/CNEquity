@@ -109,6 +109,7 @@ cne config validate --config configs/cnequity.toml
 | 键 | 说明 |
 |----|------|
 | `enabled` | 总开关 |
+| `backfill_snapshots` | `false`；是否在历史回填关键路径抓取备用源快照。默认关闭，避免慢备用源阻塞 canonical 回填；需要跨源历史 diff 时显式开启 |
 
 ### `[[failover.datasets]]`
 

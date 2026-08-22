@@ -747,9 +747,10 @@ def run_catchup(
     "--symbols",
     "symbols_str",
     default=None,
-    help="Comma-separated symbols for a scoped intraday or trading_status "
-    "backfill. The trading_status checkpoint and coverage evidence retain the "
-    "exact scope; other datasets use their configured watchlist block.",
+    help="Comma-separated symbols for a scoped intraday, trading_status, or "
+    "corporate_actions backfill. The trading_status checkpoint and coverage "
+    "evidence retain the exact scope; other datasets use their configured "
+    "watchlist block.",
 )
 @click.option(
     "--workers",
@@ -757,6 +758,11 @@ def run_catchup(
     show_default=True,
     help="Concurrent fetch workers for date-walking backfills; each worker is "
     "throttled to 1 req/s (aggregate up to N req/s, bypassing the source limiter).",
+)
+@click.option(
+    "--baostock-repair",
+    is_flag=True,
+    help="For corporate_actions only: explicitly repair delisted SH/SZ symbols via Baostock.",
 )
 def backfill(
     dataset: str,
@@ -767,6 +773,7 @@ def backfill(
     end_str: str | None,
     symbols_str: str | None,
     workers: int,
+    baostock_repair: bool,
 ):
     """Backfill a dataset."""
     _progress_logging()
@@ -777,6 +784,10 @@ def backfill(
             "Run daily ingestion on trading days instead."
         )
     cfg = _cfg(config_path)
+    if baostock_repair and dataset != "corporate_actions":
+        raise click.ClickException("--baostock-repair only applies to corporate_actions")
+    if baostock_repair:
+        cfg._corporate_actions_baostock_repair = True
     if dataset == "sector_bars":
         if retry_failed and force:
             raise click.ClickException("Use either --retry-failed or --force, not both.")
@@ -786,7 +797,7 @@ def backfill(
     _guard_history_horizon(dataset, start_d)
     if symbols_str:
         symbols = [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
-        if dataset == "trading_status":
+        if dataset in ("trading_status", "corporate_actions"):
             cfg._backfill_symbols = symbols
         else:
             _override_scope(cfg, dataset, symbols)
