@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,15 +27,50 @@ class OnDemandService:
         self.cache_root = config.meta_root / "on_demand"
         self.cache_root.mkdir(parents=True, exist_ok=True)
 
-    def _cache_path(self, dataset: str, symbol: str) -> Path:
-        safe = symbol.replace(".", "_")
-        return self.cache_root / dataset / f"{safe}.json"
+    def _cache_path(self, dataset: str, symbol: str, **kwargs) -> Path:
+        """Return a cache path that identifies the remote request.
+
+        ``stock_news`` is parameterised by date, page size and sentiment mode.
+        A symbol-only key would make a cached ``limit=5`` response satisfy a
+        later ``limit=30`` request (and, worse, could return another date's
+        headlines).  Keep the historical symbol-only path for the default
+        request so existing caches remain useful, and use a short digest for
+        non-default variants.
+        """
+        safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(symbol))
+        request = self._cache_request(dataset, kwargs)
+        suffix = ""
+        if request:
+            encoded = json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+            suffix = "__" + hashlib.sha256(encoded).hexdigest()[:16]
+        return self.cache_root / dataset / f"{safe}{suffix}.json"
+
+    def _cache_request(self, dataset: str, kwargs: dict) -> dict[str, object]:
+        """Canonicalise parameters that change the fetched payload."""
+        if dataset != "stock_news":
+            return {}
+        on_date = kwargs.get("on_date")
+        if hasattr(on_date, "isoformat"):
+            on_date = on_date.isoformat()
+        elif on_date is not None:
+            on_date = str(on_date)
+        request = {
+            "on_date": on_date,
+            "limit": int(kwargs.get("limit", 30)),
+            "use_snownlp": bool(kwargs.get("use_snownlp", self.config.sentiment_use_snownlp)),
+        }
+        defaults = {
+            "on_date": None,
+            "limit": 30,
+            "use_snownlp": bool(self.config.sentiment_use_snownlp),
+        }
+        return {} if request == defaults else request
 
     def fetch(self, dataset: str, symbol: str, **kwargs) -> dict:
         if dataset not in self.config.on_demand_datasets and self.config.on_demand_datasets:
             raise ValueError(f"Dataset {dataset} not enabled for on-demand")
 
-        path = self._cache_path(dataset, symbol)
+        path = self._cache_path(dataset, symbol, **kwargs)
         if path.exists() and not kwargs.get("refresh"):
             try:
                 with open(path, encoding="utf-8") as f:

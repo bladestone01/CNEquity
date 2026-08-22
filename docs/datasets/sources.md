@@ -64,6 +64,7 @@
 | 备源 | eastmoney |
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date, frequency) |
+| **已知限制** | `399001.SZ` 的深历史存在 18 个交易日空洞（1991–1995）。已分别核对 THS 历史接口与 TDX 原始接口，两者都不返回这些日期；这是源端历史序列的共同缺失，不补造 bar，也不把它们写入 `CLOSED_DATES`。`cne audit` 会保留 warning，表示可见但不可由本项目修复的源限制 |
 
 #### trade_ticks
 

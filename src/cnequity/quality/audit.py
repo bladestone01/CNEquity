@@ -279,6 +279,13 @@ def _collect_lake_findings(
                 "trading_status rows exist, but no complete current-scope ST evidence "
                 f"receipt covers the bar window ({evidence['reason']})"
             )
+            checkpoint_completed = evidence.get("checkpoint_completed_symbols")
+            checkpoint_expected = evidence.get("checkpoint_expected_symbols")
+            if checkpoint_completed is not None and checkpoint_expected is not None:
+                message += (
+                    f"; ST evidence backfill checkpoint is in progress "
+                    f"({checkpoint_completed}/{checkpoint_expected} symbols)"
+                )
             unsupported_symbols = int(evidence.get("unsupported_symbols", 0))
             if unsupported_symbols:
                 exchange_counts = evidence.get("unsupported_exchange_counts") or {}
@@ -301,6 +308,18 @@ def _collect_lake_findings(
                 "st_evidence_coverage_end": evidence.get("coverage_end"),
                 "st_evidence_verified": evidence["verified"],
                 "st_evidence_receipt_reason": evidence.get("reason"),
+                "st_evidence_checkpoint_status": evidence.get("checkpoint_status"),
+                "st_evidence_checkpoint_scope_start": evidence.get("checkpoint_scope_start"),
+                "st_evidence_checkpoint_scope_end": evidence.get("checkpoint_scope_end"),
+                "st_evidence_checkpoint_completed_symbols": evidence.get(
+                    "checkpoint_completed_symbols"
+                ),
+                "st_evidence_checkpoint_expected_symbols": evidence.get(
+                    "checkpoint_expected_symbols"
+                ),
+                "st_evidence_checkpoint_unresolved_symbols": evidence.get(
+                    "checkpoint_unresolved_symbols"
+                ),
                 "st_evidence_supported_symbols": evidence.get("supported_symbols"),
                 "st_evidence_unsupported_symbols": evidence.get("unsupported_symbols", 0),
                 "st_evidence_unsupported_exchange_counts": evidence.get(

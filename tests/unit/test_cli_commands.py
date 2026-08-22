@@ -416,17 +416,42 @@ def test_query_on_demand(cfg_path, monkeypatch):
         def __init__(self, cfg):
             pass
 
-        def fetch(self, dataset, symbol):
-            return {"dataset": dataset, "symbol": symbol, "rows": 0}
+        def fetch(self, dataset, symbol, **kwargs):
+            return {"dataset": dataset, "symbol": symbol, "rows": 0, **kwargs}
 
     monkeypatch.setattr("cnequity.cli.main.OnDemandService", FakeSvc)
     result = CliRunner().invoke(
         cli,
-        ["query", "--config", cfg_path, "--dataset", "daily_bars", "--symbol", "600519.SH"],
+        [
+            "query",
+            "--config",
+            cfg_path,
+            "--dataset",
+            "daily_bars",
+            "--symbol",
+            "600519.SH",
+            "--refresh",
+        ],
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["symbol"] == "600519.SH"
+    assert payload["refresh"] is True
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--dataset", "stock_news"],
+        ["--symbol", "600519.SH"],
+        ["--refresh"],
+    ],
+)
+def test_query_rejects_partial_on_demand_options(cfg_path, args):
+    result = CliRunner().invoke(cli, ["query", "--config", cfg_path, *args])
+
+    assert result.exit_code != 0
+    assert "requires" in result.output or "together" in result.output
 
 
 def test_query_sql(cfg_path, monkeypatch, tmp_path):

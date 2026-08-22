@@ -260,6 +260,37 @@ def test_st_coverage_ignores_tampered_receipt(tmp_path):
     assert report["reason"] == "no_matching_complete_receipt"
 
 
+def test_st_coverage_reports_matching_pending_checkpoint_progress(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    start, end = date(2016, 1, 1), date(2026, 8, 21)
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH"]}).write_parquet(instruments / "part-merged.parquet")
+    _write_bars_partition(cfg, date(2016, 1, 4))
+    scope = build_st_scope(["600519.SH"], start, end, universe="all_a")
+    write_st_checkpoint(
+        cfg,
+        {
+            "schema_version": 1,
+            "claim": "historical_st_evidence",
+            "scope": scope,
+            "status": "pending",
+            "completed_symbols": [],
+            "unresolved_symbols": [],
+        },
+    )
+
+    report = st_evidence_coverage_report(cfg, date(2001, 1, 2), end)
+
+    assert report["verified"] is False
+    assert report["reason"] == "no_matching_complete_receipt"
+    assert report["checkpoint_status"] == "pending"
+    assert report["checkpoint_scope_start"] == "2016-01-01"
+    assert report["checkpoint_completed_symbols"] == 0
+    assert report["checkpoint_expected_symbols"] == 1
+    assert report["checkpoint_unresolved_symbols"] == 0
+
+
 def test_st_receipt_rejects_duplicate_primary_rows(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     day = date(2024, 6, 27)

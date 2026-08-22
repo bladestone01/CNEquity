@@ -35,7 +35,7 @@ curated 列语义尽量稳定；破坏性变更要版本 bump + 迁移说明。�
 
 ## 无前视、universe 诚实
 
-`load(..., as_of=)` 对 PIT 数据集过滤 `announce_date <= as_of`，别用 `report_period` 代替公告日。`universe="all_a"` 的 ST / 停牌过滤只覆盖 `trading_status` 有数据的日期；更早窗口只做上市 / 退市过滤，并在 audit 里报覆盖起点。
+`load(..., as_of=)` 对 PIT 数据集过滤 `announce_date <= as_of`，别用 `report_period` 代替公告日。`universe="all_a"` 的 ST / 停牌过滤必须受 `trading_status` 实际覆盖和版本化 ST 证据收据约束；没有覆盖收据的更早窗口不能默认为正常标的，并在 audit 里报覆盖起点或来源能力限制。
 
 ## ADR
 

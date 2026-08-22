@@ -82,9 +82,9 @@ bars = load("daily_bars", start="2024-01-01", universe="all_a")
 
 ### 历史 ST 限制
 
-日更只抓当天 `trading_status`。停牌可由 `cne derive trading_status --start/--end` 按年重建，覆盖可与 `daily_bars` 同起点（约 2001）。**ST 标签**仍依赖 baostock，约从 **2016** 起；此前 `all_a` 不会剔除历史 ST（会剔除已派生的停牌）。
+日更只抓当天 `trading_status`。停牌可由 `cne derive trading_status --start/--end` 按年重建，覆盖可与 `daily_bars` 同起点（约 2001）。**ST 标签**依赖 Baostock 的逐标的 `isST` 历史回补；只有生成了完整、版本化的 `historical_st_evidence` 收据，才能把对应窗口用于研究。部分回补（例如仅从 2016 年开始）不能证明 2001 年起的历史 ST 已剔除。
 
-审计项 `trading_status_coverage_start` 区分总覆盖与 `st_coverage_start`。
+收据可通过重叠的深历史范围与较新尾段范围合并，但新增标的必须有首个交易日证据；北交所（BJ）不在 Baostock 历史 ST 能力范围内，仍会作为历史研究阻塞项显式报告。审计项 `trading_status_coverage_start` 区分总覆盖与 `st_coverage_start`，历史研究应使用 `cne audit --full --research-start ...` 复核。
 
 ### 交易所覆盖
 

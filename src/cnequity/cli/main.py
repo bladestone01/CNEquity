@@ -1836,12 +1836,28 @@ def stats_show(config_path: str, dataset: str | None, by_source: bool):
 @click.option("--sql", default="SELECT COUNT(*) AS n FROM daily_bars")
 @click.option("--dataset", default=None, help="On-demand dataset name")
 @click.option("--symbol", default=None, help="Symbol for on-demand fetch")
-def query(config_path: str, sql: str, dataset: str | None, symbol: str | None):
+@click.option(
+    "--refresh",
+    is_flag=True,
+    help="Refresh the on-demand cache before fetching (requires --dataset and --symbol).",
+)
+def query(
+    config_path: str,
+    sql: str,
+    dataset: str | None,
+    symbol: str | None,
+    refresh: bool,
+):
     """Run DuckDB SQL or on-demand dataset fetch."""
     cfg = _cfg(config_path)
+    if (dataset is None) != (symbol is None):
+        raise click.UsageError("--dataset and --symbol must be provided together")
+    if refresh and dataset is None:
+        raise click.UsageError("--refresh requires --dataset and --symbol")
     if dataset and symbol:
         svc = OnDemandService(cfg)
-        data = svc.fetch(dataset, symbol)
+        fetch_kwargs = {"refresh": True} if refresh else {}
+        data = svc.fetch(dataset, symbol, **fetch_kwargs)
         click.echo(json.dumps(data, indent=2, ensure_ascii=False, default=str))
         return
     db_path = ensure_duckdb_views(cfg)

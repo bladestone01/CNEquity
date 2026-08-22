@@ -80,7 +80,7 @@ cne config validate --config configs/cnequity.toml
 | nbs | 1.0 | 仅 audit：PMI 发布稿对照，每次两个请求 |
 | exchange | 1.0 | 仅 audit：交易所上市列表，每所一个请求 |
 | sina | 0.3 | 复权因子；经 `adj_factors` 的 `wait_source` |
-| baostock | 1.0 + batch 50/45s | 历史市值/ST；禁止多进程并行扫 |
+| baostock | 1.0 + batch 20/120s | 历史市值/ST；禁止多进程并行扫 |
 
 ---
 
@@ -219,7 +219,7 @@ names = [
 | `enabled` | OnDemandService 开关 |
 | `datasets` | 按需抓取的数据集名列表。默认仅 `stock_news`、`research_reports`；`announcement_body` / `financial_reports` 尚未实现 |
 
-缓存路径：`meta/on_demand/{dataset}/{symbol}.json`。通过 `cne query --dataset X --symbol Y` 访问。失败或未实现的结果不会写入缓存。
+缓存路径：默认请求为 `meta/on_demand/{dataset}/{symbol}.json`；带有会改变结果的参数时，会使用同目录下带请求摘要的变体文件，避免不同日期、条数或情感模型查询互相复用。通过 `cne query --dataset X --symbol Y` 访问；需要强制更新时追加 `--refresh`。失败或未实现的结果不会写入缓存。
 
 ---
 

@@ -432,6 +432,63 @@ def _receipts(config: Config) -> list[dict[str, Any]]:
     return out
 
 
+def _pending_checkpoint_progress(
+    config: Config,
+    start: date | None,
+    end: date | None,
+    supported_symbols: list[str],
+) -> dict[str, Any]:
+    """Expose an exact in-progress sweep without treating it as evidence.
+
+    A checkpoint is operational state, not a coverage receipt.  Still, hiding
+    it behind the generic ``no_matching_complete_receipt`` finding makes a
+    multi-hour backfill look identical to a job that was never started.  Only
+    report a checkpoint when its supported-symbol scope matches the current
+    universe and its end date reaches the requested end; this keeps progress
+    useful without making a partial or stale sweep look research-ready.
+    """
+    if start is None or end is None or not supported_symbols:
+        return {}
+    root = config.meta_root / "state" / ST_COVERAGE_CLAIM / f"v{ST_EVIDENCE_VERSION}"
+    if not root.exists():
+        return {}
+    expected = set(supported_symbols)
+    candidates: list[tuple[int, float, dict[str, Any]]] = []
+    for path in root.glob("*.json"):
+        try:
+            checkpoint = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if checkpoint.get("claim") != ST_COVERAGE_CLAIM:
+            continue
+        if checkpoint.get("status") not in {"pending", "incomplete"}:
+            continue
+        scope = checkpoint.get("scope") or {}
+        if scope.get("source") != "baostock":
+            continue
+        if scope.get("end") != end.isoformat():
+            continue
+        checkpoint_symbols = set(scope.get("expected_symbols") or [])
+        if checkpoint_symbols != expected:
+            continue
+        completed = set(checkpoint.get("completed_symbols") or []) & expected
+        candidates.append((len(completed), path.stat().st_mtime, checkpoint))
+    if not candidates:
+        return {}
+    _, _, checkpoint = max(candidates, key=lambda item: (item[0], item[1]))
+    scope = checkpoint["scope"]
+    completed = set(checkpoint.get("completed_symbols") or []) & expected
+    unresolved = set(checkpoint.get("unresolved_symbols") or []) & expected
+    return {
+        "checkpoint_status": checkpoint.get("status"),
+        "checkpoint_scope_start": scope.get("start"),
+        "checkpoint_scope_end": scope.get("end"),
+        "checkpoint_completed_symbols": len(completed),
+        "checkpoint_expected_symbols": len(expected),
+        "checkpoint_unresolved_symbols": len(unresolved),
+    }
+
+
 def _valid_receipt_scope(receipt: dict[str, Any]) -> tuple[dict[str, Any], date, date] | None:
     """Return a receipt scope only when its integrity fields are consistent."""
     scope = receipt.get("scope")
@@ -647,7 +704,7 @@ def st_evidence_coverage_report(
         default=None,
     )
     if best is None:
-        return {
+        report = {
             "verified": False,
             "claim": ST_COVERAGE_CLAIM,
             "evidence_version": ST_EVIDENCE_VERSION,
@@ -667,6 +724,8 @@ def st_evidence_coverage_report(
             },
             "reason": "no_current_universe" if not symbols else "no_matching_complete_receipt",
         }
+        report.update(_pending_checkpoint_progress(config, start, end, supported_symbols))
+        return report
     scope = best["scope"]
     unsupported = bool(unsupported_symbols)
     return {

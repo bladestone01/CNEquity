@@ -27,7 +27,7 @@ def test_fetch_cache_roundtrip(tmp_path, monkeypatch):
         "cnequity.query.on_demand.fetch_stock_news",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("cache miss")),
     )
-    second = svc.fetch("stock_news", "600519.SH")
+    second = svc.fetch("stock_news", "600519.SH", limit=5)
     assert second["items"][0]["title"] == "t"
 
     with pytest.raises(ValueError, match="not enabled"):
@@ -50,6 +50,39 @@ def test_corrupt_cache_is_refetched(tmp_path, monkeypatch):
     out = svc.fetch("stock_news", "600519.SH")
 
     assert out["items"][0]["title"] == "fresh"
+
+
+def test_parameterised_stock_news_queries_do_not_share_cache(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data", on_demand_datasets=["stock_news"])
+    svc = OnDemandService(cfg)
+    calls = []
+
+    def fetch(symbol, **kwargs):
+        calls.append(kwargs)
+        return {"symbol": symbol, "items": [{"limit": kwargs["limit"]}]}
+
+    monkeypatch.setattr("cnequity.query.on_demand.fetch_stock_news", fetch)
+    monkeypatch.setattr(Config, "rate_limit", lambda self, name: None)
+
+    assert svc.fetch("stock_news", "600519.SH", limit=5)["items"][0]["limit"] == 5
+    assert svc.fetch("stock_news", "600519.SH", limit=30)["items"][0]["limit"] == 30
+    assert [call["limit"] for call in calls] == [5, 30]
+
+
+def test_cache_symbol_is_kept_inside_on_demand_root(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data", on_demand_datasets=["stock_news"])
+    svc = OnDemandService(cfg)
+    monkeypatch.setattr(
+        "cnequity.query.on_demand.fetch_stock_news",
+        lambda symbol, **kwargs: {"symbol": symbol, "items": []},
+    )
+    monkeypatch.setattr(Config, "rate_limit", lambda self, name: None)
+
+    svc.fetch("stock_news", "../outside/600519.SH")
+
+    files = list((cfg.meta_root / "on_demand" / "stock_news").glob("*.json"))
+    assert len(files) == 1
+    assert files[0].resolve().is_relative_to((cfg.meta_root / "on_demand").resolve())
 
 
 def test_unimplemented_datasets_raise_and_do_not_cache(tmp_path):

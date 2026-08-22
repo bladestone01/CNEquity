@@ -387,6 +387,8 @@ cne stats refresh
 
 ## cne query
 
+使用 `--dataset X --symbol CODE` 时按需抓取并读取本地缓存；追加 `--refresh` 可强制重新抓取并覆盖对应的缓存变体。`--dataset`、`--symbol` 必须成对出现，否则命令会明确报错；未指定二者时才执行 DuckDB SQL 查询。
+
 **DuckDB 模式**（默认）：
 
 | 选项 | 默认 |
