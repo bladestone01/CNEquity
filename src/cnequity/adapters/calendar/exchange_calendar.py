@@ -91,6 +91,25 @@ def _bar_dates(curated_root: Path, dataset: str) -> set[date]:
     root = curated_root / dataset
     if not root.exists():
         return set()
+    if dataset == "daily_bars" and any(root.rglob("*.parquet")):
+        # The per-file fallback below deliberately isolates corrupt fragments,
+        # but filtering each fragment independently lets an old positive retry
+        # create a session beside a newer zero-volume canonical row. Use the
+        # partition-aware canonical scan on the normal readable path; retain
+        # the isolated fallback so calendar derivation remains best-effort when
+        # one historical fragment is unreadable.
+        try:
+            from cnequity.query.parquet_scan import scan_parquet_root
+
+            scan = scan_parquet_root(root, partition_col="trade_date", traded_only=True)
+            scan = scan.filter(
+                (pl.col("trade_date").dt.weekday() <= 5)
+                & ~pl.col("trade_date").dt.strftime("%Y-%m-%d").is_in(CLOSED_DATES)
+            )
+            values = scan.select("trade_date").collect().get_column("trade_date").drop_nulls()
+            return set(values.to_list())
+        except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+            logger.warning("Falling back to per-file %s bar dates: %s", dataset, exc)
     dates: set[date] = set()
     for path in root.glob("**/*.parquet"):
         try:

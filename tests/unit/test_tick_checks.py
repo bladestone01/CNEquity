@@ -273,3 +273,25 @@ def test_findings_run_end_to_end_over_a_written_lake(tmp_path):
     rows[4]["trade_time"] = datetime(DAY.year, DAY.month, DAY.day, 12, 30)
     pl.DataFrame(rows).write_parquet(root / "part-0.parquet")
     assert "trade_ticks_off_session" in _checks(trade_ticks_findings(config, DAY))
+
+
+def test_findings_use_one_canonical_tick_per_sequence(tmp_path):
+    config = Config(data_root=tmp_path)
+    root = config.curated_root / DATASET / f"trade_date={DAY}"
+    root.mkdir(parents=True)
+    rows = _rows(count=6)
+    current = (
+        pl.DataFrame(rows)
+        .with_columns(
+            pl.lit("tdx_protocol").alias("source"),
+            pl.lit("v1").alias("data_version"),
+            pl.lit(datetime(2026, 8, 1, tzinfo=timezone.utc)).alias("fetched_at"),
+        )
+    )
+    stale = current.with_columns(
+        pl.lit(datetime(2020, 1, 1, tzinfo=timezone.utc)).alias("fetched_at")
+    )
+    current.write_parquet(root / "part-current.parquet")
+    stale.write_parquet(root / "part-stale.parquet")
+
+    assert trade_ticks_findings(config, DAY) == []

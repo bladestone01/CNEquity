@@ -10,6 +10,7 @@ import polars as pl
 
 from cnequity.adapters.sina.adj_factors import fetch_adj_factor_series
 from cnequity.config import Config
+from cnequity.domain.canonical import dedupe_lazy_by_primary_key
 from cnequity.domain.rate_limit import wait_source
 from cnequity.domain.schemas import with_provenance
 from cnequity.domain.symbols import is_cdr_symbol, parse_symbol
@@ -334,11 +335,16 @@ def _uncovered_symbols(config: Config) -> set[str]:
     candidates = {s for s in uncovered["symbol"].to_list() if not _is_cdr(s)}
     inst_root = config.curated_root / "instruments"
     if dataset_has_parquet(inst_root):
-        instruments = scan_parquet_root(inst_root).collect()
+        instruments = dedupe_lazy_by_primary_key(
+            scan_parquet_root(inst_root), "instruments"
+        ).collect()
         if "asset_type" in instruments.columns:
             stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
-            if stocks:
-                candidates &= stocks
+            # An explicit asset_type column is authoritative even when the
+            # current catalog contains no stocks (for example an ETF-only
+            # fixture or a fully filtered research scope). Falling back to
+            # every uncovered symbol would schedule non-stock factor fetches.
+            candidates &= stocks
     return candidates
 
 

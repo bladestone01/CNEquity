@@ -9,7 +9,7 @@ over EastMoney HTTP.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 
@@ -94,6 +94,25 @@ def test_star_st_names_count_as_st(tmp_path):
     for s in labeled:
         names[s] = "*ST退市"
     assert st_label_crosscheck_findings(_lake(tmp_path, names=names, st_labeled=labeled), TD) == []
+
+
+def test_superseded_st_label_is_not_reported(tmp_path):
+    names = {"600000.SH": "公司0"}
+    cfg = _lake(tmp_path, names=names, st_labeled=list(names))
+    part = cfg.curated_root / "trading_status" / f"trade_date={TD.isoformat()}"
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "trade_date": [TD],
+            "is_trading": [True],
+            "status": ["normal"],
+            "source": ["eastmoney"],
+            "data_version": ["v1"],
+            "fetched_at": [datetime.now(timezone.utc) + timedelta(seconds=1)],
+        }
+    ).write_parquet(part / "part-new.parquet")
+
+    assert st_label_crosscheck_findings(cfg, TD) == []
 
 
 def test_small_disagreement_is_tolerated_as_naming_lag(tmp_path):

@@ -58,6 +58,36 @@ def test_coverage_flags_missing_trading_day(tmp_path):
     assert f["source_limited"] is False
 
 
+def test_coverage_uses_canonical_calendar_rows(tmp_path):
+    """A superseded calendar row must not turn a closed day into a session."""
+    cfg = Config(data_root=tmp_path / "data")
+    days = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5)]
+    _write_calendar(cfg.data_root, [(days[0], True), (days[2], True)])
+    calendar_dir = cfg.curated_root / "trading_calendar" / f"trade_date={days[1].isoformat()}"
+    calendar_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "trade_date": [days[1]],
+            "is_trading": [True],
+            "source": ["seed"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-04T07:00:00+00:00"],
+        }
+    ).write_parquet(calendar_dir / "part-old.parquet")
+    pl.DataFrame(
+        {
+            "trade_date": [days[1]],
+            "is_trading": [False],
+            "source": ["exchange"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-04T08:00:00+00:00"],
+        }
+    ).write_parquet(calendar_dir / "part-new.parquet")
+    _write_index_bars(cfg.data_root, [("000300.SH", d) for d in days if d != days[1]])
+
+    assert _index_bars_coverage_findings(cfg, days[2]) == []
+
+
 def test_coverage_classifies_verified_399001_source_gaps(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     days = [date(1991, 9, 27), date(1991, 9, 30), date(1991, 10, 1)]

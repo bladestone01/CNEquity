@@ -206,6 +206,25 @@ def test_repair_ignores_suspended_stock_with_a_dense_placeholder_run(tmp_path):
     assert staged.is_empty() or "000099.SZ" not in staged["symbol"].to_list()
 
 
+def test_repair_does_not_count_duplicate_placeholder_rows_twice(tmp_path):
+    """Retry fragments must not turn a short tail into an active halt."""
+    from datetime import timedelta
+
+    cfg = _cfg(tmp_path, {})
+    _write_bars(cfg, "000018.SZ", date(2016, 1, 4), date(2019, 6, 10))
+    days = [date(2026, 6, 1) + timedelta(days=i) for i in range(10)]
+    _write_placeholder_run(cfg, "000018.SZ", days)
+    for day in days:
+        part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+        pl.read_parquet(part / f"part-placeholder-{day.isoformat()}.parquet").write_parquet(
+            part / f"part-retry-{day.isoformat()}.parquet"
+        )
+
+    result = repair_delisted_instruments(cfg, "run-1")
+
+    assert result["from_orphan_bars"] == 1
+
+
 def test_instruments_rows_fills_null_list_date_from_recovery_spans(tmp_path):
     """A prior repair with no bars must not shadow a later backfill's list_date."""
     from cnequity.steps.delisted import _instruments_rows

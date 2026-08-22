@@ -168,6 +168,37 @@ def test_latest_em_boards_from_lake_reads_all_shards(tmp_path):
     assert {row["sector_code"] for row in out} == {"BK0437", "BK0917"}
 
 
+def test_latest_em_boards_from_lake_uses_newest_canonical_fragment(tmp_path):
+    from cnequity.derive import sector_routing as sr
+
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.curated_root / "sector_bars" / "trade_date=2026-07-14"
+    part.mkdir(parents=True)
+    common = {
+        "sector_code": ["BK0437"],
+        "board_type": ["industry"],
+        "trade_date": [date(2026, 7, 14)],
+    }
+    pl.DataFrame(
+        {
+            **common,
+            "sector_name": ["旧名称"],
+            "fetched_at": ["2026-07-14T08:00:00+00:00"],
+        }
+    ).write_parquet(part / "part-old.parquet")
+    pl.DataFrame(
+        {
+            **common,
+            "sector_name": ["新名称"],
+            "fetched_at": ["2026-07-14T09:00:00+00:00"],
+        }
+    ).write_parquet(part / "part-new.parquet")
+
+    assert sr._latest_em_boards_from_lake(cfg) == [
+        {"sector_code": "BK0437", "sector_name": "新名称", "board_type": "industry"}
+    ]
+
+
 def test_latest_em_boards_from_lake_reads_nested_shards(tmp_path):
     from cnequity.derive import sector_routing as sr
 

@@ -41,6 +41,7 @@ from cnequity.quality.unit_checks import (
     daily_bars_amount_completeness_findings,
     daily_bars_volume_unit_findings,
 )
+from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.query.universe import (
     coverage_end_date,
@@ -93,7 +94,10 @@ def _index_bars_coverage_findings(config: Config, trade_date: date) -> list[dict
         return findings
 
     cal = (
-        scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(cal_root, partition_col="trade_date", end=trade_date),
+            "trading_calendar",
+        )
         .filter(
             pl.col("is_trading")
             & (pl.col("trade_date").dt.weekday() <= 5)

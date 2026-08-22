@@ -103,6 +103,51 @@ def test_canonical_dedupe_prefers_primary_source_on_same_timestamp():
     ]
 
 
+def test_canonical_dedupe_prefers_primary_source_without_fetch_time():
+    frame = pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "trade_date": [date(2024, 6, 28)] * 2,
+            "close": [1800.0, 1900.0],
+            "source": ["tdx_protocol", "eastmoney"],
+            "data_version": ["v1", "v9"],
+        }
+    )
+
+    eager = dedupe_by_primary_key(frame, "daily_bars")
+    lazy = dedupe_lazy_by_primary_key(frame.lazy(), "daily_bars").collect()
+
+    assert eager.select("source", "close").to_dicts() == [
+        {"source": "tdx_protocol", "close": 1800.0}
+    ]
+    assert lazy.select("source", "close").to_dicts() == [
+        {"source": "tdx_protocol", "close": 1800.0}
+    ]
+
+
+def test_canonical_dedupe_does_not_let_null_fetch_time_override_known_row():
+    frame = pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "trade_date": [date(2024, 6, 28)] * 2,
+            "close": [1900.0, 1800.0],
+            "source": ["tdx_protocol", "eastmoney"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [None, datetime(2024, 6, 28, tzinfo=timezone.utc)],
+        }
+    )
+
+    eager = dedupe_by_primary_key(frame, "daily_bars")
+    lazy = dedupe_lazy_by_primary_key(frame.lazy(), "daily_bars").collect()
+
+    assert eager.select("source", "close").to_dicts() == [
+        {"source": "eastmoney", "close": 1800.0}
+    ]
+    assert lazy.select("source", "close").to_dicts() == [
+        {"source": "eastmoney", "close": 1800.0}
+    ]
+
+
 def test_duckdb_views_dedupe_prefers_primary_source_on_same_timestamp(tmp_path):
     data_root = tmp_path / "data"
     partition = data_root / "curated" / "daily_bars" / "trade_date=2024-06-28"
@@ -123,6 +168,34 @@ def test_duckdb_views_dedupe_prefers_primary_source_on_same_timestamp(tmp_path):
     pl.DataFrame(
         {**common, "close": [1900.0], "source": ["tdx_protocol"], "data_version": ["v1"]}
     ).write_parquet(partition / "part-primary.parquet")
+
+    db = ensure_duckdb_views(Config(data_root=data_root))
+    with duckdb.connect(str(db), read_only=True) as con:
+        rows = con.execute("SELECT source, close FROM daily_bars").fetchall()
+
+    assert rows == [("tdx_protocol", 1900.0)]
+
+
+def test_duckdb_views_dedupe_legacy_rows_by_source_without_fetch_time(tmp_path):
+    data_root = tmp_path / "data"
+    partition = data_root / "curated" / "daily_bars" / "trade_date=2024-06-28"
+    partition.mkdir(parents=True)
+    common = {
+        "symbol": ["600519.SH"],
+        "trade_date": [date(2024, 6, 28)],
+        "open": [1790.0],
+        "high": [1810.0],
+        "low": [1780.0],
+        "volume": [1000],
+        "amount": [1_000_000.0],
+        "data_version": ["v1"],
+    }
+    pl.DataFrame({**common, "close": [1800.0], "source": ["eastmoney"]}).write_parquet(
+        partition / "part-backup.parquet"
+    )
+    pl.DataFrame({**common, "close": [1900.0], "source": ["tdx_protocol"]}).write_parquet(
+        partition / "part-primary.parquet"
+    )
 
     db = ensure_duckdb_views(Config(data_root=data_root))
     with duckdb.connect(str(db), read_only=True) as con:

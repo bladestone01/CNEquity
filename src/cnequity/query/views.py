@@ -70,7 +70,9 @@ def _sql_literal(value: str) -> str:
 
 def _canonical_order_sql(name: str, columns: set[str]) -> str:
     """Return the DuckDB ordering used to select one canonical lake row."""
-    order_by = ["fetched_at DESC NULLS LAST"]
+    order_by: list[str] = []
+    if "fetched_at" in columns:
+        order_by.append("fetched_at DESC NULLS LAST")
     if "source" in columns:
         spec = DATASETS.get(name)
         cases: list[str] = []
@@ -105,11 +107,16 @@ def _view_select_sql(
         f"read_parquet('{glob_path}', hive_partitioning={str(hive).lower()}, union_by_name=true)"
     )
     # A few pre-schema-migration fragments in the wild (and lightweight
-    # bootstrap fixtures) do not carry provenance. There is no honest
-    # freshness tie-breaker in that case; keep the raw view readable and let
-    # the schema/quality checks report the malformed fragment.
+    # bootstrap fixtures) do not carry provenance. If no provenance field is
+    # available, keep the raw view readable and let the schema/quality checks
+    # report the malformed fragment. A source/version without fetched_at is
+    # still enough to apply the same deterministic fallback as Python.
     if not primary_key or (
-        columns is not None and not set([*primary_key, "fetched_at"]).issubset(columns)
+        columns is not None
+        and (
+            not set(primary_key).issubset(columns)
+            or not {"fetched_at", "source", "data_version"}.intersection(columns)
+        )
     ):
         return f"SELECT * FROM {source}"
     partition_by = ", ".join(primary_key)

@@ -81,7 +81,10 @@ def _scan(config: Config, start: date, end: date) -> pl.LazyFrame | None:
     root = config.curated_root / DATASET
     if not dataset_has_parquet(root):
         return None
-    return scan_parquet_root(root, partition_col="trade_date", start=start, end=end)
+    return dedupe_lazy_by_primary_key(
+        scan_parquet_root(root, partition_col="trade_date", start=start, end=end),
+        DATASET,
+    )
 
 
 def seq_gap_findings(lf: pl.LazyFrame, start: date, end: date) -> list[dict]:

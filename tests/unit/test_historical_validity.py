@@ -1,6 +1,6 @@
 """Historical-universe validity stays strict and machine-readable."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 
@@ -215,3 +215,31 @@ def test_daily_bar_coverage_ignores_placeholder_only_boundary_partitions(tmp_pat
 
     assert coverage_start_date(cfg, "daily_bars") == date(2024, 1, 15)
     assert coverage_end_date(cfg, "daily_bars") == date(2024, 1, 15)
+
+
+def test_daily_bar_boundary_uses_newest_retry_before_volume_filter(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    first = date(2024, 1, 15)
+    terminal = date(2024, 1, 20)
+    _partition(
+        cfg,
+        "daily_bars",
+        first,
+        pl.DataFrame({"symbol": ["600519.SH"], "trade_date": [first], "volume": [100]}),
+    )
+    part = cfg.curated_root / "daily_bars" / f"trade_date={terminal.isoformat()}"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "trade_date": [terminal, terminal],
+            "volume": [100, 0],
+            "fetched_at": [
+                datetime(2024, 1, 20, 7, tzinfo=timezone.utc),
+                datetime(2024, 1, 20, 8, tzinfo=timezone.utc),
+            ],
+        }
+    ).write_parquet(part / "part-retry.parquet")
+
+    assert coverage_start_date(cfg, "daily_bars") == first
+    assert coverage_end_date(cfg, "daily_bars") == first

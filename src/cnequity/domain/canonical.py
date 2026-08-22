@@ -28,8 +28,11 @@ def _source_rank_expr(dataset: str, columns: set[str]) -> pl.Expr | None:
 def _sort_for_canonical(frame, dataset: str):
     """Order freshest rows, then source priority, before PK collapse."""
     columns = set(frame.collect_schema().names()) if isinstance(frame, pl.LazyFrame) else set(frame.columns)
-    sort_cols = ["fetched_at"]
-    descending = [False]
+    sort_cols: list[str] = []
+    descending: list[bool] = []
+    if "fetched_at" in columns:
+        sort_cols.append("fetched_at")
+        descending.append(False)
     rank = _source_rank_expr(dataset, columns)
     if rank is not None:
         frame = frame.with_columns(rank.alias(_SOURCE_RANK))
@@ -40,21 +43,27 @@ def _sort_for_canonical(frame, dataset: str):
     if "data_version" in columns:
         sort_cols.append("data_version")
         descending.append(False)
-    return frame.sort(sort_cols, descending=descending, nulls_last=True, maintain_order=True)
+    if not sort_cols:
+        return frame
+    # ``keep="last"`` below selects the final row.  Put legacy rows without a
+    # fetch timestamp first so they cannot override a timestamped observation;
+    # this mirrors DuckDB's ``fetched_at DESC NULLS LAST`` ordering.
+    return frame.sort(sort_cols, descending=descending, nulls_last=False, maintain_order=True)
 
 
 def dedupe_by_primary_key(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
     """Keep one row per registered PK, preferring the freshest provenance.
 
     Validated lake rows always carry ``fetched_at``. The no-provenance fallback
-    still collapses duplicate keys so a malformed legacy fragment cannot
-    multiply a quality join; schema checks remain responsible for reporting
-    that the fragment is incomplete.
+    still collapses duplicate keys and, when available, applies source/version
+    precedence so a malformed legacy fragment cannot multiply a quality join or
+    let filesystem order decide between a primary and backup row; schema checks
+    remain responsible for reporting that the fragment is incomplete.
     """
     primary_key = PRIMARY_KEYS.get(dataset, [])
     if df.is_empty() or not primary_key or any(k not in df.columns for k in primary_key):
         return df
-    if "fetched_at" in df.columns:
+    if any(column in df.columns for column in ("fetched_at", "source", "data_version")):
         df = _sort_for_canonical(df, dataset)
     out = df.unique(subset=primary_key, keep="last", maintain_order=True)
     return out.drop(_SOURCE_RANK, strict=False)
@@ -66,7 +75,7 @@ def dedupe_lazy_by_primary_key(lf: pl.LazyFrame, dataset: str) -> pl.LazyFrame:
     columns = set(lf.collect_schema().names())
     if not primary_key or any(k not in columns for k in primary_key):
         return lf
-    if "fetched_at" in columns:
+    if any(column in columns for column in ("fetched_at", "source", "data_version")):
         lf = _sort_for_canonical(lf, dataset)
     return lf.unique(subset=primary_key, keep="last", maintain_order=True).drop(
         _SOURCE_RANK, strict=False

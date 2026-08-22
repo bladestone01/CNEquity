@@ -74,6 +74,36 @@ def test_latest_bars_selects_latest_trade_date(tmp_path):
     assert out["sector_code"].to_list() == ["BK0437"]
 
 
+def test_latest_bars_uses_newest_canonical_fragment(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.curated_root / "sector_bars" / "trade_date=2026-07-14"
+    part.mkdir(parents=True)
+    common = {
+        "sector_code": ["BK0437"],
+        "board_type": ["industry"],
+        "trade_date": [date(2026, 7, 14)],
+    }
+    pl.DataFrame(
+        {
+            **common,
+            "sector_name": ["旧名称"],
+            "fetched_at": ["2026-07-14T08:00:00+00:00"],
+        }
+    ).write_parquet(part / "part-old.parquet")
+    pl.DataFrame(
+        {
+            **common,
+            "sector_name": ["新名称"],
+            "fetched_at": ["2026-07-14T09:00:00+00:00"],
+        }
+    ).write_parquet(part / "part-new.parquet")
+
+    out = _latest_bars(cfg)
+    assert out.select("sector_code", "sector_name").to_dicts() == [
+        {"sector_code": "BK0437", "sector_name": "新名称"}
+    ]
+
+
 def test_latest_member_boards_empty_when_no_curated_data(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     out = _latest_member_boards(cfg, "sector_members", "sector_code", "sector_name")

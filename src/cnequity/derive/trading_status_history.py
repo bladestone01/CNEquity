@@ -27,7 +27,7 @@ import polars as pl
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
 from cnequity.domain.schemas import validate_dataframe, with_provenance
-from cnequity.query.canonical import dedupe_by_primary_key
+from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.storage.parquet import CuratedWriter
 
@@ -99,9 +99,10 @@ def _suspended_pairs(
 
     # Lifetime bounds may include zero-volume suspension placeholders, but a
     # symbol represented only by placeholders must not get a synthetic active
-    # range and be reported as suspended on every calendar day. Keep the
-    # traded-only scan per file so legacy files without volume retain row-based
-    # semantics when they coexist with current files.
+    # range and be reported as suspended on every calendar day. The scanner
+    # canonicalizes the daily-bar identity before filtering; legacy files
+    # without volume retain row-based semantics when they coexist with current
+    # files.
     bars_all_lf = scan_parquet_root(bars_root, partition_col="trade_date")
     traded_bars_lf = scan_parquet_root(bars_root, partition_col="trade_date", traded_only=True)
     traded_symbols = traded_bars_lf.select("symbol").unique()
@@ -129,7 +130,10 @@ def _suspended_pairs(
     bars = bars_lf.unique().collect()
 
     cal_lf = (
-        scan_parquet_root(cal_root, partition_col="trade_date")
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(cal_root, partition_col="trade_date"),
+            "trading_calendar",
+        )
         .filter(pl.col("is_trading"))
         .select("trade_date")
     )

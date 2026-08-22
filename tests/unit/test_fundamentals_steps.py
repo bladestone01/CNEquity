@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -172,6 +172,24 @@ def test_load_bar_universe_ignores_zero_volume_placeholders(cfg):
     ).write_parquet(part / "part-000.parquet")
 
     assert load_bar_universe(cfg) == {"600519.SH"}
+
+
+def test_load_bar_universe_uses_newest_retry_before_volume_filter(cfg):
+    part = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "trade_date": [date(2024, 6, 28)] * 2,
+            "volume": [100, 0],
+            "fetched_at": [
+                datetime(2024, 6, 28, 7, tzinfo=timezone.utc),
+                datetime(2024, 6, 28, 8, tzinfo=timezone.utc),
+            ],
+        }
+    ).write_parquet(part / "part-retry.parquet")
+
+    assert load_bar_universe(cfg) == set()
 
 
 def test_load_bar_universe_keeps_legacy_rows_in_a_mixed_schema_lake(cfg):

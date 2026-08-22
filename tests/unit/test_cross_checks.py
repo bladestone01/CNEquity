@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 
@@ -113,6 +113,33 @@ def test_daily_bars_flags_placeholder_only_day_as_missing(tmp_path):
     assert findings[0]["missing_sample"] == ["2024-06-04"]
 
 
+def test_daily_bars_canonicalizes_before_market_day_volume_check(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    days = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5)]
+    _write_calendar(cfg.data_root, [(d, True) for d in days])
+    _write_daily(cfg.data_root, "daily_bars", [("A", days[0]), ("A", days[2])])
+
+    part = cfg.data_root / "curated" / "daily_bars" / f"trade_date={days[1].isoformat()}"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["A", "A"],
+            "trade_date": [days[1], days[1]],
+            "volume": [100, 0],
+            "fetched_at": [
+                datetime(2024, 6, 4, 7, tzinfo=timezone.utc),
+                datetime(2024, 6, 4, 8, tzinfo=timezone.utc),
+            ],
+        }
+    ).write_parquet(part / "part-retry.parquet")
+
+    findings = daily_bars_calendar_findings(cfg, date(2024, 6, 5))
+
+    assert len(findings) == 1
+    assert findings[0]["check"] == "daily_bars_calendar_missing_day"
+    assert findings[0]["missing_sample"] == ["2024-06-04"]
+
+
 def test_daily_bars_placeholder_only_tail_does_not_extend_coverage(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     days = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5)]
@@ -162,6 +189,30 @@ def test_valuation_flags_symbol_with_no_bars_anywhere(tmp_path):
     orphan = next(f for f in findings if f["check"] == "valuation_bars_orphan_symbol")
     assert orphan["orphan_sample"] == ["DELISTED"]
     assert orphan["severity"] == "warning"
+
+
+def test_valuation_coverage_uses_canonical_traded_bar(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    day = date(2024, 6, 5)
+    _write_daily(cfg.data_root, "daily_bars", [("B", day)])
+    part = cfg.data_root / "curated" / "daily_bars" / f"trade_date={day.isoformat()}"
+    pl.DataFrame(
+        {
+            "symbol": ["A", "A"],
+            "trade_date": [day, day],
+            "volume": [100, 0],
+            "fetched_at": [
+                datetime(2024, 6, 5, 7, tzinfo=timezone.utc),
+                datetime(2024, 6, 5, 8, tzinfo=timezone.utc),
+            ],
+        }
+    ).write_parquet(part / "part-retry.parquet")
+    _write_daily(cfg.data_root, "valuation_metrics", [("A", day), ("B", day)])
+
+    findings = valuation_bars_coverage_findings(cfg, day)
+
+    orphan = next(f for f in findings if f["check"] == "valuation_bars_orphan_symbol")
+    assert orphan["orphan_sample"] == ["A"]
 
 
 def test_valuation_flags_low_coverage(tmp_path):

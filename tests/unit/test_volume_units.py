@@ -226,11 +226,18 @@ def _write_bars(config, rows: list[dict]) -> None:
         pl.DataFrame(day_rows).write_parquet(part / "part-0.parquet")
 
 
-def _rows(source: str, *, volume: int, n: int, anchor: date) -> list[dict]:
+def _rows(
+    source: str,
+    *,
+    volume: int,
+    n: int,
+    anchor: date,
+    symbol_start: int = 600000,
+) -> list[dict]:
     """*n* rows spread over the days before *anchor*, all with the same unit."""
     return [
         {
-            "symbol": f"{600000 + i}.SH",
+            "symbol": f"{symbol_start + i}.SH",
             "trade_date": anchor - timedelta(days=i % 5),
             "close": CLOSE,
             "volume": volume,
@@ -246,8 +253,20 @@ def test_no_finding_when_every_source_is_in_shares(config):
     anchor = date(2024, 6, 28)
     _write_bars(
         config,
-        _rows("tdx_protocol", volume=SHARES, n=UNIT_CHECK_MIN_ROWS + 10, anchor=anchor)
-        + _rows("ths", volume=SHARES, n=UNIT_CHECK_MIN_ROWS + 10, anchor=anchor),
+        _rows(
+            "tdx_protocol",
+            volume=SHARES,
+            n=UNIT_CHECK_MIN_ROWS + 10,
+            anchor=anchor,
+            symbol_start=600000,
+        )
+        + _rows(
+            "ths",
+            volume=SHARES,
+            n=UNIT_CHECK_MIN_ROWS + 10,
+            anchor=anchor,
+            symbol_start=601000,
+        ),
     )
     assert daily_bars_volume_unit_findings(config, anchor) == []
 
@@ -256,8 +275,20 @@ def test_flags_the_source_that_wrote_lots(config):
     anchor = date(2024, 6, 28)
     _write_bars(
         config,
-        _rows("tdx_protocol", volume=LOTS, n=UNIT_CHECK_MIN_ROWS + 10, anchor=anchor)
-        + _rows("ths", volume=SHARES, n=UNIT_CHECK_MIN_ROWS + 10, anchor=anchor),
+        _rows(
+            "tdx_protocol",
+            volume=LOTS,
+            n=UNIT_CHECK_MIN_ROWS + 10,
+            anchor=anchor,
+            symbol_start=600000,
+        )
+        + _rows(
+            "ths",
+            volume=SHARES,
+            n=UNIT_CHECK_MIN_ROWS + 10,
+            anchor=anchor,
+            symbol_start=601000,
+        ),
     )
     findings = daily_bars_volume_unit_findings(config, anchor)
     assert len(findings) == 1
@@ -267,6 +298,39 @@ def test_flags_the_source_that_wrote_lots(config):
     assert finding["check"] == "daily_bars_volume_unit"
     assert finding["median_ratio"] == pytest.approx(SHARES_PER_LOT)
     assert "手" in finding["message"]
+
+
+def test_unit_check_uses_newest_canonical_bar_on_conflicting_retry(config):
+    anchor = date(2024, 6, 28)
+    rows: list[dict] = []
+    for i in range(UNIT_CHECK_MIN_ROWS + 10):
+        symbol = f"{600000 + i}.SH"
+        day = anchor - timedelta(days=i % 5)
+        base = {
+            "symbol": symbol,
+            "trade_date": day,
+            "close": CLOSE,
+            "amount": AMOUNT,
+            "source": "tdx_protocol",
+            "data_version": "v2",
+        }
+        rows.extend(
+            [
+                {
+                    **base,
+                    "volume": LOTS,
+                    "fetched_at": "2024-06-28T07:00:00+00:00",
+                },
+                {
+                    **base,
+                    "volume": SHARES,
+                    "fetched_at": "2024-06-28T08:00:00+00:00",
+                },
+            ]
+        )
+    _write_bars(config, rows)
+
+    assert daily_bars_volume_unit_findings(config, anchor) == []
 
 
 def test_thin_sources_are_not_judged(config):

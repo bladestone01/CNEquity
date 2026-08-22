@@ -509,18 +509,19 @@ def load_bar_universe(config: Config) -> set[str]:
     files = list(bars_root.glob("**/*.parquet")) if bars_root.exists() else []
     if not files:
         return set()
-    # Apply the volume contract per file. A diagonal union would turn legacy
-    # files without ``volume`` into nulls, and a global ``volume > 0`` filter
-    # would then silently discard their valid row-based evidence.
-    scans: list[pl.LazyFrame] = []
-    for path in files:
-        scan = pl.scan_parquet(str(path))
-        if "volume" in scan.collect_schema().names():
-            scan = scan.filter(pl.col("volume") > 0)
-        scans.append(scan.select("symbol"))
+    # Canonicalize the daily-bar identity before applying the volume contract.
+    # Filtering each file first lets an old positive retry keep a symbol in the
+    # valuation universe beside a newer zero-volume canonical row. The shared
+    # scanner preserves row-based semantics for legacy files without volume.
+    from cnequity.query.parquet_scan import scan_parquet_root
+
+    scan = scan_parquet_root(
+        bars_root,
+        partition_col="trade_date",
+        traded_only=True,
+    )
     return set(
-        pl.concat(scans, how="diagonal_relaxed")
-        .select("symbol")
+        scan.select("symbol")
         .unique()
         .collect()["symbol"]
         .to_list()

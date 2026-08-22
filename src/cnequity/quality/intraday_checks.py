@@ -69,7 +69,10 @@ def _scan_intraday(config: Config, dataset: str, start: date, end: date) -> pl.L
     root = config.curated_root / dataset
     if not dataset_has_parquet(root):
         return None
-    return scan_parquet_root(root, partition_col="trade_date", start=start, end=end)
+    return dedupe_lazy_by_primary_key(
+        scan_parquet_root(root, partition_col="trade_date", start=start, end=end),
+        dataset,
+    )
 
 
 def off_session_findings(lf: pl.LazyFrame, dataset: str, start: date, end: date) -> list[dict]:

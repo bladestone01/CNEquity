@@ -34,6 +34,7 @@ from datetime import date, timedelta
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
 # Window scanned back from the audit date. Long enough that a quiet market or a
@@ -80,7 +81,10 @@ def daily_bars_volume_unit_findings(
         return findings
 
     start = trade_date - timedelta(days=lookback_days)
-    lf = scan_parquet_root(root, partition_col="trade_date", start=start, end=trade_date)
+    lf = dedupe_lazy_by_primary_key(
+        scan_parquet_root(root, partition_col="trade_date", start=start, end=trade_date),
+        "daily_bars",
+    )
     cols = lf.collect_schema().names()
     if not {"volume", "amount", "close", "source"}.issubset(cols):
         return findings
@@ -148,7 +152,10 @@ def daily_bars_amount_completeness_findings(
         return findings
 
     start = trade_date - timedelta(days=lookback_days)
-    lf = scan_parquet_root(root, partition_col="trade_date", start=start, end=trade_date)
+    lf = dedupe_lazy_by_primary_key(
+        scan_parquet_root(root, partition_col="trade_date", start=start, end=trade_date),
+        "daily_bars",
+    )
     cols = lf.collect_schema().names()
     if not {"amount", "source"}.issubset(cols):
         return findings

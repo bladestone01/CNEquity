@@ -13,6 +13,7 @@ from pathlib import Path
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.market_time import shanghai_today
 from cnequity.storage.atomic import write_json_atomic, write_parquet_atomic
 
@@ -180,8 +181,9 @@ def _latest_em_boards_from_lake(config: Config) -> list[dict]:
     files = list(latest.rglob("*.parquet"))
     if not files:
         return []
-    df = pl.concat([pl.read_parquet(path) for path in files], how="diagonal_relaxed").unique(
-        subset=["sector_code"], keep="last", maintain_order=True
+    df = dedupe_by_primary_key(
+        pl.concat([pl.read_parquet(path) for path in files], how="diagonal_relaxed"),
+        "sector_bars",
     )
     return [
         {

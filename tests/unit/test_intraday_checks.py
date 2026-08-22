@@ -200,6 +200,47 @@ def test_reconciliation_uses_one_canonical_daily_row(cfg):
     assert findings == []
 
 
+def test_intraday_checks_use_one_canonical_bar_per_minute(cfg):
+    symbols = [f"60000{i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
+    good_rows = _minute_rows(symbols, [TRADE_DATE], 240, volume=100)
+    _write_minute_bars(cfg, good_rows)
+    stale = with_provenance(
+        pl.DataFrame(
+            [
+                {**row, "volume": 1000, "amount": 10_000.0}
+                for row in good_rows
+            ]
+        ),
+        source="tdx_protocol",
+        data_version="v1",
+    ).with_columns(pl.lit(datetime(2020, 1, 1, tzinfo=timezone.utc)).alias("fetched_at"))
+    part = cfg.curated_root / "minute_bars" / f"trade_date={TRADE_DATE.isoformat()}"
+    stale.write_parquet(part / "part-stale.parquet")
+    _write_daily_bars(
+        cfg,
+        [
+            {
+                "symbol": symbol,
+                "trade_date": TRADE_DATE,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 240 * 100,
+                "amount": 240 * 1000.0,
+            }
+            for symbol in symbols
+        ],
+    )
+
+    findings = [
+        finding
+        for finding in minute_bars_findings(cfg, TRADE_DATE)
+        if finding["check"] == "minute_bars_daily_reconciliation"
+    ]
+    assert findings == []
+
+
 def test_reconciliation_flags_a_volume_mismatch(cfg):
     symbols = [f"60000{i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
     _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=100))

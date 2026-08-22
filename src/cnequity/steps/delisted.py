@@ -37,6 +37,7 @@ import httpx
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.canonical import dedupe_lazy_by_primary_key
 from cnequity.domain.symbols import issued_code_space
 from cnequity.query.universe import coverage_end_date
 from cnequity.steps.common import (
@@ -1215,7 +1216,10 @@ def repair_delisted_instruments(
                 "symbol", "last_bar"
             )
             tail_counts = (
-                scan_parquet_root(bars_root, partition_col="trade_date", hive=False)
+                dedupe_lazy_by_primary_key(
+                    scan_parquet_root(bars_root, partition_col="trade_date", hive=False),
+                    "daily_bars",
+                )
                 .filter(pl.col("symbol").is_in(candidates))
                 .join(last_bar_by_symbol.lazy(), on="symbol", how="inner")
                 .filter(pl.col("trade_date") > pl.col("last_bar"))

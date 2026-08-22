@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 
@@ -87,6 +87,29 @@ def test_daily_placeholder_does_not_create_pre_seed_session(tmp_path):
         date(2010, 2, 10), date(2010, 2, 24), curated_root=tmp_path / "curated"
     )
     assert date(2010, 2, 17) not in set(cal.filter(pl.col("is_trading"))["trade_date"])
+
+
+def test_daily_retry_uses_canonical_row_before_creating_pre_seed_session(tmp_path):
+    root = tmp_path / "curated" / "daily_bars"
+    root.mkdir(parents=True)
+    first = date(2010, 2, 10)
+    day = date(2010, 2, 17)
+    pl.DataFrame(
+        {
+            "trade_date": [first, day, day],
+            "symbol": ["600519.SH"] * 3,
+            "volume": [100, 100, 0],
+            "fetched_at": [
+                datetime(2010, 2, 10, 7, tzinfo=timezone.utc),
+                datetime(2010, 2, 17, 7, tzinfo=timezone.utc),
+                datetime(2010, 2, 17, 8, tzinfo=timezone.utc),
+            ],
+        }
+    ).write_parquet(root / "part-retry.parquet")
+
+    cal = build_trading_calendar(day, day, curated_root=tmp_path / "curated")
+
+    assert cal["is_trading"][0] is False
 
 
 def test_weekend_index_bar_does_not_create_pre_seed_session(tmp_path):

@@ -14,7 +14,11 @@ from cnequity.quality.st_coverage import (
     st_evidence_coverage_report,
     write_st_checkpoint,
 )
-from cnequity.query.universe import coverage_start_date, trading_status_coverage_start
+from cnequity.query.universe import (
+    coverage_start_date,
+    st_coverage_start,
+    trading_status_coverage_start,
+)
 from cnequity.steps.finalize import step_audit
 
 
@@ -84,6 +88,39 @@ def test_trading_status_coverage_start_from_partitions(tmp_path):
     _write_status_partition(cfg, date(2024, 6, 28))
     assert trading_status_coverage_start(cfg) == date(2024, 6, 27)
     assert coverage_start_date(cfg, "daily_bars") is None
+
+
+def test_st_coverage_start_ignores_superseded_positive_label(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    root = cfg.curated_root / "trading_status" / "trade_date=2024-06"
+    root.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [date(2024, 6, 27)],
+            "is_trading": [True],
+            "status": ["st"],
+            "source": ["eastmoney"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-27T07:00:00+00:00"],
+        }
+    ).write_parquet(root / "part-old.parquet")
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "trade_date": [date(2024, 6, 27), date(2024, 6, 28)],
+            "is_trading": [True, True],
+            "status": ["normal", "st"],
+            "source": ["eastmoney", "eastmoney"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [
+                "2024-06-27T08:00:00+00:00",
+                "2024-06-28T07:00:00+00:00",
+            ],
+        }
+    ).write_parquet(root / "part-new.parquet")
+
+    assert st_coverage_start(cfg) == date(2024, 6, 28)
 
 
 def test_current_st_universe_reads_nested_instrument_fragments(tmp_path):

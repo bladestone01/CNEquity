@@ -13,6 +13,7 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.derive.sector_routing import norm_sector_name
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.market_time import shanghai_today
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.storage.atomic import write_json_atomic, write_parquet_atomic
@@ -53,7 +54,9 @@ def _latest_bars(config: Config) -> pl.DataFrame:
     root = config.curated_root / "sector_bars"
     if not dataset_has_parquet(root):
         return pl.DataFrame()
-    df = scan_parquet_root(root, partition_col="trade_date").collect()
+    df = dedupe_by_primary_key(
+        scan_parquet_root(root, partition_col="trade_date").collect(), "sector_bars"
+    )
     if df.is_empty():
         return df
     latest = df["trade_date"].max()
@@ -71,7 +74,7 @@ def _latest_member_boards(
     if not dataset_has_parquet(root):
         return pl.DataFrame()
     partition = "as_of_date"
-    df = scan_parquet_root(root, partition_col=partition).collect()
+    df = dedupe_by_primary_key(scan_parquet_root(root, partition_col=partition).collect(), dataset)
     if df.is_empty():
         return df
     latest = df[partition].max()

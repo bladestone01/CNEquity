@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -693,6 +693,28 @@ def test_uncovered_symbols_finds_history_behind_the_watermark(adj_config):
     _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
 
     assert _uncovered_symbols(adj_config) == {"600519.SH"}
+
+
+def test_uncovered_symbols_uses_newest_instrument_revision(adj_config):
+    from cnequity.derive.adj_factors import _uncovered_symbols
+
+    _write_bar(adj_config, "600519.SH", date(2016, 1, 4))
+    _write_bar(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
+    instruments = adj_config.curated_root / "instruments"
+    instruments.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "600519.SH"],
+            "asset_type": ["stock", "etf"],
+            "fetched_at": [
+                datetime(2024, 6, 28, 7, tzinfo=timezone.utc),
+                datetime(2024, 6, 28, 8, tzinfo=timezone.utc),
+            ],
+        }
+    ).write_parquet(instruments / "part-revision.parquet")
+
+    assert _uncovered_symbols(adj_config) == set()
 
 
 def test_a_symbol_covered_from_its_first_bar_is_not_reprocessed(adj_config):

@@ -114,6 +114,86 @@ def test_derive_suspension_tie_break_is_not_file_order_dependent(tmp_path):
     assert out.filter(pl.col("symbol") == "600519.SH")["status"].to_list() == ["suspended"]
 
 
+def test_derive_suspension_uses_canonical_calendar_rows(tmp_path):
+    """A superseded trading-calendar row must not create a false suspension."""
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    day_before = date(2024, 6, 26)
+    gap_day = date(2024, 6, 27)
+    day_after = date(2024, 6, 28)
+
+    for current in (day_before, day_after):
+        _write(
+            root,
+            "trading_calendar",
+            "trade_date",
+            current.isoformat(),
+            pl.DataFrame(
+                {
+                    "trade_date": [current],
+                    "is_trading": [True],
+                    "source": ["seed"],
+                    "data_version": ["v1"],
+                    "fetched_at": ["2024-06-28T00:00:00+00:00"],
+                }
+            ),
+        )
+    calendar_dir = root / "curated" / "trading_calendar" / f"trade_date={gap_day.isoformat()}"
+    calendar_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "trade_date": [gap_day],
+            "is_trading": [True],
+            "source": ["seed"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-27T07:00:00+00:00"],
+        }
+    ).write_parquet(calendar_dir / "part-old.parquet")
+    pl.DataFrame(
+        {
+            "trade_date": [gap_day],
+            "is_trading": [False],
+            "source": ["exchange"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-27T08:00:00+00:00"],
+        }
+    ).write_parquet(calendar_dir / "part-new.parquet")
+
+    for current in (day_before, day_after):
+        _write(
+            root,
+            "daily_bars",
+            "trade_date",
+            current.isoformat(),
+            pl.DataFrame(
+                {
+                    "symbol": ["600519.SH"],
+                    "trade_date": [current],
+                    "open": [1.0],
+                    "high": [1.0],
+                    "low": [1.0],
+                    "close": [1.0],
+                    "volume": [100],
+                    "amount": [100.0],
+                    "source": ["tdx_protocol"],
+                    "data_version": ["v1"],
+                    "fetched_at": ["2024-06-28T00:00:00+00:00"],
+                }
+            ),
+        )
+    instruments = root / "curated" / "instruments"
+    instruments.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "list_date": [date(2010, 1, 1)],
+            "delist_date": [None],
+        }
+    ).write_parquet(instruments / "part-merged.parquet")
+
+    assert derive_suspension_history(cfg) == 0
+
+
 def _write(root, dataset, partition_col, val, df):
     d = root / "curated" / dataset / f"{partition_col}={val}"
     d.mkdir(parents=True, exist_ok=True)

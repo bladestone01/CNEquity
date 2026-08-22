@@ -1,6 +1,6 @@
 """universe_survivorship_findings — does the lake keep the names that died?"""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 
@@ -106,6 +106,57 @@ def test_zero_volume_placeholder_does_not_hide_retired_symbol(tmp_path):
 
     assert "universe_survivorship_absent" not in checks
     assert checks["universe_survivorship"]["retired_symbols"] == 1
+
+
+def test_newer_zero_volume_retry_does_not_extend_retired_symbol(tmp_path):
+    """Canonical rows must be selected before deciding whether a bar traded."""
+    cfg = Config(data_root=tmp_path / "data")
+    dead_last = _END - timedelta(days=RETIRED_GAP_DAYS + 30)
+    _write_bars(cfg.data_root, {"A": (_START, _END), "DEAD": (_START, dead_last)})
+
+    tail = cfg.data_root / "curated" / "daily_bars" / f"trade_date={_END.isoformat()}"
+    tail.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["DEAD", "DEAD"],
+            "trade_date": [_END, _END],
+            "volume": [100, 0],
+            "fetched_at": [
+                datetime(2024, 6, 28, tzinfo=timezone.utc),
+                datetime(2024, 6, 29, tzinfo=timezone.utc),
+            ],
+        }
+    ).write_parquet(tail / "part-retry.parquet")
+
+    checks = _by_check(universe_survivorship_findings(cfg, _END))
+
+    assert checks["universe_survivorship"]["retired_symbols"] == 1
+
+
+def test_newest_instrument_revision_is_used_for_delist_status(tmp_path):
+    """A stale null delist_date must not override the later terminal revision."""
+    cfg = Config(data_root=tmp_path / "data")
+    dead_last = _END - timedelta(days=RETIRED_GAP_DAYS + 30)
+    _write_bars(cfg.data_root, {"A": (_START, _END), "DEAD": (_START, dead_last)})
+
+    part = cfg.data_root / "curated" / "instruments"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["A", "DEAD", "DEAD"],
+            "delist_date": [None, None, dead_last],
+            "fetched_at": [
+                datetime(2024, 6, 28, tzinfo=timezone.utc),
+                datetime(2024, 6, 28, tzinfo=timezone.utc),
+                datetime(2024, 6, 29, tzinfo=timezone.utc),
+            ],
+        },
+        schema={"symbol": pl.Utf8, "delist_date": pl.Date, "fetched_at": pl.Datetime("us", "UTC")},
+    ).write_parquet(part / "part-revision.parquet")
+
+    checks = _by_check(universe_survivorship_findings(cfg, _END))
+
+    assert "retired_symbol_missing_delist_date" not in checks
 
 
 def test_flags_retired_symbol_with_no_delist_date(tmp_path):

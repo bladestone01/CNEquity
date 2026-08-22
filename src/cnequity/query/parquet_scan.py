@@ -16,6 +16,7 @@ from pathlib import Path
 
 import polars as pl
 
+from cnequity.domain.canonical import dedupe_lazy_by_primary_key
 from cnequity.domain.datasets import granularity_for_dataset
 from cnequity.domain.partitions import (
     Partition,
@@ -163,15 +164,10 @@ def _scan_parquet_paths(
             extra_columns=extra_columns,
         )
     if all(schema == schemas[0] for schema in schemas[1:]):
-        lf = pl.scan_parquet(paths, hive_partitioning=hive)
-        if traded_only and "volume" in schemas[0]:
-            lf = lf.filter(pl.col("volume") > 0)
-        return lf
+        return pl.scan_parquet(paths, hive_partitioning=hive)
     scans: list[pl.LazyFrame] = []
-    for path, schema in zip(paths, schemas, strict=True):
+    for path, _schema in zip(paths, schemas, strict=True):
         scan = pl.scan_parquet(path, hive_partitioning=hive)
-        if traded_only and "volume" in schema:
-            scan = scan.filter(pl.col("volume") > 0)
         scans.append(scan)
     return pl.concat(scans, how="diagonal_relaxed")
 
@@ -233,6 +229,17 @@ def scan_parquet_root(
                 lf = lf.filter(pl.col(partition_col) <= end)
     if symbols and "symbol" in lf.collect_schema().names():
         lf = lf.filter(pl.col("symbol").is_in(symbols))
+    if traded_only:
+        # Filtering each file before the union lets an old positive-volume
+        # retry survive beside a newer zero-volume canonical row. Canonicalize
+        # the daily-bar identity first, then decide whether that final row is
+        # a real print. Legacy files without ``volume`` retain row semantics;
+        # their diagonal null volume is handled as a traded row below.
+        columns = set(lf.collect_schema().names())
+        if root.name == "daily_bars" and {"symbol", "trade_date"}.issubset(columns):
+            lf = dedupe_lazy_by_primary_key(lf, "daily_bars")
+        if "volume" in columns:
+            lf = lf.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
     return lf
 
 

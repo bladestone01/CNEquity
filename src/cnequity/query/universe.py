@@ -128,9 +128,13 @@ def coverage_start_date(
         # because the earliest partition can contain only zero-volume
         # suspension placeholders, which do not establish traded coverage.
         for part in parts:
-            scan = scan_parquet_root(root, partition_col=date_col, start=part.start, end=part.end)
-            if "volume" in scan.collect_schema().names():
-                scan = scan.filter(pl.col("volume") > 0)
+            scan = scan_parquet_root(
+                root,
+                partition_col=date_col,
+                start=part.start,
+                end=part.end,
+                traded_only=True,
+            )
             value = scan.select(pl.col(date_col).min()).collect().item()
             if value is not None:
                 return value
@@ -181,9 +185,13 @@ def coverage_end_date(
         # historical file; the fallback remains fully row-based for mixed or
         # loose layouts.
         for part in reversed(parts):
-            scan = scan_parquet_root(root, partition_col=date_col, start=part.start, end=part.end)
-            if "volume" in scan.collect_schema().names():
-                scan = scan.filter(pl.col("volume") > 0)
+            scan = scan_parquet_root(
+                root,
+                partition_col=date_col,
+                start=part.start,
+                end=part.end,
+                traded_only=True,
+            )
             value = scan.select(pl.col(date_col).max()).collect().item()
             if value is not None:
                 return value
@@ -215,7 +223,10 @@ def st_coverage_start(config: Config) -> date | None:
         return None
     try:
         return (
-            scan_parquet_root(root, partition_col="trade_date")
+            dedupe_lazy_by_primary_key(
+                scan_parquet_root(root, partition_col="trade_date"),
+                "trading_status",
+            )
             .filter(pl.col("status").is_in(["st", "*st"]))
             .select(pl.col("trade_date").min())
             .collect()

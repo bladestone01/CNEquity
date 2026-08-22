@@ -1,6 +1,6 @@
 """Partition period arithmetic, mixed-granularity reads, compact, repartition."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -181,6 +181,32 @@ def test_reads_legacy_and_current_files_with_different_columns(tmp_path):
     assert df.sort("trade_date")["volume"].to_list() == [None, 100]
     traded = collect_parquet_root(root, partition_col="trade_date", traded_only=True)
     assert sorted(traded["trade_date"].to_list()) == [date(2024, 6, 27), date(2024, 6, 28)]
+
+
+def test_traded_only_canonicalizes_before_filtering_volume(tmp_path):
+    root = tmp_path / "curated" / "daily_bars"
+    root.mkdir(parents=True)
+    day = date(2024, 6, 28)
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "trade_date": [day],
+            "volume": [100],
+            "fetched_at": [datetime(2024, 6, 28, 7, tzinfo=timezone.utc)],
+        }
+    ).write_parquet(root / "part-old.parquet")
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "trade_date": [day],
+            "volume": [0],
+            "fetched_at": [datetime(2024, 6, 28, 8, tzinfo=timezone.utc)],
+        }
+    ).write_parquet(root / "part-new.parquet")
+
+    traded = collect_parquet_root(root, partition_col="trade_date", traded_only=True)
+
+    assert traded.is_empty()
 
 
 def test_window_outside_coverage_returns_empty_not_error(tmp_path):

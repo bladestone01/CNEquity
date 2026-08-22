@@ -20,7 +20,7 @@ import polars as pl
 
 from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 from cnequity.config import Config
-from cnequity.query.canonical import dedupe_lazy_by_primary_key
+from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
     list_partitions,
@@ -89,6 +89,11 @@ def _traded_bars(bars: pl.LazyFrame) -> pl.LazyFrame:
     return bars
 
 
+def _canonical_traded_bars(bars: pl.LazyFrame) -> pl.LazyFrame:
+    """Canonicalize daily-bar identity before applying traded-row semantics."""
+    return _traded_bars(dedupe_lazy_by_primary_key(bars, "daily_bars"))
+
+
 def _trading_days(config: Config, trade_date: date) -> set[date]:
     cal_root = config.curated_root / "trading_calendar"
     if not dataset_has_parquet(cal_root):
@@ -120,7 +125,10 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
     if not trading_days:
         return findings
 
-    bars = scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+    bars = dedupe_lazy_by_primary_key(
+        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date),
+        "daily_bars",
+    )
     # Aggregate both calendar signals in one streaming pass. The old code
     # collected the same historical daily_bars scan twice (all rows, then
     # traded rows), which made a full health run needlessly amplify its peak
@@ -255,7 +263,7 @@ def valuation_day_coverage_ratio(config: Config, trade_date: date) -> float | No
         .to_list()
     )
     bars_syms = set(
-        _traded_bars(
+        _canonical_traded_bars(
             scan_parquet_root(
                 bars_root, partition_col="trade_date", start=trade_date, end=trade_date
             )
@@ -376,7 +384,9 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
         scan_parquet_root(val_root, partition_col="trade_date", end=trade_date)
     )
     bars_syms_all, bars_dates = _unique_symbols_and_dates(
-        _traded_bars(scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date))
+        _canonical_traded_bars(
+            scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+        )
     )
     if not val_syms_all or not bars_syms_all:
         return findings
@@ -423,7 +433,7 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
         .to_list()
     )
     bars_syms = set(
-        _traded_bars(
+        _canonical_traded_bars(
             scan_parquet_root(bars_root, partition_col="trade_date", start=anchor, end=anchor)
         )
         .select("symbol")
@@ -702,7 +712,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
         return []
 
     priced = set(
-        _traded_bars(scan_parquet_root(bars_root))
+        _canonical_traded_bars(scan_parquet_root(bars_root))
         .select("symbol")
         .unique()
         .collect(engine="streaming")["symbol"]
@@ -964,10 +974,11 @@ def _symbol_last_bar(config: Config, trade_date: date) -> pl.DataFrame | None:
     bars_root = config.curated_root / "daily_bars"
     if not dataset_has_parquet(bars_root):
         return None
-    bars = scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+    bars = _canonical_traded_bars(
+        scan_parquet_root(bars_root, partition_col="trade_date", end=trade_date)
+    )
     # A suspended/delisted name can retain carried-forward OHLC placeholders
     # after its final print. Those rows must not hide a survivorship gap.
-    bars = _traded_bars(bars)
     out = (
         bars.group_by("symbol")
         .agg(
@@ -983,7 +994,7 @@ def _instruments_frame(config: Config) -> pl.DataFrame | None:
     root = config.curated_root / "instruments"
     if not dataset_has_parquet(root):
         return None
-    out = scan_parquet_root(root, hive=False).collect()
+    out = dedupe_by_primary_key(scan_parquet_root(root, hive=False).collect(), "instruments")
     return None if out.is_empty() else out
 
 
@@ -1333,7 +1344,10 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
         return []
 
     labeled = (
-        scan_parquet_root(status_root, partition_col="trade_date", end=trade_date)
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(status_root, partition_col="trade_date", end=trade_date),
+            "trading_status",
+        )
         .filter(pl.col("trade_date") == pl.lit(trade_date))
         .filter(pl.col("status").is_in(["st", "*st"]))
         .select("symbol")
