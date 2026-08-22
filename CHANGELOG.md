@@ -6,6 +6,121 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Research-universe scoping for quality and health.** Historical-validity
+  checks accept an explicit research universe, and the health entrypoints and
+  `serve` API report readiness against that scope instead of the whole lake, so
+  a source that never covered a board no longer reads as a hole in the data.
+- **Explicit `all_a_sh_sz` universe in the query layer.** Callers can name the
+  Shanghai/Shenzhen universe directly rather than approximating it with a
+  filter. See Changed for the rejection behavior that comes with it.
+- **Scoped Baostock corporate-action repair.** A bounded repair for corporate
+  actions, including historical Beijing events, replaces what previously needed
+  a full-history refetch. The adjustment-factor reconciliation finding also
+  carries a sample of the delisted SH/SZ symbols Baostock can actually repair
+  (`baostock_repairable_sample`), so the audit output names the candidates
+  rather than only counting them.
+- **Optional Beijing ST evidence back to 2016.** Baostock's ST history covers
+  SH/SZ only. With an explicitly configured Tushare Pro token, BJ evidence is
+  now collected from `stock_st` (2017-01-01 onward) and `bak_basic` name history
+  (2016). Pre-2016 BJ stays blocked as a declared source limitation rather than
+  being read as clean, and an unconfigured Tushare still blocks BJ explicitly.
+- **`cne query --refresh` for on-demand datasets.** Forces a refetch and
+  overwrites the matching cache variant; on-demand cache entries are keyed by
+  request parameters so different dates, row counts, and sentiment models no
+  longer reuse each other's results.
+- **Beijing tip turnover supplementation.** Beijing daily bars fill turnover at
+  the tip from a secondary snapshot instead of landing incomplete.
+
+### Fixed
+
+- **One canonical source precedence across the whole lake.** Storage, query,
+  views, calendar, sector mapping, adjustment factors, intraday and tick checks,
+  and every quality consumer now resolve multi-source rows the same way:
+  timestamped observations win, ties break deterministically, and legacy rows
+  without timestamps rank consistently. Previously each consumer could pick a
+  different row for the same key.
+- **Daily-bar failover is scoped, resumable, and lossless.** Retries narrow to
+  the batches that actually failed, verified batches are reused instead of
+  refetched, valid rows survive a partially failed batch, edge gaps in a
+  requested window are detected, and a source outage degrades that source alone
+  rather than the whole run. Large partial tip snapshots are rejected outright.
+- **Hung upstream requests are interrupted instead of blocking a run.** TDX bar
+  requests and native socket reads are bounded, stalled Baostock queries are
+  interrupted, and long trading-status backfills heartbeat so a stall is visible
+  rather than indistinguishable from slow progress.
+- **Adapters fail closed on malformed payloads.** TDX (unknown price
+  coefficients, malformed quantity and action amounts), EastMoney (action
+  values), Sina (all-malformed klines), CNI (unsupported workbooks), BSE
+  (truncated quote pagination), Tushare (ST evidence rows), and the news index
+  (unstable article identities) reject bad rows instead of writing them through.
+  THS transfer-increase plans are parsed rather than dropped.
+- **Expected gaps are distinguished from real ones.** Retired datasets, on-demand
+  backup gaps, known index-source limits, Sina turnover gaps, and unsupported
+  exchanges are classified as informational and carry their reason into the
+  audit artifact and the health API, so a blocked research question is
+  distinguishable from a healthy lake with a known source limitation.
+- **ST evidence receipts are drift-checked and composable.** Overlapping
+  coverage receipts merge, a later run over the same universe extends an earlier
+  one, duplicate symbols are rejected, in-progress checkpoints are visible, and
+  receipts that no longer match the data they claim are detected. Strict
+  universes and the MCP surface gate on real all-A evidence.
+- **Placeholder and stub rows stay out of the lake.** Padded subscription
+  placeholders are stripped on ingest and purged during compaction, subscription
+  stubs are excluded from symbol universes, and delisted placeholder tails are
+  counted canonically.
+- **Historical calendar and closure modeling.** Weekend rows in historical index
+  data are sanitized, the calendar keeps weekdays only, verified historical
+  market holidays are excluded, and early market closures are modeled from
+  evidence rather than inferred.
+- **Corporate-action history is complete at its boundaries.** Source precedence
+  is aligned, the history floor matches what sources actually publish, pre-2016
+  backfill rows and the earliest snapshot coverage are preserved, and optional
+  snapshots failing does not fail the backfill.
+- **Adjustment factors report incomplete coverage.** Partial factor spans are
+  detected, uncached Beijing factors are fetched rather than assumed present,
+  and factors unavailable for delisted symbols are classified instead of
+  silently missing.
+- **PIT fundamentals are bounded by collection date**, so a backfill cannot
+  surface a report earlier than the lake could have known it.
+- **Backfill recovery reflects what landed.** Orphaned staging is recovered,
+  valuation backfill windows are honored, empty CNI backfills degrade safely,
+  derived coverage repairs route to the right dataset, disabled intraday
+  captures are not audited as gaps, and delisted symbols are kept out of both
+  intraday sweeps and the active universe.
+
+### Changed
+
+- **Strict universe queries now raise where they previously returned rows or an
+  empty frame.** This is the one caller-visible break in this release. An
+  unsupported universe name raises `ValueError` instead of passing the frame
+  through unfiltered (supported names are `all_a` and `all_a_sh_sz`). Under
+  `strict`, a `daily_bars` scope that returns no rows, missing curated
+  instruments, and missing ST evidence each raise `UniverseCoverageError`
+  instead of yielding a silently unproven population, and the MCP surface
+  enforces the same all-A evidence requirement. Code that relied on a strict
+  query degrading quietly must now catch `UniverseCoverageError` or supply the
+  coverage. This is deliberate: a strict universe that cannot prove its coverage
+  was returning survivorship-biased results.
+- **Quality and query scans are bounded or streamed rather than full-lake.**
+  Cross-dataset scans, audit aggregates, and valuation coverage stream or
+  combine their passes; ST universe scans, adjustment audits, daily coverage
+  boundaries, current-day status reads, and Baostock repair windows are pruned
+  to the window that matters; the factor audit drops a full anti-join; ST
+  receipt revalidation is cached; and duplicate intraday scans and duplicate
+  daily-bar failover requests are eliminated. Bounded Sina fallback fetches run
+  in parallel. Note that the bounding is not purely a speed change: a scan that
+  now covers a narrower window can legitimately produce a different finding set
+  for the same lake, so audit output may shift alongside the runtime.
+
+### Docs
+
+- Documented scoped research validity, corporate-action repair scope, explicit
+  universe semantics for MCP, retired-source semantics, the index-history source
+  limitation, and ST coverage with Baostock pacing. Source coverage counts no
+  longer hard-code numbers that go stale.
+
 ## [0.7.2] — 2026-08-16
 
 ### Fixed
@@ -711,6 +826,10 @@ First public release of the self-hosted A-share Parquet data layer.
 - TLS verify on by default for HTTP clients
 - Project URLs point at `rootSunc/cnequity`
 
+[Unreleased]: https://github.com/rootSunc/cnequity/compare/v0.7.2...main
+[0.7.2]: https://github.com/rootSunc/cnequity/releases/tag/v0.7.2
+[0.7.1]: https://github.com/rootSunc/cnequity/releases/tag/v0.7.1
+[0.7.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.7.0
 [0.6.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.6.0
 [0.5.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.5.0
 [0.4.0]: https://github.com/rootSunc/cnequity/releases/tag/v0.4.0
