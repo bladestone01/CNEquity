@@ -410,3 +410,18 @@ def test_backfill_stops_paging_once_past_the_floor(monkeypatch):
     assert stop(pages[0]) is False, "a page inside the window must not stop paging"
     assert stop(pages[1]) is True, "a page ending before the floor must stop it"
     assert stop([{"SECURITY_CODE": "x"}]) is False, "no parseable date — keep going"
+
+
+def test_backfill_default_floor_keeps_first_documented_snapshot_date(monkeypatch):
+    captured = {}
+
+    def _fake(client, report, columns, *, filter_expr, stop_after=None, **kwargs):
+        captured["stop_after"] = stop_after
+        return []
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.corporate_actions.fetch_datacenter", _fake)
+    fetch_corporate_actions_eastmoney(date(2026, 8, 7), backfill=True, client=_Client())
+
+    stop = captured["stop_after"]
+    assert stop([{"EX_DIVIDEND_DATE": "2015-09-29"}]) is False
+    assert stop([{"EX_DIVIDEND_DATE": "2015-09-28"}]) is True

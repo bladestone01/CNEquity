@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 
 from cnequity.adapters.tdx_protocol import client as tdx
+from cnequity.config import Config
 from cnequity.domain.schemas import MOCK_SOURCE, with_provenance
 
 START = date(2024, 6, 24)
@@ -60,6 +61,33 @@ def test_trading_calendar_uses_seed_without_mock():
 def test_corporate_actions_raises_without_allow_mock_on_backfill_path():
     with pytest.raises(tdx.TdxSourceError, match="corporate_actions"):
         tdx.fetch_corporate_actions(date(2024, 6, 28), primary_only=True)
+
+
+def test_corporate_actions_default_backfill_reaches_research_floor(monkeypatch, tmp_path):
+    row = pl.DataFrame(
+        {
+            "symbol": ["600849.SH"],
+            "ex_date": [date(2005, 8, 19)],
+            "action_type": ["cash_dividend"],
+            "cash_dividend": [0.08],
+            "bonus_ratio": [0.0],
+            "transfer_ratio": [0.0],
+            "allotment_ratio": [None],
+            "allotment_price": [None],
+        },
+        schema_overrides={"allotment_ratio": pl.Float64, "allotment_price": pl.Float64},
+    )
+    monkeypatch.setattr(tdx, "fetch_corporate_actions_tdx", lambda *args, **kwargs: row)
+
+    out = tdx.fetch_corporate_actions(
+        date(2005, 12, 31),
+        symbols=["600849.SH"],
+        backfill=True,
+        primary_only=True,
+        config=Config(data_root=tmp_path / "data"),
+    )
+
+    assert out.select("ex_date").to_series().to_list() == [date(2005, 8, 19)]
 
 
 def test_trading_status_raises_without_allow_mock(monkeypatch):

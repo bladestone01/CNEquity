@@ -410,7 +410,7 @@ def test_missing_corp_action_on_a_delisted_symbol_is_info_not_warning(tmp_path):
         [(symbol, _D[0], 1.0), (symbol, _D[1], 1.0), (symbol, _D[2], 2.0), (symbol, _D[3], 2.0)],
     )
     _write_corp_actions(cfg.data_root, _DECOY)
-    _write_instruments(cfg.data_root, [(symbol, date(2024, 6, 5))])
+    _write_instruments(cfg.data_root, [(symbol, date(2024, 6, 6))])
     findings = adj_factor_reconciliation_findings(cfg, _D[-1])
     assert len(findings) == 1
     f = findings[0]
@@ -419,7 +419,37 @@ def test_missing_corp_action_on_a_delisted_symbol_is_info_not_warning(tmp_path):
     assert f["symbols_total"] == 1
     assert f["sample"] == [symbol]
     assert f["baostock_repairable_symbols"] == 1
+    assert f["baostock_repairable_sample"] == [symbol]
     assert f["unsupported_exchange_counts"] == {}
+    assert f["divergence_date_relation_counts"] == {
+        "on_or_before_delist_date": 1,
+        "after_delist_date": 0,
+    }
+    assert "all after their delist_date" not in f["message"]
+
+
+def test_missing_corp_action_on_bj_delisted_symbol_points_to_independent_source(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    symbol = "430090.BJ"
+    _write_bars(
+        cfg.data_root,
+        [(symbol, _D[0], 10.0), (symbol, _D[1], 10.0), (symbol, _D[2], 5.0), (symbol, _D[3], 5.0)],
+    )
+    _write_factors(
+        cfg.data_root,
+        [(symbol, _D[0], 1.0), (symbol, _D[1], 1.0), (symbol, _D[2], 2.0), (symbol, _D[3], 2.0)],
+    )
+    _write_corp_actions(cfg.data_root, _DECOY)
+    _write_instruments(cfg.data_root, [(symbol, date(2024, 6, 5))])
+
+    findings = adj_factor_reconciliation_findings(cfg, _D[-1])
+
+    assert len(findings) == 1
+    f = findings[0]
+    assert f["baostock_repairable_symbols"] == 0
+    assert f["unsupported_exchange_counts"] == {"BJ": 1}
+    assert "Baostock" not in f["remediation"]
+    assert "independent historical corporate-action source" in f["remediation"]
 
 
 def test_missing_corp_action_on_a_still_listed_symbol_stays_a_warning(tmp_path):

@@ -100,6 +100,30 @@ def test_corporate_actions_backfill_rejects_source_rows_outside_requested_window
     assert not list((cfg.staging_root / "corporate_actions").glob("**/*.parquet"))
 
 
+def test_corporate_actions_backfill_default_reaches_research_floor(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill = True
+    monkeypatch.setattr("cnequity.steps.events.load_symbols", lambda _cfg: ["600849.SH"])
+    rows = pl.DataFrame(
+        {
+            "symbol": ["600849.SH"],
+            "ex_date": [date(2005, 8, 19)],
+            "action_type": ["cash_dividend"],
+            "cash_dividend": [0.08],
+            "bonus_ratio": [0.0],
+            "transfer_ratio": [0.0],
+            "allotment_ratio": [None],
+            "allotment_price": [None],
+        },
+        schema_overrides={"allotment_ratio": pl.Float64, "allotment_price": pl.Float64},
+    )
+    monkeypatch.setattr("cnequity.steps.events.fetch_corporate_actions", lambda *a, **k: rows)
+
+    result = step_corporate_actions(cfg, date(2026, 8, 21), "run-floor", {})
+
+    assert result["rows_written"] == 1
+
+
 def test_parse_row_maps_current_eastmoney_columns():
     """Guards against EM column drift (EX_DIVIDEND_DATE/PRETAX_BONUS_RMB/IT_RATIO)."""
     from cnequity.adapters.eastmoney.corporate_actions import _parse_row

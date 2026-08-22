@@ -25,8 +25,11 @@ _REPORT = "RPT_SHAREBONUS_DET"
 # pretax; _parse_row divides by 10 to honor the per-share CORPORATE_ACTIONS
 # unit contract (schemas.py). Do NOT stage the raw per-10 values.
 _EX_DATE_COL = "EX_DIVIDEND_DATE"
-# Oldest ex-date a backfill walks back to when the caller names no start.
-_BACKFILL_FLOOR = date(2016, 1, 1)
+# Oldest ex-date a backup snapshot walks back to when the caller names no
+# start.  EastMoney's corporate-action report is documented in this project
+# as covering 2015-09-29 onward; keeping the implicit floor at 2016 silently
+# dropped the first available quarter from the optional audit artifact.
+_BACKFILL_FLOOR = date(2015, 9, 29)
 _COLUMNS = (
     "SECURITY_CODE,SECUCODE,EX_DIVIDEND_DATE,EQUITY_RECORD_DATE,PRETAX_BONUS_RMB,"
     "BONUS_RATIO,IT_RATIO,BONUS_IT_RATIO,IMPL_PLAN_PROFILE,ASSIGN_PROGRESS"

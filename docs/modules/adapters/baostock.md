@@ -40,6 +40,7 @@
 - 通过 `cne backfill corporate_actions --baostock-repair` 显式启用
 - 只对 instruments 中已退市的 SH/SZ 标的请求 `query_dividend_data`
 - 每票按 `list_date..delist_date` 裁剪年份窗口，避免查询上市前/退市后的无效年份
+- corporate_actions 修复默认跟随项目研究底 `2001-01-01`；需要更窄范围时通过 `--start/--end` 明确指定
 - `yearType="operate"` 的 `dividOperateDate` 作为除权除息日；现金、送股、转股按每股单位拆成独立行
 - 北交所代码会被 Baostock 接口拒绝，因此继续作为 `missing_corporate_action_delisted` 的已知源限制
 - Baostock 该接口不提供可靠的配股比例/价格，配股仍依赖 TDX/EastMoney

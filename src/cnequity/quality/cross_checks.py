@@ -979,6 +979,12 @@ def adj_factor_reconciliation_findings(
             noun="a raw move with no corporate action on record",
         )
     if not delisted.is_empty():
+        divergence_on_or_before_delist = delisted.filter(
+            pl.col("trade_date") <= pl.col("delist_date")
+        ).height
+        divergence_after_delist = delisted.filter(
+            pl.col("trade_date") > pl.col("delist_date")
+        ).height
         baostock_repairable = 0
         unsupported_exchange_counts: dict[str, int] = {}
         for symbol in delisted["symbol"].to_list():
@@ -992,6 +998,11 @@ def adj_factor_reconciliation_findings(
                 unsupported_exchange_counts[exchange] = (
                     unsupported_exchange_counts.get(exchange, 0) + 1
                 )
+        repairable_symbols = sorted(
+            str(symbol)
+            for symbol in delisted["symbol"].to_list()
+            if str(symbol).upper().endswith((".SH", ".SZ"))
+        )
         repair_hint = (
             " Explicit Baostock repair can cover "
             f"{baostock_repairable} delisted SH/SZ symbol(s); run "
@@ -1010,6 +1021,20 @@ def adj_factor_reconciliation_findings(
             if unsupported_exchange_counts
             else ""
         )
+        remediation_parts: list[str] = []
+        if baostock_repairable:
+            remediation_parts.append(
+                "Run a scoped Baostock repair for SH/SZ symbols"
+            )
+        if unsupported_exchange_counts:
+            remediation_parts.append(
+                "obtain an independent historical corporate-action source for "
+                "unsupported exchanges"
+            )
+        remediation = "; ".join(remediation_parts) or (
+            "Review the delisted symbols against an independent historical "
+            "corporate-action source"
+        )
         findings.append(
             {
                 "dataset": "corporate_actions",
@@ -1017,7 +1042,9 @@ def adj_factor_reconciliation_findings(
                 "check": "missing_corporate_action_delisted",
                 "message": (
                     f"{delisted.height} delisted symbol(s) have a raw/hfq return divergence "
-                    "with no corporate action on record, all after their delist_date. "
+                    "with no corporate action on record; these symbols later delisted "
+                    f"({divergence_on_or_before_delist} on/before their delist_date, "
+                    f"{divergence_after_delist} after). "
                     "Verified live against both tdx_protocol and the eastmoney backup: "
                     "neither serves corporate-action history for a name once it is gone "
                     "from their live symbol list. Not a market-id or filter bug — see "
@@ -1026,12 +1053,14 @@ def adj_factor_reconciliation_findings(
                 ),
                 "symbols_total": delisted.height,
                 "sample": sorted(delisted["symbol"].to_list())[:_SAMPLE],
+                "divergence_date_relation_counts": {
+                    "on_or_before_delist_date": divergence_on_or_before_delist,
+                    "after_delist_date": divergence_after_delist,
+                },
                 "baostock_repairable_symbols": baostock_repairable,
+                "baostock_repairable_sample": repairable_symbols[:_SAMPLE],
                 "unsupported_exchange_counts": unsupported_exchange_counts,
-                "remediation": (
-                    "Run a scoped Baostock repair for SH/SZ symbols; obtain an independent "
-                    "historical corporate-action source for unsupported exchanges."
-                ),
+                "remediation": remediation + ".",
                 "source_limited": True,
             }
         )

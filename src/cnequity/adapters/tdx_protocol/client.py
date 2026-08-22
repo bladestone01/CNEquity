@@ -34,6 +34,12 @@ from cnequity.domain.symbols import (
 
 logger = logging.getLogger(__name__)
 
+# Corporate actions are joined to the 2001 research bars and adjustment
+# factors.  Keeping the adapter's implicit floor at the generic 2016 default
+# silently discarded pre-2016 events before the step-level window validation
+# could see them.
+CORPORATE_ACTIONS_BACKFILL_START = date(2001, 1, 1)
+
 _close_quotes_client = close_quotes_client
 
 INDEX_SYMBOLS = [
@@ -1056,7 +1062,9 @@ def fetch_corporate_actions(
         if not backfill:
             out = out.filter(pl.col("ex_date") == trade_date)
         else:
-            backfill_start = getattr(config, "_backfill_start", None) or date(2016, 1, 1)
+            backfill_start = (
+                getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
+            )
             backfill_end = getattr(config, "_backfill_end", None) or trade_date
             out = out.filter(
                 (pl.col("ex_date") >= backfill_start) & (pl.col("ex_date") <= backfill_end)

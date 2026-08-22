@@ -18,7 +18,7 @@
 | 波次 | `instruments`（Wave 0） |
 | 主源 | tdx_protocol（内置 security_list） |
 | 备源 | baostock（仅 `--backfill`，补退市标的） |
-| 频率 | 每日 |
+| 频率 | 每日；历史回填默认从 2001-01-01 起，支持 `--start` 缩小窗口 |
 | 主键 | symbol |
 | 股票池 | SH/SZ/BJ 前缀白名单 60/68/00/30/92 |
 | 已知限制 | 快照中消失时推断 `delist_date`；东财补充 `list_date` |

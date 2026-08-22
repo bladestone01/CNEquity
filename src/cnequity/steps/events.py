@@ -16,7 +16,10 @@ from cnequity.adapters.eastmoney.earnings_disclosure import (
     _backfill_report_dates,
     fetch_earnings_disclosure_schedule,
 )
-from cnequity.adapters.tdx_protocol.client import fetch_corporate_actions
+from cnequity.adapters.tdx_protocol.client import (
+    CORPORATE_ACTIONS_BACKFILL_START,
+    fetch_corporate_actions,
+)
 from cnequity.config import Config
 from cnequity.domain.schemas import with_provenance
 from cnequity.orchestrator.manifest import Manifest
@@ -26,7 +29,6 @@ from cnequity.quality.failover import (
     snapshot_corporate_actions_tdx_backup,
 )
 from cnequity.steps.common import (
-    BACKFILL_START,
     fetch_incremental_daily,
     instrument_metadata,
     load_symbols,
@@ -240,7 +242,9 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 raise RuntimeError(
                     "corporate_actions: --baostock-repair requires the baostock source"
                 )
-            repair_start = getattr(config, "_backfill_start", None) or BACKFILL_START
+            repair_start = (
+                getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
+            )
             repair_end = getattr(config, "_backfill_end", None) or trade_date
             repair_windows = _delisted_sh_sz_windows(
                 config,
@@ -327,7 +331,9 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 )
 
     if backfill and not df.is_empty():
-        start = getattr(config, "_backfill_start", None) or BACKFILL_START
+        start = (
+            getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
+        )
         end = getattr(config, "_backfill_end", None) or trade_date
         if "ex_date" not in df.columns:
             raise RuntimeError("corporate_actions: backfill response has no ex_date column")
