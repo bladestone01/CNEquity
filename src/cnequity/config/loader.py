@@ -369,16 +369,44 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("[tdx_protocol].lock_timeout_sec must be > 0")
     if not cfg.daily_waves:
         errors.append("job.daily.waves must define at least one wave")
+
+    from cnequity.domain.datasets import DATASETS, intraday_datasets
+
+    known_sources: set[str] = set()
+    for ds_spec in DATASETS.values():
+        known_sources.add(ds_spec.primary_source)
+        if ds_spec.backup_source:
+            known_sources.add(ds_spec.backup_source)
+        if ds_spec.backfill_source:
+            known_sources.add(ds_spec.backfill_source)
+
+    seen_failover_names: set[str] = set()
     for spec in cfg.failover_datasets:
         if spec.snapshot_cadence not in {"on_demand", "daily"}:
             errors.append(
                 f"failover dataset {spec.name!r}: snapshot_cadence must be 'on_demand' or 'daily'"
             )
+        if spec.name in seen_failover_names:
+            errors.append(f"[[failover.datasets]]: duplicate entry for {spec.name!r}")
+        seen_failover_names.add(spec.name)
+        if spec.name not in DATASETS:
+            errors.append(
+                f"[[failover.datasets]]: {spec.name!r} is not a registered dataset "
+                f"(available: {', '.join(sorted(DATASETS))})"
+            )
+        if spec.primary not in known_sources:
+            errors.append(
+                f"failover dataset {spec.name!r}: unknown primary source {spec.primary!r} "
+                f"(known sources: {', '.join(sorted(known_sources))})"
+            )
+        if spec.backup not in known_sources:
+            errors.append(
+                f"failover dataset {spec.name!r}: unknown backup source {spec.backup!r} "
+                f"(known sources: {', '.join(sorted(known_sources))})"
+            )
 
     # Each frequency must have a dataset to land in, or its rows would have
     # nowhere to go and its horizon nowhere to be declared.
-    from cnequity.domain.datasets import intraday_datasets
-
     known_frequencies = intraday_datasets()
     for frequency in cfg.minute_bars_frequencies:
         if frequency not in known_frequencies:

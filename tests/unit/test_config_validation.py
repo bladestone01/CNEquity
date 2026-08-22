@@ -62,6 +62,49 @@ def test_validate_config_rejects_invalid_failover_snapshot_cadence(tmp_path):
     assert any("snapshot_cadence" in e for e in errors)
 
 
+def test_validate_config_rejects_unknown_failover_dataset_name(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        failover_datasets=[
+            FailoverDatasetSpec(
+                name="not_a_dataset",
+                primary="tdx_protocol",
+                backup="eastmoney",
+            )
+        ],
+    )
+    errors = validate_config(cfg)
+    assert any("'not_a_dataset' is not a registered dataset" in e for e in errors)
+
+
+def test_validate_config_rejects_unknown_failover_source(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        failover_datasets=[
+            FailoverDatasetSpec(
+                name="daily_bars",
+                primary="tdx_protocol",
+                backup="not_a_source",
+            )
+        ],
+    )
+    errors = validate_config(cfg)
+    assert any("unknown backup source 'not_a_source'" in e for e in errors)
+    assert not any("unknown primary source" in e for e in errors)
+
+
+def test_validate_config_rejects_duplicate_failover_entries(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        failover_datasets=[
+            FailoverDatasetSpec(name="daily_bars", primary="tdx_protocol", backup="eastmoney"),
+            FailoverDatasetSpec(name="daily_bars", primary="eastmoney", backup="tdx_protocol"),
+        ],
+    )
+    errors = validate_config(cfg)
+    assert any("duplicate entry for 'daily_bars'" in e for e in errors)
+
+
 def test_validate_config_accepts_registered_waves(tmp_path):
     cfg = Config(
         data_root=tmp_path / "data",
