@@ -52,6 +52,19 @@ jobs:
       # Windows below covers the platform-specific file-lock/path behavior.
       matrix:
         python-version: ["3.10", "3.12"]
+        # "latest" = whatever pip resolves, which is what a fresh
+        # `pip install cnequity` gets. See the floor job in `include`.
+        httpx: ["latest"]
+        include:
+          # pyproject declares `httpx>=0.25` with no upper bound, so the jobs
+          # above always test the newest release and the declared floor is
+          # never exercised. httpx 0.28 changed `params` from merging into a
+          # URL's existing query to replacing it outright — a silent, live
+          # breakage (see adapters/eastmoney/em_auth.py) that only shows up
+          # when the two ends of the declared range disagree. Pinning the floor
+          # here makes the lower bound a tested claim rather than an assumption.
+          - python-version: "3.12"
+            httpx: "0.25.2"
     steps:
       - uses: actions/checkout@v4
 
@@ -66,12 +79,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e . --group dev
+          if [ "${{ matrix.httpx }}" != "latest" ]; then
+            pip install "httpx==${{ matrix.httpx }}"
+          fi
+
+      - name: Report resolved httpx
+        # The version is otherwise an invisible side effect of resolution drift;
+        # print it so a failure names the httpx it happened on.
+        run: python -c "import httpx; print('httpx', httpx.__version__)"
 
       - name: Test
         run: pytest --cov=cnequity --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage
-        if: matrix.python-version == '3.12'
+        # Both 3.12 jobs would otherwise upload and double-count the same run.
+        if: matrix.python-version == '3.12' && matrix.httpx == 'latest'
         uses: codecov/codecov-action@v5
         with:
           files: coverage.xml
