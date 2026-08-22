@@ -1,0 +1,11 @@
+# Formatting-only commits. Skip them in blame:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub reads this file automatically.
+#
+# Each commit below was verified to change no behavior.
+
+# style: apply ruff formatting (53 files)
+f209d5b88a7fa1c349dffafe6f1606fbdd221899
+
+# fix: apply ruff formatting so CI quality job passes (46 files)
+7b34ca73ef4508ea4f91c7abc5f064c0af0e2dad

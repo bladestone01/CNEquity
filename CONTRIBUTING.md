@@ -26,9 +26,13 @@
 python -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip   # PEP 735 --group 需要 pip >= 25.1
 pip install -e . --group dev
+pre-commit install                    # 提交前自动跑 ruff check / ruff format
 # 无 extras：运行时依赖全部随包安装
 # 见 docs/getting-started/installation.md
 ```
+
+`pre-commit install` 只需每个 clone 执行一次。它跑的就是 CI `quality` job 的那两项检查，
+把格式问题挡在提交前，而不是推送后才变红。
 
 请勿提交 `configs/cnequity.toml`、`data/`、`logs/`。
 

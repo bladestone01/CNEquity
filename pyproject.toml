@@ -94,6 +94,9 @@ dev = [
   # line-wrapping changes between minors, so an unpinned `ruff>=0.4` turns any
   # upstream release into a red build on code nobody touched.
   "ruff>=0.15,<0.16",
+  # Runs the same two checks before the commit instead of after the push.
+  # `pre-commit install` once per clone; see .pre-commit-config.yaml.
+  "pre-commit>=3.5",
 ]
 
 [project.urls]
@@ -138,6 +141,10 @@ src = ["src", "tests"]
 # re-synced or diffed against upstream; reformatting it to our rules would only
 # make that harder, and the style is not ours to own.
 extend-exclude = ["src/cnequity/adapters/tdx_protocol/_wire"]
+# extend-exclude alone only applies while ruff walks a directory. Anything that
+# passes filenames explicitly — pre-commit, an editor-on-save action, a manual
+# `ruff format <path>` — bypasses it and would reformat the vendored tree.
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
