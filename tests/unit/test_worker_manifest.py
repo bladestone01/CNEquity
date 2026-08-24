@@ -343,3 +343,52 @@ def test_retry_requeues_stale_running_batch(worker_config, monkeypatch):
         worker_config.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
     )
     assert curated.exists()
+
+
+def _retry_recorder(worker_config, monkeypatch, *, recorded_date=None):
+    """Run a retry for a failed daily_bars batch, spying on the step's trade_date/specs."""
+    from cnequity.orchestrator import engine as engine_mod
+
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("daily")
+    if recorded_date:
+        manifest.update_run_metadata(run_id, {"trade_date": recorded_date})
+    manifest.start_batch(
+        run_id, "b0", "daily_bars", "daily_bars", symbols=["600519.SH"],
+        window_start="2026-08-20", window_end="2026-08-21",
+    )
+    manifest.finish_batch(run_id, "b0", "failed", error_message="gap")
+
+    captured: dict = {}
+
+    def _spy(self_or_engine, name, trade_date, run_id, context):
+        captured["name"] = name
+        captured["date"] = trade_date
+        captured["specs"] = context.get("_retry_batch_specs")
+        return {"status": "success"}
+
+    monkeypatch.setattr(engine_mod.JobEngine, "_run_step", _spy)
+    engine = JobEngine(worker_config)
+    engine._retry_run(run_id, date(2026, 8, 22))  # "today" differs from the recorded date
+    return captured
+
+
+def test_retry_reanchores_trade_date_from_run_metadata(worker_config, monkeypatch):
+    captured = _retry_recorder(worker_config, monkeypatch, recorded_date="2026-08-21")
+    assert captured["name"] == "daily_bars"
+    # Date-bound steps get the run's recorded anchor, not today (2026-08-22).
+    assert captured["date"] == date(2026, 8, 21)
+    # Worker-batch window still comes from the manifest, unaffected by the anchor.
+    assert captured["specs"] == [("b0", ["600519.SH"], date(2026, 8, 20), date(2026, 8, 21))]
+
+
+def test_retry_without_recorded_trade_date_keeps_passed_date(worker_config, monkeypatch):
+    captured = _retry_recorder(worker_config, monkeypatch, recorded_date=None)
+    assert captured["date"] == date(2026, 8, 22)
+
+
+def test_retry_malformed_recorded_date_falls_back(worker_config, monkeypatch):
+    captured = _retry_recorder(worker_config, monkeypatch, recorded_date="not-a-date")
+    assert captured["date"] == date(2026, 8, 22)
+    assert captured["name"] == "daily_bars"

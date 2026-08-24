@@ -539,6 +539,19 @@ class JobEngine:
         self, run_id: str, trade_date: date, *, auto_finalize: bool = True
     ) -> dict[str, Any]:
         run_meta = self.manifest.get_run_metadata(run_id)
+        # Re-anchor date-bound (non worker-batch) steps to the date the run
+        # actually targeted. `cne retry` otherwise defaults to the current
+        # clock's day, so e.g. trading_status would be re-fetched for "today"
+        # instead of the day that failed — and could even succeed for the wrong
+        # date. Worker-batch steps are unaffected (their windows come from the
+        # manifest BatchSpec). Malformed recorded values fall back to the passed
+        # date so a dirty metadata field never breaks the retry.
+        recorded_trade_date = run_meta.get("trade_date")
+        if recorded_trade_date:
+            try:
+                trade_date = date.fromisoformat(recorded_trade_date)
+            except (TypeError, ValueError):
+                pass
         self.config._backfill = bool(run_meta.get("backfill"))
         # Restore the granularity recorded at run start (config-only: retry has
         # no override entry). Runs that never recorded a value (created before
