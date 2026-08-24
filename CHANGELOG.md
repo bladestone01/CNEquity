@@ -6,7 +6,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-**主要变更：`daily_bars` 失败归因细化（symbol 级）+ 处理粒度开关 + 豁免。**
+**主要变更：`daily_bars` 失败归因细化（symbol 级）+ 处理粒度开关 + 豁免 + 失败呈现代。**
 
 ### Added
 
@@ -19,6 +19,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ### Notes
 
 - 行为影响：默认从"整批 all-or-nothing"切到符号级归因，`100 symbols FAILED` 全批重拉消失；切换粒度 = 改配置文件并跑后改回（run metadata 留痕可审计）；已 compact 的数据不回放，重验旧窗口请显式 `cne backfill --start/--end`。
+- **`daily_bars` 缺口失败改走 step 状态通道（不再抛 `RuntimeError`）.** 多日窗口 gap-fill 后仍缺口的失败以 `status="failed"` + 结构化字段（`unresolved_symbols` / `missing_keys` / `failed_batches` 含 batch_id、符号数、样例）返回，run 结果/脚本可程序化消费；引擎日志无 traceback，一条 `ERROR` 行给出缺口数、符号样例、失败批次与 `cne retry --run-id` 指引。严格语义不变（run 仍 `failed`、compact gate 仍锁 daily_bars、retry 仍按 failed_scope 精确重拉）；真正的 bug 仍照常抛异常。
+- **`cne retry` 重放 run 记录的 `trade_date`.** 之前 `cne retry --run-id` 把日期锚定的非 worker step（如 `trading_status`）重跑成"今天"，会因当天未结算/非交易日而反复失败，甚至可能补错日期。现在 retry 优先使用 run 启动时写入 metadata 的 `trade_date`（非法值回退到传入/今天）；worker 批（`daily_bars`）窗口仍由 manifest 驱动，不受影响。
+- **`trading_status` 备源不再编造无记录 `normal`.** baostock `query_all_stock` 快照缺失且该符号**前一日无记录**时，不再伪造一行 `is_trading=True, status="normal"`——该符号当日缺行（无观测=无数据），避免把"从未观测"当"正常"污染 ST/停牌覆盖。保留"前日 normal 顺延 / 前日非交易拒绝"与阈值/防洗/新鲜度守卫不变；新增 meta `n_missing_unseen` 与 audit finding `trading_status_backup_unseen_missing` 观测缺失数，步骤的完整性检查对这类豁免符号不再误报。
 
 ## [0.7.2.1] — 2026-08-19
 
