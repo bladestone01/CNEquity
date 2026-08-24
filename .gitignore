@@ -47,3 +47,6 @@ logs/
 
 # Frontend build inputs (the built bundle IS committed — see frontend/README.md)
 frontend/node_modules/
+
+# graphify runtime artifacts
+/graphify-out/
