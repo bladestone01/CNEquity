@@ -146,9 +146,123 @@ def test_backup_refused_on_fill_failure(monkeypatch):
 def test_fill_missing_classification():
     previous = {"600984.SH": "suspended", "000002.SZ": "st", "600519.SH": "normal"}
     missing = ["600984.SH", "000002.SZ", "600519.SH", "300000.SZ"]
-    fill_rows, failures, n = failover._fill_missing(missing, previous, D, threshold=10)
+    fill_rows, failures, n, unseen = failover._fill_missing(missing, previous, D, threshold=10)
     assert failures == ["600984.SH", "000002.SZ"]
-    assert n == 2  # 600519.SH normal + 300000.SZ no record
+    assert n == 1  # only 600519.SH (previous normal) is carried forward
+    assert unseen == ["300000.SZ"]  # no prior record -> left absent, never fabricated
+
+
+def test_backup_leaves_never_recorded_missing_absent(monkeypatch):
+    sh = ["600519.SH", "300000.SZ"]  # 300000.SZ absent from snapshot, never recorded
+    bs_df = _ts_frame(["600519.SH"], D)
+    monkeypatch.setattr(failover, "failover_spec", lambda config, dataset: _spec())
+    monkeypatch.setattr(failover, "_baostock_has_day", lambda config, trade_date: True)
+    monkeypatch.setattr(
+        failover, "fetch_trading_status_baostock", lambda symbols, day, config: bs_df
+    )
+    monkeypatch.setattr(failover, "_previous_statuses", lambda config, trade_date: {})
+    monkeypatch.setattr(failover, "_bj_rows", lambda config, bj, day: ([], 0))
+
+    class _Cfg:
+        sources = {"baostock": True}
+
+    frame, meta = failover.fetch_trading_status_backup(_Cfg(), sh, D)
+    assert frame is not None
+    symbols = set(frame.get_column("symbol").to_list())
+    assert "300000.SZ" not in symbols      # absent, not fabricated as normal
+    assert "600519.SH" in symbols
+    assert meta["n_filled"] == 0
+    assert meta["n_missing_unseen"] == 1
+    assert meta["missing_unseen_symbols"] == ["300000.SZ"]
+
+
+def test_step_reports_unseen_missing_finding(monkeypatch, config):
+    syms = ["600519.SH", "300000.SZ"]
+    d = date(2026, 8, 18)
+
+    def _incremental(cfg, dataset, trade_date, fetch_fn, allow_empty=False):
+        return fetch_fn(d), []
+
+    backup_df = _ts_frame(["600519.SH"], d)  # 300000.SZ left absent
+    meta = {
+        "failover_used": True,
+        "source": "baostock",
+        "n_filled": 0,
+        "n_bj_defaulted": 0,
+        "n_fill_failed": 0,
+        "n_missing_unseen": 1,
+        "missing_unseen_symbols": ["300000.SZ"],
+        "freshness": "fresh",
+    }
+
+    monkeypatch.setattr(steps.reference, "fetch_incremental_daily", _incremental)
+    monkeypatch.setattr(
+        steps.reference,
+        "fetch_trading_status",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("em down")),
+    )
+    monkeypatch.setattr(
+        steps.reference, "fetch_trading_status_backup", lambda cfg, symbols, day: (backup_df, meta)
+    )
+    monkeypatch.setattr(
+        steps.reference,
+        "snapshot_trading_status_backup",
+        lambda cfg, *, df, run_id, trade_date: None,
+    )
+
+    def _write(cfg, run_id, dataset, df):
+        return {"rows_read": df.height, "rows_written": df.height}
+
+    monkeypatch.setattr(steps.reference, "write_simple", _write)
+
+    result = steps.reference.step_trading_status(config, d, "run-unseen", {"symbols": syms})
+    findings = result["context_updates"]["audit_findings"]
+    unseen = [f for f in findings if f["check"] == "trading_status_backup_unseen_missing"]
+    assert unseen and "300000.SZ" in unseen[0]["detail"]
+    # 300000.SZ was exempted from the completeness gate and staged provably absent
+    assert not any("incomplete daily snapshot" in f["detail"] for f in findings)
+
+
+def test_step_no_unseen_finding_when_zero(monkeypatch, config):
+    syms = ["600519.SH"]
+    d = date(2026, 8, 18)
+
+    def _incremental(cfg, dataset, trade_date, fetch_fn, allow_empty=False):
+        return fetch_fn(d), []
+
+    backup_df = _ts_frame(syms, d)
+    meta = {
+        "failover_used": True,
+        "source": "baostock",
+        "n_filled": 0,
+        "n_bj_defaulted": 0,
+        "n_fill_failed": 0,
+        "n_missing_unseen": 0,
+        "missing_unseen_symbols": [],
+        "freshness": "fresh",
+    }
+
+    monkeypatch.setattr(steps.reference, "fetch_incremental_daily", _incremental)
+    monkeypatch.setattr(
+        steps.reference,
+        "fetch_trading_status",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("em down")),
+    )
+    monkeypatch.setattr(
+        steps.reference, "fetch_trading_status_backup", lambda cfg, symbols, day: (backup_df, meta)
+    )
+    monkeypatch.setattr(
+        steps.reference,
+        "snapshot_trading_status_backup",
+        lambda cfg, *, df, run_id, trade_date: None,
+    )
+    monkeypatch.setattr(
+        steps.reference, "write_simple", lambda cfg, run_id, dataset, df: {"rows_written": df.height}
+    )
+
+    result = steps.reference.step_trading_status(config, d, "run-zero", {"symbols": syms})
+    findings = result.get("context_updates", {}).get("audit_findings", [])
+    assert not any(f["check"] == "trading_status_backup_unseen_missing" for f in findings)
 
 
 def test_step_marks_warning_and_baostock_provenance(monkeypatch, config):

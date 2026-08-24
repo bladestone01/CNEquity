@@ -343,22 +343,29 @@ def _fill_missing(
     previous: dict[str, str],
     trade_date: date,
     threshold: int,
-) -> tuple[list[dict], list[str], int]:
+) -> tuple[list[dict], list[str], int, list[str]]:
     """Classify snapshot-missing SH/SZ symbols.
 
-    Returns ``(fill_rows, fill_failures, filled_vocab_size)``.
+    Returns ``(fill_rows, fill_failures, filled_count, missing_unseen)``.
 
     - A missing symbol whose previous curated status is ``st/*st/suspended`` is a
       fill-failure (never washed to ``normal``).
-    - Anything else (previous ``normal`` or no record: e.g. a new listing) is
-      filled as ``normal`` and counted.
+    - A missing symbol with a previous ``normal`` status is carried forward as
+      ``normal`` and counted.
+    - A missing symbol with **no prior record** is left absent (no row) and
+      returned in ``missing_unseen`` — we never fabricate a first observation,
+      since "unobserved" is not evidence of "normal".
     - The caller refuses the whole backup when ``fill_failures`` is non-empty or
       the filled count exceeds *threshold*.
     """
     fill_rows: list[dict] = []
     fill_failures: list[str] = []
+    missing_unseen: list[str] = []
     for sym in missing:
         prev_status = previous.get(sym)
+        if prev_status is None:
+            missing_unseen.append(sym)
+            continue
         if prev_status in _NON_TRADABLE_STATUSES:
             fill_failures.append(sym)
             continue
@@ -370,7 +377,7 @@ def _fill_missing(
                 "status": "normal",
             }
         )
-    return fill_rows, fill_failures, len(fill_rows)
+    return fill_rows, fill_failures, len(fill_rows), missing_unseen
 
 
 def fetch_trading_status_backup(
@@ -435,7 +442,7 @@ def fetch_trading_status_backup(
 
     previous = _previous_statuses(config, trade_date)
     threshold = max(50, len(symbols) // 100)
-    fill_rows, fill_failures, n_filled = _fill_missing(
+    fill_rows, fill_failures, n_filled, missing_unseen = _fill_missing(
         a_share_missing, previous, trade_date, threshold
     )
     n_scope_defaults = len(scope_defaults)
@@ -491,5 +498,7 @@ def fetch_trading_status_backup(
         "n_scope_defaults": n_scope_defaults,
         "n_bj_defaulted": n_bj_defaulted,
         "n_fill_failed": 0,
+        "n_missing_unseen": len(missing_unseen),
+        "missing_unseen_symbols": sorted(missing_unseen),
     }
     return df, meta

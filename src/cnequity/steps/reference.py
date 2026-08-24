@@ -359,7 +359,12 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
         if "symbol" not in frame.columns:
             raise RuntimeError("trading_status: response is missing the symbol column")
         observed_symbols = set(frame.get_column("symbol").drop_nulls().to_list())
-        missing = sorted(expected_symbols - observed_symbols)
+        # Symbols the backup intentionally left absent (no prior record) are not
+        # failures — see trading-status-backup-absent-not-fabricated. Exempt them
+        # from the completeness check so an otherwise-accepted backup is not then
+        # rejected for its honest absences.
+        unseen_exempt = set(degraded.get("missing_unseen_symbols") or [])
+        missing = sorted(expected_symbols - observed_symbols - unseen_exempt)
         unexpected = sorted(observed_symbols - expected_symbols)
         if missing or unexpected:
             details: list[str] = []
@@ -405,6 +410,23 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
             }
         )
         result["status"] = "warning"
+    if degraded.get("n_missing_unseen"):
+        unseen_sample = ", ".join(
+            (degraded.get("missing_unseen_symbols") or [])[:5]
+        )
+        suffix = "..." if degraded.get("n_missing_unseen", 0) > 5 else ""
+        findings.append(
+            {
+                "dataset": "trading_status",
+                "check": "trading_status_backup_unseen_missing",
+                "severity": "info",
+                "detail": (
+                    f"backup: {degraded.get('n_missing_unseen')} symbol(s) missing "
+                    "from snapshot with no prior record — left absent, no fabricated normal"
+                    f" (e.g. {unseen_sample}{suffix})"
+                ),
+            }
+        )
     if findings:
         result["context_updates"] = {"audit_findings": findings}
     return result
