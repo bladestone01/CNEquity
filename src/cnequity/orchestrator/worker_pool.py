@@ -419,18 +419,24 @@ def fetch_daily_bars_parallel(
     # it is one ordered stream whether the batches ran serially or in a pool.
     done = 0
     started_at = time.monotonic()
+    # Last cumulative rows_written seen at the previous batch verdict, so each
+    # progress line can show the rows THIS batch added as well as the run total.
+    last_total_written = 0
 
     def _progress(batch_symbols: list[str], failed: bool = False) -> None:
-        nonlocal done
+        nonlocal done, last_total_written
         done += 1
+        batch_rows = total_written - last_total_written
+        last_total_written = total_written
         elapsed = time.monotonic() - started_at
         remaining = (elapsed / done) * (len(batches) - done) if done else 0.0
         logger.info(
-            "%s %d/%d batches%s · %s rows · %s elapsed · ~%s left",
+            "%s %d/%d batches%s · +%s (total %s) rows · %s elapsed · ~%s left",
             dataset,
             done,
             len(batches),
             f" ({len(batch_symbols)} symbols FAILED)" if failed else "",
+            f"{batch_rows:,}",
             f"{total_written:,}",
             _hms(elapsed),
             _hms(remaining),
