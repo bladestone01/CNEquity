@@ -14,6 +14,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from cnequity.config import load_config
 from cnequity.config.bootstrap import path_for_toml
@@ -60,7 +61,9 @@ def _bars_df(symbols, start: date):
 
 def _write_curated_daily_bars(cfg, rows: pl.DataFrame):
     root = cfg.curated_root / "daily_bars"
-    for symbol, trade_date in zip(rows["symbol"].to_list(), rows["trade_date"].to_list(), strict=True):
+    for symbol, trade_date in zip(
+        rows["symbol"].to_list(), rows["trade_date"].to_list(), strict=True
+    ):
         key = _partition_key("trade_date", trade_date)
         out_dir = root / f"trade_date={key}"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -80,7 +83,10 @@ def _partition_key(col: str, value):
 def _write_curated_trading_status(cfg, rows: pl.DataFrame):
     root = cfg.curated_root / "trading_status"
     for symbol, trade_date, status in zip(
-        rows["symbol"].to_list(), rows["trade_date"].to_list(), rows["status"].to_list(), strict=True
+        rows["symbol"].to_list(),
+        rows["trade_date"].to_list(),
+        rows["status"].to_list(),
+        strict=True,
     ):
         out_dir = root / f"trade_date={_partition_key('trade_date', trade_date)}"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +128,11 @@ def test_config_only_no_cli_granularity():
 
     from cnequity.cli.main import cli
 
-    for args in (["run", "daily", "--help"], ["backfill", "daily_bars", "--help"], ["retry", "--help"]):
+    for args in (
+        ["run", "daily", "--help"],
+        ["backfill", "daily_bars", "--help"],
+        ["retry", "--help"],
+    ):
         result = CliRunner().invoke(cli, args)
         assert result.exit_code == 0
         assert "granularity" not in (result.output or "").lower()
@@ -166,9 +176,15 @@ def test_symbol_mode_stages_partial_and_records_failed_scope(tmp_path, monkeypat
     monkeypatch.setattr(worker_pool, "fetch_daily_bars_tolerant", _tolerant)
     run_id = worker_pool.Manifest(cfg.manifest_path).start_run("t")
     result = fetch_daily_bars_parallel(
-        cfg, good + failed, start, end, run_id, "daily_bars", batch_specs=[
+        cfg,
+        good + failed,
+        start,
+        end,
+        run_id,
+        "daily_bars",
+        batch_specs=[
             ("b0", ["600519.SH", "000001.SZ", "301655.SZ"], start, end),
-        ]
+        ],
     )
     assert result["had_error"] is True
     assert result["failed_symbols"] == failed
@@ -210,9 +226,7 @@ def test_stock_filter_applies_in_both_granularities(tmp_path):
     cfg = _config(tmp_path, "batch")
     init_data_layout(cfg)
     _write_curated_instruments(cfg, ["600519.SH", "562110.SH", "920001.BJ"])
-    out = bars_step._stock_only_symbols(
-        cfg, ["600519.SH", "562110.SH", "920001.BJ"]
-    )
+    out = bars_step._stock_only_symbols(cfg, ["600519.SH", "562110.SH", "920001.BJ"])
     assert "562110.SH" not in out  # etf
     assert "600519.SH" in out and "920001.BJ" in out  # stock (incl BJ)
     cfg = _config(tmp_path, "symbol")
@@ -304,9 +318,7 @@ def test_exemption_classification_is_offline(tmp_path, monkeypatch):
     init_data_layout(cfg)
     end = date(2026, 8, 21)
     _write_curated_instruments(cfg, ["301655.SZ"], list_dates={"301655.SZ": end})
-    for name in (
-        "cnequity.adapters.tdx_protocol.client._quotes_client",
-    ):
+    for name in ("cnequity.adapters.tdx_protocol.client._quotes_client",):
         monkeypatch.setattr(
             name,
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("live vendor called")),
@@ -321,7 +333,9 @@ def test_classify_with_exemptions_moves_exempt_to_expected_no_data(tmp_path):
     init_data_layout(cfg)
     end = date(2026, 8, 21)
     _write_curated_instruments(
-        cfg, ["600519.SH", "301655.SZ"], list_dates={"301655.SZ": end, "600519.SH": date(2010, 1, 1)}
+        cfg,
+        ["600519.SH", "301655.SZ"],
+        list_dates={"301655.SZ": end, "600519.SH": date(2010, 1, 1)},
     )
     spans = bars_step._instrument_spans(cfg)
     ownership, findings = bars_step._classify_with_exemptions(
@@ -355,10 +369,7 @@ def test_attempt_batch_id_counts_and_supersedes_family(tmp_path):
     manifest.start_batch(run_id, a2, "daily_bars", "daily_bars", symbols=["s1"])
     manifest.finish_batch(run_id, a2, "success", rows_written=1)
     assert bars_step._supersede_resolved_attempts(cfg, run_id, {a2: "b0"}) is None
-    statuses = {
-        r["batch_id"]: r["status"]
-        for r in manifest.get_batches_for_run(run_id)
-    }
+    statuses = {r["batch_id"]: r["status"] for r in manifest.get_batches_for_run(run_id)}
     assert statuses["b0"] == "superseded"
     assert statuses[a1] == "superseded"
     assert statuses[a2] == "success"
@@ -384,6 +395,139 @@ def test_retry_restores_recorded_granularity(tmp_path):
     engine = JobEngine(cfg)
     engine._retry_run_locked(run_id, date(2026, 8, 21), auto_finalize=False)
     assert cfg.daily_bars_granularity == "batch"
+
+
+def _failed_batch_run(tmp_path, granularity="symbol"):
+    """Set up a run with one failed daily_bars batch (failed_scope recorded)."""
+    from cnequity.orchestrator.manifest import Manifest
+
+    cfg = _config(tmp_path, granularity)
+    init_data_layout(cfg)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily")
+    manifest.start_batch(
+        run_id,
+        "b0",
+        "daily_bars",
+        "daily_bars",
+        symbols=["600519.SH"],
+        window_start="2026-08-20",
+        window_end="2026-08-21",
+    )
+    manifest.set_failed_scope(run_id, "b0", [{"symbol": "301655.SZ"}])
+    manifest.finish_batch(run_id, "b0", "failed", error_message="1 symbol(s) in failure scope")
+    return cfg, run_id
+
+
+def _noop_gapfill(*a, **k):
+    return {
+        "rows_read": 0,
+        "rows_written": 0,
+        "filled": False,
+        "unresolved_symbols": ["301655.SZ"],
+        "audit_findings": [],
+    }
+
+
+def test_finish_daily_bars_reports_failed_status_with_payload(tmp_path, monkeypatch, caplog):
+    cfg, run_id = _failed_batch_run(tmp_path)
+    monkeypatch.setattr(bars_step, "_gapfill_multiday_via_kline", _noop_gapfill)
+    monkeypatch.setattr(bars_step, "_reject_preopen_placeholder", lambda *a, **k: None)
+
+    with caplog.at_level("ERROR", logger="cnequity.steps.bars"):
+        result = bars_step._finish_daily_bars(
+            cfg,
+            date(2026, 8, 21),
+            run_id,
+            start=date(2026, 8, 20),
+            end=date(2026, 8, 21),
+            expected_tdx_symbols=["301655.SZ", "600519.SH"],
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": ["301655.SZ"],
+            },
+            sina_result=None,
+        )
+    assert result["status"] == "failed"
+    assert result["unresolved_symbols"] == ["301655.SZ"]
+    assert result["missing_keys"] == 1
+    payload = result["failed_batches"]
+    assert payload[0]["batch_id"] == "b0"
+    assert payload[0]["symbol_count"] == 1
+    assert "301655.SZ" in payload[0]["sample_symbols"]
+
+    # 2.4 — actionable ERROR, no traceback
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("cne retry --run-id" in m for m in messages)
+    assert all("Traceback (most recent call last)" not in m for m in messages)
+
+    # 2.5 — the unresolved batch stays manifest 'failed' → compact gate blocks
+    from cnequity.orchestrator.manifest import Manifest
+
+    manifest = Manifest(cfg.manifest_path)
+    assert manifest.get_batch(run_id, "b0")["status"] == "failed"
+    assert manifest.incomplete_batch_counts_by_dataset(run_id) == {"daily_bars": 1}
+
+
+def test_finish_daily_bars_genuine_bug_still_raises(tmp_path, monkeypatch):
+    cfg, run_id = _failed_batch_run(tmp_path)
+
+    def _boom(*a, **k):
+        raise RuntimeError("schema violation inside gap-fill")
+
+    monkeypatch.setattr(bars_step, "_gapfill_multiday_via_kline", _boom)
+    monkeypatch.setattr(bars_step, "_reject_preopen_placeholder", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="schema violation"):
+        bars_step._finish_daily_bars(
+            cfg,
+            date(2026, 8, 21),
+            run_id,
+            start=date(2026, 8, 20),
+            end=date(2026, 8, 21),
+            expected_tdx_symbols=["301655.SZ"],
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": ["301655.SZ"],
+            },
+            sina_result=None,
+        )
+
+
+def test_engine_run_job_surfaces_worker_step_failed_status(tmp_path, monkeypatch):
+    cfg = _config(tmp_path, "symbol")
+    init_data_layout(cfg)
+    from cnequity.orchestrator import engine as engine_mod
+    from cnequity.orchestrator.registry import STEP_REGISTRY
+
+    canned = {
+        "rows_read": 1,
+        "rows_written": 1,
+        "status": "failed",
+        "unresolved_symbols": ["301655.SZ"],
+        "missing_keys": 1,
+        "failed_batches": [{"batch_id": "b0", "symbol_count": 1, "sample_symbols": ["301655.SZ"]}],
+    }
+
+    def _fake_step(config, trade_date, run_id, context):
+        return dict(canned)
+
+    monkeypatch.setattr(STEP_REGISTRY["daily_bars"], "fn", _fake_step)
+    engine = JobEngine(cfg)
+    result = engine.run_job(
+        "daily",
+        date(2026, 8, 21),
+        backfill=True,
+        waves=[engine_mod.WaveConfig(name="w", parallel=False, steps=["daily_bars"])],
+    )
+    assert result["status"] == "failed"
+    entry = next(r for r in result["results"] if r.get("step") == "daily_bars")
+    assert entry["status"] == "failed"
+    assert entry["unresolved_symbols"] == ["301655.SZ"]
+    assert entry["failed_batches"][0]["batch_id"] == "b0"
 
 
 def test_worker_batch_specs_narrows_to_failed_scope(tmp_path):

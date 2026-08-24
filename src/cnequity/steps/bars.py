@@ -184,7 +184,9 @@ def _merge_ownership_result(
     context.setdefault("audit_findings", []).extend(updates["audit_findings"])
     context["daily_bars_ownership"] = updates["daily_bars_ownership"]
     if ownership.delegated_delisted and not delegated_complete:
-        out["status"] = "warning"
+        # Do not downgrade an explicit 'failed' (coverage gap) to warning.
+        if out.get("status") != "failed":
+            out["status"] = "warning"
         out["delegated_symbols"] = len(ownership.delegated_delisted)
     return out
 
@@ -300,9 +302,11 @@ def _whole_window_suspended_symbols(
         return suspended
     if scan.is_empty():
         return suspended
-    last_positive = scan.filter(
-        pl.col("volume").is_not_null() & (pl.col("volume") > 0)
-    ).group_by("symbol").agg(pl.col("trade_date").max().alias("lp"))
+    last_positive = (
+        scan.filter(pl.col("volume").is_not_null() & (pl.col("volume") > 0))
+        .group_by("symbol")
+        .agg(pl.col("trade_date").max().alias("lp"))
+    )
     if last_positive.is_empty():
         return suspended
     placeholder = scan.filter(
@@ -317,9 +321,12 @@ def _whole_window_suspended_symbols(
     # "still tracked as listed ⇒ halted, not delisted" tell the delisted
     # recovery path uses. Only symbols whose last print predates the window
     # can be wholly suspended across it.
-    counts = placeholder.join(last_positive, on="symbol", how="inner").filter(
-        (pl.col("trade_date") > pl.col("lp")) & (pl.col("lp") < start)
-    ).group_by("symbol").agg(pl.col("trade_date").count().alias("n"))
+    counts = (
+        placeholder.join(last_positive, on="symbol", how="inner")
+        .filter((pl.col("trade_date") > pl.col("lp")) & (pl.col("lp") < start))
+        .group_by("symbol")
+        .agg(pl.col("trade_date").count().alias("n"))
+    )
     for row in counts.iter_rows(named=True):
         if row["n"] >= _ORPHAN_ACTIVE_PLACEHOLDER_MIN_ROWS:
             suspended.add(row["symbol"])
@@ -429,7 +436,7 @@ def _attempt_batch_id(config: Config, run_id: str, batch_id: str) -> str:
     for row in manifest.get_batches_for_run(run_id):
         if row["batch_id"].startswith(prefix):
             try:
-                n = max(n, int(row["batch_id"][len(prefix):]))
+                n = max(n, int(row["batch_id"][len(prefix) :]))
             except ValueError:
                 continue
     return f"{prefix}{n + 1}"
@@ -481,9 +488,7 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
         attempt_map: dict[str, str] = {}
         symbol_mode = getattr(config, "daily_bars_granularity", "symbol") == "symbol"
         for batch_id, symbols, spec_start, spec_end in batch_specs:
-            routed, exempt = _classify_with_exemptions(
-                config, symbols, spans, spec_start, spec_end
-            )
+            routed, exempt = _classify_with_exemptions(config, symbols, spans, spec_start, spec_end)
             exempt_findings.extend(exempt)
             ownership.generic.extend(routed.generic)
             ownership.delegated_delisted.extend(routed.delegated_delisted)
@@ -654,6 +659,7 @@ def _finish_daily_bars(
             config, run_id, all_expected_symbols, start, end
         )
         failed_set = set(failed_symbols) | fallback_failed_symbols
+        unresolved_symbols: set[str] = set()
         if failed_set:
             gap = _gapfill_multiday_via_kline(
                 config,
@@ -665,6 +671,7 @@ def _finish_daily_bars(
             rows_read += int(gap.get("rows_read", 0))
             rows_written += int(gap.get("rows_written", 0))
             findings.extend(gap.get("audit_findings") or [])
+            unresolved_symbols = set(gap.get("unresolved_symbols") or [])
             if gap.get("filled") and gap.get("complete", False):
                 had_error = False
 
@@ -720,12 +727,92 @@ def _finish_daily_bars(
         # the daily_bars_tip_missing_symbols finding above.
         had_error = False
     elif had_error:
-        raise RuntimeError("daily_bars: one or more symbol batches failed")
+        # Expected business outcome (unresolved coverage gap): report it as a
+        # structured step status, NOT an exception. The engine records
+        # status='failed' without a traceback; genuine bugs still raise above.
+        unresolved_all = sorted(unresolved_symbols or failed_set)
+        batch_desc = _describe_failed_daily_bar_batches(config, run_id)
+        msg = (
+            f"daily_bars incomplete over {start}..{end}: "
+            f"{len(unresolved_all)} symbol×date key(s) still missing "
+            f"({len(failed_set)} symbol(s) in failure scope"
+        )
+        if unresolved_all:
+            suffix = "..." if len(unresolved_all) > 8 else ""
+            msg += f", e.g. {', '.join(unresolved_all[:8])}{suffix}"
+        msg += ")"
+        if batch_desc:
+            msg += "; failed batches: " + "; ".join(batch_desc[:8])
+        msg += f"; → run `cne retry --run-id {run_id}` after the vendor recovers"
+        logger.error(msg)
+        result = {
+            "rows_read": rows_read,
+            "rows_written": rows_written,
+            "status": "failed",
+            "unresolved_symbols": unresolved_all,
+            "missing_keys": len(unresolved_all),
+            "failed_batches": _failed_daily_bar_batch_payload(config, run_id),
+        }
+        if findings:
+            result["context_updates"] = {"audit_findings": findings}
+        return result
 
     result: dict = {"rows_read": rows_read, "rows_written": rows_written}
     if findings:
         result["context_updates"] = {"audit_findings": findings}
     return result
+
+
+def _failed_daily_bar_batch_payload(config: Config, run_id: str) -> list[dict]:
+    """Structured ``[{batch_id, symbol_count, sample_symbols}]`` for failed daily_bars batches.
+
+    Uses the persisted ``failed_scope_json`` (symbol mode) and falls back to the
+    full ``symbols_json`` (batch mode / crash path). Diagnostics only — it must
+    never mask the real error.
+    """
+    import json as _json
+
+    from cnequity.orchestrator.manifest import Manifest
+
+    try:
+        batches = Manifest(config.manifest_path).get_batches_for_run(run_id)
+    except Exception:  # noqa: BLE001 — diagnostics must never mask the real error
+        return []
+    out: list[dict] = []
+    for row in batches:
+        if row["dataset"] != "daily_bars" or row["status"] != "failed":
+            continue
+        try:
+            scope = _json.loads(row["failed_scope_json"] or "[]")
+        except (TypeError, ValueError, _json.JSONDecodeError):
+            scope = []
+        if not isinstance(scope, list):
+            scope = []
+        scope_syms = sorted(
+            {str(e.get("symbol", "")) for e in scope if isinstance(e, dict) and e.get("symbol")}
+        )
+        try:
+            batch_syms = _json.loads(row["symbols_json"] or "[]")
+        except (TypeError, ValueError, _json.JSONDecodeError):
+            batch_syms = []
+        symbols = scope_syms or sorted(batch_syms)
+        out.append(
+            {
+                "batch_id": row["batch_id"],
+                "symbol_count": len(symbols),
+                "sample_symbols": symbols[:5],
+            }
+        )
+    return out
+
+
+def _describe_failed_daily_bar_batches(config: Config, run_id: str) -> list[str]:
+    """Human-readable ``batch_id: N symbol(s) (a, b, …)`` for each failed daily_bars batch."""
+    out: list[str] = []
+    for payload in _failed_daily_bar_batch_payload(config, run_id):
+        suffix = f" ({', '.join(payload['sample_symbols'])})" if payload["sample_symbols"] else ""
+        out.append(f"{payload['batch_id']}: {payload['symbol_count']} symbol(s){suffix}")
+    return out
 
 
 def _staged_daily_bar_symbols(config: Config, run_id: str, trade_date: date | None) -> set[str]:
@@ -955,7 +1042,12 @@ def _gapfill_multiday_via_kline(
 
     spec = failover_spec(config, "daily_bars")
     if spec is None or not config.sources.get(spec.backup, True) or not symbols:
-        return {"rows_read": 0, "rows_written": 0, "filled": False}
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "filled": False,
+            "unresolved_symbols": sorted(symbols),
+        }
 
     df = fetch_em_kline(symbols, start, end, config=config)
     if df.is_empty():
@@ -964,6 +1056,7 @@ def _gapfill_multiday_via_kline(
             "rows_written": 0,
             "filled": False,
             "complete": False,
+            "unresolved_symbols": sorted(symbols),
             "audit_findings": [
                 {
                     "dataset": "daily_bars",
@@ -1023,6 +1116,7 @@ def _gapfill_multiday_via_kline(
             "rows_written": 0,
             "filled": True,
             "complete": not missing_keys,
+            "unresolved_symbols": sorted({s for s, _ in missing_keys}),
             "audit_findings": audit_findings,
         }
 
@@ -1062,6 +1156,7 @@ def _gapfill_multiday_via_kline(
         "rows_written": gap_df.height,
         "filled": True,
         "complete": not missing_keys,
+        "unresolved_symbols": sorted({s for s, _ in missing_keys}),
         "audit_findings": [
             {
                 "dataset": "daily_bars",
