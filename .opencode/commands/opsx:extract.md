@@ -4,7 +4,7 @@ description: "从已归档的变更中提取知识到项目知识库"
 
 从已归档的 OpenSpec 变更中提取业务规则、设计方案、技术约束和集成规范，写入项目知识库。
 
-**Input**: 可选参数为 change-name（如 `/opsx-extract fix-paginated-dto-total-loss`）。如果省略，将从已归档变更列表中让用户选择。
+**Input**: 可选参数为 change-name（如 `/opsx:extract fix-paginated-dto-total-loss`）。如果省略，将从已归档变更列表中让用户选择。
 
 **Steps**
 

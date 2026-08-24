@@ -4,7 +4,7 @@ description: "Ship completed work — commit, push, create PR, cleanup worktree,
 
 Ship completed work: commit worktree changes, push branch, create a Draft PR, cleanup worktree, and archive the OpenSpec change.
 
-**Input**: Optionally specify a change name after `/opsx-ship` (e.g., `/opsx-ship add-auth`). If omitted, infer from conversation context or prompt for selection.
+**Input**: Optionally specify a change name after `/opsx:ship` (e.g., `/opsx:ship add-auth`). If omitted, infer from conversation context or prompt for selection.
 
 **Steps**
 
@@ -128,11 +128,11 @@ Ship completed work: commit worktree changes, push branch, create a Draft PR, cl
 
    After archiving, run the extract flow to pull durable knowledge from the change:
 
-   - Invoke the `/opsx-extract` command with the archived change name:
+   - Invoke the `/opsx:extract` command with the archived change name:
      ```
-     /opsx-extract <change-name>
+     /opsx:extract <change-name>
      ```
-   - `/opsx-extract` reads the change artifacts (proposal / design / tasks), proposes knowledge entries grouped by dimension (business rules / design decisions / technical constraints / best practices / integration specs), and writes **only what the user confirms** — it has no `--auto` silent-write mode.
+   - `/opsx:extract` reads the change artifacts (proposal / design / tasks), proposes knowledge entries grouped by dimension (business rules / design decisions / technical constraints / best practices / integration specs), and writes **only what the user confirms** — it has no `--auto` silent-write mode.
    - If the change was not archived (skipped in step 8), also skip this step
    - Show the extract summary as part of the ship summary
 
@@ -152,7 +152,7 @@ Ship completed work: commit worktree changes, push branch, create a Draft PR, cl
     ```
 
 **Guardrails**
-- This is an independent command — it does NOT auto-delegate from `/opsx-apply`; the user invokes it manually
+- This is an independent command — it does NOT auto-delegate from `/opsx:apply`; the user invokes it manually
 - Run code review before committing, fix any issues found
 - Do NOT merge to main/master directly — always create a Draft PR instead
 - Never force-push (`--force`) or force-merge

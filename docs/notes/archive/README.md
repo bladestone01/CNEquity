@@ -9,4 +9,4 @@ promoted（已升权威源）或 stale（失效）的笔记移入本目录，作
   > promoted → 权威源：`docs/adr/0006-xxx.md`（YYYYMMDD 提升，凭据非事实源）
   ```
 
-- 归档动作由 `/opsx-triage` 执行；本 README 同步记录保留窗口，按需调整。
+- 归档动作由 `/opsx:triage` 执行；本 README 同步记录保留窗口，按需调整。

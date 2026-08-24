@@ -4,7 +4,7 @@ description: "整理 notes 暂存区：提升/折叠/失效/清理 archive"
 
 周期性整理 `docs/notes/` 的 active 暂存队列，防止单向增长。逐条与用户确认后执行动作；与 capture 的写即合并没有冲突——**此处是按条决策去向**。
 
-**Input**：无参数，直接 `/opsx-triage`。
+**Input**：无参数，直接 `/opsx:triage`。
 
 ## 步骤
 

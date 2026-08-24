@@ -49,9 +49,9 @@ List all OpenSpec changes and optionally specs in the system.
 - 📝 No Tasks: 1
 
 ### Next Actions
-- `/opsx-apply <change>` to continue implementation
-- `/opsx-propose <name>` to create a new change
-- `/opsx-list --specs` to view specifications
+- `/opsx:apply <change>` to continue implementation
+- `/opsx:propose <name>` to create a new change
+- `/opsx:list --specs` to view specifications
 ```
 
 **When `--specs` is passed**
@@ -61,4 +61,4 @@ Run `openspec list --specs --json` and display specs in a similar table format.
 **Guardrails**
 - Always use `--json` for reliable parsing
 - Sort by last modified (most recent first) by default
-- If no changes exist, suggest creating one with `/opsx-propose`
+- If no changes exist, suggest creating one with `/opsx:propose`
