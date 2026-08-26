@@ -40,8 +40,9 @@ logger = logging.getLogger(__name__)
 _DAILY_BAR_FINAL_AT = A_SHARE_FINAL_AT
 # A few halted or newly listed symbols can remain absent after both sources
 # have been tried. A large missing fraction, however, is a partial market
-# capture and must not be checkpointed as a successful tip.
-_DAILY_BAR_TIP_MAX_MISSING_RATIO = 0.05
+# capture and must not be checkpointed as a successful run — applies to both
+# the single-session tip and the multi-day catch-up window.
+_DAILY_BAR_MAX_MISSING_RATIO = 0.05
 _SINA_RETRY_STATUS_CODES = frozenset({429, 456, 500, 502, 503, 504})
 _SINA_FETCH_ATTEMPTS = 3
 
@@ -679,7 +680,7 @@ def _finish_daily_bars(
             )
             allowed_missing = max(
                 1,
-                int(len(expected_symbols) * _DAILY_BAR_TIP_MAX_MISSING_RATIO),
+                int(len(expected_symbols) * _DAILY_BAR_MAX_MISSING_RATIO),
             )
             if len(missing_staged) > allowed_missing:
                 raise RuntimeError(
@@ -699,7 +700,50 @@ def _finish_daily_bars(
         # the daily_bars_tip_missing_symbols finding above.
         had_error = False
     elif had_error:
-        raise RuntimeError("daily_bars: one or more symbol batches failed")
+        all_expected_symbols = list(
+            dict.fromkeys((expected_tdx_symbols or []) + (expected_fallback_symbols or []))
+        )
+        staged = _staged_daily_bar_symbols(config, run_id, end)
+        missing_staged = set(all_expected_symbols) - staged
+        if missing_staged:
+            # Same tolerance as the tip path above: a handful of symbols can
+            # legitimately stay missing (suspension, a new listing none of
+            # TDX/fallback/kline cover yet) after every source has had a
+            # shot. Failing the whole multi-day window over that means any
+            # stubborn leftover from the kline gap-fill's own circuit breaker
+            # reds the entire core gate despite the rest of the market
+            # landing fine.
+            preview = ", ".join(sorted(missing_staged)[:8])
+            suffix = "..." if len(missing_staged) > 8 else ""
+            findings.append(
+                {
+                    "dataset": "daily_bars",
+                    "severity": "warning",
+                    "check": "daily_bars_window_missing_symbols",
+                    "message": (
+                        f"daily_bars {start}..{end}: {len(missing_staged)} expected "
+                        "key(s) remain missing after TDX and fallback/kline gap-fill "
+                        f"(may be suspended): {preview}{suffix}"
+                    ),
+                    "missing_keys": len(missing_staged),
+                }
+            )
+            # No min-1 floor here, unlike the tip path: this branch also
+            # covers narrow explicit scopes (a scoped backfill, a `cne
+            # retry` batch of a handful of symbols), where "tolerate at
+            # least 1" would silently swallow the only symbol that matters.
+            # Below ~20 expected symbols this rounds down to 0 — every
+            # symbol counts — and only grants real slack once the universe
+            # is big enough that a stray straggler is genuinely a rounding
+            # error, not the whole ask.
+            allowed_missing = int(len(all_expected_symbols) * _DAILY_BAR_MAX_MISSING_RATIO)
+            if len(missing_staged) > allowed_missing:
+                raise RuntimeError(
+                    f"daily_bars {start}..{end}: {len(missing_staged)}/"
+                    f"{len(all_expected_symbols)} expected key(s) remain missing "
+                    f"after failover (allowed at most {allowed_missing}); refusing "
+                    "to checkpoint a partial market snapshot"
+                )
 
     result: dict = {"rows_read": rows_read, "rows_written": rows_written}
     if findings:
@@ -1372,6 +1416,7 @@ def fetch_bars_via_sina(
     from cnequity.steps.http_common import write_fetched
 
     use_parallel = fetch is None
+    requested_symbols = list(dict.fromkeys(symbols))
     fetch = fetch or (
         lambda symbol, client: fetch_daily_bars_sina(symbol, start=start, end=end, client=client)
     )
@@ -1379,6 +1424,67 @@ def fetch_bars_via_sina(
     failed: list[str] = []
     empty: list[str] = []
     covered_dates: dict[str, set[date]] = {}
+    audit_findings: list[dict] = []
+    rows = 0
+
+    # The BSE quotation API is an official current-session snapshot, not a
+    # history source.  Use it first whenever this window contains exactly one
+    # live session.  The normal incremental Monday window is often
+    # ``Friday+1 .. Monday`` because the watermark is calendar-based; without
+    # this check BJ symbols unnecessarily enter the much larger Sina sweep.
+    # ``fetch`` is injectable for tests, so skip this live path when a fake
+    # fetcher is supplied.
+    bse_symbols = [symbol for symbol in requested_symbols if symbol.upper().endswith(".BJ")]
+    bse_attempted = False
+    if use_parallel and bse_symbols and config.sources.get("bse", False):
+        sessions = list_trading_dates(config, start, end)
+        if len(sessions) == 1 and not getattr(config, "_backfill", False):
+            bse_attempted = True
+            try:
+                from cnequity.adapters.bse.daily_quotes import fetch_daily_quotes
+
+                bse = fetch_daily_quotes(sessions[0], symbols=bse_symbols, config=config)
+            except Exception as exc:  # noqa: BLE001 — Sina remains the fallback
+                logger.warning("BSE tip bars failed for %s: %s", sessions[0], exc)
+                audit_findings.append(
+                    {
+                        "dataset": "daily_bars",
+                        "severity": "info",
+                        "check": "daily_bars_bse_tip_unavailable",
+                        "message": f"BSE tip quote unavailable for {sessions[0]}: {exc}",
+                        "source": "bse",
+                        "source_limited": True,
+                    }
+                )
+            else:
+                if not bse.is_empty():
+                    out = write_fetched(
+                        config,
+                        run_id,
+                        "daily_bars",
+                        bse,
+                        source="bse",
+                        batch_id=f"{batch_prefix}-bse-0000",
+                    )
+                    rows += int(out.get("rows_written", 0))
+                    for symbol in bse.get_column("symbol").unique().to_list():
+                        covered_dates[symbol] = {sessions[0]}
+                    covered = set(bse.get_column("symbol").unique().to_list())
+                    requested_symbols = [symbol for symbol in requested_symbols if symbol not in covered]
+                    audit_findings.append(
+                        {
+                            "dataset": "daily_bars",
+                            "severity": "info",
+                            "check": "daily_bars_bse_tip",
+                            "message": (
+                                f"routed {len(covered)} current BJ bar(s) through the official BSE "
+                                f"snapshot for {sessions[0]}"
+                            ),
+                            "source": "bse",
+                            "rows_written": int(out.get("rows_written", 0)),
+                            "symbols": len(covered),
+                        }
+                    )
 
     def fetch_one(symbol: str) -> tuple[str, pl.DataFrame | None, str | None]:
         for attempt in range(_SINA_FETCH_ATTEMPTS):
@@ -1410,11 +1516,11 @@ def fetch_bars_via_sina(
             return symbol, bars, None
         return symbol, None, "failed"
 
-    if use_parallel and symbols:
-        with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as pool:
-            results = list(pool.map(fetch_one, symbols))
+    if use_parallel and requested_symbols:
+        with ThreadPoolExecutor(max_workers=min(6, len(requested_symbols))) as pool:
+            results = list(pool.map(fetch_one, requested_symbols))
     else:
-        results = [fetch_one(symbol) for symbol in symbols]
+        results = [fetch_one(symbol) for symbol in requested_symbols]
     for symbol, bars, failure_kind in results:
         if failure_kind == "failed":
             failed.append(symbol)
@@ -1428,27 +1534,26 @@ def fetch_bars_via_sina(
         frames.append(bars)
 
     expected_dates = set(list_trading_dates(config, start, end))
-    for symbol in symbols:
+    for symbol in requested_symbols:
         if symbol in failed:
             continue
         if expected_dates - covered_dates.get(symbol, set()):
             failed.append(symbol)
 
-    rows = 0
     supplement_findings: list[dict] = []
     if frames:
         merged = pl.concat(frames, how="diagonal_relaxed")
-        if start == end:
+        if start == end and not bse_attempted:
             merged, supplement_findings = _supplement_bse_tip_amounts(
-                config, merged, trade_date=start, symbols=symbols
+                config, merged, trade_date=start, symbols=requested_symbols
             )
         out = write_fetched(
             config, run_id, "daily_bars", merged, source="sina", batch_id=f"{batch_prefix}-0000"
         )
-        rows = int(out.get("rows_written", 0))
+        rows += int(out.get("rows_written", 0))
 
     result: dict = {"rows_read": rows, "rows_written": rows}
-    audit_findings = list(supplement_findings)
+    audit_findings.extend(supplement_findings)
     if failed:
         result["failed_symbols"] = len(failed)
         # Keep the names as well as the count. The daily step can then route
@@ -1462,7 +1567,7 @@ def fetch_bars_via_sina(
                 "severity": "warning",
                 "check": "fallback_source_incomplete",
                 "message": (
-                    f"{len(failed)}/{len(symbols)} symbols without a TDX route "
+                    f"{len(failed)}/{len(requested_symbols)} symbols without a TDX route "
                     f"failed to fetch from the fallback vendor "
                     f"(e.g. {', '.join(failed[:5])})"
                 ),

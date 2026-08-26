@@ -561,6 +561,177 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
     assert result["rows_written"] == 7
 
 
+def test_multiday_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, monkeypatch):
+    # A symbol can stay genuinely missing after TDX, Sina, and the kline
+    # gap-fill have all had a shot (suspension, or a name none of the three
+    # sources cover that day). That must not fail the whole multi-day
+    # window — same tolerance the tip path already applies, see
+    # test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step.
+    # Regression test for a check that used to raise on any single leftover
+    # key in this path, so one stubborn symbol reds the whole core gate.
+    #
+    # Uses a 20-symbol universe rather than a 2-symbol one: this branch has
+    # no min-1 floor (see test_multiday_single_symbol_scope_still_raises for
+    # why), so the tolerance only exists once the expected set is large
+    # enough for 5% to round up to at least 1.
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    start, end = date(2024, 6, 20), date(2024, 6, 21)
+    days = [date(2024, 6, 20), date(2024, 6, 21)]
+    expected = [f"600{i:03d}.SH" for i in range(20)]
+    missing = expected[-1]
+    resolved = expected[:-1]
+
+    def _kline(symbols, s, e, **k):
+        rows = [
+            {
+                "symbol": symbol,
+                "trade_date": day,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1,
+                "amount": 1.0,
+            }
+            for symbol in symbols
+            if symbol != missing
+            for day in days
+        ]
+        return pl.DataFrame(rows)
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": len(expected),
+            "failed_symbol_names": expected,
+            "empty_symbol_names": [],
+        },
+    )
+
+    result = _finish_daily_bars(
+        cfg,
+        end,
+        run_id,
+        start=start,
+        end=end,
+        expected_tdx_symbols=expected,
+        tdx_result={
+            "rows_read": 0,
+            "rows_written": 0,
+            "had_error": True,
+            "failed_symbols": expected,
+        },
+        sina_result=None,
+    )
+    assert result["rows_written"] == len(resolved) * len(days)
+    findings = result["context_updates"]["audit_findings"]
+    assert any(
+        f["check"] == "daily_bars_window_missing_symbols" and missing in f["message"]
+        for f in findings
+    )
+
+
+def test_multiday_single_symbol_scope_still_raises(tmp_path, monkeypatch):
+    # The tolerance above must not apply to a narrow explicit scope — a
+    # scoped backfill or a `cne retry` batch of just one or two symbols,
+    # where every symbol is the whole ask and "tolerate at least 1" would
+    # make the run silently report success with nothing staged.
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    start, end = date(2024, 6, 20), date(2024, 6, 21)
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": 1,
+            "failed_symbol_names": ["600519.SH"],
+            "empty_symbol_names": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            end,
+            run_id,
+            start=start,
+            end=end,
+            expected_tdx_symbols=["600519.SH"],
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": ["600519.SH"],
+            },
+            sina_result=None,
+        )
+
+
+def test_multiday_large_partial_miss_blocks_checkpoint(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    start, end = date(2024, 6, 20), date(2024, 6, 21)
+    days = [date(2024, 6, 20), date(2024, 6, 21)]
+    expected = [f"600{i:03d}.SH" for i in range(10)]
+
+    def _kline(symbols, s, e, **k):
+        rows = [
+            {
+                "symbol": symbol,
+                "trade_date": day,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1,
+                "amount": 1.0,
+            }
+            for symbol in symbols
+            if symbol == expected[0]
+            for day in days
+        ]
+        return pl.DataFrame(rows)
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": len(expected),
+            "failed_symbol_names": expected,
+            "empty_symbol_names": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            end,
+            run_id,
+            start=start,
+            end=end,
+            expected_tdx_symbols=expected,
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": expected,
+            },
+            sina_result=None,
+        )
+
+
 def test_multiday_accepts_explicit_no_data_from_fallback(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     run_id = Manifest(cfg.manifest_path).start_run("backfill")
