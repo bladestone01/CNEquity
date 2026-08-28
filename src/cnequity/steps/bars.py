@@ -1470,7 +1470,9 @@ def fetch_bars_via_sina(
                     for symbol in bse.get_column("symbol").unique().to_list():
                         covered_dates[symbol] = {sessions[0]}
                     covered = set(bse.get_column("symbol").unique().to_list())
-                    requested_symbols = [symbol for symbol in requested_symbols if symbol not in covered]
+                    requested_symbols = [
+                        symbol for symbol in requested_symbols if symbol not in covered
+                    ]
                     audit_findings.append(
                         {
                             "dataset": "daily_bars",
