@@ -25,6 +25,9 @@ cne status --datasets            # 探针：有 STALE 才继续
   └─ sleep CNE_STALE_RETRY_DELAY_SEC
      cne run daily --stale-only  # 只重抓仍落后的
 health_notify.sh
+cne sources --vantage $CNE_SOURCE_VANTAGE
+cne source slo                    # 累积报告，日更不 enforce
+cne stability --days 20           # 累积报告，日更不 enforce
 backup_meta.sh
 cne clean
 ```
@@ -36,6 +39,9 @@ cne clean
 `CNE_SOFT_FAIL_OK`（默认 `1`：gate OK 时 soft 失败 exit 0；`0`=仍 exit 1）、
 `CNE_STALE_RETRY`（默认 `1`；`0` 关闭收尾补抓）、
 `CNE_STALE_RETRY_DELAY_SEC`（默认 `1800`）、
+`CNE_SOURCE_HEALTH`（默认 `1`；`0` 关闭每日源探测）、
+`CNE_SOURCE_VANTAGE`（默认 `local`；应设为稳定且真实的出口标签，如 `cn` 或
+`overseas`）、
 `CNE_TRADE_DATE`、
 `CNE_BIN`（覆盖 `cne` 路径；供用 stub 跑通控制流的测试用）。
 
@@ -46,6 +52,8 @@ cne clean
 ### install_scheduler.sh / uninstall_scheduler.sh
 
 从 `scripts/launchd/com.cnequity.daily.plist.template` 生成用户 launchd plist，加载 `daily_pipeline.sh`。
+安装时用 `CNE_SOURCE_VANTAGE=cn scripts/install_scheduler.sh` 固化真实出口标签；省略时
+使用 `local`。标签仅允许字母、数字、点、下划线和连字符，防止生成无效 plist。
 
 ---
 
@@ -62,7 +70,9 @@ cne status --datasets
 
 ### backup_meta.sh
 
-打包 `meta/manifest.db`、`meta/state/`、`meta/quality/` 为 `meta-YYYYMMDD-HHMMSS.tar.gz`，按保留天数清理旧包。
+打包 `meta/manifest.db`、`state/`、`quality/`、`revisions/`、`source_snapshots/`、
+`source_health/` 和 `stability/` 为 `meta-YYYYMMDD-HHMMSS.tar.gz`，按保留天数清理旧包。
+因此磁盘故障不会让 revision receipt、PIT 源快照或已积累的验收窗口归零。
 
 参数：`backup_meta.sh [config_path] [backup_dir] [retention_days]`
 
@@ -126,7 +136,7 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
 `scripts/launchd/com.cnequity.daily.plist.template`
 
 - `ProgramArguments` 指向 `daily_pipeline.sh`
-- `StartCalendarInterval`：Hour=11, Minute=15（Europe/Helsinki；夏令时 16:15 CST、冬令时 17:15 CST）
+- `StartCalendarInterval`：Hour=11, Minute=15（本机时区；UTC+2/+3 机器约合 16:15/17:15 CST，均在收盘后）
 - 标准输出/错误重定向到 `{data.root}/logs/launchd.*.log`
 
 ---

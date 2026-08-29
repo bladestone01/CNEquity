@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -18,7 +19,18 @@ from cnequity.domain.datasets import (
     intraday_dataset_names,
     pit_dataset_names,
 )
+from cnequity.domain.pit import (
+    PIT_STORAGE_COLUMNS,
+    PitMode,
+    classify_pit_rows,
+    normalize_pit_storage_columns,
+)
 from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS, validate_dataframe
+from cnequity.domain.universe_profiles import (
+    UniverseProfile,
+    UniverseProfileError,
+    resolve_universe_profile,
+)
 from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.query.parquet_scan import (
     collect_parquet_root,
@@ -32,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 AdjustType = Literal["qfq", "hfq"]
 UniverseType = Literal["all_a", "all_a_sh_sz"]
+UniverseProfileLike = str | UniverseProfile
 
 # All derived from the DatasetSpec registry (domain/datasets.py).
 CURATED_DATASETS = curated_dataset_names()
@@ -57,6 +70,99 @@ ADJUSTABLE_DATASETS = {"daily_bars", "trade_ticks"} | set(intraday_dataset_names
 
 class ReaderError(ValueError):
     """Raised when load() arguments or dataset state are invalid."""
+
+
+def _resolve_reader_scope(
+    *,
+    universe: UniverseType | str | None,
+    profile: UniverseProfileLike | None,
+    universe_profile: UniverseProfileLike | None,
+    strict_universe: bool,
+) -> tuple[str | None, UniverseProfile | None, bool]:
+    """Resolve profile/universe compatibility arguments for one read.
+
+    The old ``universe`` argument remains a permissive compatibility path.  A
+    named profile is an explicit research contract and enables its strict
+    evidence requirements automatically.  ``universe_profile`` is accepted as
+    a spelling used by integrations; supplying both profile spellings is only
+    valid when they resolve to the same registry record.
+    """
+
+    selected = profile
+    if profile is not None and universe_profile is not None:
+        try:
+            if resolve_universe_profile(profile) != resolve_universe_profile(universe_profile):
+                raise ReaderError("profile and universe_profile refer to different profiles")
+        except UniverseProfileError as exc:
+            raise ReaderError(str(exc)) from exc
+    elif selected is None:
+        selected = universe_profile
+
+    if selected is not None:
+        try:
+            resolved = resolve_universe_profile(selected)
+        except UniverseProfileError as exc:
+            raise ReaderError(str(exc)) from exc
+        if universe is not None and universe != resolved.legacy_universe:
+            raise ReaderError(
+                f"universe={universe!r} conflicts with profile={resolved.name!r} "
+                f"(profile uses {resolved.legacy_universe!r})"
+            )
+        return resolved.legacy_universe, resolved, bool(strict_universe or resolved.strict_research)
+
+    if universe == "all_a":
+        warnings.warn(
+            "universe='all_a' is a deprecated compatibility alias; choose an explicit "
+            "versioned profile such as 'cn_a_sh_sz_research_v1' or "
+            "'cn_a_all_experimental_v1'",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    return universe, None, strict_universe
+
+
+def _require_profile_delisting_evidence(
+    config: Config,
+    frame: pl.DataFrame,
+    profile: UniverseProfile,
+) -> None:
+    """Fail closed when a strict profile cannot prove survivorship coverage."""
+    if not profile.strict_research or frame.is_empty() or "trade_date" not in frame.columns:
+        return
+    if not any(
+        requirement.startswith("historical_delisting_coverage")
+        for requirement in profile.evidence_requirements
+    ):
+        return
+    from cnequity.steps.delisted import delisted_coverage_report
+
+    start = frame["trade_date"].min()
+    end = frame["trade_date"].max()
+    report = delisted_coverage_report(
+        config,
+        start,
+        end,
+        universe=profile.legacy_universe,
+    )
+    if not report.get("verified"):
+        counts = report.get("counts") or {}
+        unresolved = sum(
+            int(counts.get(key, 0) or 0)
+            for key in (
+                "pending_probe",
+                "missing_bars",
+                "unknown_overlap",
+                "terminal_mismatch",
+                "missing_instrument",
+                "invalid_delist_date",
+                "recent_quarantined",
+                "formal_unresolved",
+            )
+        )
+        raise ReaderError(
+            f"profile={profile.name!r} requires complete historical delisting evidence for "
+            f"{start.isoformat()}..{end.isoformat()} (unresolved={unresolved})"
+        )
 
 
 def _parse_date(value: str | date | None) -> date | None:
@@ -163,7 +269,7 @@ def _read_dataset(
     start: date | None = None,
     end: date | None = None,
     symbols: list[str] | None = None,
-    universe: UniverseType | None = None,
+    universe: UniverseType | str | None = None,
     strict_universe: bool = False,
 ) -> pl.DataFrame:
     root = _dataset_root(config, dataset)
@@ -210,7 +316,19 @@ def _read_dataset(
                 df = df.filter(usable)
 
     if dataset in DATASET_SCHEMAS:
+        # Bitemporal PIT columns are an additive, optional storage contract.
+        # ``validate_dataframe`` intentionally returns the canonical schema
+        # and therefore drops unknown columns; preserve and normalise these
+        # four columns around validation so mixed legacy/new Parquet remains
+        # readable while the writer schema is still backwards compatible.
+        pit_columns = (
+            normalize_pit_storage_columns(df, dataset).select(PIT_STORAGE_COLUMNS)
+            if dataset in PIT_DATASETS
+            else None
+        )
         df = validate_dataframe(df, dataset)
+        if pit_columns is not None:
+            df = df.hstack(pit_columns)
         return dedupe_by_primary_key(df, dataset)
     return df
 
@@ -364,22 +482,23 @@ def _apply_pit_filters(
     as_of: date,
     items: list[str] | None,
     all_vintages: bool,
+    pit_mode: PitMode,
+    legacy_cutoff: bool = False,
 ) -> pl.DataFrame:
-    if df.is_empty():
-        return df
-    if "announce_date" not in df.columns:
-        raise ReaderError(f"{dataset} requires announce_date column (PIT contract)")
-    df = df.filter(pl.col("announce_date") <= as_of)
-    # A historical backfill can only prove that its current/restated value was
-    # available when the lake fetched it, not on the original announcement date.
-    # The collection cutoff is applied to every FSI row, including legacy rows
-    # whose source marker predates the backfill marker. This is conservative for
-    # a late-ingested daily disclosure, but never lets an unversioned value leak
-    # into an earlier PIT slice.
-    if dataset == "financial_statement_items" and {"source", "fetched_at"} <= set(df.columns):
-        df = df.filter(pl.col("fetched_at").dt.date() <= as_of)
+    try:
+        df = classify_pit_rows(
+            df,
+            dataset,
+            as_of=as_of,
+            pit_mode=pit_mode,
+            legacy_cutoff=legacy_cutoff,
+        )
+    except ValueError as exc:
+        raise ReaderError(str(exc)) from exc
     if items and "item_code" in df.columns:
         df = df.filter(pl.col("item_code").is_in(items))
+    if df.is_empty():
+        return df
     if all_vintages or df.is_empty():
         return df
 
@@ -390,7 +509,10 @@ def _apply_pit_filters(
     key = [c for c in PRIMARY_KEYS.get(dataset, []) if c != "announce_date"]
     if not key or not all(c in df.columns for c in key):
         return df
-    return df.sort("announce_date").group_by(key, maintain_order=True).last()
+    order = [column for column in ("announce_date", "observed_at", "fetched_at") if column in df]
+    if order:
+        df = df.sort(order)
+    return df.group_by(key, maintain_order=True).last()
 
 
 def load(
@@ -400,12 +522,15 @@ def load(
     end: str | date | None = None,
     adjust: AdjustType | None = None,
     universe: UniverseType | None = None,
+    profile: UniverseProfileLike | None = None,
+    universe_profile: UniverseProfileLike | None = None,
     as_of: str | date | None = None,
     items: list[str] | None = None,
     symbols: list[str] | None = None,
     strict_adj: bool = False,
     strict_universe: bool = False,
     all_vintages: bool = False,
+    pit_mode: PitMode | None = None,
     config: Config | None = None,
     data_root: str | Path | None = None,
 ) -> pl.DataFrame:
@@ -438,6 +563,13 @@ def load(
         requested window has complete ``trading_status`` rows and a versioned
         historical ST evidence receipt. Dates before that evidence coverage
         are not filtered in permissive mode; strict research reads fail closed.
+    profile / universe_profile:
+        Explicit versioned :class:`cnequity.domain.UniverseProfile` name (or
+        object). Profiles bind exchange/board, CDR/ETF, ST/suspension,
+        delisting and PIT-evidence rules and persist a stable ``scope_hash``.
+        A strict profile enables strict evidence checks even when
+        ``strict_universe`` is omitted. ``universe_profile`` is a spelling
+        compatibility alias; pass only one of the two profile arguments.
     as_of:
         Point-in-time date for ``financial_statement_items``. Keeps only facts
         announced on or before this date, and — because a restatement stores a
@@ -450,6 +582,16 @@ def load(
         the one current then. For studying revisions (a restatement's size and
         direction is itself a signal); not for cross-sectional screens, where
         multiple vintages of one fact would double-count it.
+    pit_mode:
+        ``"strict"`` keeps only vintages whose source disclosure,
+        publication/availability, and lake observation are all provably no
+        later than ``as_of``. Rows from the current historical backfill are
+        reconstructed and are excluded. ``"best_effort"`` keeps those rows
+        for exploratory work and adds ``pit_is_exact=False``/
+        ``pit_quality="reconstructed"``. When omitted, the 0.x compatibility
+        path behaves like best-effort but retains the old ``fetched_at``
+        cutoff; it is deprecated and emits no exactness guarantee. Choose the
+        mode explicitly in research manifests.
     symbols:
         Restrict to these symbols when the dataset has a ``symbol`` column.
     strict_universe:
@@ -462,10 +604,20 @@ def load(
         Raises ``ReaderError`` if config or dataset parquet files are missing.
     """
     cfg = resolve_config(config=config, data_root=data_root)
+    effective_universe, resolved_profile, effective_strict_universe = _resolve_reader_scope(
+        universe=universe,
+        profile=profile,
+        universe_profile=universe_profile,
+        strict_universe=strict_universe,
+    )
     if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
         raise ReaderError(f"unknown dataset {dataset!r}")
+    legacy_pit_mode = pit_mode is None
+    effective_pit_mode: PitMode = "best_effort" if legacy_pit_mode else pit_mode
+    if effective_pit_mode not in ("strict", "best_effort"):
+        raise ReaderError(f"unsupported pit_mode {pit_mode!r}; use 'strict' or 'best_effort'")
 
-    if universe and dataset != "daily_bars":
+    if (effective_universe or resolved_profile) and dataset != "daily_bars":
         raise ReaderError(
             f"universe filter applies to daily_bars only; it is not supported for {dataset}"
         )
@@ -482,7 +634,15 @@ def load(
         if as_of_d is None:
             raise ReaderError(f"{dataset} requires as_of= for point-in-time queries")
         df = _read_dataset(cfg, dataset, symbols=symbols)
-        df = _apply_pit_filters(df, dataset, as_of=as_of_d, items=items, all_vintages=all_vintages)
+        df = _apply_pit_filters(
+            df,
+            dataset,
+            as_of=as_of_d,
+            items=items,
+            all_vintages=all_vintages,
+            pit_mode=effective_pit_mode,
+            legacy_cutoff=legacy_pit_mode,
+        )
         df = _apply_pit_date_range(df, dataset, start_d, end_d)
         df = _apply_symbol_filter(df, symbols)
         sort_cols = [
@@ -496,9 +656,11 @@ def load(
         start=start_d,
         end=end_d,
         symbols=symbols,
-        universe=universe,
-        strict_universe=strict_universe,
+        universe=effective_universe,
+        strict_universe=effective_strict_universe,
     )
+    if resolved_profile is not None and dataset == "daily_bars":
+        _require_profile_delisting_evidence(cfg, df, resolved_profile)
 
     # Intraday datasets join on (symbol, trade_date) like the daily bars do: a
     # corporate action applies to a whole session, so every bar in a day shares
@@ -589,6 +751,7 @@ def list_datasets(
     state = StateStore(cfg.meta_root)
     rows = []
     for name, spec in sorted(DATASETS.items()):
+        state_payload = state.get_payload(name)
         root = (cfg.derived_root if spec.layer == "derived" else cfg.curated_root) / name
         has_data = dataset_has_parquet(root)
         first_part = last_part = None
@@ -609,6 +772,8 @@ def list_datasets(
                 "fetch_semantics": spec.fetch_semantics,
                 "history_mode": history_mode_for(spec),
                 "backfill_source": spec.backfill_source,
+                "pit_quality": spec.pit_quality,
+                "pit_storage_columns": list(PIT_STORAGE_COLUMNS) if spec.pit else [],
                 # None = unbounded. A number means the source itself serves only
                 # that many trading days back, so anything earlier is
                 # unreachable rather than merely un-backfilled.
@@ -619,6 +784,10 @@ def list_datasets(
                 "coverage_end": last_part,
                 "watermarked": spec.watermark,
                 "watermark": state.get_date(name) if spec.watermark else None,
+                "revision": state_payload.get("revision"),
+                "revision_id": state_payload.get("revision_id"),
+                "schema_version": state_payload.get("schema_version"),
+                "contract_fingerprint": state_payload.get("contract_fingerprint"),
             }
         )
     return pl.DataFrame(rows)

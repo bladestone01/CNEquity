@@ -14,9 +14,11 @@
 | `parquet.py` | `StagingWriter`, `CuratedWriter`, `compact_dataset()` |
 | `instruments.py` | instruments 合并 compact，保留退市股 |
 | `state.py` | `StateStore` — `meta/state/{dataset}.json` 水位（跨平台文件锁） |
+| `revisions.py` | `RevisionStore` — 单调 revision、内容摘要与不可变变更 receipt |
 | `atomic.py` | 写临时文件 → rename |
 | `stats.py` | `rebuild_stats()` — `meta/stats/` 行数 / 字节 / 溯源分布度量表 |
 | `source_snapshots.py` | `SnapshotStore` — failover 备源落地 |
+| `snapshots.py` | 可移植研究快照 — 数据、契约、lineage、state 与 revision receipt |
 | `staging_cleanup.py` | `clean_staging()` — `cne clean` |
 
 ---
@@ -73,6 +75,15 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, backups/, meta/locks/
 - `watermark=False` 的数据集（如 instruments、financial_statement_items）不写水位
 - 增量窗口：`steps/common.incremental_window()` 读取
 
+revision 发布后，同一 state 文件还会保存 `revision`、`revision_id`、内容摘要、契约指纹和
+`revision_receipt`。最大日期不变的历史修复也会推进 revision，供 EquityLab 正确失效缓存。
+
+## revisions.py
+
+每次实际改写 curated 文件后，`RevisionStore` 对文件大小和 SHA-256 建立内容摘要，先原子写入
+`meta/revisions/{dataset}/{revision}-{revision_id}.json`，再推进 state。没有文件变化不会制造
+新 revision；receipt 写入后进程崩溃只会留下未引用的恢复证据，不会让 state 指向半成品。
+
 ---
 
 ## atomic.py
@@ -105,6 +116,14 @@ staging/, curated/, derived/, raw/, meta/, duckdb/, backups/, meta/locks/
 - 主源 batch 失败时由 `quality/failover.py` 写入
 - **不**进入 curated
 - `audit` 的 `source_diff.py` 读取比对
+
+## snapshots.py
+
+`cne snapshot create/verify/restore` 将选定数据集复制到不可变目录，并对每个 Parquet 和所引用
+的 revision receipt 记录大小与 SHA-256。manifest 同时固化数据集 state、契约指纹和运行
+lineage。恢复仅允许新目录或空目录；所有 manifest 路径都拒绝绝对路径与 `..`，元数据文件
+只允许恢复到 `meta/`，避免篡改后的快照越界写文件。恢复后的 state 所引用 receipt 确实存在，
+因此下游仍可读取完整 revision 身份，而不是只得到一个悬空路径。
 
 ---
 

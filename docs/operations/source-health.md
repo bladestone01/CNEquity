@@ -90,10 +90,32 @@ cne sources --vantage cn >> logs/source-health.log 2>&1
 
 **探测失败不会让命令失败。** 源变红是这条命令的**输出**而不是它的错误；如果调度需要门禁，请解析 JSON 中的 `status`，按业务决定是否阻断日更。
 
-仓库还提供一个每周运行的 GitHub Actions workflow：它从海外 runner 探测 TDX、Sina、东财和巨潮，
+仓库还提供一个工作日关键源探测、每周全量探测的 GitHub Actions workflow：它从海外 runner
+探测 TDX、Sina、东财和巨潮，
 把文本摘要写入 Job Summary，并上传 JSON artifact。这个报告只代表
 `github-actions` 视角；大陆机器仍应运行 `cne sources --vantage cn`，不要把海外的 `blocked`
 误读成全局故障。
+
+该 workflow 会用唯一 run key 恢复并保存 `meta/source_health` 的 Actions cache，因此 30 日
+SLO 使用的是跨运行的不可变样本，而不是临时 runner 内的一次探测。每次报告同时作为 30 天
+artifact 留存；cache 丢失时 SLO 会因样本不足 fail-closed，不会把空历史解释为健康。
+
+## Source SLO 与韧性
+
+`cne sources` 默认同时写入 latest 与不可变的 vantage 历史样本；显式 `--out` 只用于一次性
+导出。累计样本后运行：
+
+```bash
+cne source slo --window-days 30 --minimum-observations 10 --enforce
+cne source resilience --enforce
+```
+
+第一条按 probe/vantage 分开计算，每个 UTC 日只采用最后一次非跳过探测；跳过项不算失败，
+关键源缺最小跨日样本或样本过期均失败。同日重试可验证恢复，但不能用来刷高 SLO 样本数。
+连续三次失败会写入稳定 `dedupe_key` 的 `meta/source_health/incidents.json`；后续 CI 重跑更新
+同一事故载荷。第二条从 DatasetSpec 生成集中度与 failure-domain 爆炸半径，并验证核心数据集
+是否有真正独立的备源。复权因子属于研究层：Sina 单源风险会被报告，但其失败将 run 标为
+`degraded`，不会把已提交的原始 daily bars revision 回滚或误判为核心失败。
 
 ## 加一个源
 

@@ -532,7 +532,12 @@ def _run_shareholder_step(
             run_id,
             dataset,
             part,
-            source="eastmoney",
+            # Historical shareholder endpoints expose the source's current
+            # reconstructed snapshot for an old record/disclosure window.
+            # Preserve that fact at row level so strict PIT reads can reject
+            # it even after the data has been copied to another lake without
+            # the registry metadata beside it.
+            source=("eastmoney_backfill" if getattr(config, "_backfill", False) else "eastmoney"),
             batch_id=f"batch-{win_start.isoformat()}",
         )
         rows_read += int(chunk.get("rows_read", 0))

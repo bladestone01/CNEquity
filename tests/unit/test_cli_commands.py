@@ -230,6 +230,57 @@ def test_status_latest_run(cfg_path, monkeypatch):
     assert payload["status"] == "success"
 
 
+def test_status_run_degraded_exits_two_and_lists_dataset_stages(tmp_path, cfg_path):
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily")
+    manifest.record_dataset_result(
+        run_id, "daily_bars", "publish_revision", "success", criticality="core"
+    )
+    manifest.record_dataset_result(
+        run_id,
+        "adj_factors",
+        "derive",
+        "failed",
+        criticality="research",
+        error_code="source_down",
+    )
+    manifest.finish_run(run_id, "degraded")
+
+    result = CliRunner().invoke(cli, ["status", "--run", "latest", "--config", cfg_path])
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.output)
+    assert payload["dataset_status"] == "degraded"
+    assert any(
+        item["dataset"] == "adj_factors"
+        and item["stage"] == "derive"
+        and item["status"] == "failed"
+        for item in payload["dataset_results"]
+    )
+
+
+def test_status_run_core_failure_exits_one(tmp_path, cfg_path):
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily")
+    manifest.record_dataset_result(
+        run_id,
+        "daily_bars",
+        "compact",
+        "failed",
+        criticality="core",
+        error_code="compact_failed",
+    )
+    manifest.finish_run(run_id, "failed")
+
+    result = CliRunner().invoke(cli, ["status", "--run", run_id, "--config", cfg_path])
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["dataset_status"] == "failed"
+
+
 def test_status_datasets_all_fresh(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "cnequity.cli.main._last_trading_day",

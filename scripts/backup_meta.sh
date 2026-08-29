@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
 # B3 — Daily snapshot of the metadata that cannot be rebuilt from the curated
-# lake: the manifest DB (run history) and meta/state (per-source incremental
-# watermarks, the PIT-critical bit). Curated parquet, adj_factors_cache, and
-# runtime locks are deliberately excluded — they are large and reproducible.
+# lake: the manifest DB, incremental state, revision/source receipts, quality
+# findings and the operational acceptance evidence. Curated parquet,
+# adj_factors_cache and runtime locks are deliberately excluded — they are
+# large or reproducible. Portable research snapshots cover curated data.
 #
 # Usage: scripts/backup_meta.sh [DATA_ROOT] [BACKUP_DIR] [RETENTION_DAYS]
 # Defaults resolve to the repo's ./data/cnequity lake.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATA_ROOT="${1:-${CNE_DATA_ROOT:-$REPO_ROOT/data/cnequity}}"
-BACKUP_DIR="${2:-${CNE_BACKUP_DIR:-$DATA_ROOT/backups}}"
+DATA_ROOT_INPUT="${1:-${CNE_DATA_ROOT:-$REPO_ROOT/data/cnequity}}"
 RETENTION_DAYS="${3:-${CNE_BACKUP_RETENTION_DAYS:-14}}"
 
-META_DIR="$DATA_ROOT/meta"
+META_DIR="$DATA_ROOT_INPUT/meta"
 if [[ ! -d "$META_DIR" ]]; then
   echo "backup_meta: meta dir not found: $META_DIR" >&2
   exit 1
 fi
+DATA_ROOT="$(cd "$DATA_ROOT_INPUT" && pwd)"
+META_DIR="$DATA_ROOT/meta"
+BACKUP_DIR_INPUT="${2:-${CNE_BACKUP_DIR:-$DATA_ROOT/backups}}"
 
-mkdir -p "$BACKUP_DIR"
+mkdir -p "$BACKUP_DIR_INPUT"
+BACKUP_DIR="$(cd "$BACKUP_DIR_INPUT" && pwd)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 ARCHIVE="$BACKUP_DIR/meta-$STAMP.tar.gz"
 
@@ -37,10 +41,12 @@ if [[ -f "$MANIFEST" ]]; then
   fi
 fi
 
-# Assemble the archive: consistent manifest snapshot + state/quality dirs.
+# Assemble the archive: consistent manifest snapshot plus non-reconstructable
+# metadata and accumulated acceptance evidence. Missing optional directories
+# are harmless on a newly initialized lake.
 TAR_ARGS=()
 [[ -f "$TMP_DIR/manifest.db" ]] && TAR_ARGS+=(-C "$TMP_DIR" manifest.db)
-for sub in state quality; do
+for sub in state quality revisions source_snapshots source_health stability; do
   [[ -e "$META_DIR/$sub" ]] && TAR_ARGS+=(-C "$META_DIR" "$sub")
 done
 if [[ ${#TAR_ARGS[@]} -eq 0 ]]; then

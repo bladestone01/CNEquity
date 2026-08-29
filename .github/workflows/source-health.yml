@@ -2,9 +2,11 @@ name: Source health
 
 on:
   schedule:
-    # Weekly, after the weekend, from GitHub's overseas runners. The report is
+    # Daily after the mainland close for critical paths, plus a weekly full
+    # sweep. The report is
     # a vantage point, not a universal SLA; mainland users should run `cne
     # sources --vantage cn` in their own scheduler as well.
+    - cron: "17 10 * * 1-5"
     - cron: "17 3 * * 1"
   workflow_dispatch:
 
@@ -31,21 +33,39 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install .
+      - name: Restore source-health evidence
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/cnequity-health/data/meta/source_health
+          key: source-health-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            source-health-${{ runner.os }}-
       - name: Probe public sources
         env:
           HEALTH_ROOT: ${{ runner.temp }}/cnequity-health
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           set -o pipefail
           mkdir -p "$HEALTH_ROOT"
           cne config init \
             --config "$HEALTH_ROOT/cnequity.toml" \
             --data-root "$HEALTH_ROOT/data"
-          cne sources \
-            --config "$HEALTH_ROOT/cnequity.toml" \
-            --vantage github-actions \
-            --only tdx_protocol,sina,eastmoney_push2,eastmoney_push2his,cninfo \
-            --out "$HEALTH_ROOT/source-health.json" \
-            | tee "$HEALTH_ROOT/source-health.txt"
+          if [ "$SCHEDULE" = "17 3 * * 1" ]; then
+            cne sources \
+              --config "$HEALTH_ROOT/cnequity.toml" \
+              --vantage github-actions \
+              | tee "$HEALTH_ROOT/source-health.txt"
+          else
+            cne sources \
+              --config "$HEALTH_ROOT/cnequity.toml" \
+              --vantage github-actions \
+              --only tdx_protocol,sina,eastmoney_push2,eastmoney_push2his,cninfo \
+              | tee "$HEALTH_ROOT/source-health.txt"
+          fi
+          cne source slo --config "$HEALTH_ROOT/cnequity.toml" \
+            > "$HEALTH_ROOT/source-slo.json"
+          cne source resilience --out "$HEALTH_ROOT/source-resilience.json" --enforce \
+            > "$HEALTH_ROOT/source-resilience.stdout.json"
       - name: Add report to job summary
         if: always()
         env:
@@ -70,7 +90,15 @@ jobs:
         with:
           name: source-health-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/cnequity-health/source-health.json
+            ${{ runner.temp }}/cnequity-health/data/meta/source_health/**
             ${{ runner.temp }}/cnequity-health/source-health.txt
+            ${{ runner.temp }}/cnequity-health/source-slo.json
+            ${{ runner.temp }}/cnequity-health/source-resilience.json
           if-no-files-found: warn
           retention-days: 30
+      - name: Preserve source-health evidence
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/cnequity-health/data/meta/source_health
+          key: source-health-${{ runner.os }}-${{ github.run_id }}

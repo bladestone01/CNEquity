@@ -70,6 +70,120 @@ def test_manifest_accepts_str_db_path(tmp_path):
     assert run_id
 
 
+def test_dataset_results_schema_migrates_and_round_trips(tmp_path):
+    """A pre-stage-4 result table gains the new columns in place."""
+    db = tmp_path / "meta" / "manifest.db"
+    manifest = Manifest(db)
+    with manifest._connect() as conn:
+        conn.execute("DROP TABLE dataset_results")
+        conn.execute(
+            """
+            CREATE TABLE dataset_results (
+                run_id TEXT NOT NULL,
+                dataset TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL
+            )
+            """
+        )
+
+    migrated = Manifest(db)
+    run_id = migrated.start_run("daily")
+    migrated.record_dataset_result(
+        run_id,
+        "daily_bars",
+        "compact",
+        "success",
+        criticality="core",
+        revision_id="rev-1",
+        rows_written=7,
+    )
+    row = migrated.get_dataset_result(run_id, "daily_bars", "compact")
+    assert row is not None
+    assert dict(row)["revision_id"] == "rev-1"
+    assert dict(row)["rows_written"] == 7
+    with migrated._connect() as conn:
+        columns = {item[1] for item in conn.execute("PRAGMA table_info(dataset_results)")}
+    assert {
+        "criticality",
+        "revision_id",
+        "rows_written",
+        "error_code",
+        "error_message",
+    } <= columns
+
+
+def test_dataset_result_aggregate_distinguishes_degraded_from_core_failure(tmp_path):
+    manifest = Manifest(tmp_path / "meta" / "manifest.db")
+    run_id = manifest.start_run("daily")
+    manifest.record_dataset_result(run_id, "daily_bars", "compact", "success", criticality="core")
+    manifest.record_dataset_result(
+        run_id,
+        "adj_factors",
+        "derive",
+        "failed",
+        criticality="research",
+        error_code="source_down",
+    )
+    assert manifest.aggregate_run_status(run_id)["status"] == "degraded"
+
+    manifest.record_dataset_result(
+        run_id,
+        "daily_bars",
+        "fetch",
+        "failed",
+        criticality="core",
+        error_code="source_down",
+    )
+    assert manifest.aggregate_run_status(run_id)["status"] == "failed"
+
+
+def test_adj_failure_keeps_committed_daily_bars_revision(worker_config, monkeypatch):
+    from cnequity.adapters.tdx_protocol.client import _mock_bars, normalize_with_source
+    from cnequity.storage.revisions import RevisionStore
+
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("daily")
+    frame = normalize_with_source(
+        _mock_bars(["600519.SH"], date(2024, 6, 28), date(2024, 6, 28)),
+        dataset="daily_bars",
+    )
+    StagingWriter(worker_config.staging_root).write_batch("daily_bars", run_id, "batch-0", frame)
+    manifest.start_batch(
+        run_id,
+        "batch-0",
+        "daily_bars",
+        "daily_bars",
+        symbols=["600519.SH"],
+        window_start="2024-06-28",
+        window_end="2024-06-28",
+    )
+    manifest.finish_batch(run_id, "batch-0", "success", rows_written=frame.height)
+
+    engine = JobEngine(worker_config)
+    compact = engine.run_step("compact", date(2024, 6, 28), run_id)
+    assert compact["status"] == "success"
+    revision = RevisionStore(worker_config.meta_root, worker_config.curated_root).latest(
+        "daily_bars"
+    )
+    assert revision is not None
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.compute_adj_factors",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("adj source down")),
+    )
+    derive = engine.run_step("derive_adj_factors", date(2024, 6, 28), run_id)
+    assert derive["status"] == "failed"
+    assert engine._overall_status(run_id, "success") == "degraded"
+    daily_revision = manifest.get_dataset_result(run_id, "daily_bars", "publish_revision")
+    assert daily_revision is not None
+    assert daily_revision["revision_id"] == revision.revision_id
+    adj_result = manifest.get_dataset_result(run_id, "adj_factors", "derive")
+    assert adj_result is not None
+    assert adj_result["status"] == "failed"
+
+
 def test_manifest_connection_context_closes_connection(tmp_path):
     manifest = Manifest(tmp_path / "meta" / "manifest.db")
 
@@ -290,6 +404,7 @@ def test_retry_reruns_failed_symbol_batch_only(worker_config, monkeypatch):
 
 def test_partial_batch_retry_scope_is_reduced_to_missing_symbols(worker_config, monkeypatch):
     from cnequity.adapters.tdx_protocol import client as tdx
+    from cnequity.derive.adj_factors import AdjFactorsResult
 
     worker_config.batch_size = 2
     worker_config.failover_enabled = False
@@ -309,6 +424,12 @@ def test_partial_batch_retry_scope_is_reduced_to_missing_symbols(worker_config, 
 
     monkeypatch.setattr("cnequity.orchestrator.worker_pool.fetch_daily_bars", _fetch)
     monkeypatch.setattr("cnequity.steps.bars.load_symbols", lambda _cfg: ["600519.SH", "000001.SZ"])
+    # This test targets daily-bar retry scope.  Keep finalize deterministic and
+    # offline so a transient Sina factor response cannot mask that contract.
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.compute_adj_factors",
+        lambda *args, **kwargs: AdjFactorsResult(0, 0, [], []),
+    )
     worker_config.tdx_allow_mock = False
 
     init_data_layout(worker_config)

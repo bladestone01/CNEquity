@@ -13,6 +13,20 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ``ingestion_batches`` is the retry ledger.  ``dataset_results`` is the
+# smaller, user-facing receipt ledger: one row per logical dataset and stage.
+# Keep these values here (rather than sprinkling string literals through the
+# engine) so an older manifest can be migrated and callers can validate input
+# consistently.
+DATASET_RESULT_STAGES = frozenset(
+    {"fetch", "stage", "compact", "derive", "audit", "publish_revision"}
+)
+DATASET_RESULT_STATUSES = frozenset(
+    {"success", "warning", "failed", "skipped", "blocked", "degraded"}
+)
+DATASET_RESULT_CRITICALITIES = frozenset({"core", "research", "advisory"})
+
+
 @dataclass
 class RunRecord:
     run_id: str
@@ -43,6 +57,27 @@ class BatchRecord:
     finished_at: str | None = None
     error_message: str | None = None
     blocks_compaction: bool = True
+
+
+@dataclass
+class DatasetResult:
+    """One logical dataset/stage receipt in the run manifest.
+
+    This intentionally mirrors the public ``dataset_results`` table rather
+    than the more detailed batch ledger.  A row is upserted by
+    ``(run_id, dataset, stage)`` as a stage moves from an attempt to its final
+    outcome, which keeps status queries deterministic after retries.
+    """
+
+    run_id: str
+    dataset: str
+    stage: str
+    status: str
+    criticality: str = "core"
+    revision_id: str | None = None
+    rows_written: int = 0
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -115,6 +150,18 @@ class Manifest:
                     ON ingestion_batches(run_id, status);
                 CREATE INDEX IF NOT EXISTS idx_batches_dataset
                     ON ingestion_batches(dataset, status);
+                CREATE TABLE IF NOT EXISTS dataset_results (
+                    run_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    criticality TEXT NOT NULL DEFAULT 'core',
+                    revision_id TEXT,
+                    rows_written INTEGER DEFAULT 0,
+                    error_code TEXT,
+                    error_message TEXT,
+                    PRIMARY KEY (run_id, dataset, stage)
+                );
                 """
             )
             cols = {row[1] for row in conn.execute("PRAGMA table_info(ingestion_batches)")}
@@ -124,6 +171,51 @@ class Manifest:
                 conn.execute(
                     "ALTER TABLE ingestion_batches ADD COLUMN blocks_compaction INTEGER DEFAULT 1"
                 )
+
+            # ``dataset_results`` was added after the original two-table
+            # manifest.  Keep the migration deliberately additive: operators
+            # may have copied a manifest between releases, and SQLite does
+            # not support ``ADD COLUMN IF NOT EXISTS`` on all versions we
+            # support.  The defaults make old rows readable without inventing
+            # a result for a stage that never ran.
+            result_cols = {row[1] for row in conn.execute("PRAGMA table_info(dataset_results)")}
+            for name, definition in (
+                ("run_id", "TEXT"),
+                ("dataset", "TEXT"),
+                ("stage", "TEXT"),
+                ("status", "TEXT"),
+                ("criticality", "TEXT NOT NULL DEFAULT 'core'"),
+                ("revision_id", "TEXT"),
+                ("rows_written", "INTEGER DEFAULT 0"),
+                ("error_code", "TEXT"),
+                ("error_message", "TEXT"),
+            ):
+                if name not in result_cols:
+                    conn.execute(f"ALTER TABLE dataset_results ADD COLUMN {name} {definition}")
+
+            # A hand-created pre-release table may not have carried the
+            # composite primary key.  The write path below remains safe for
+            # that shape, while this index gives normal manifests the same
+            # uniqueness guarantee as the declared primary key.
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_dataset_results_key "
+                    "ON dataset_results(run_id, dataset, stage)"
+                )
+            except sqlite3.IntegrityError:
+                # A hand-created pre-release table may contain duplicate
+                # receipts.  Do not make opening an otherwise readable old
+                # manifest fail; the UPDATE-first write path remains
+                # idempotent and future writes converge all duplicates.
+                pass
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dataset_results_run "
+                "ON dataset_results(run_id, status, criticality)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dataset_results_dataset "
+                "ON dataset_results(dataset, stage, status)"
+            )
 
     @staticmethod
     def _batch_activity_at(row: sqlite3.Row) -> datetime | None:
@@ -153,6 +245,20 @@ class Manifest:
         rows_written: int = 0,
         error_message: str | None = None,
     ) -> None:
+        # A caller may still pass the legacy ``warning`` spelling or may
+        # finalize a run without first asking for its aggregate.  Once logical
+        # receipts exist, make the persisted run status obey the same
+        # core/research policy as ``aggregate_run_status``.  Runs from before
+        # this table was introduced retain their original status.
+        if status in {"success", "warning", "degraded", "failed"}:
+            aggregate = self.aggregate_run_status(run_id)
+            if aggregate["results"]:
+                if aggregate["status"] == "failed" or status == "failed":
+                    status = "failed"
+                elif aggregate["status"] == "degraded" or status in {"warning", "degraded"}:
+                    status = "degraded"
+                else:
+                    status = "success"
         with self._connect() as conn:
             conn.execute(
                 """
@@ -684,6 +790,179 @@ class Manifest:
                 (run_id, batch_id),
             ).fetchone()
 
+    def record_dataset_result(
+        self,
+        run_id: str,
+        dataset: str,
+        stage: str,
+        status: str,
+        *,
+        criticality: str = "core",
+        revision_id: str | None = None,
+        rows_written: int = 0,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Upsert the public result for one dataset/stage.
+
+        ``dataset_results`` is intentionally independent of batch retries.
+        A retry updates the same logical receipt, while the detailed failed
+        attempt remains in ``ingestion_batches``.  Updating then inserting
+        (instead of relying only on ``ON CONFLICT``) also works with manifests
+        created by an early migration that had no primary key declaration.
+        """
+        if stage not in DATASET_RESULT_STAGES:
+            raise ValueError(f"invalid dataset result stage: {stage!r}")
+        if status not in DATASET_RESULT_STATUSES:
+            raise ValueError(f"invalid dataset result status: {status!r}")
+        if criticality not in DATASET_RESULT_CRITICALITIES:
+            raise ValueError(f"invalid dataset result criticality: {criticality!r}")
+        try:
+            rows = int(rows_written)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("rows_written must be an integer") from exc
+        if rows < 0:
+            raise ValueError("rows_written must be non-negative")
+
+        values = (
+            status,
+            criticality,
+            revision_id,
+            rows,
+            error_code,
+            error_message,
+            run_id,
+            dataset,
+            stage,
+        )
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE dataset_results
+                SET status = ?, criticality = ?, revision_id = ?, rows_written = ?,
+                    error_code = ?, error_message = ?
+                WHERE run_id = ? AND dataset = ? AND stage = ?
+                """,
+                values,
+            )
+            if cur.rowcount:
+                return
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO dataset_results (
+                        run_id, dataset, stage, status, criticality, revision_id,
+                        rows_written, error_code, error_message
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        dataset,
+                        stage,
+                        status,
+                        criticality,
+                        revision_id,
+                        rows,
+                        error_code,
+                        error_message,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                # Another worker may have inserted the same logical receipt
+                # between UPDATE and INSERT.  Finish with a deterministic
+                # update rather than leaking a transient UNIQUE failure.
+                conn.execute(
+                    """
+                    UPDATE dataset_results
+                    SET status = ?, criticality = ?, revision_id = ?, rows_written = ?,
+                        error_code = ?, error_message = ?
+                    WHERE run_id = ? AND dataset = ? AND stage = ?
+                    """,
+                    values,
+                )
+
+    # Synonyms make the small API convenient for callers that describe this as
+    # a receipt or an upsert, and keep compatibility with early stage-4
+    # consumers that used those names while the schema was being finalized.
+    upsert_dataset_result = record_dataset_result
+    record_result = record_dataset_result
+
+    def get_dataset_results(
+        self,
+        run_id: str,
+        dataset: str | None = None,
+        stage: str | None = None,
+    ) -> list[sqlite3.Row]:
+        """Read dataset/stage receipts for *run_id* in stable order."""
+        clauses = ["run_id = ?"]
+        params: list[object] = [run_id]
+        if dataset is not None:
+            clauses.append("dataset = ?")
+            params.append(dataset)
+        if stage is not None:
+            clauses.append("stage = ?")
+            params.append(stage)
+        where = " AND ".join(clauses)
+        with self._connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT run_id, dataset, stage, status, criticality, revision_id,
+                       rows_written, error_code, error_message
+                FROM dataset_results
+                WHERE {where}
+                ORDER BY dataset, stage
+                """,
+                params,
+            ).fetchall()
+
+    list_dataset_results = get_dataset_results
+    dataset_results_for_run = get_dataset_results
+
+    def get_dataset_result(self, run_id: str, dataset: str, stage: str) -> sqlite3.Row | None:
+        rows = self.get_dataset_results(run_id, dataset=dataset, stage=stage)
+        return rows[0] if rows else None
+
+    def aggregate_run_status(self, run_id: str) -> dict[str, Any]:
+        """Aggregate logical dataset receipts into success/degraded/failed.
+
+        A core failure (including a blocked core gate) is a failed run.  A
+        research/advisory failure, or any warning/degraded result, leaves the
+        run usable but degraded.  Explicitly skipped optional stages do not
+        affect the aggregate.
+        """
+        rows = self.get_dataset_results(run_id)
+        core_failures: list[dict[str, Any]] = []
+        degraded_results: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+        for row in rows:
+            status = str(row["status"])
+            counts[status] = counts.get(status, 0) + 1
+            if status == "skipped":
+                continue
+            item = dict(row)
+            criticality = str(row["criticality"] or "core")
+            if criticality == "core" and status in {"failed", "blocked"}:
+                core_failures.append(item)
+            elif status in {"warning", "degraded", "failed", "blocked"}:
+                degraded_results.append(item)
+        if core_failures:
+            status = "failed"
+        elif degraded_results:
+            status = "degraded"
+        else:
+            status = "success"
+        return {
+            "status": status,
+            "counts": counts,
+            "core_failures": core_failures,
+            "degraded_results": degraded_results,
+            "results": [dict(row) for row in rows],
+        }
+
+    # ``dataset_status`` reads naturally at call sites that need only the
+    # aggregate and is kept as an alias for compatibility with status UIs.
+    dataset_status = aggregate_run_status
+
     def get_run(self, run_id: str) -> sqlite3.Row | None:
         with self._connect() as conn:
             return conn.execute(
@@ -741,9 +1020,22 @@ class Manifest:
                 "SELECT status, COUNT(*) as cnt FROM ingestion_batches WHERE run_id = ? GROUP BY status",
                 (run_id,),
             ).fetchall()
+        dataset_status = self.aggregate_run_status(run_id)
+        run_payload = dict(run) if run else None
+        public_dataset_status = (
+            dataset_status["status"]
+            if dataset_status["results"]
+            else (run_payload.get("status") if run_payload else None)
+        )
         return {
-            "run": dict(run) if run else None,
+            "run": run_payload,
+            "run_id": run_payload.get("run_id") if run_payload else run_id,
+            "job_name": run_payload.get("job_name") if run_payload else None,
+            "status": run_payload.get("status") if run_payload else None,
             "batch_counts": {row["status"]: row["cnt"] for row in batches},
+            "dataset_results": dataset_status["results"],
+            "dataset_status": public_dataset_status,
+            "dataset_result_counts": dataset_status["counts"],
         }
 
     def update_run_metadata(self, run_id: str, metadata: dict[str, Any]) -> None:

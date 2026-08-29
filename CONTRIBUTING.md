@@ -20,6 +20,9 @@
 数据源接入需要同时提交来源、保留期、限流和合规说明；请不要把真实数据文件提交到仓库。
 较大的方向可以先在 issue / discussion 中确认范围。
 
+版本、数据契约、迁移与发布门禁见
+[`docs/development/release-governance.md`](docs/development/release-governance.md)。
+
 ## 环境
 
 ```bash

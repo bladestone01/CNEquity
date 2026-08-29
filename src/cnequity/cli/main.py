@@ -83,6 +83,20 @@ def _progress_logging(quiet: bool = False) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+def _run_status_exit_code(status: str) -> int:
+    """Map the run contract to scheduler-friendly exit codes.
+
+    0 means all requested work succeeded; 2 means the core spine completed
+    but research/advisory work degraded; 1 means a core failure (or another
+    terminal failure without a usable result).
+    """
+    if status in {"success", "skipped_non_trading_day"}:
+        return 0
+    if status in {"degraded", "warning"}:
+        return 2
+    return 1
+
+
 def resolve_config_path(config_path: str) -> Path:
     path = Path(config_path)
     if config_path == USER_CONFIG and not path.exists():
@@ -104,6 +118,207 @@ def _cfg(config: str):
 @click.version_option(package_name="cnequity")
 def cli():
     """cnequity — A-share data ingestion CLI."""
+
+
+def _profile_list_payload(include_compatibility: bool) -> list[dict]:
+    from cnequity.domain.universe_profiles import list_universe_profiles
+
+    return list_universe_profiles(include_compatibility=include_compatibility)
+
+
+def _profile_show_payload(name: str, symbols: tuple[str, ...]) -> dict:
+    from cnequity.domain.universe_profiles import (
+        resolve_universe_profile,
+        show_universe_profile,
+    )
+
+    try:
+        payload = show_universe_profile(name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if symbols:
+        payload["concrete_scope_hash"] = resolve_universe_profile(name).symbol_scope_hash(symbols)
+        payload["symbols"] = sorted(
+            {symbol.strip().upper() for symbol in symbols if symbol.strip()}
+        )
+    return payload
+
+
+@cli.group("profile")
+def profile_grp():
+    """Inspect versioned research universe profiles."""
+
+
+@profile_grp.command("list")
+@click.option(
+    "--include-compatibility/--official-only",
+    default=True,
+    show_default=True,
+    help="Include legacy universe aliases in the registry listing.",
+)
+def profile_list(include_compatibility: bool):
+    """List machine-readable profile registry records."""
+
+    click.echo(
+        json.dumps(_profile_list_payload(include_compatibility), ensure_ascii=False, indent=2)
+    )
+
+
+@profile_grp.command("show")
+@click.argument("name")
+@click.option(
+    "--symbol",
+    "symbols",
+    multiple=True,
+    help="Bind the profile to concrete symbols and include concrete_scope_hash.",
+)
+def profile_show(name: str, symbols: tuple[str, ...]):
+    """Show one versioned profile and its stable scope hash."""
+
+    click.echo(json.dumps(_profile_show_payload(name, symbols), ensure_ascii=False, indent=2))
+
+
+@cli.group("contract")
+def contract_grp():
+    """Inspect and validate the registered dataset data contract."""
+
+
+@contract_grp.command("show")
+@click.argument("dataset", required=False)
+@click.option(
+    "--dataset",
+    "dataset_option",
+    default=None,
+    help="Dataset name (an argument is also accepted). Omit for the full contract.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON (the default).")
+def contract_show(dataset: str | None, dataset_option: str | None, as_json: bool):
+    """Show one dataset contract, or the complete registry contract."""
+    from cnequity.domain.contracts import (
+        build_contract,
+        contract_json,
+        dataset_contract,
+    )
+
+    name = dataset_option or dataset
+    try:
+        payload = dataset_contract(name) if name else build_contract()
+    except KeyError as exc:
+        raise click.ClickException(str(exc)) from exc
+    # ``--json`` is intentionally a no-op today: JSON is the stable output
+    # shape for this command. Keeping the option makes scripts explicit and
+    # leaves room for a future human table without changing their invocation.
+    del as_json
+    click.echo(contract_json(payload))
+
+
+@contract_grp.command("export")
+@click.option(
+    "--out",
+    "--output",
+    "--path",
+    "output_path",
+    default="-",
+    show_default=True,
+    help="Write JSON to this path; '-' prints to stdout.",
+)
+@click.option("--dataset", default=None, help="Export only this dataset record.")
+def contract_export(output_path: str, dataset: str | None):
+    """Export the complete registered contract as stable JSON."""
+    from cnequity.domain.contracts import contract_json, dataset_contract, export_contract
+
+    try:
+        payload = dataset_contract(dataset) if dataset else export_contract()
+    except KeyError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if output_path == "-":
+        click.echo(contract_json(payload))
+        return
+    if dataset:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text(contract_json(payload) + "\n", encoding="utf-8")
+    else:
+        export_contract(output_path)
+    click.echo(f"Wrote {output_path}")
+
+
+@contract_grp.command("diff")
+@click.argument("old_contract", required=False)
+@click.argument("new_contract", required=False)
+@click.option("--old", "old_option", default=None, help="Baseline contract path.")
+@click.option("--new", "new_option", default=None, help="Candidate contract path.")
+@click.option("--from", "from_option", default=None, help="Alias for --old.")
+@click.option("--to", "to_option", default=None, help="Alias for --new.")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
+@click.option(
+    "--allow-breaking",
+    is_flag=True,
+    help="Return exit code 0 even when breaking changes are found.",
+)
+def contract_diff(
+    old_contract: str | None,
+    new_contract: str | None,
+    old_option: str | None,
+    new_option: str | None,
+    from_option: str | None,
+    to_option: str | None,
+    as_json: bool,
+    allow_breaking: bool,
+):
+    """Compare OLD_CONTRACT with NEW_CONTRACT (default: current registry)."""
+    from cnequity.domain.contracts import contract_json, diff_contracts, format_contract_diff
+
+    old_path = old_option or from_option or old_contract
+    new_path = new_option or to_option or new_contract
+    if old_path is None:
+        raise click.UsageError("provide OLD_CONTRACT or --old/--from")
+    try:
+        diff = diff_contracts(old_path, new_path)
+    except (OSError, TypeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(contract_json(diff))
+    else:
+        click.echo(format_contract_diff(diff))
+    if diff["is_breaking"] and not allow_breaking:
+        raise SystemExit(1)
+
+
+@contract_grp.command("validate")
+@click.argument("contract_path", required=False)
+@click.option(
+    "--path", "path_option", default=None, help="Contract JSON path (an argument is also accepted)."
+)
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
+@click.option(
+    "--against-registry",
+    is_flag=True,
+    help="Require a file contract to match the current DATASETS/SCHEMAS/PRIMARY_KEYS exactly.",
+)
+def contract_validate(
+    contract_path: str | None,
+    path_option: str | None,
+    as_json: bool,
+    against_registry: bool,
+):
+    """Validate a contract file, or the current registry when omitted."""
+    from cnequity.domain.contracts import contract_json, validate_contract
+
+    contract_path = path_option or contract_path
+    errors = validate_contract(
+        contract_path,
+        against_registry=True if (contract_path is None or against_registry) else False,
+    )
+    if as_json:
+        click.echo(contract_json({"valid": not errors, "errors": errors}))
+    elif errors:
+        for error in errors:
+            click.echo(f"ERROR: {error}", err=True)
+    else:
+        click.echo("Contract OK")
+    if errors:
+        raise SystemExit(1)
 
 
 @cli.command("demo")
@@ -297,8 +512,9 @@ def init(
         keep_going=keep_going,
     )
     click.echo(json.dumps(result, indent=2, default=str))
-    if result.get("status") != "success":
-        raise SystemExit(1)
+    exit_code = _run_status_exit_code(str(result.get("status", "failed")))
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 @cli.command("config")
@@ -436,8 +652,9 @@ def _run_stale_only(cfg, engine, trade_date: date | None, *, backfill: bool) -> 
     except RunLockError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps({"run_id": result["run_id"], "status": result["status"]}, indent=2))
-    if result["status"] not in ("success", "skipped_non_trading_day"):
-        raise SystemExit(1)
+    exit_code = _run_status_exit_code(result["status"])
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 @run.command("daily")
@@ -499,8 +716,9 @@ def run_daily(
     click.echo(json.dumps({"run_id": result["run_id"], "status": result["status"]}, indent=2))
     # Exit non-zero on failure so schedulers (launchd/cron) and the daily
     # pipeline can detect it; a non-trading-day skip is a success (exit 0).
-    if result["status"] not in ("success", "skipped_non_trading_day"):
-        raise SystemExit(1)
+    exit_code = _run_status_exit_code(result["status"])
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 _CATCHUP_EXTRA_DEFAULT = (
@@ -1546,14 +1764,29 @@ def verify(config_path: str, only: str | None, repair: bool, kinds: str | None):
 @cli.command()
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(
+    "--run",
+    "run_selector",
+    default=None,
+    help="Run id to inspect, or 'latest' (the default). Includes dataset stage results.",
+)
+@click.option("--run-id", "run_id", default=None, help="Alias for --run with an explicit id.")
+@click.option(
     "--datasets",
     "show_datasets",
     is_flag=True,
     help="Per-dataset freshness: coverage, watermark, and staleness vs the last trading day.",
 )
-def status(config_path: str, show_datasets: bool):
+def status(
+    config_path: str,
+    run_selector: str | None,
+    run_id: str | None,
+    show_datasets: bool,
+):
     """Show latest run status, or per-dataset freshness with --datasets."""
     cfg = _cfg(config_path)
+
+    if run_selector and run_id:
+        raise click.UsageError("use either --run or --run-id, not both")
 
     if show_datasets:
         import polars as pl_mod
@@ -1590,11 +1823,25 @@ def status(config_path: str, show_datasets: bool):
         return
 
     manifest = Manifest(cfg.manifest_path)
-    latest = manifest.latest_run()
+    selected = run_selector or run_id
+    if selected and selected != "latest":
+        latest = manifest.get_run(selected)
+        if latest is None:
+            raise click.ClickException(f"Unknown run_id: {selected}")
+    else:
+        latest = manifest.latest_run()
     if not latest:
         click.echo("No runs yet.")
         return
     summary = manifest.run_summary(latest["run_id"])
+    # Keep the historical summary shape while making `cne status --run latest`
+    # easy for shell callers to consume.  ``run_summary`` now carries the
+    # complete dataset_results list and aggregate dataset_status.
+    if isinstance(summary, dict) and "run" in summary and summary["run"]:
+        run_payload = summary["run"]
+        summary.setdefault("run_id", run_payload.get("run_id"))
+        summary.setdefault("status", run_payload.get("status"))
+        summary.setdefault("job_name", run_payload.get("job_name"))
     orphaned = manifest.count_stale_running_runs(
         stale_after_seconds=cfg.batch_stale_seconds,
         locks_root=cfg.meta_root,
@@ -1607,6 +1854,11 @@ def status(config_path: str, show_datasets: bool):
             "or `cne clean --reconcile-runs`"
         )
     click.echo(json.dumps(summary, indent=2, default=str))
+    run_status = str(summary.get("dataset_status") or summary.get("status") or "success")
+    if run_status == "degraded":
+        raise SystemExit(2)
+    if run_status == "failed":
+        raise SystemExit(1)
 
 
 def _retry_single_run(engine: JobEngine, run_id: str) -> dict:
@@ -1683,8 +1935,9 @@ def retry(config_path: str, run_id: str | None, failed_groups: bool):
     if not run_id:
         raise click.ClickException("provide --run-id or --failed-groups")
     result = _retry_single_run(engine, run_id)
-    if result.get("status") != "success":
-        raise SystemExit(1)
+    exit_code = _run_status_exit_code(str(result.get("status", "failed")))
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 @cli.command()
@@ -2075,6 +2328,179 @@ def _guard_mcp_data_root(cfg, config_path: str) -> None:
     )
 
 
+@cli.group("source")
+def source_grp():
+    """Source availability SLOs, backup resilience and use-policy checks.
+
+    These read stored evidence and the dataset registry; none of them hit the
+    network. Use `cne sources` (plural) for the live probe itself.
+    """
+
+
+@source_grp.command("slo")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--window-days", default=30, show_default=True, type=click.IntRange(min=1))
+@click.option("--minimum-observations", default=10, show_default=True, type=click.IntRange(min=1))
+@click.option("--enforce", is_flag=True, help="Exit 1 when a critical source SLO is not met.")
+def source_slo(config_path: str, window_days: int, minimum_observations: int, enforce: bool):
+    """Evaluate historical source probes and emit incident payloads."""
+    from cnequity.diagnostics.source_slo import (
+        build_source_incidents,
+        evaluate_source_slo,
+        load_health_history,
+        store_source_incidents,
+    )
+
+    cfg = _cfg(config_path)
+    history = load_health_history(cfg.meta_root)
+    report = evaluate_source_slo(
+        history,
+        window_days=window_days,
+        minimum_observations=minimum_observations,
+    )
+    incidents = build_source_incidents(history)
+    incident_path = store_source_incidents(cfg.meta_root, incidents)
+    payload = report.to_dict()
+    payload["incidents"] = incidents
+    payload["incident_path"] = str(incident_path)
+    click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+    if enforce and not report.passed:
+        raise SystemExit(1)
+
+
+@source_grp.command("resilience")
+@click.option("--out", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--enforce", is_flag=True, help="Exit 1 when a core dataset lacks an independent backup."
+)
+def source_resilience(out: Path | None, enforce: bool):
+    """Show source concentration, blast radius and independent backup gate."""
+    from cnequity.diagnostics.source_resilience import build_dependency_report
+
+    report = build_dependency_report()
+    payload = report.to_dict()
+    if out is not None:
+        write_json_atomic(out, payload, indent=2, ensure_ascii=False)
+    click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+    if enforce and not report.passed:
+        raise SystemExit(1)
+
+
+@source_grp.command("policy")
+@click.argument("source", required=False)
+@click.option(
+    "--profile",
+    type=click.Choice(["personal", "commercial", "cache", "redistribution"]),
+    default=None,
+)
+@click.option("--redistribution", is_flag=True)
+def source_policy(source: str | None, profile: str | None, redistribution: bool):
+    """Inspect source-use policy; unknown permission fails closed."""
+    from cnequity.compliance.source_policy import load_source_policies, usage_profile
+
+    policies = load_source_policies()
+    if source is None:
+        click.echo(
+            json.dumps(
+                {name: policy.as_dict() for name, policy in sorted(policies.items())},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+    if source not in policies:
+        raise click.ClickException(f"unknown source policy {source!r}")
+    assessment = usage_profile(
+        policies[source],
+        profile=profile,
+        redistribution=redistribution,
+    )
+    click.echo(json.dumps(assessment.as_dict(), indent=2, ensure_ascii=False))
+    if not assessment.allowed:
+        raise SystemExit(1)
+
+
+@cli.group("snapshot")
+def snapshot_grp():
+    """Create, verify and safely restore portable lake snapshots."""
+
+
+@snapshot_grp.command("create")
+@click.argument("name")
+@click.option("--dataset", "datasets", multiple=True, required=True)
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--snapshot-root", type=click.Path(path_type=Path), default=None)
+def snapshot_create(
+    name: str, datasets: tuple[str, ...], config_path: str, snapshot_root: Path | None
+):
+    from cnequity.storage.snapshots import SnapshotStore
+
+    manifest = SnapshotStore(_cfg(config_path), snapshot_root).create(name, list(datasets))
+    click.echo(str(manifest))
+
+
+@snapshot_grp.command("verify")
+@click.argument("name")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--snapshot-root", type=click.Path(path_type=Path), default=None)
+def snapshot_verify(name: str, config_path: str, snapshot_root: Path | None):
+    from dataclasses import asdict
+
+    from cnequity.storage.snapshots import SnapshotStore
+
+    result = SnapshotStore(_cfg(config_path), snapshot_root).verify(name)
+    click.echo(json.dumps(asdict(result), indent=2, ensure_ascii=False))
+    if not result.passed:
+        raise SystemExit(1)
+
+
+@snapshot_grp.command("restore")
+@click.argument("name")
+@click.argument("target", type=click.Path(path_type=Path))
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--snapshot-root", type=click.Path(path_type=Path), default=None)
+def snapshot_restore(name: str, target: Path, config_path: str, snapshot_root: Path | None):
+    from cnequity.storage.snapshots import SnapshotStore
+
+    restored = SnapshotStore(_cfg(config_path), snapshot_root).restore(name, target)
+    click.echo(str(restored))
+
+
+@cli.command("stability")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--days", default=20, show_default=True, type=click.IntRange(min=1))
+@click.option("--as-of", default=None, help="Inclusive YYYY-MM-DD cutoff.")
+@click.option("--enforce", is_flag=True, help="Exit 1 until the consecutive-day gate passes.")
+def stability(config_path: str, days: int, as_of: str | None, enforce: bool):
+    """Verify consecutive trading-day run evidence without filling gaps."""
+    from cnequity.diagnostics.stability import evaluate_stability, store_stability_report
+    from cnequity.query.parquet_scan import collect_parquet_root
+
+    cfg = _cfg(config_path)
+    try:
+        calendar = collect_parquet_root(
+            cfg.curated_root / "trading_calendar", partition_col="trade_date"
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException("curated trading_calendar is required") from exc
+    trading_days = (
+        calendar.filter(pl.col("is_trading"))["trade_date"].drop_nulls().unique().to_list()
+    )
+    report = evaluate_stability(
+        Manifest(cfg.manifest_path),
+        trading_days,
+        required_days=days,
+        as_of=date.fromisoformat(as_of) if as_of else None,
+    )
+    latest, historical = store_stability_report(cfg.meta_root, report)
+    payload = report.to_dict()
+    payload["latest_path"] = str(latest)
+    payload["historical_path"] = str(historical)
+    click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+    if enforce and not report.passed:
+        raise SystemExit(1)
+
+
 @cli.command("sources")
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
 @click.option(
@@ -2116,13 +2542,14 @@ def sources(config_path: str, vantage: str, only: str | None, out: str | None):
         label = STATUS_LABELS[ProbeStatus(result.status)]
         click.echo(f"{result.status:<8}{label:<5}{latency}  {result.key:<22}{result.detail}")
 
-    path = Path(out) if out else cfg.meta_root / "source_health" / f"{vantage}.json"
-    write_json_atomic(
-        path,
-        report.to_dict(),
-        indent=2,
-        ensure_ascii=False,
-    )
+    if out:
+        path = Path(out)
+        write_json_atomic(path, report.to_dict(), indent=2, ensure_ascii=False)
+    else:
+        from cnequity.diagnostics.source_slo import store_health_report
+
+        path, historical = store_health_report(cfg.meta_root, report)
+        click.echo(f"Historical sample: {historical}")
     click.echo(f"\nWrote {path}")
     click.echo("View it with: cne serve  \u2192  http://127.0.0.1:8787/source-health")
 

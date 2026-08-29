@@ -68,9 +68,7 @@ def fetch_list_date_map(
         except Exception as exc:  # noqa: BLE001 — enrichment is best-effort
             logger.warning("EastMoney clist ETF/LOF list_date fetch failed: %s", exc)
             return out
-        for sym, item in clist_rows_to_symbols(
-            etf_rows, symbol_resolver=symbol_from_clist_etf
-        ):
+        for sym, item in clist_rows_to_symbols(etf_rows, symbol_resolver=symbol_from_clist_etf):
             list_date = _parse_list_date(item.get("f26"))
             if list_date is not None:
                 out[sym] = list_date

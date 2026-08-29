@@ -6,6 +6,84 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Machine-readable dataset contracts.** `DatasetSpec` now carries
+  `schema_version`, `contract_level`, `pit_quality`, `availability_col`,
+  `unit_contract` and a compatibility policy, inferred so existing positional
+  constructors are unaffected. `cne contract show/export/validate/diff` (and
+  `cnequity.domain.contracts`) render the registry, schemas and primary keys
+  into a deterministic fingerprinted JSON document; `diff` classifies column
+  drops, type and primary-key changes, and unit/PIT/history changes as
+  breaking. See `docs/datasets/contract.md`.
+- **Point-in-time query mode.** `load(..., pit_mode="strict")` returns only
+  vintages whose disclosure, publication/availability and lake observation are
+  all provably on or before `as_of`, and excludes reconstructed backfill rows;
+  `"best_effort"` keeps them and adds `pit_is_exact` / `pit_quality`. Four
+  optional bitemporal columns (`available_at`, `source_published_at`,
+  `observed_at`, `revision_id`) are filled on read, and
+  `scripts/migrate_pit_vintages.py` writes them into old files in place.
+- **Versioned universe profiles.** `cnequity.domain.universe_profiles` is a
+  registry of reproducible research scopes (`cn_a_sh_sz_research_v1`,
+  `cn_a_all_experimental_v1`, plus legacy records) with a stable `scope_hash`.
+  `load(profile=...)` binds exchange/board, CDR/ETF, ST and delisting-evidence
+  rules and enables the strict checks. `cne profile list/show`. See
+  `docs/reference/universe-profiles.md`.
+- **Committed dataset revisions and portable snapshots.** Compaction now
+  commits a monotonic `revision` plus a content digest and per-file hashes
+  when curated files change, exposed through `StateStore` and
+  `cnequity.query.dataset_state` so a cache invalidates on a repair that never
+  moves the watermark. `cne snapshot create/verify/restore` produces
+  checksummed, immutable lake snapshots that also carry the contract
+  fingerprint and run lineage.
+- **Run-level dataset receipts.** A `dataset_results` table records one row
+  per logical dataset and stage (fetch/stage/compact/derive/audit/
+  publish_revision) with core/research/advisory criticality, with an additive
+  migration for hand-copied manifests. `cne status --run <id|latest>` reports
+  it.
+- **Source-use policy register.** `sources/SOURCES.yml` records access type,
+  terms-review status and a conservative use conclusion per source label; an
+  unreviewed permission is the literal `unknown` and never satisfies an allow
+  check. `cnequity.compliance.source_policy` and `cne source policy` evaluate
+  it and fail closed. See `docs/legal/source-matrix.md`.
+- **Source SLO, resilience and stability gates.** `cne source slo` turns
+  stored probe history into per-source availability SLOs and de-duplicated
+  incident payloads; `cne source resilience` derives source concentration,
+  failure domains and a fail-closed backup gate for the core datasets from the
+  registry with no network calls; `cne stability` checks consecutive clean
+  trading days without filling gaps. Each supports `--enforce`.
+- **Run provenance on receipts.** Revision and snapshot receipts carry
+  non-secret code and config identity (package version, git commit, config
+  fingerprint) via `cnequity.provenance`.
+- **Supply-chain CI.** A new `security.yml` workflow runs `pip-audit` and
+  emits a CycloneDX SBOM on dependency changes and weekly. `docs/development/
+  release-governance.md` records the version and data-contract policy.
+
+### Changed
+
+- **Run status contract.** A step-level `warning` is now reported as
+  `degraded` at run level. `cne status` and the run commands
+  (`run daily`, `run --stale-only`, `init`, `retry`) exit `2` for a degraded
+  run — the core spine completed, research/advisory work did not — and `1`
+  only for a core failure; a bare `cne status` previously always exited `0`.
+- **Research-source failures no longer fail the run.** An `adj_factors` or
+  `industry_index` derive whose source is unavailable degrades a run and keeps
+  the committed raw `daily_bars` revision, instead of marking the whole run
+  failed.
+- **`list_datasets()` gains columns** `pit_quality`, `pit_storage_columns`,
+  `revision`, `revision_id`, `schema_version` and `contract_fingerprint`.
+- **PyYAML is now a direct runtime dependency** (used to parse
+  `sources/SOURCES.yml`) and ships as a wheel data file.
+
+### Deprecated
+
+- **`universe="all_a"` in the query layer.** It still resolves and keeps its
+  permissive legacy semantics but emits a `DeprecationWarning`; choose an
+  explicit profile such as `cn_a_sh_sz_research_v1`.
+- **`load()` without an explicit `pit_mode` for PIT datasets.** The omitted
+  case keeps the old `fetched_at` cutoff and makes no exactness guarantee.
+  Research code should pass `pit_mode` and record the choice.
+
 ### Fixed
 
 - **ETF/LOF adjustment factors and deep history are now complete.** Sina's

@@ -72,6 +72,15 @@ cnequity 的 curated 数据集统一带溯源列，并声明明确主键。
 | data_version | string | |
 | fetched_at | timestamp | |
 
+PIT 的双时态扩展列是可选列，旧 Parquet 没有这些列仍可读取：
+
+| 列 | 类型 | 说明 |
+|--------|------|-------|
+| available_at | timestamp, nullable | 该事实在源端可用的时间；未知时必须为 null，不能用回填时的报告期代替 |
+| source_published_at | timestamp, nullable | 源端实际发布时间；当前东财历史回填通常未知 |
+| observed_at | timestamp, nullable | 湖实际观察到该行的时间；旧文件由 `fetched_at` 兼容补出 |
+| revision_id | string, nullable | 稳定的事实/版本身份；读侧可由业务字段和溯源确定性补出 |
+
 #### trading_calendar
 
 | 列 | 类型 | 说明 |
@@ -326,9 +335,11 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
   或改用 `bps`（每股净资产）× 股本。
 - `capex` 取「购建固定资产、无形资产和其他长期资产支付的现金」，是代理量而非严格资本开支。
 - **回填值是修订后的**：东财只提供某期财务数据的*当前*版本。回填拿到的是修订值，
-  但配的是首次披露日（statement 报表自带的 `NOTICE_DATE` 是「最后一次重述日」，
-  往往晚 1–2 年，直接用会让基本面在 PIT 查询里整体迟到）。因此存在小幅前视：
-  修订后的数字在首次披露日其实还不知道。只有日更逐日累积的版本才是严格 PIT。
+  但配的是首次披露日，因此注册表将 `financial_statement_items` 标为
+  `pit_quality="reconstructed"`（旧别名 `pit_grade="partial"`），而不是严格 PIT。
+  `load(..., pit_mode="strict")` 会拒绝这类行；`pit_mode="best_effort"` 可以读取，
+  但必须检查返回的 `pit_is_exact` / `pit_quality`。只有逐日累积、同时保存真实
+  `available_at`/`observed_at` 的版本才可称为严格 PIT。
 - **历史深度**：`cne backfill financial_statement_items` 默认走东财报告期自 **2001** 起
   （可用 `--start` / `--end` 分块）；不走 baostock。盘上实际起点见 `list_datasets().coverage_start`。
 

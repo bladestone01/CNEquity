@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Iterable
-from contextlib import AbstractContextManager
+from collections.abc import Iterable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import IO
@@ -24,11 +24,47 @@ class StateStore:
     def _path(self, dataset: str) -> Path:
         return self.root / f"{dataset}.json"
 
+    def get_payload(self, dataset: str) -> dict:
+        """Return a copy of the complete state payload for *dataset*.
+
+        Watermarks are only one part of dataset identity.  Consumers that cache
+        query results also need the committed dataset revision so a repair to an
+        old partition invalidates their cache even when the maximum covered date
+        does not move.
+        """
+        with self._dataset_lock(dataset):
+            return dict(self._read_payload(self._path(dataset)))
+
+    def get_revision(self, dataset: str) -> int | None:
+        """Return the latest committed monotonic revision, when present."""
+        value = self.get_payload(dataset).get("revision")
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"state field {dataset}.revision must be a positive integer")
+        return value
+
     def _lock_path(self, dataset: str) -> Path:
         return self.root / f"{dataset}.lock"
 
     def _dataset_lock(self, dataset: str) -> AbstractContextManager[IO]:
         return exclusive_lock(self._lock_path(dataset))
+
+    @contextmanager
+    def transaction(self, dataset: str) -> Iterator[dict]:
+        """Yield the dataset's mutable state payload under its exclusive lock.
+
+        The yielded dict is written back atomically when the block exits
+        normally; if the block raises, nothing is written. This is the
+        supported way for another store to read the current state, do work
+        that must happen inside the lock, and advance the payload in one step.
+        Callers set their own timestamp fields.
+        """
+        path = self._path(dataset)
+        with self._dataset_lock(dataset):
+            payload = self._read_payload(path)
+            yield payload
+            self._write_payload(path, payload)
 
     def _read_payload(self, path: Path) -> dict:
         if not path.exists():

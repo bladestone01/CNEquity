@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 
@@ -15,6 +16,54 @@ from cnequity.storage.instruments import compact_instruments
 from cnequity.storage.state import StateStore
 
 logger = logging.getLogger(__name__)
+
+
+def _record_dataset_result(
+    config: Config,
+    run_id: str,
+    dataset: str,
+    stage: str,
+    status: str,
+    *,
+    criticality: str,
+    revision_id: str | None = None,
+    rows_written: int = 0,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Persist a logical dataset receipt without coupling steps to the engine."""
+    from cnequity.orchestrator.manifest import Manifest
+
+    Manifest(config.manifest_path).record_dataset_result(
+        run_id,
+        dataset,
+        stage,
+        status,
+        criticality=criticality,
+        revision_id=revision_id,
+        rows_written=rows_written,
+        error_code=error_code,
+        error_message=error_message,
+    )
+
+
+def _dataset_criticality(dataset: str) -> str:
+    """Classify a physical dataset for the run-level degraded policy."""
+    if dataset in {"adj_factors", "industry_index"}:
+        return "research"
+    if dataset in {"compact", "audit"}:
+        return "core"
+    try:
+        from cnequity.orchestrator.registry import get_step
+
+        group = get_step(dataset).group
+    except KeyError:
+        group = "advisory"
+    if group in {"core", "finalize"}:
+        return "core"
+    if group == "research":
+        return "research"
+    return "advisory"
 
 
 def _max_partition_date(config: Config, dataset: str, partition_col: str) -> date | None:
@@ -219,16 +268,22 @@ def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -
 
 
 def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    from cnequity.domain.contracts import contract_fingerprint, dataset_contract
     from cnequity.orchestrator.compact_gate import compact_allowed
     from cnequity.orchestrator.manifest import Manifest
+    from cnequity.provenance import runtime_lineage
+    from cnequity.storage.revisions import RevisionStore
 
     manifest = Manifest(config.manifest_path)
     writer = StagingWriter(config.staging_root)
     staged = [ds for ds in PARTITION_COLS if writer.list_run_files(ds, run_id)]
     total = 0
     compacted: set[str] = set()
+    committed_revisions: dict[str, dict] = {}
     skipped: list[dict] = []
     audit_findings: list[dict] = []
+    revisions = RevisionStore(config.meta_root, config.curated_root)
+    lineage = runtime_lineage(config)
 
     for ds in staged:
         allowed, incomplete_count = compact_allowed(
@@ -244,15 +299,27 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
                     "incomplete_batches": incomplete_count,
                 }
             )
+            _record_dataset_result(
+                config,
+                run_id,
+                ds,
+                "compact",
+                "blocked",
+                criticality=_dataset_criticality(ds),
+                error_code="incomplete_batches",
+                error_message=f"{incomplete_count} incomplete batch(es) block compact",
+            )
             continue
 
         pcol = PARTITION_COLS[ds]
+        changed_files: list[Path] = []
         if ds == "instruments":
             rows, inst_findings = compact_instruments(
                 config.staging_root,
                 config.curated_root,
                 run_id,
                 trade_date,
+                changed_files=changed_files,
             )
             if rows:
                 compacted.add(ds)
@@ -266,10 +333,78 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
                 ds,
                 run_id,
                 partition_col=pcol,
+                changed_files=changed_files,
             )
             if rows:
                 compacted.add(ds)
             total += rows
+
+        _record_dataset_result(
+            config,
+            run_id,
+            ds,
+            "compact",
+            "success",
+            criticality=_dataset_criticality(ds),
+            rows_written=rows,
+        )
+
+        if changed_files:
+            try:
+                contract = dataset_contract(ds)
+                revision = revisions.commit(
+                    ds,
+                    run_id=run_id,
+                    changed_files=changed_files,
+                    schema_version=int(contract["schema_version"]),
+                    contract_fingerprint=contract_fingerprint(contract),
+                    metadata={
+                        "trade_date": trade_date.isoformat(),
+                        "partition_col": pcol,
+                        "rows_written": rows,
+                        **lineage,
+                    },
+                )
+            except Exception as exc:
+                _record_dataset_result(
+                    config,
+                    run_id,
+                    ds,
+                    "publish_revision",
+                    "failed",
+                    criticality=_dataset_criticality(ds),
+                    rows_written=rows,
+                    error_code=type(exc).__name__,
+                    error_message=str(exc),
+                )
+                raise
+            if revision is not None:
+                committed_revisions[ds] = {
+                    "revision": revision.revision,
+                    "revision_id": revision.revision_id,
+                    "content_digest": revision.content_digest,
+                    "changed_partitions": list(revision.changed_partitions),
+                }
+                _record_dataset_result(
+                    config,
+                    run_id,
+                    ds,
+                    "publish_revision",
+                    "success",
+                    criticality=_dataset_criticality(ds),
+                    revision_id=revision.revision_id,
+                    rows_written=rows,
+                )
+            else:
+                _record_dataset_result(
+                    config,
+                    run_id,
+                    ds,
+                    "publish_revision",
+                    "skipped",
+                    criticality=_dataset_criticality(ds),
+                    rows_written=rows,
+                )
 
     if compacted:
         _update_watermarks(config, frozenset(compacted), trade_date)
@@ -302,6 +437,8 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
         result["status"] = "warning"
     if coverage_receipts:
         result["coverage_receipts"] = coverage_receipts
+    if committed_revisions:
+        result["dataset_revisions"] = committed_revisions
     context_updates: dict = {}
     if skipped:
         context_updates["compact_skipped_datasets"] = skipped
@@ -326,7 +463,20 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
     )
 
     rebackfill = context.get("symbols_to_rebackfill") or []
-    result = compute_adj_factors(config, refresh_symbols=rebackfill)
+    try:
+        result = compute_adj_factors(config, refresh_symbols=rebackfill)
+    except Exception as exc:
+        _record_dataset_result(
+            config,
+            run_id,
+            "adj_factors",
+            "derive",
+            "failed",
+            criticality="research",
+            error_code=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise
     out: dict = {"rows_read": result.rows, "rows_written": result.rows}
     if result.findings:
         out["context_updates"] = {"audit_findings": result.findings}
@@ -337,13 +487,39 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
         out["failed_tasks"] = len(result.failed)
         out["status"] = "warning"
     if result.failed and result.fail_ratio > FAIL_RATIO_THRESHOLD:
-        raise AdjFactorsDeriveError(
+        exc = AdjFactorsDeriveError(
             (
                 f"adj_factors: {len(result.failed)}/{result.task_count} symbol×type tasks "
                 f"failed uncached fetch (>{FAIL_RATIO_THRESHOLD:.0%} threshold)"
             ),
             findings=result.findings,
         )
+        _record_dataset_result(
+            config,
+            run_id,
+            "adj_factors",
+            "derive",
+            "failed",
+            criticality="research",
+            rows_written=result.rows,
+            error_code=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise exc
+    status = str(out.get("status", "success"))
+    _record_dataset_result(
+        config,
+        run_id,
+        "adj_factors",
+        "derive",
+        status,
+        criticality="research",
+        rows_written=result.rows,
+        error_code="partial_fetch" if result.failed else None,
+        error_message=(
+            f"{len(result.failed)} symbol×type fetch failure(s)" if result.failed else None
+        ),
+    )
     return out
 
 
@@ -358,7 +534,20 @@ def step_derive_industry_index(
 ) -> dict:
     from cnequity.derive.industry_index import derive_industry_index
 
-    summary = derive_industry_index(config)
+    try:
+        summary = derive_industry_index(config)
+    except Exception as exc:
+        _record_dataset_result(
+            config,
+            run_id,
+            "industry_index",
+            "derive",
+            "failed",
+            criticality="research",
+            error_code=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise
     rows = int(summary.get("rows") or 0)
     out: dict = {"rows_read": rows, "rows_written": rows}
     note = str(summary.get("note") or "")
@@ -377,6 +566,18 @@ def step_derive_industry_index(
                 }
             ]
         }
+    status = str(out.get("status", "success"))
+    _record_dataset_result(
+        config,
+        run_id,
+        "industry_index",
+        "derive",
+        status,
+        criticality="research",
+        rows_written=rows,
+        error_code="derived_empty" if status == "warning" else None,
+        error_message=(str(summary.get("note") or "") if status == "warning" else None),
+    )
     return out
 
 
@@ -390,4 +591,14 @@ def step_audit(config: Config, trade_date: date, run_id: str, context: dict) -> 
     from cnequity.quality.audit import run_audit
 
     findings = run_audit(config, run_id, trade_date, context)
-    return {"rows_read": findings, "rows_written": findings}
+    out = {"rows_read": findings, "rows_written": findings}
+    _record_dataset_result(
+        config,
+        run_id,
+        "audit",
+        "audit",
+        "success",
+        criticality="core",
+        rows_written=findings,
+    )
+    return out

@@ -88,6 +88,37 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 
 ---
 
+## cne contract
+
+查看和维护 42 个注册数据集的机器可读 JSON 契约。
+
+| 子命令 | 说明 |
+|--------|------|
+| `show [DATASET]` | 输出一个数据集或完整 registry 契约 |
+| `export --out PATH` | 写出稳定 JSON（省略 `--out` 时打印到 stdout） |
+| `validate [PATH]` | 校验文件；省略 PATH 时校验当前 registry。文件加 `--against-registry` 做精确同步检查 |
+| `diff OLD [NEW]` | 比较两个契约；省略 NEW 时比较当前 registry。默认发现 breaking 时退出 1，检查报告可加 `--allow-breaking` |
+
+diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别为 breaking；新增
+列和新增数据集为 compatible。
+
+---
+
+## cne profile
+
+查看版本化的研究 universe 画像（`cnequity.domain.universe_profiles` 注册表）。
+
+| 子命令 | 说明 |
+|--------|------|
+| `list` | 输出注册表记录；`--official-only` 排除 legacy 兼容画像 |
+| `show NAME` | 输出单个画像及其 `scope_hash`；`--symbol` 可重复，绑定具体标的并附 `concrete_scope_hash` |
+
+画像绑定交易所/板块、CDR/ETF、ST/停牌、退市与 PIT 证据规则。研究读取用
+`load(..., profile="cn_a_sh_sz_research_v1")`，并把 `name` / `version` / `scope_hash`
+一起记进产出。详见 [universe 画像](universe-profiles.md)。
+
+---
+
 ## cne doctor
 
 环境与配置体检：`data.root` 是否绝对路径 / 可写、声明的依赖能否 import。不访问网络；无配置也能跑（新鲜安装）。有实质性风险时退出 1。
@@ -280,8 +311,11 @@ cne derive trading_status --start 2001-01-01 --end 2001-12-31
 | 选项 | 说明 |
 |------|------|
 | `--datasets` | 逐数据集新鲜度表；有 STALE 退出 1 |
+| `--run <id\|latest>` | 指定 run（默认 `latest`）；摘要含每个数据集 stage 的 `dataset_results` 与聚合 `dataset_status` |
+| `--run-id <id>` | `--run` 的显式 id 别名；两者不能同时给 |
 
-无选项：输出最近 run 的 JSON 摘要。
+无选项：输出最近 run 的 JSON 摘要。run 为 `degraded`（核心正常、研究/建议层降级）退出 2，
+核心失败退出 1。
 
 ---
 
@@ -475,6 +509,48 @@ cne serve                    # → http://127.0.0.1:8787/source-health
 
 ---
 
+## cne source
+
+从已存的探测证据和数据集注册表算派生结论，**不联网**。注意与 `cne sources`（复数，实时探测）区分。
+
+| 子命令 | 说明 |
+|--------|------|
+| `slo` | 把 `meta/source_health` 历史样本按 probe/vantage 聚成可用性 SLO，并写去重事故载荷。`--window-days`（默认 30）、`--minimum-observations`（默认 10）、`--enforce`（关键源不达标退出 1） |
+| `resilience` | 从注册表算源集中度、failure-domain 爆炸半径和核心数据集独立备源门禁。`--out PATH` 落 JSON，`--enforce`（有核心表缺独立备源则退出 1） |
+| `policy [SOURCE]` | 查 `sources/SOURCES.yml` 的来源使用策略。省略 SOURCE 输出全部；给 SOURCE 加 `--profile personal\|commercial\|cache\|redistribution` 做保守判断，未知权限一律 fail-closed（退出 1） |
+
+---
+
+## cne snapshot
+
+把选定数据集复制成不可变、带校验和的可移植快照，用于冻结可复现实验依赖的 Parquet。
+
+| 子命令 | 说明 |
+|--------|------|
+| `create NAME --dataset D [--dataset D ...]` | 建快照；manifest 固化每个 Parquet 的大小/SHA-256、数据集 state、契约指纹和运行 lineage |
+| `verify NAME` | 逐文件校验大小与哈希；不通过退出 1 |
+| `restore NAME TARGET` | 恢复到新目录或空目录（拒绝活动湖根、不覆盖已有文件）。恢复后对 TARGET 跑 `cne status --datasets` 再切换 |
+
+`--config` / `--snapshot-root` 各子命令通用；默认根为 `meta/snapshots`。
+
+---
+
+## cne stability
+
+从权威 `trading_calendar` 取最近窗口，按 logical trade date 选最新 `daily:core` attempt，验证连续交易日运行证据。
+
+| 选项 | 说明 |
+|------|------|
+| `--days` | 需连续通过的交易日数（默认 20） |
+| `--as-of` | 含当日的 `YYYY-MM-DD` 截止 |
+| `--enforce` | 门禁未过则退出 1 |
+
+缺 run、核心 stage 失败、或只有旧 `warning` 且无 dataset receipt 都算失败。报告写
+`meta/stability/latest.json` 与不可变历史目录。日更脚本每天跑但不 `--enforce`；
+release 治理在第 20 天 enforce。
+
+---
+
 ## cne servers test
 
 测试 TDX 连接（并行探测主机池，返回首个能出数的服务器）。
@@ -492,7 +568,8 @@ cne serve                    # → http://127.0.0.1:8787/source-health
 | 码 | 场景 |
 |----|------|
 | 0 | 成功、非交易日跳过、健康检查通过 |
-| 1 | 运行失败、UNHEALTHY、STALE、校验失败 |
+| 1 | 核心运行失败、UNHEALTHY、STALE、校验失败、门禁未过 |
+| 2 | run 可用但降级（`degraded`）——核心 spine 正常，研究/建议层有失败（`run daily` / `run --stale-only` / `init` / `retry` / `status`） |
 
 ---
 

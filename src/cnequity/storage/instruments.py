@@ -14,6 +14,7 @@ from cnequity.domain.schemas import INSTRUMENTS_SCHEMA, validate_dataframe
 from cnequity.domain.symbols import is_subscription_placeholder
 from cnequity.storage.atomic import write_parquet_atomic
 from cnequity.storage.parquet import StagingWriter
+from cnequity.storage.revisions import sha256_file
 
 # Refuse delist inference when too many symbols vanish from a snapshot — usually
 # a partial TDX fetch, not a mass delisting event.
@@ -63,6 +64,7 @@ def compact_instruments(
     curated_root: Path,
     run_id: str,
     trade_date: date,
+    changed_files: list[Path] | None = None,
 ) -> tuple[int, list[dict]]:
     """Merge staging instruments into curated, retaining symbols missing from TDX."""
     staging = StagingWriter(staging_root)
@@ -79,6 +81,8 @@ def compact_instruments(
 
     out_path = curated_root / "instruments" / "part-merged.parquet"
     curated_files = sorted(out_path.parent.rglob("*.parquet")) if out_path.parent.exists() else []
+    before_digest = sha256_file(out_path) if out_path.is_file() else None
+    had_fragments = any(path != out_path for path in curated_files)
     if curated_files:
         existing = pl.concat(
             [validate_dataframe(pl.read_parquet(path), "instruments") for path in curated_files],
@@ -197,5 +201,7 @@ def compact_instruments(
     for stale in out_path.parent.rglob("*.parquet"):
         if stale != out_path:
             stale.unlink()
+    if changed_files is not None and (before_digest != sha256_file(out_path) or had_fragments):
+        changed_files.append(out_path)
     _save_absence_state(absence_path, absence_state)
     return merged.height, findings

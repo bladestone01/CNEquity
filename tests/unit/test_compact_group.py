@@ -4,6 +4,7 @@ import polars as pl
 
 import cnequity.steps  # noqa: F401
 from cnequity.config import Config
+from cnequity.query import dataset_state
 from cnequity.steps.finalize import step_compact
 from cnequity.storage import StagingWriter, compact_dataset
 
@@ -39,6 +40,10 @@ def test_compact_only_merges_datasets_staged_in_run(tmp_path):
     curated = cfg.curated_root / "fund_flow" / "trade_date=2024-06-28" / "part-merged.parquet"
     assert curated.exists()
     assert not (cfg.curated_root / "daily_bars").exists()
+    assert out["dataset_revisions"]["fund_flow"]["revision"] == 1
+    state = dataset_state("fund_flow", config=cfg)
+    assert state.revision == 1
+    assert state.revision_id == out["dataset_revisions"]["fund_flow"]["revision_id"]
 
 
 def test_staging_writer_lists_nested_run_fragments(tmp_path):

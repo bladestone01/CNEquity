@@ -442,3 +442,25 @@ def test_shareholder_backfill_surfaces_empty_windows(cfg, monkeypatch):
     assert result["status"] == "warning"
     assert result["empty_windows"] == 1
     assert result["context_updates"]["audit_findings"][0]["check"] == ("backfill_empty_windows")
+
+
+def test_shareholder_backfill_rows_are_marked_reconstructed(cfg, monkeypatch):
+    cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 12, 31)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.shareholders.fetch_share_structure",
+        lambda *args, **kwargs: pl.DataFrame({"symbol": ["600519.SH"]}),
+    )
+    seen: list[str] = []
+
+    def fake_write(*args, source, **kwargs):
+        seen.append(source)
+        return {"rows_read": 1, "rows_written": 1}
+
+    monkeypatch.setattr(fund, "write_fetched", fake_write)
+
+    result = fund.step_share_structure(cfg, date(2026, 6, 30), "run-backfill", {})
+
+    assert result["rows_written"] == 1
+    assert seen == ["eastmoney_backfill"]

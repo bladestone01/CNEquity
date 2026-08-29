@@ -185,7 +185,7 @@ retry 只重跑失败 batch；全部成功后自动 compact → derive_adj_facto
 
 ```bash
 # 需 clone 仓库后：
-scripts/install_scheduler.sh   # macOS launchd，Helsinki 每天 11:15
+scripts/install_scheduler.sh   # macOS launchd，每天 11:15 本机时间
 ```
 
 见 [运维 Runbook](../operations/runbook.md)。

@@ -9,6 +9,7 @@ from cnequity.domain.datasets import granularity_for_dataset
 from cnequity.domain.partitions import Granularity
 from cnequity.domain.schemas import PRIMARY_KEYS, sanitize_dataset_rows, validate_dataframe
 from cnequity.storage.atomic import write_parquet_atomic
+from cnequity.storage.revisions import sha256_file
 
 
 class StagingWriter:
@@ -93,6 +94,7 @@ def compact_dataset(
     run_id: str,
     partition_col: str | None = "trade_date",
     granularity: Granularity | None = None,
+    changed_files: list[Path] | None = None,
 ) -> int:
     """Merge staging batches into curated partitions, dedupe by PK.
 
@@ -125,6 +127,8 @@ def compact_dataset(
         out_dir = curated.curated_root / dataset
         out_path = out_dir / "part-merged.parquet"
         existing_files = sorted(out_dir.rglob("*.parquet")) if out_dir.exists() else []
+        before_digest = sha256_file(out_path) if out_path.is_file() else None
+        had_fragments = any(path != out_path for path in existing_files)
         if existing_files:
             existing = pl.concat(
                 [
@@ -143,6 +147,8 @@ def compact_dataset(
         for stale in out_dir.rglob("*.parquet"):
             if stale != out_path:
                 stale.unlink()
+        if changed_files is not None and (before_digest != sha256_file(out_path) or had_fragments):
+            changed_files.append(out_path)
         return combined.height
 
     _PART = "__partition__"
@@ -155,9 +161,13 @@ def compact_dataset(
         val_str = str(key[0] if isinstance(key, tuple) else key)
         group = group.drop(_PART)
         existing_dir = curated.partition_path(dataset, partition_col, val_str)
+        out_path = existing_dir / "part-merged.parquet"
+        before_digest = sha256_file(out_path) if out_path.is_file() else None
+        had_fragments = False
         frames = [group]
         if existing_dir.exists():
             for existing in existing_dir.rglob("*.parquet"):
+                had_fragments = had_fragments or existing != out_path
                 frames.append(
                     sanitize_dataset_rows(
                         validate_dataframe(pl.read_parquet(existing), dataset), dataset
@@ -166,6 +176,10 @@ def compact_dataset(
         merged = pl.concat(frames, how="diagonal_relaxed")
         if pk:
             merged = dedupe_by_primary_key(merged, dataset)
-        curated.write_partition(dataset, partition_col, val_str, merged, "part-merged.parquet")
+        written = curated.write_partition(
+            dataset, partition_col, val_str, merged, "part-merged.parquet"
+        )
+        if changed_files is not None and (before_digest != sha256_file(written) or had_fragments):
+            changed_files.append(written)
         total += merged.height
     return total

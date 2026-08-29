@@ -32,6 +32,8 @@
 #        设为 0 则 soft 失败仍 exit 1（国内全组日更可用），
 #      CNE_STALE_RETRY=1 (default) — 收尾补抓仍落后的数据集；0 关闭，
 #      CNE_STALE_RETRY_DELAY_SEC=1800 (default) — 补抓前等多久，
+#      CNE_SOURCE_HEALTH=1 (default) — 每日串行探测并积累 SLO 样本；0 关闭，
+#      CNE_SOURCE_VANTAGE=local — 当前网络出口的稳定标签，
 #      CNE_TRADE_DATE (same as optional CLI arg — catch up a prior session).
 set -uo pipefail
 
@@ -62,6 +64,8 @@ GATE_GROUP_LIST="${CNE_GATE_GROUPS:-core}"
 SOFT_FAIL_OK="${CNE_SOFT_FAIL_OK:-1}"
 STALE_RETRY="${CNE_STALE_RETRY:-1}"
 STALE_RETRY_DELAY_SEC="${CNE_STALE_RETRY_DELAY_SEC:-1800}"
+SOURCE_HEALTH="${CNE_SOURCE_HEALTH:-1}"
+SOURCE_VANTAGE="${CNE_SOURCE_VANTAGE:-local}"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -133,6 +137,28 @@ fi
 log "--- health check ---"
 if ! "$REPO_ROOT/scripts/health_notify.sh" >>"$LOG" 2>&1; then
   log "health check reported problems"
+fi
+
+# Availability evidence is non-blocking while it accumulates: a red public
+# source is the observation, not a reason to discard an otherwise valid core
+# revision.  `cne source slo` still writes fail-closed incidents/report state,
+# and release/acceptance gates invoke it separately with `--enforce`.
+if [[ "$SOURCE_HEALTH" == "1" ]]; then
+  log "--- source health (vantage=${SOURCE_VANTAGE}) ---"
+  if ! "$CNE" sources --config "$CONFIG" --vantage "$SOURCE_VANTAGE" >>"$LOG" 2>&1; then
+    log "source probe command FAILED (non-fatal)"
+  fi
+  if ! "$CNE" source slo --config "$CONFIG" >>"$LOG" 2>&1; then
+    log "source SLO reporting FAILED (non-fatal)"
+  fi
+fi
+
+# Persist the current consecutive-day evidence after every scheduled run.  It
+# is intentionally not enforced here: the first 19 clean days must not make a
+# healthy ingestion job exit non-zero.  Release governance enforces day 20.
+log "--- stability evidence ---"
+if ! "$CNE" stability --config "$CONFIG" --days 20 >>"$LOG" 2>&1; then
+  log "stability reporting FAILED (non-fatal)"
 fi
 
 log "--- backup ---"

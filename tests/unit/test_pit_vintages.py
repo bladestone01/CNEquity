@@ -121,6 +121,59 @@ def test_backfill_vintage_is_hidden_before_its_collection_date(tmp_path):
     assert after_collection["item_value"].to_list() == [90.0]
 
 
+def test_explicit_strict_rejects_reconstructed_and_best_effort_marks_it(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    row = _row(_ORIGINAL, 120.0, "2026-08-22T09:00:00+00:00")
+    row["source"] = "eastmoney_backfill"
+    _write_curated(cfg, [row])
+
+    strict = load(
+        _DATASET,
+        as_of="2025-06-30",
+        pit_mode="strict",
+        config=cfg,
+    )
+    assert strict.is_empty()
+
+    best_effort = load(
+        _DATASET,
+        as_of="2025-06-30",
+        pit_mode="best_effort",
+        config=cfg,
+    )
+    assert best_effort["item_value"].to_list() == [120.0]
+    assert best_effort["pit_is_exact"].to_list() == [False]
+    assert best_effort["pit_quality"].to_list() == ["reconstructed"]
+
+
+def test_known_source_times_are_bounds_in_both_modes(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    row = _row(_ORIGINAL, 100.0, "2024-04-20T09:00:00+00:00")
+    row.update(
+        {
+            "available_at": "2024-04-21T09:00:00+00:00",
+            "source_published_at": "2024-04-21T09:00:00+00:00",
+            "observed_at": "2024-04-21T09:00:00+00:00",
+        }
+    )
+    _write_curated(cfg, [row])
+
+    before_available = load(
+        _DATASET,
+        as_of="2024-04-20",
+        pit_mode="best_effort",
+        config=cfg,
+    )
+    after_available = load(
+        _DATASET,
+        as_of="2024-04-21",
+        pit_mode="strict",
+        config=cfg,
+    )
+    assert before_available.is_empty()
+    assert after_available["pit_is_exact"].to_list() == [True]
+
+
 def test_all_vintages_exposes_the_revision_history(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     _write_curated(

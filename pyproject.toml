@@ -53,6 +53,7 @@ dependencies = [
   "curl_cffi>=0.7",
   "polars>=1.0",
   "pyarrow>=15.0",
+  "PyYAML>=6.0",
   # No AkShare. Its two call sites wrapped endpoints already queried directly —
   # the ST board (push2 clist) and the PMI / 货币供应量 datacenter reports — so it
   # bought a parsing layer, 14 transitive packages and the mini-racer collision
@@ -112,6 +113,9 @@ cne = "cnequity.cli.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/cnequity" = ["sources/SOURCES.yml"]
 
 [tool.setuptools.package-data]
 cnequity = [
