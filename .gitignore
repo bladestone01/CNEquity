@@ -36,8 +36,10 @@ data/
 # Runtime logs (prefer {data.root}/logs/; never commit either)
 logs/
 
-# Local AI / editor tooling
-.claude/
+# Local AI / editor tooling (.claude keeps only the .agents alias symlinks tracked)
+.claude/*
+!.claude/skills
+!.claude/commands
 .cursor/
 
 # Editor / OS
@@ -47,3 +49,4 @@ logs/
 
 # Frontend build inputs (the built bundle IS committed — see frontend/README.md)
 frontend/node_modules/
+

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "duckdb": {
+      "command": "/Users/bladestone/.local/bin/mcp-server-duckdb",
+      "args": [
+        "--db-path",
+        "/Users/bladestone/devspace/gitcode/stockagent/datalake/data/cnequity/duckdb/browse.duckdb",
+        "--readonly"
+      ]
+    }
+  }
+}
