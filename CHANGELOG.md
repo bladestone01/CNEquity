@@ -44,11 +44,11 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **Source-use policy register.** `sources/SOURCES.yml` records access type,
   terms-review status and a conservative use conclusion per source label; an
   unreviewed permission is the literal `unknown` and never satisfies an allow
-  check. `cnequity.compliance.source_policy` and `cne source policy` evaluate
+  check. `cnequity.compliance.source_policy` and `cne sources policy` evaluate
   it and fail closed. See `docs/legal/source-matrix.md`.
-- **Source SLO, resilience and stability gates.** `cne source slo` turns
+- **Source SLO, resilience and stability gates.** `cne sources slo` turns
   stored probe history into per-source availability SLOs and de-duplicated
-  incident payloads; `cne source resilience` derives source concentration,
+  incident payloads; `cne sources resilience` derives source concentration,
   failure domains and a fail-closed backup gate for the core datasets from the
   registry with no network calls; `cne stability` checks consecutive clean
   trading days without filling gaps. Each supports `--enforce`.
@@ -74,6 +74,15 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   `revision`, `revision_id`, `schema_version` and `contract_fingerprint`.
 - **PyYAML is now a direct runtime dependency** (used to parse
   `sources/SOURCES.yml`) and ships as a wheel data file.
+- **The vendored TDX tree is excluded file by file, not wholesale.** Ruff,
+  `coverage` and Codecov skipped everything under `adapters/tdx_protocol/_wire`
+  on the rationale that it is upstream code kept byte-close for re-syncing. Two
+  of those files are ports that fix three tdxpy defects and return raw prices,
+  and `_wire/__init__.py` (`TdxWireClient`, the page caps, the heartbeat choice)
+  never existed upstream at all — and tdxpy, unmaintained since 2024, is why the
+  tree is vendored, so there is nothing to re-sync from. Those three are now
+  linted and measured like the rest of the package; the genuinely untouched
+  files are still listed and still skipped.
 
 ### Deprecated
 
@@ -86,6 +95,18 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The two TDX transaction parsers had no test.** `trade_ticks` is a
+  single-source dataset whose prices are delta-encoded per page, so one
+  mis-read field corrupts every later row — and the only verification was a
+  one-off byte comparison against a live server that CI cannot repeat.
+  `tests/unit/test_tdx_tick_parsers.py` now pins the wire layout both parsers
+  assume: field order, the four filler bytes only the historical response
+  carries, the absent per-record trade count, integer quantities, and undivided
+  prices.
+- **The vendored tree described itself as keeping "the five calls this project
+  makes"** after the two transaction commands brought it to seven.
+  `test_tdx_decoupling` now pins the kept set, so the count is a contract rather
+  than a comment.
 - **ETF/LOF adjustment factors and deep history are now complete.** Sina's
   fund payloads use `s` (while `f` is only a placeholder); the adapter now maps
   fund hfq directly from `s` and derives qfq as `1/s`. ETF/LOF symbols are

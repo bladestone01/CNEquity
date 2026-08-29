@@ -72,7 +72,7 @@ class GetTransactionDataCmd(BaseParser):
                     [
                         ("hour", hour),
                         ("minute", minute),
-                        ("time", "%02d:%02d" % (hour, minute)),
+                        ("time", f"{hour:02d}:{minute:02d}"),
                         ("price_raw", last_price),
                         ("vol", vol),
                         ("trade_count", trade_count),

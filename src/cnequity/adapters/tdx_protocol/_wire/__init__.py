@@ -6,9 +6,11 @@ sibling mootdx were last released in 2024 and are no longer maintained, and
 mootdx additionally drags in `py-mini-racer`, a compiled V8 binding this
 project has no use for.
 
-Only the five calls this project makes are kept, against tdxpy's 22. The
-extended market (`exhq`), local-file readers and the financial crawler are all
-dropped, as is the pandas dependency — the lake converts to polars anyway.
+Only the seven standard-market calls this project makes are kept, against
+tdxpy's 22 — `test_tdx_decoupling` pins the set, so this count cannot drift the
+way it did when the two transaction commands were added. The extended market
+(`exhq`), local-file readers and the financial crawler are all dropped, as is
+the pandas dependency — the lake converts to polars anyway.
 
 The TDX wire format is a frozen legacy binary protocol; the parsers below are
 fixed-width `struct.unpack` and do not track a moving upstream.
