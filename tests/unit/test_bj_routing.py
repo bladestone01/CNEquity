@@ -1,7 +1,7 @@
 """Beijing exchange has no TDX route — bars must come from the fallback vendor."""
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 import polars as pl
@@ -81,6 +81,68 @@ def test_fallback_bars_are_staged_with_their_own_provenance(tmp_path):
     assert result["rows_written"] == 4
     assert set(staged["symbol"]) == {"920000.BJ", "920001.BJ"}
     assert staged["source"].unique().to_list() == ["sina"]
+
+
+def test_bse_is_primary_for_a_current_single_session(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"sina": True, "bse": True},
+        source_intervals={"bse": 0.0, "sina_bars": 0.0},
+    )
+    day = date(2026, 8, 21)
+    bse = _bars("920000.BJ", [day]).with_columns(pl.lit(1234.5).alias("amount"))
+    monkeypatch.setattr("cnequity.steps.bars.list_trading_dates", lambda *args: [day])
+    monkeypatch.setattr(
+        "cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *args, **kwargs: bse
+    )
+
+    def no_sina(*args, **kwargs):
+        raise AssertionError("Sina should not be called when BSE covers the BJ tip")
+
+    monkeypatch.setattr("cnequity.adapters.sina.bars.fetch_daily_bars_sina", no_sina)
+    result = fetch_bars_via_sina(
+        cfg,
+        ["920000.BJ"],
+        day - timedelta(days=1),
+        day,
+        "run-bse",
+    )
+
+    staged = _staged(cfg, "run-bse")
+    assert result["rows_written"] == 1
+    assert staged["amount"].item() == 1234.5
+    assert staged["source"].item() == "bse"
+    assert result["context_updates"]["audit_findings"][0]["check"] == "daily_bars_bse_tip"
+
+
+def test_bse_rows_are_counted_with_sina_residuals(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"sina": True, "bse": True},
+        source_intervals={"bse": 0.0, "sina_bars": 0.0},
+    )
+    day = date(2026, 8, 21)
+    bse = _bars("920000.BJ", [day]).with_columns(pl.lit(1234.5).alias("amount"))
+    monkeypatch.setattr("cnequity.steps.bars.list_trading_dates", lambda *args: [day])
+    monkeypatch.setattr(
+        "cnequity.adapters.bse.daily_quotes.fetch_daily_quotes", lambda *args, **kwargs: bse
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.sina.bars.fetch_daily_bars_sina",
+        lambda symbol, **kwargs: _bars(symbol, [day]),
+    )
+
+    result = fetch_bars_via_sina(
+        cfg,
+        ["920000.BJ", "600519.SH"],
+        day - timedelta(days=1),
+        day,
+        "run-mixed",
+    )
+
+    staged = _staged(cfg, "run-mixed")
+    assert result["rows_written"] == 2
+    assert set(staged["source"].unique().to_list()) == {"bse", "sina"}
 
 
 def test_bse_tip_amount_requires_exact_sina_ohlcv(tmp_path, monkeypatch):

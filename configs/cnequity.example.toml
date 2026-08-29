@@ -133,8 +133,8 @@ min_interval_seconds = 0.3
 enabled = true
 min_interval_seconds = 1.0
 
-# BSE official current quote snapshot; supplements BJ tip amount only after
-# exact OHLCV matching against the Sina fallback. It is not a history source.
+# BSE official current quote snapshot; primary source for current BJ tip bars
+# and turnover. It is not a history source; historical BJ windows still use Sina.
 [sources.bse]
 enabled = true
 min_interval_seconds = 1.0
