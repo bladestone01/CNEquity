@@ -235,7 +235,7 @@
 | ingestion_batches | manifest.db |
 | quality_findings | meta/quality/findings/ |
 | source_diffs | meta/quality/source_diffs/ |
-| data_catalog | 由 `cne catalog` 生成 |
+| data_catalog | 由 `cne stats show --json`（无 stats 表时的直扫回退）生成 |
 
 ---
 

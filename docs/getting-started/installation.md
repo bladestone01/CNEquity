@@ -116,7 +116,7 @@ cne --help
 cne demo
 # 全量配置就绪后：
 cne config validate --config configs/cnequity.toml
-cne servers test --config configs/cnequity.toml   # 探测 TDX 行情主机
+cne sources probe --only tdx_protocol --config configs/cnequity.toml   # 探测 TDX 行情主机
 pytest tests/unit -q                               # 需源码 + --group dev，离线可跑
 ```
 

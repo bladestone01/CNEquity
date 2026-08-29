@@ -74,6 +74,46 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   `revision`, `revision_id`, `schema_version` and `contract_fingerprint`.
 - **PyYAML is now a direct runtime dependency** (used to parse
   `sources/SOURCES.yml`) and ships as a wheel data file.
+- **The CLI surface is 33 commands, down from 43.** An audit found 58% of it was
+  reachable from neither the README nor any automation — one-off tooling that a
+  published CLI turns into a permanent compatibility obligation. Nothing lost a
+  capability:
+    - `cne servers test` (a deprecated, hidden alias) is **removed**; use
+      `cne sources --only tdx_protocol`, which asserts real bars came back.
+    - `cne stats refresh` → `cne stats rebuild --if-stale`. Its `--force` was
+      already what plain `rebuild` does. `--if-stale` cannot be combined with
+      `--dataset`: it decides on the whole lake's watermark.
+    - `cne contract export` → `cne contract show --out PATH`. Same document,
+      differing only in whether it was written to a file.
+    - `cne catalog` → the no-stats fallback of `cne stats show`, with `--json`
+      as its output. A lake that has never built its stats tables should not
+      need a build step to answer what is in it.
+    - `cne run catchup` → `scripts/run_catchup.py`; `cne repartition` →
+      `scripts/repartition.py`; `cne delisted discover/reconcile/repair/coverage`
+      → `scripts/delisted_ops.py`. Composition and one-off migrations, which is
+      what `scripts/` is for. `cne delisted status` and `cne delisted backfill`
+      stayed.
+- **`cne sources` is now a group; the probe is `cne sources probe`.** This is
+  the one breaking rename here: `cne sources` has shipped since the source
+  health board landed, and scripts calling it need the extra word. The `slo`,
+  `resilience` and `policy` subcommands join it under the same plural noun —
+  they were added earlier in this same unreleased cycle as `cne source <sub>`
+  and never shipped under the singular, so nothing that exists in a release is
+  affected by that half.
+
+  The reason: `source` and `sources` were two top-level entries one letter
+  apart, and typing the wrong one runs a different command rather than erroring.
+  `cne source --help` had to spend a sentence saying which was which, which is
+  what a naming defect looks like. Renamed before 1.0 deliberately — afterwards
+  it would need a deprecation cycle.
+- **`cli/main.py` is split by what a command does.** One 2,828-line module
+  became `setup_cmds`, `run_cmds`, `backfill_cmds`, `maintain_cmds`,
+  `quality_cmds`, `govern_cmds`, `consume_cmds` and `delisted_cmds`, with the
+  group in `_root` and shared pieces in `_shared`; `main` only imports them to
+  register. `--config`, hand-written 34 times, is now one `config_option`
+  decorator. Tests patch the module that binds the name — `main` deliberately
+  no longer re-exports internals, so a stale patch target raises instead of
+  silently patching a name nothing reads.
 - **The vendored TDX tree is excluded file by file, not wholesale.** Ruff,
   `coverage` and Codecov skipped everything under `adapters/tdx_protocol/_wire`
   on the rationale that it is upstream code kept byte-close for re-syncing. Two
@@ -95,6 +135,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`cne snapshot`'s three subcommands had no help text at all.** `create`,
+  `verify` and `restore` listed as bare names with no description and no option
+  help — the only commands in the CLI with none.
+- **`cne stability` and `cne sources policy` had no CLI test.** Both are
+  fail-closed gates whose exit code is the entire point, and `stability` runs in
+  `scripts/daily_pipeline.sh` every day. A wrapper that stopped raising would
+  have reported the failure and still exited 0.
 - **The two TDX transaction parsers had no test.** `trade_ticks` is a
   single-source dataset whose prices are delta-encoded per page, so one
   mis-read field corrupts every later row — and the only verification was a

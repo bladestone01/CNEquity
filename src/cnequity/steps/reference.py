@@ -78,7 +78,7 @@ def _merge_untdxable_instruments(config: Config, df: pl.DataFrame) -> pl.DataFra
     TDX serves Shanghai and Shenzhen only, so the Beijing exchange never
     appeared in the snapshot and the lake carried zero BJ instruments — meaning
     ``universe="all_a"`` quietly resolved to two exchanges out of three. The
-    code-space sweep is what discovers them (``cne delisted discover``); this
+    code-space sweep is what discovers them (``scripts/delisted_ops.py discover``); this
     reads its live-but-missing bucket so the daily bar step has symbols to
     route to the fallback vendor.
 

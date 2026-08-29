@@ -74,7 +74,7 @@ def test_a_failed_batch_still_advances_the_counter(caplog, config, monkeypatch):
 
 
 def test_quiet_silences_progress_but_not_warnings():
-    from cnequity.cli.main import _progress_logging
+    from cnequity.cli._shared import _progress_logging
 
     _progress_logging(quiet=True)
     assert logging.getLogger().level == logging.WARNING
@@ -85,7 +85,7 @@ def test_quiet_silences_progress_but_not_warnings():
 def test_http_clients_stay_quiet():
     """httpx logs a line per request; a full-market sweep would bury the
     progress this exists to surface."""
-    from cnequity.cli.main import _progress_logging
+    from cnequity.cli._shared import _progress_logging
 
     _progress_logging()
     assert logging.getLogger("httpx").level == logging.WARNING

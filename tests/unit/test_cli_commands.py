@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
 import pytest
 from click.testing import CliRunner
 
-from cnequity.cli.main import _recover_compactable_backfill_staging, cli
+from cnequity.cli.backfill_cmds import _recover_compactable_backfill_staging
+from cnequity.cli.main import cli
 from cnequity.config import Config
 from cnequity.config.bootstrap import path_for_toml
 from cnequity.derive.adj_factors import AdjFactorsResult
@@ -222,7 +222,7 @@ def test_status_latest_run(cfg_path, monkeypatch):
         def count_stale_running_runs(self, **kwargs):
             return 0
 
-    monkeypatch.setattr("cnequity.cli.main.Manifest", FakeManifest)
+    monkeypatch.setattr("cnequity.cli.quality_cmds.Manifest", FakeManifest)
     result = CliRunner().invoke(cli, ["status", "--config", cfg_path])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -283,7 +283,7 @@ def test_status_run_core_failure_exits_one(tmp_path, cfg_path):
 
 def test_status_datasets_all_fresh(cfg_path, monkeypatch):
     monkeypatch.setattr(
-        "cnequity.cli.main._last_trading_day",
+        "cnequity.cli.quality_cmds._last_trading_day",
         lambda cfg, today: date(2024, 6, 28),
     )
     monkeypatch.setattr(
@@ -306,7 +306,7 @@ def test_status_datasets_all_fresh(cfg_path, monkeypatch):
 
 def test_status_datasets_ignores_disabled_optional_capture(cfg_path, monkeypatch):
     monkeypatch.setattr(
-        "cnequity.cli.main._last_trading_day",
+        "cnequity.cli.quality_cmds._last_trading_day",
         lambda cfg, today: date(2024, 6, 28),
     )
     monkeypatch.setattr(
@@ -336,7 +336,7 @@ def test_retry_unknown_run(cfg_path, monkeypatch):
         def __init__(self, cfg):
             self.manifest = FakeManifest()
 
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.run_cmds.JobEngine", FakeEngine)
     result = CliRunner().invoke(cli, ["retry", "--config", cfg_path, "--run-id", "missing"])
     assert result.exit_code != 0
     assert "Unknown run_id" in result.output
@@ -357,7 +357,7 @@ def test_retry_init_run(cfg_path, monkeypatch):
         def run_job(self, *a, **k):
             raise AssertionError("non-init path should not run")
 
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.run_cmds.JobEngine", FakeEngine)
     result = CliRunner().invoke(cli, ["retry", "--config", cfg_path, "--run-id", "init-1"])
     assert result.exit_code == 0, result.output
     assert "init-1" in result.output
@@ -377,7 +377,7 @@ def test_retry_failed_job(cfg_path, monkeypatch):
             assert kwargs.get("retry_failed_only") is True
             return {"run_id": kwargs["run_id"], "status": "failed"}
 
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.run_cmds.JobEngine", FakeEngine)
     result = CliRunner().invoke(cli, ["retry", "--config", cfg_path, "--run-id", "d1"])
     assert result.exit_code == 1
 
@@ -405,9 +405,9 @@ def test_retry_failed_groups_retries_only_latest_failed_per_group(cfg_path, monk
         returncode = 0
 
     calls: list[list[str]] = []
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.run_cmds.JobEngine", FakeEngine)
     monkeypatch.setattr(
-        "cnequity.cli.main.subprocess.run",
+        "cnequity.cli.run_cmds.subprocess.run",
         lambda argv, **kwargs: calls.append(argv) or Proc(),
     )
 
@@ -432,8 +432,8 @@ def test_retry_failed_groups_reports_child_failure(cfg_path, monkeypatch):
     class Proc:
         returncode = 1
 
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
-    monkeypatch.setattr("cnequity.cli.main.subprocess.run", lambda *args, **kwargs: Proc())
+    monkeypatch.setattr("cnequity.cli.run_cmds.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.run_cmds.subprocess.run", lambda *args, **kwargs: Proc())
 
     result = CliRunner().invoke(cli, ["retry", "--config", cfg_path, "--failed-groups"])
 
@@ -448,7 +448,7 @@ def test_retry_requires_exactly_one_scope(cfg_path):
 
 def test_derive_adj_factors(cfg_path, monkeypatch):
     monkeypatch.setattr(
-        "cnequity.cli.main.compute_adj_factors",
+        "cnequity.cli.maintain_cmds.compute_adj_factors",
         lambda cfg, full=False: AdjFactorsResult(rows=12, task_count=12, failed=[], findings=[]),
     )
     result = CliRunner().invoke(cli, ["derive", "adj_factors", "--config", cfg_path])
@@ -474,7 +474,7 @@ def test_derive_unknown_target(cfg_path):
 
 def test_clean_dry_run(cfg_path, monkeypatch):
     monkeypatch.setattr(
-        "cnequity.cli.main.clean_staging",
+        "cnequity.cli.maintain_cmds.clean_staging",
         lambda cfg, **kwargs: StagingCleanupResult(
             removed_run_ids=["r1"],
             orphan_run_ids=[],
@@ -483,7 +483,7 @@ def test_clean_dry_run(cfg_path, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "cnequity.cli.main.clean_source_snapshots",
+        "cnequity.cli.maintain_cmds.clean_source_snapshots",
         lambda meta_root, **kwargs: SnapshotCleanupResult(
             removed_run_dirs=[], kept_run_dirs=["s1"], bytes_freed=20
         ),
@@ -496,7 +496,9 @@ def test_clean_dry_run(cfg_path, monkeypatch):
     assert payload["bytes_freed"] == 120
 
 
-def test_catalog_lists_datasets(tmp_path, cfg_path):
+def test_stats_show_scans_curated_when_no_stats_exist(tmp_path, cfg_path):
+    """The former `cne catalog`. A lake that has never run `stats rebuild` must
+    still be able to answer what is in it, without a build step first."""
     from cnequity.config import load_config
 
     cfg = load_config(cfg_path)
@@ -518,10 +520,19 @@ def test_catalog_lists_datasets(tmp_path, cfg_path):
         }
     ).write_parquet(part / "part-000.parquet")
 
-    result = CliRunner().invoke(cli, ["catalog", "--config", cfg_path])
+    result = CliRunner().invoke(cli, ["stats", "show", "--json", "--config", cfg_path])
     assert result.exit_code == 0, result.output
     entries = json.loads(result.output)
     assert any(e["dataset"] == "daily_bars" and e["rows"] == 1 for e in entries)
+
+
+def test_stats_show_fallback_refuses_the_views_it_cannot_serve(cfg_path):
+    """The scan has no per-partition or per-source detail. Silently returning the
+    dataset roll-up for `--by-source` would answer a different question."""
+    result = CliRunner().invoke(cli, ["stats", "show", "--by-source", "--config", cfg_path])
+
+    assert result.exit_code != 0
+    assert "cne stats rebuild" in result.output
 
 
 def test_query_on_demand(cfg_path, monkeypatch):
@@ -532,7 +543,7 @@ def test_query_on_demand(cfg_path, monkeypatch):
         def fetch(self, dataset, symbol, **kwargs):
             return {"dataset": dataset, "symbol": symbol, "rows": 0, **kwargs}
 
-    monkeypatch.setattr("cnequity.cli.main.OnDemandService", FakeSvc)
+    monkeypatch.setattr("cnequity.cli.consume_cmds.OnDemandService", FakeSvc)
     result = CliRunner().invoke(
         cli,
         [
@@ -578,7 +589,7 @@ def test_query_sql(cfg_path, monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr("cnequity.cli.main.ensure_duckdb_views", lambda cfg: db)
+    monkeypatch.setattr("cnequity.cli.consume_cmds.ensure_duckdb_views", lambda cfg: db)
     monkeypatch.setattr("duckdb.connect", lambda *a, **k: FakeCon())
     result = CliRunner().invoke(cli, ["query", "--config", cfg_path, "--sql", "SELECT 1 AS n"])
     assert result.exit_code == 0, result.output
@@ -586,27 +597,10 @@ def test_query_sql(cfg_path, monkeypatch, tmp_path):
 
 
 def test_audit_with_run_id(cfg_path, monkeypatch):
-    monkeypatch.setattr("cnequity.cli.main.run_audit", lambda cfg, rid, d: 2)
+    monkeypatch.setattr("cnequity.cli.quality_cmds.run_audit", lambda cfg, rid, d: 2)
     result = CliRunner().invoke(cli, ["audit", "--config", cfg_path, "--run-id", "r1"])
     assert result.exit_code == 0, result.output
     assert "2 findings" in result.output
-
-
-def test_servers_connection_failure(cfg_path, monkeypatch):
-    """`cne servers test` now delegates to the tdx probe, which asserts that
-    real bars came back rather than that a socket opened. Still exits 1, and
-    the reason it reports is the vendor's, not "connection failed"."""
-    import cnequity.adapters.tdx_protocol.client as tdx_client
-
-    monkeypatch.setattr(
-        tdx_client,
-        "_quotes_client",
-        lambda cfg: (_ for _ in ()).throw(RuntimeError("unreachable")),
-    )
-    result = CliRunner().invoke(cli, ["servers", "test", "--config", cfg_path])
-    assert result.exit_code == 1
-    assert "unreachable" in result.output
-    assert "cne sources --only tdx_protocol" in result.output
 
 
 def test_compact_uses_latest_run(cfg_path, monkeypatch):
@@ -626,8 +620,8 @@ def test_compact_uses_latest_run(cfg_path, monkeypatch):
             assert run_id == "latest-1"
             return {"rows_written": 9}
 
-    monkeypatch.setattr("cnequity.cli.main.Manifest", FakeManifest)
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.maintain_cmds.Manifest", FakeManifest)
+    monkeypatch.setattr("cnequity.cli.maintain_cmds.JobEngine", FakeEngine)
     result = CliRunner().invoke(cli, ["compact", "--config", cfg_path])
     assert result.exit_code == 0, result.output
     assert "latest-1" in result.output
@@ -641,50 +635,10 @@ def test_compact_no_runs(cfg_path, monkeypatch):
         def latest_run(self):
             return None
 
-    monkeypatch.setattr("cnequity.cli.main.Manifest", FakeManifest)
+    monkeypatch.setattr("cnequity.cli.maintain_cmds.Manifest", FakeManifest)
     result = CliRunner().invoke(cli, ["compact", "--config", cfg_path])
     assert result.exit_code != 0
     assert "No runs found" in result.output
-
-
-def test_repartition_lists_candidates(cfg_path, monkeypatch):
-    monkeypatch.setattr(
-        "cnequity.storage.repartition.repartition_candidates",
-        lambda cfg: ["index_bars"],
-    )
-    result = CliRunner().invoke(cli, ["repartition", "--config", cfg_path])
-    assert result.exit_code == 0, result.output
-    assert "index_bars" in result.output
-
-
-def test_repartition_dataset_dry_run(cfg_path, monkeypatch):
-    from cnequity.storage.repartition import RepartitionResult
-
-    monkeypatch.setattr(
-        "cnequity.storage.repartition.repartition_candidates",
-        lambda cfg: ["index_bars"],
-    )
-    monkeypatch.setattr(
-        "cnequity.storage.repartition.repartition_dataset",
-        lambda cfg, name, dry_run=False: RepartitionResult(
-            dataset=name,
-            changed=True,
-            rows=10,
-            files_before=5,
-            files_after=1,
-            partitions_before=5,
-            partitions_after=1,
-            bytes_before=1_000_000,
-            bytes_after=200_000,
-        ),
-    )
-    result = CliRunner().invoke(
-        cli, ["repartition", "index_bars", "--dry-run", "--config", cfg_path]
-    )
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["dry_run"] is True
-    assert payload["results"][0]["dataset"] == "index_bars"
 
 
 def test_audit_full_healthy(cfg_path, monkeypatch):
@@ -808,33 +762,6 @@ def test_audit_full_can_select_scoped_research_universe(cfg_path, monkeypatch):
     assert "historical all_a_sh_sz" in result.output
 
 
-def test_delisted_coverage_can_select_scoped_research_universe(cfg_path, monkeypatch):
-    observed: dict[str, object] = {}
-
-    def _coverage(_cfg, start, end, *, sample, universe):
-        observed.update(start=start, end=end, sample=sample, universe=universe)
-        return {"verified": True, "universe": universe}
-
-    monkeypatch.setattr("cnequity.steps.delisted.delisted_coverage_report", _coverage)
-    result = CliRunner().invoke(
-        cli,
-        [
-            "delisted",
-            "coverage",
-            "--config",
-            cfg_path,
-            "--start",
-            "2020-01-01",
-            "--universe",
-            "all_a_sh_sz",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert observed["universe"] == "all_a_sh_sz"
-    assert '"universe": "all_a_sh_sz"' in result.output
-
-
 def test_derive_trading_status_and_orphans(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "cnequity.derive.trading_status_history.derive_suspension_history",
@@ -865,24 +792,9 @@ def test_derive_trading_status_and_orphans(cfg_path, monkeypatch):
     assert "purged_symbols" in result.output
 
 
-def test_delisted_discover_and_status(cfg_path, monkeypatch):
-    monkeypatch.setattr(
-        "cnequity.steps.delisted.discover_delisted",
-        lambda cfg, limit=None: SimpleNamespace(
-            probed=10,
-            delisted=2,
-            never_issued=5,
-            failed=["x"],
-            remaining=100,
-            complete=False,
-        ),
-    )
-    result = CliRunner().invoke(
-        cli, ["delisted", "discover", "--config", cfg_path, "--limit", "10"]
-    )
-    assert result.exit_code == 0, result.output
-    assert '"probed": 10' in result.output
-
+def test_delisted_status_summarises_the_catalogue(cfg_path, monkeypatch):
+    # The sweep that fills this catalogue is `scripts/delisted_ops.py discover`;
+    # reading it stayed here because reading is the routine half.
     monkeypatch.setattr(
         "cnequity.steps.delisted.classify_catalog",
         lambda cfg: ({"600001.SH": date(2020, 1, 2)}, set()),
@@ -897,131 +809,6 @@ def test_delisted_discover_and_status(cfg_path, monkeypatch):
     payload = json.loads(result.output)
     assert payload["delisted"] == 1
     assert payload["pending_probe"] == 1
-
-
-def test_delisted_coverage_uses_exit_status_as_a_strict_gate(cfg_path, monkeypatch):
-    report = {
-        "window": {"start": "2020-01-01", "end": "2024-12-31"},
-        "verified": True,
-    }
-    monkeypatch.setattr(
-        "cnequity.steps.delisted.delisted_coverage_report",
-        lambda cfg, start, end, sample=15, **kwargs: report,
-    )
-
-    result = CliRunner().invoke(
-        cli,
-        [
-            "delisted",
-            "coverage",
-            "--config",
-            cfg_path,
-            "--start",
-            "2020-01-01",
-            "--end",
-            "2024-12-31",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["verified"] is True
-
-    report["verified"] = False
-    result = CliRunner().invoke(
-        cli, ["delisted", "coverage", "--config", cfg_path, "--start", "2020-01-01"]
-    )
-    assert result.exit_code == 1
-    assert json.loads(result.output)["verified"] is False
-
-
-def test_delisted_reconcile_is_dry_run_unless_apply_is_explicit(cfg_path, monkeypatch):
-    seen = []
-    report = {"read_only": True, "counts": {"safe_correction": 1}}
-    monkeypatch.setattr(
-        "cnequity.steps.delisted.delisted_catalog_reconciliation_report",
-        lambda cfg, sample=15: seen.append("dry-run") or report,
-    )
-    monkeypatch.setattr(
-        "cnequity.steps.delisted.reconcile_delisted_catalog",
-        lambda cfg, sample=15: seen.append("apply") or {**report, "read_only": False},
-    )
-
-    result = CliRunner().invoke(cli, ["delisted", "reconcile", "--config", cfg_path])
-    assert result.exit_code == 0, result.output
-    assert seen == ["dry-run"]
-
-    result = CliRunner().invoke(cli, ["delisted", "reconcile", "--config", cfg_path, "--apply"])
-    assert result.exit_code == 0, result.output
-    assert seen == ["dry-run", "apply"]
-
-
-def test_delisted_repair(cfg_path, monkeypatch):
-    class FakeManifest:
-        def start_run(self, *a, **k):
-            return "repair-1"
-
-        def finish_run(self, *a, **k):
-            return None
-
-    class FakeEngine:
-        def __init__(self, cfg):
-            self.manifest = FakeManifest()
-
-        def run_step(self, name, trade_date, run_id):
-            return {"rows_written": 1}
-
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
-    monkeypatch.setattr(
-        "cnequity.steps.delisted.repair_delisted_instruments",
-        lambda cfg, run_id, start=None: {"rows_written": 3, "updated": 3},
-    )
-    monkeypatch.setattr(
-        "cnequity.steps.delisted.purge_subscription_placeholders",
-        lambda cfg: 1,
-    )
-    monkeypatch.setattr("cnequity.cli.main.ensure_duckdb_views", lambda cfg: Path("/tmp/x"))
-    result = CliRunner().invoke(cli, ["delisted", "repair", "--config", cfg_path])
-    assert result.exit_code == 0, result.output
-    assert "repair-1" in result.output
-
-
-def test_delisted_repair_surfaces_incomplete_bars(cfg_path, monkeypatch):
-    class FakeManifest:
-        def __init__(self):
-            self.finished = None
-
-        def start_run(self, *a, **k):
-            return "repair-warning"
-
-        def finish_run(self, *args, **kwargs):
-            self.finished = (args, kwargs)
-
-    manifest = FakeManifest()
-
-    class FakeEngine:
-        def __init__(self, cfg):
-            self.manifest = manifest
-
-        def run_step(self, name, trade_date, run_id):
-            return {"rows_written": 1, "status": "success"}
-
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
-    monkeypatch.setattr(
-        "cnequity.steps.delisted.repair_delisted_instruments",
-        lambda cfg, run_id, start=None: {
-            "rows_written": 1,
-            "still_need_bars": ["600071.SH"],
-            "status": "warning",
-        },
-    )
-    monkeypatch.setattr("cnequity.steps.delisted.purge_subscription_placeholders", lambda cfg: 0)
-    monkeypatch.setattr("cnequity.cli.main.ensure_duckdb_views", lambda cfg: Path("/tmp/x"))
-
-    result = CliRunner().invoke(cli, ["delisted", "repair", "--config", cfg_path])
-
-    assert result.exit_code != 0, result.output
-    assert '"status": "warning"' in result.output
-    assert manifest.finished[0][1] == "warning"
 
 
 def test_delisted_backfill(cfg_path, monkeypatch):
@@ -1041,7 +828,7 @@ def test_delisted_backfill(cfg_path, monkeypatch):
         def run_step(self, name, trade_date, run_id):
             return {"rows_written": 4}
 
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.delisted_cmds.JobEngine", FakeEngine)
     monkeypatch.setattr(
         "cnequity.steps.delisted.backfill_delisted_bars",
         lambda cfg, run_id, since: {"rows_read": 8, "rows_written": 8, "symbols": 2},
@@ -1082,7 +869,7 @@ def test_backfill_trading_status_uses_dedicated_history_path(cfg_path, monkeypat
             assert name == "compact"
             return {"rows_written": 1}
 
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.backfill_cmds.JobEngine", FakeEngine)
     result = CliRunner().invoke(cli, ["backfill", "trading_status", "--config", cfg_path])
 
     assert result.exit_code == 0, result.output
@@ -1126,7 +913,7 @@ def test_backfill_success_compacts(cfg_path, monkeypatch):
             assert name == "compact"
             return {"rows_written": 1}
 
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
+    monkeypatch.setattr("cnequity.cli.backfill_cmds.JobEngine", FakeEngine)
     result = CliRunner().invoke(
         cli,
         [
@@ -1143,55 +930,3 @@ def test_backfill_success_compacts(cfg_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert finished["status"] == "success"
     assert "bf-ok" in result.output
-
-
-def test_catchup_already_fresh_core_only(cfg_path, monkeypatch):
-    monkeypatch.setattr("cnequity.steps.common.is_trading_day", lambda cfg, d: True)
-    monkeypatch.setattr(
-        "cnequity.cli.main._dataset_watermark",
-        lambda cfg, name: date(2024, 6, 28),
-    )
-    monkeypatch.setattr(
-        "cnequity.cli.main._gate_fresh_for_catchup",
-        lambda cfg, td, core_only=False: {
-            "daily_bars": True,
-            "adj_factors": True,
-            "market_breadth": True,
-            "core": True,
-            "all": True,
-        },
-    )
-
-    class FakeEngine:
-        def __init__(self, cfg):
-            self.cfg = cfg
-
-        def run_job(self, *a, **k):
-            raise AssertionError("should skip when already fresh")
-
-    monkeypatch.setattr("cnequity.cli.main.JobEngine", FakeEngine)
-    from cnequity.cli import main as cli_main
-    from cnequity.config import ScheduleGroup
-
-    real_cfg = cli_main._cfg
-
-    def _cfg_with_core(path):
-        c = real_cfg(path)
-        c.schedule_groups["core"] = ScheduleGroup(at="09:00", steps=["daily_bars"])
-        return c
-
-    monkeypatch.setattr(cli_main, "_cfg", _cfg_with_core)
-    result = CliRunner().invoke(
-        cli,
-        [
-            "run",
-            "catchup",
-            "--config",
-            cfg_path,
-            "--trade-date",
-            "2024-06-28",
-            "--core-only",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert "skipped_already_fresh" in result.output

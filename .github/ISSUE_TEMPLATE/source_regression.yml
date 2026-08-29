@@ -12,7 +12,7 @@ body:
     id: source
     attributes:
       label: 源 key
-      description: '`cne sources --only ...` 使用的 key，例如 tdx_protocol、sina、eastmoney_push2。'
+      description: '`cne sources probe --only ...` 使用的 key，例如 tdx_protocol、sina、eastmoney_push2。'
       placeholder: "sina"
     validations:
       required: true
@@ -32,9 +32,9 @@ body:
     id: command
     attributes:
       label: 最小复现命令与输出
-      description: "请打码本地路径、代理地址、token；优先附 `cne sources --vantage <label> --only <source>` 的输出。"
+      description: "请打码本地路径、代理地址、token；优先附 `cne sources probe --vantage <label> --only <source>` 的输出。"
       placeholder: |
-        cne sources --vantage overseas --only sina
+        cne sources probe --vantage overseas --only sina
         ...
     validations:
       required: true

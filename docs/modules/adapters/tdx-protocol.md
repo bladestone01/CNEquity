@@ -32,7 +32,7 @@
 - `servers = "host:port"`：固定单服
 - `allow_mock = false`（生产）：连接失败抛异常，不造假数据
 
-`cne servers test` 验证连通性。
+`cne sources probe --only tdx_protocol` 验证连通性。
 
 ---
 

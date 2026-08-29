@@ -141,14 +141,14 @@ fi
 
 # Availability evidence is non-blocking while it accumulates: a red public
 # source is the observation, not a reason to discard an otherwise valid core
-# revision.  `cne source slo` still writes fail-closed incidents/report state,
+# revision.  `cne sources slo` still writes fail-closed incidents/report state,
 # and release/acceptance gates invoke it separately with `--enforce`.
 if [[ "$SOURCE_HEALTH" == "1" ]]; then
   log "--- source health (vantage=${SOURCE_VANTAGE}) ---"
-  if ! "$CNE" sources --config "$CONFIG" --vantage "$SOURCE_VANTAGE" >>"$LOG" 2>&1; then
+  if ! "$CNE" sources probe --config "$CONFIG" --vantage "$SOURCE_VANTAGE" >>"$LOG" 2>&1; then
     log "source probe command FAILED (non-fatal)"
   fi
-  if ! "$CNE" source slo --config "$CONFIG" >>"$LOG" 2>&1; then
+  if ! "$CNE" sources slo --config "$CONFIG" >>"$LOG" 2>&1; then
     log "source SLO reporting FAILED (non-fatal)"
   fi
 fi

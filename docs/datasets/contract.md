@@ -5,7 +5,7 @@
 
 ```bash
 cne contract show daily_bars
-cne contract export --out meta/dataset-contract.json
+cne contract show --out meta/dataset-contract.json
 cne contract validate meta/dataset-contract.json
 cne contract diff meta/old-contract.json meta/dataset-contract.json
 ```

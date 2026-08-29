@@ -441,3 +441,75 @@ def test_a_real_shrink_still_fires_mid_period():
     )
     assert finding is not None, "proration must not blind the check to a genuine collapse"
     assert "prorated" in finding["message"]
+
+
+# --- the CLI surface -------------------------------------------------------
+#
+# `cne stats refresh` was folded into `cne stats rebuild --if-stale`: the two
+# differed only in whether the rebuild was conditional, and neither had a test
+# at the CLI layer. These cover the merged command, including the combination
+# the merge makes newly expressible and has to reject.
+
+
+def _run_cli(cfg_path, *args):
+    from click.testing import CliRunner
+
+    from cnequity.cli.main import cli
+
+    return CliRunner().invoke(cli, ["stats", "rebuild", "--config", str(cfg_path), *args])
+
+
+def test_cli_rebuild_writes_the_stats_tables(config, tmp_path):
+    _seed(config)
+
+    result = _run_cli(tmp_path / "test.toml")
+
+    assert result.exit_code == 0, result.output
+    assert load_summary(config) is not None
+
+
+def test_cli_if_stale_stands_down_when_the_lake_has_not_moved(config, tmp_path):
+    _seed(config)
+    rebuild_stats(config, datasets=["daily_bars"])
+    before = load_summary(config)["generated_at"]
+
+    result = _run_cli(tmp_path / "test.toml", "--if-stale")
+
+    assert result.exit_code == 0, result.output
+    assert "nothing to do" in result.output
+    assert load_summary(config)["generated_at"] == before
+
+
+def test_cli_if_stale_rebuilds_once_a_run_has_landed(config, tmp_path):
+    _seed(config)
+    rebuild_stats(config, datasets=["daily_bars"])
+    before = load_summary(config)["generated_at"]
+    _write(config.curated_root / "daily_bars", "trade_date=2026-07-30", [_bar("000001.SZ")])
+    _start_run(config)
+
+    result = _run_cli(tmp_path / "test.toml", "--if-stale")
+
+    assert result.exit_code == 0, result.output
+    assert "rebuilt" in result.output
+    assert load_summary(config)["generated_at"] != before
+
+
+def test_cli_if_stale_refuses_a_partial_rebuild(config, tmp_path):
+    """`--if-stale` decides against the whole lake's watermark, so scoping it to
+    one dataset would either ignore the scope or answer the wrong question."""
+    result = _run_cli(tmp_path / "test.toml", "--if-stale", "--dataset", "daily_bars")
+
+    assert result.exit_code != 0
+    assert "--if-stale" in result.output
+
+
+def test_cli_if_stale_reports_machine_readably(config, tmp_path):
+    import json
+
+    _seed(config)
+    rebuild_stats(config, datasets=["daily_bars"])
+
+    result = _run_cli(tmp_path / "test.toml", "--if-stale", "--json")
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["rebuilt"] is False

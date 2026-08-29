@@ -117,7 +117,7 @@ instruments 每次日更从代码空间扫描的「在市但缺失」桶补齐�
 - 已落盘的单个交易日可用 `cne backfill daily_bars --start <日> --end <日>
   --symbols <BJ列表> --bse-tip-repair` 定向补写；该模式只读取已有 OHLCV，
   不重新请求新浪历史，也不会用成交额反推价格或成交量
-- 新上市的北交所票要等下一次 `cne delisted discover` 扫到才会进 instruments，
+- 新上市的北交所票要等下一次 `scripts/delisted_ops.py discover` 扫到才会进 instruments，
   不是当天自动出现
 
 ---

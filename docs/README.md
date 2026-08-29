@@ -48,7 +48,7 @@ CLI 是 `cne`，Python 包是 `cnequity`。推荐：`pip install cnequity` → `
 ## 运维
 
 - [Runbook](operations/runbook.md) · [脚本说明](operations/scripts.md) · [故障排查](operations/troubleshooting.md)
-- [数据源健康度](operations/source-health.md)（`cne sources` + `cne serve /source-health`）
+- [数据源健康度](operations/source-health.md)（`cne sources probe` + `cne serve /source-health`）
 
 ## 架构
 

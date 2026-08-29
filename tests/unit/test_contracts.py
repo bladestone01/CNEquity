@@ -92,7 +92,23 @@ def test_export_and_cli_contract_commands(tmp_path):
     assert shown.exit_code == 0, shown.output
     assert json.loads(shown.output)["name"] == "daily_bars"
 
-    exported = runner.invoke(cli, ["contract", "export", "--out", str(output)])
+    # `contract export` folded into `contract show --out`; the written document
+    # must still be exactly what `contract validate` and `contract diff` read.
+    exported = runner.invoke(cli, ["contract", "show", "--out", str(output)])
     assert exported.exit_code == 0, exported.output
     checked = runner.invoke(cli, ["contract", "validate", str(output)])
     assert checked.exit_code == 0, checked.output
+    assert json.loads(output.read_text(encoding="utf-8"))["fingerprint"] == document["fingerprint"]
+
+
+def test_show_out_writes_a_single_dataset_record(tmp_path):
+    """The single-dataset write path is not the registry path: it serialises the
+    record itself, so a caller cannot get a whole-registry document by accident."""
+    output = tmp_path / "daily_bars.json"
+
+    result = CliRunner().invoke(cli, ["contract", "show", "daily_bars", "--out", str(output)])
+
+    assert result.exit_code == 0, result.output
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written["name"] == "daily_bars"
+    assert "fingerprint" not in written

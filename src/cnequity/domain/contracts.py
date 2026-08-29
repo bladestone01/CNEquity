@@ -566,7 +566,7 @@ def validate_contract(
     if not isinstance(document, Mapping):
         return ["contract: top-level value must be an object"]
     datasets = document.get("datasets")
-    # ``cne contract export --dataset`` intentionally emits a compact record;
+    # ``cne contract show --dataset --out`` intentionally emits a compact record;
     # accept that record anywhere a one-dataset contract is expected.
     if datasets is None and isinstance(document.get("name"), str):
         datasets = {document["name"]: document}

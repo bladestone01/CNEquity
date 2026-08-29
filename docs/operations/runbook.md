@@ -31,11 +31,11 @@ scripts/install_scheduler.sh
 - **每天 11:15 本机时间**触发；按本机时区选一个稳在 A 股 15:00 收盘之后的时间
   （UTC+2/+3 机器约合 16:15/17:15 CST）。改时间编辑 plist 模板后重装。
 - 非交易日自动跳过（退出 0）
-- **漏跑 / 周末补数**：`uv run cne run catchup`（门禁 core + breadth；水位已齐则
+- **漏跑 / 周末补数**：`uv run python scripts/run_catchup.py`（门禁 core + breadth；水位已齐则
   `skipped_already_fresh`），或 `scripts/daily_pipeline.sh YYYY-MM-DD` /
   `CNE_TRADE_DATE=...`（全组定点）
 - **海外 Mac**：保 `core`（+ 本地 derive breadth）即可；东财组留给
-  国内机器 `catchup --all-groups` / 全组 pipeline。SOCKS 出口不够，见
+  国内机器 `scripts/run_catchup.py --all-groups` / 全组 pipeline。SOCKS 出口不够，见
   [troubleshooting](troubleshooting.md#云主机--socks-能开-ipinfo-但东财-empty-reply)。
 
 ```bash
@@ -114,9 +114,9 @@ core → capital → signals → fundamentals → macro_risk → research
 ```bash
 cne status --datasets          # 新鲜度；STALE 时退出 1
 cne audit --full               # 湖级健康；UNHEALTHY 退出 1
-cne catalog                    # 行数概览
-cne source slo --enforce        # 30 日关键源可用性（缺历史也 fail-closed）
-cne source resilience --enforce # 核心数据集独立备援门禁与单源爆炸半径
+cne stats show                 # 行数概览
+cne sources slo --enforce        # 30 日关键源可用性（缺历史也 fail-closed）
+cne sources resilience --enforce # 核心数据集独立备援门禁与单源爆炸半径
 cne stability --days 20 --enforce # 连续交易日运行证据
 ```
 

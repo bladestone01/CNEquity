@@ -14,7 +14,8 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 
-from cnequity.cli.main import cli, stale_fetch_steps
+from cnequity.cli.main import cli
+from cnequity.cli.run_cmds import stale_fetch_steps
 
 ANCHOR = date(2026, 7, 31)
 BEHIND = date(2026, 7, 29)
@@ -79,7 +80,7 @@ def test_nothing_stale_is_a_clean_no_op(config, monkeypatch):
     """Safe on a timer: it must not create a run when there is nothing to do."""
     _write(config, "daily_bars", ANCHOR)
     _watermark(config, "daily_bars", ANCHOR)
-    monkeypatch.setattr("cnequity.cli.main._last_trading_day", lambda cfg, today: ANCHOR)
+    monkeypatch.setattr("cnequity.cli.run_cmds._last_trading_day", lambda cfg, today: ANCHOR)
 
     result = CliRunner().invoke(
         cli, ["run", "daily", "--stale-only", "--config", str(config.config_path)]

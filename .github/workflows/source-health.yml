@@ -51,20 +51,20 @@ jobs:
             --config "$HEALTH_ROOT/cnequity.toml" \
             --data-root "$HEALTH_ROOT/data"
           if [ "$SCHEDULE" = "17 3 * * 1" ]; then
-            cne sources \
+            cne sources probe \
               --config "$HEALTH_ROOT/cnequity.toml" \
               --vantage github-actions \
               | tee "$HEALTH_ROOT/source-health.txt"
           else
-            cne sources \
+            cne sources probe \
               --config "$HEALTH_ROOT/cnequity.toml" \
               --vantage github-actions \
               --only tdx_protocol,sina,eastmoney_push2,eastmoney_push2his,cninfo \
               | tee "$HEALTH_ROOT/source-health.txt"
           fi
-          cne source slo --config "$HEALTH_ROOT/cnequity.toml" \
+          cne sources slo --config "$HEALTH_ROOT/cnequity.toml" \
             > "$HEALTH_ROOT/source-slo.json"
-          cne source resilience --out "$HEALTH_ROOT/source-resilience.json" --enforce \
+          cne sources resilience --out "$HEALTH_ROOT/source-resilience.json" --enforce \
             > "$HEALTH_ROOT/source-resilience.stdout.json"
       - name: Add report to job summary
         if: always()

@@ -94,13 +94,15 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 
 | 子命令 | 说明 |
 |--------|------|
-| `show [DATASET]` | 输出一个数据集或完整 registry 契约 |
-| `export --out PATH` | 写出稳定 JSON（省略 `--out` 时打印到 stdout） |
+| `show [DATASET]` | 输出一个数据集或完整 registry 契约；`--out PATH` 写文件而非打印 |
 | `validate [PATH]` | 校验文件；省略 PATH 时校验当前 registry。文件加 `--against-registry` 做精确同步检查 |
 | `diff OLD [NEW]` | 比较两个契约；省略 NEW 时比较当前 registry。默认发现 breaking 时退出 1，检查报告可加 `--allow-breaking` |
 
 diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别为 breaking；新增
 列和新增数据集为 compatible。
+
+> `cne contract export` 已并入 `cne contract show --out`——两者本来就是同一份文档，
+> 只差写不写文件。
 
 ---
 
@@ -222,28 +224,24 @@ cne backfill sector_bars --config configs/cnequity.toml --retry-failed
 
 ## cne delisted
 
-重建退市宇宙（幸存者偏差修复）。
+读退市目录，并拉它点名的那些行情。**重建**目录（扫码空间、核对终点、修 instruments、
+覆盖门禁）是一次性工程，在 [`scripts/delisted_ops.py`](../operations/scripts.md#delisted_opspy)。
 
 | 子命令 | 说明 |
 |--------|------|
-| `discover [--limit N]` | 扫 issued code space，分类为曾上市 / 从未发行（可续跑） |
 | `status [--since]` | 目录摘要：数量、年份、尚未 ingest |
-| `coverage [--start] [--end]` | **只读严格门禁**：验证发现完整性、窗口重叠、末根有效成交和 instruments 身份；未通过时退出码为 1 |
-| `reconcile [--apply]` | 默认只读核对目录终点；`--apply` 仅修正被正式退市日、交易日历和正成交量行情共同证伪的终点，并生成备份及 SHA-256 回执 |
-| `repair [--since]` | **不重新拉行情**：用已有 `daily_bars` 跨度写 `instruments.delist_date`，并清掉 `认购款` 占位 |
 | `backfill [--since]` | 对目录中尚未有行情的退市股拉 Sina 历史并 compact |
 
-推荐顺序：`discover` → `reconcile`（先 dry-run，确认后 `--apply`）→ `repair`
-（bars 已在湖里时）→ `backfill`（补缺口）→ `coverage`。
+推荐顺序（跨 CLI 和脚本）：
 
 ```bash
-cne delisted status
-cne delisted reconcile
-cne delisted reconcile --apply   # 仅在没有 active ingestion run 时执行
-cne delisted coverage --start 2016-01-01 --end 2025-12-31 --universe all_a_sh_sz
-cne delisted repair
-cne delisted backfill --since 2016-01-01
-cne delisted discover --limit 500   # 扩大 band 后的续扫
+cne delisted status                                   # 已知多少
+python scripts/delisted_ops.py discover --limit 500   # 扫码空间，可续跑
+cne delisted backfill --since 2016-01-01              # 拉扫到的行情
+python scripts/delisted_ops.py repair                 # bars 已在湖里时写 delist_date
+python scripts/delisted_ops.py reconcile              # 先 dry-run
+python scripts/delisted_ops.py reconcile --apply      # 仅在没有 active ingestion run 时
+python scripts/delisted_ops.py coverage --start 2016-01-01 --universe all_a_sh_sz
 ```
 
 `coverage` 的通过声明刻意很窄：它证明退市目录已扫完，且已知与窗口重叠的退市标的具备一致的末根有效成交和证券主数据；它不证明两端之间每个交易日都连续。数据源在停牌或正式摘牌前可能保留零成交占位行，门禁不会把它们误当成末次交易。目录末日晚于窗口、但窗口内又没有行情可证明已经上市的标的会进入 `unknown_overlap`，不会被静默排除。
@@ -253,27 +251,6 @@ cne delisted discover --limit 500   # 扩大 band 后的续扫
 正式退市日之后或非交易日，才允许自动修改。命令检测到任何 active ingestion run
 都会拒绝执行；修改前的目录保存在 `meta/state/history/`，质量回执写入
 `meta/quality/`，并记录修改前备份和修改后目录的 SHA-256。
-
----
-
-## cne repartition [dataset]
-
-| 选项 | 说明 |
-|------|------|
-| `--all` | 改写所有布局与配置不一致的数据集 |
-| `--dry-run` | 只报告效果，不落盘 |
-
-把历史分区改写成 `DatasetSpec.partition_granularity` 配的周期
-（见 [分区粒度](../architecture/lake-layout.md#分区粒度)）。不带参数则列出待改写的数据集。
-
-读路径按目录形状自解析，改粒度本身**不需要**迁移；这条命令只是把碎文件收回来。
-写入是先建临时目录、逐分区写完并核对总行数，再一次 rename 换上去，中途挂掉不动原数据；
-重复执行是幂等的。
-
-```bash
-cne repartition --all --dry-run   # 先看影响
-cne repartition trading_calendar  # 单个数据集
-```
 
 ---
 
@@ -303,6 +280,30 @@ cne derive trading_status --start 2001-01-01 --end 2001-12-31
 | `--research-universe all_a\|all_a_sh_sz` | 历史研究口径；默认 `all_a`，`all_a_sh_sz` 排除 BJ 的来源能力缺口 |
 
 `--full` 且 UNHEALTHY 退出 1。显式传 `--research-start` 后，研究宇宙未通过也退出 1；此时末行会显示 `HEALTHY (operational; research BLOCKED)`，表示湖的运营健康与研究可用性是两个独立门禁。未显式传 `--research-start` 时，历史宇宙状态仍写入 health 与 `historical-validity-latest.json`，但不会改变运维健康的退出码。快照同时记录 `historical_universe`，避免把 scoped 结果误读成全 A。
+
+---
+
+## cne verify
+
+| 选项 | 说明 |
+|------|------|
+| `--dataset` | 只查这些数据集（逗号分隔）；默认全部已注册数据集 |
+| `--repair` | 对可修复的缺口跑回填，按数据集从新到旧 |
+| `--kind` | 只看这些缺口类型：`empty,stale,interior,shallow` |
+
+**和 `cne audit`问的不是同一件事。** `audit` 问「落下来的数据对不对」，`verify` 问
+「该落的有没有落」——后者是一个 step 一碰就抛异常时产生的故障。没有它，一个数据集可以
+连续数周每次 run 都失败，而每次 run 只记录一个 failed batch，湖级看不出来。
+
+**缺口按「能不能补」分开，而不是按大小。** `by_date` 数据集缺一个交易日是故障；
+`snapshot` 数据集缺一个交易日是它本来的形状，任何回填都不可能诚实地补上它
+（补了就是伪造行）。`--repair` 只跑前者。
+
+```bash
+cne verify                                  # 全表体检
+cne verify --dataset daily_bars,adj_factors
+cne verify --kind interior --repair         # 只补内部空洞
+```
 
 ---
 
@@ -343,12 +344,6 @@ cne derive trading_status --start 2001-01-01 --end 2001-12-31
 | `--dry-run` | 仅报告可删 staging |
 | `--orphan-retention-days` | 无 manifest 的 orphan 保留天数（默认 7） |
 | `--force` | 也删尚未 cleanup-ready 的 staging（incomplete / 未 compact）；成功 fetch batch 会被 demote，`cne retry` 全量重抓。**不要**对 success-without-compact 用 force——先 `cne compact --run-id` |
-
----
-
-## cne catalog
-
-JSON 列出 curated 各数据集文件数与行数。每次都全扫；固定的度量走 `cne stats`。
 
 ---
 
@@ -399,30 +394,27 @@ cne serve
 | 选项 | 说明 |
 |------|------|
 | `--dataset` | 只重建这些数据集（可重复）；**其余数据集保留原有行**，不会被删 |
+| `--if-stale` | 只在「湖动过了」时才重建，否则空转返回。放定时器上用这个 |
 | `--json` | 结果输出 JSON |
 
 全量重建：参考湖（1.5GB / 6600 万行 / 21k 分区）约 6 秒——只读 `source`、`data_version`、`fetched_at` 三列。增量刷新是可行的（跑批动过的分区可以从 `ingestion_batches.window_start/window_end` 反推），但没到需要的规模。
 
-### cne stats refresh
-
-只在「湖动过了」时才重建，否则空转返回。
-
-| 选项 | 说明 |
-|------|------|
-| `--force` | 即使是最新的也重建 |
-
-**判据是 run id，不是时钟。** 改变湖的是采集，所以建于最后一个 run 之后的表无论多旧都是当前的，建于之前的无论多新都是过期的——`stats-latest.json` 的 `latest_run_id` 和 manifest 的最新 run 比对即可，只读一个小 JSON 加一行 SQLite。
+**`--if-stale` 的判据是 run id，不是时钟。** 改变湖的是采集，所以建于最后一个 run 之后的表无论多旧都是当前的，建于之前的无论多新都是过期的——`stats-latest.json` 的 `latest_run_id` 和 manifest 的最新 run 比对即可，只读一个小 JSON 加一行 SQLite。
 
 并发用非阻塞锁收敛：面板请求、cron、夜间跑批同时想重建时只有一个真做，抢不到锁的直接返回而不是排队——把 web 请求堵在一次全扫后面比多看一个 run 的旧数字更糟。
+
+`--if-stale` 判的是全湖水位，所以不能和 `--dataset` 同用，命令会直接报错而不是二选一地猜。
 
 刷新策略（`meta/stats` 不会自己刷新）：
 
 ```bash
 # 兜底：定时器上跑，没变化就是空转
-cne stats refresh
+cne stats rebuild --if-stale
 ```
 
-面板（M2）走 `stats_freshness()` 判过期 + 后台线程调 `refresh_stats_if_stale()`；线程策略留在调用方，模块本身是同步的。`cne run daily && cne stats rebuild` 也可以，但 `refresh` 更省。
+面板（M2）走 `stats_freshness()` 判过期 + 后台线程调 `refresh_stats_if_stale()`；线程策略留在调用方，模块本身是同步的。
+
+> `cne stats refresh` 已并入 `cne stats rebuild --if-stale`；原 `--force` 就是不加 `--if-stale` 的默认行为。
 
 ### cne stats show
 
@@ -430,8 +422,13 @@ cne stats refresh
 |------|------|
 | `--dataset` | 单个数据集的逐分区明细 |
 | `--by-source` | 改看 source / data_version 分布 |
+| `--json` | 机器可读输出 |
 
-无 stats 时报错并提示先 `cne stats rebuild`。
+**无 stats 表时直扫 curated 回退**（原 `cne catalog`）：只给 dataset / files / rows，没有字节数、
+源分布和逐分区明细，但一个从没跑过 `stats rebuild` 的湖不该先做一次构建才能回答「里面有什么」。
+`--dataset` / `--by-source` 是 stats 表独有的视图，回退时直接报错而不是降级回答另一个问题。
+
+> `cne catalog` 已并入本命令的回退路径；`--json` 就是它原来的输出。
 
 ---
 
@@ -483,6 +480,20 @@ cne mcp --config /abs/path/cnequity.toml --live
 
 ## cne sources
 
+数据源这一面的全部：`probe` 实时探测，其余三个从已存证据算派生结论、**不联网**。
+
+| 子命令 | 说明 |
+|--------|------|
+| `probe` | 探测公开数据源，报告写进湖里 |
+| `slo` | 把 `meta/source_health` 历史样本按 probe/vantage 聚成可用性 SLO，并写去重事故载荷。`--window-days`（默认 30）、`--minimum-observations`（默认 10）、`--enforce`（关键源不达标退出 1） |
+| `resilience` | 从注册表算源集中度、failure-domain 爆炸半径和核心数据集独立备源门禁。`--out PATH` 落 JSON，`--enforce`（有核心表缺独立备源则退出 1） |
+| `policy [SOURCE]` | 查 `sources/SOURCES.yml` 的来源使用策略。省略 SOURCE 输出全部；给 SOURCE 加 `--profile personal\|commercial\|cache\|redistribution` 做保守判断，未知权限一律 fail-closed（退出 1） |
+
+> 原为 `cne sources`（探测）+ `cne source <sub>`（派生结论）——两个顶层条目差一个字母，
+> 且 `cne source --help` 不得不用一句话把自己和邻居区分开。现在收敛成一个名词。
+
+### cne sources probe
+
 探测本湖依赖的公开数据源。每个源发**一个**请求，断言响应体（不是状态行），串行且尊重各源限速。
 
 | 选项 | 说明 |
@@ -493,7 +504,7 @@ cne mcp --config /abs/path/cnequity.toml --live
 | `--out` | JSON 报告路径。默认写进湖里的 `meta/source_health/<vantage>.json`，也就是 `cne serve` 读的位置 |
 
 ```bash
-cne sources --vantage cn
+cne sources probe --vantage cn
 cne serve                    # → http://127.0.0.1:8787/source-health
 ```
 
@@ -506,18 +517,6 @@ cne serve                    # → http://127.0.0.1:8787/source-health
 状态五档：`ok` 可用 · `empty` 空响应 · `blocked` 被拒 · `down` 不可达 · `skipped` 未探测。`empty` 单独一档是因为它看起来比失败健康、实际更危险（回填静默截断）。
 
 口径、加新源的方法见 [数据源健康度](../operations/source-health.md)。
-
----
-
-## cne source
-
-从已存的探测证据和数据集注册表算派生结论，**不联网**。注意与 `cne sources`（复数，实时探测）区分。
-
-| 子命令 | 说明 |
-|--------|------|
-| `slo` | 把 `meta/source_health` 历史样本按 probe/vantage 聚成可用性 SLO，并写去重事故载荷。`--window-days`（默认 30）、`--minimum-observations`（默认 10）、`--enforce`（关键源不达标退出 1） |
-| `resilience` | 从注册表算源集中度、failure-domain 爆炸半径和核心数据集独立备源门禁。`--out PATH` 落 JSON，`--enforce`（有核心表缺独立备源则退出 1） |
-| `policy [SOURCE]` | 查 `sources/SOURCES.yml` 的来源使用策略。省略 SOURCE 输出全部；给 SOURCE 加 `--profile personal\|commercial\|cache\|redistribution` 做保守判断，未知权限一律 fail-closed（退出 1） |
 
 ---
 
@@ -551,12 +550,6 @@ release 治理在第 20 天 enforce。
 
 ---
 
-## cne servers test
-
-测试 TDX 连接（并行探测主机池，返回首个能出数的服务器）。
-
----
-
 ## cne --version
 
 包版本号。
@@ -569,7 +562,7 @@ release 治理在第 20 天 enforce。
 |----|------|
 | 0 | 成功、非交易日跳过、健康检查通过 |
 | 1 | 核心运行失败、UNHEALTHY、STALE、校验失败、门禁未过 |
-| 2 | run 可用但降级（`degraded`）——核心 spine 正常，研究/建议层有失败（`run daily` / `run --stale-only` / `init` / `retry` / `status`） |
+| 2 | run 可用但降级（`degraded`）——核心 spine 正常，研究/建议层有失败（`run daily` / `run daily --stale-only` / `init` / `retry` / `status`） |
 
 ---
 

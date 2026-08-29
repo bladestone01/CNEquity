@@ -100,7 +100,7 @@ python scripts/accept_backfill.py check --compare /tmp/curated-counts.json
 
 验收项：幂等性、覆盖起点、消费层可读。详见 [回填完成验收](../operations/runbook.md#回填完成验收)。
 
-纯 PyPI 用户可先用 `cne status --datasets` / `cne catalog` 做粗检。
+纯 PyPI 用户可先用 `cne status --datasets` / `cne stats show` 做粗检。
 
 ## 4. 每日增量
 
@@ -125,7 +125,7 @@ cne run daily --group capital --config configs/cnequity.toml
 ```bash
 cne status --config configs/cnequity.toml              # 最近一次 run 摘要
 cne status --datasets --config configs/cnequity.toml   # 各数据集新鲜度
-cne catalog --config configs/cnequity.toml             # 行数统计
+cne stats show --config configs/cnequity.toml          # 行数统计
 ```
 
 ## 6. 读取数据
@@ -197,7 +197,7 @@ scripts/install_scheduler.sh   # macOS launchd，每天 11:15 本机时间
 | `load()` 读不到新数据 | 确认 run 已 compact；分组 run 必须含 `compact` step |
 | `universe="all_a"` 未剔历史 ST | `trading_status` 仅覆盖日更起点之后；2016→上线日回测需注意 |
 | init 中途失败 | 勿重新 `init`，用 `--resume` 或 `retry` |
-| TDX 连接失败 | `cne servers test`；检查 `[tdx_protocol.hosts]` 与网络 |
+| TDX 连接失败 | `cne sources probe --only tdx_protocol`；检查 `[tdx_protocol.hosts]` 与网络 |
 | 缺配置报错 | 先跑 `cne config init` |
 | demo 与全量混用 | demo 用独立 `data/cnequity-demo/`，全量另配 `data.root` |
 

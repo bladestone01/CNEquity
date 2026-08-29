@@ -424,7 +424,7 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
 
     @app.get("/source-health", response_class=HTMLResponse, include_in_schema=False)
     def source_health(request: Request) -> HTMLResponse:
-        """Render whatever `cne sources` last wrote into the lake.
+        """Render whatever `cne sources probe` last wrote into the lake.
 
         Reads, never probes. Probing reaches out to a dozen third-party hosts,
         and a GET that does it turns an unauthenticated local service into
@@ -450,7 +450,7 @@ def create_app(config: Config, *, token: str | None = None) -> FastAPI:
                 "code{background:#f6f8fa;padding:.1rem .3rem;border-radius:4px}</style>"
                 "<h1>还没有探测记录</h1>"
                 "<p>先跑一次探测，报告会写进湖里，这个页面读它：</p>"
-                "<pre><code>cne sources --vantage cn</code></pre>"
+                "<pre><code>cne sources probe --vantage cn</code></pre>"
                 "<p>探测放在 CLI 上是有意的——这个面板只读，不会替你去请求十几个第三方主机。</p>",
                 status_code=404,
             )

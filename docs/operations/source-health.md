@@ -7,7 +7,7 @@
 ## 怎么用
 
 ```bash
-cne sources --vantage cn     # 探测一遍，报告写进 meta/source_health/cn.json
+cne sources probe --vantage cn     # 探测一遍，报告写进 meta/source_health/cn.json
 cne serve                    # → http://127.0.0.1:8787/source-health
 ```
 
@@ -16,7 +16,7 @@ cne serve                    # → http://127.0.0.1:8787/source-health
 只测某几个源：
 
 ```bash
-cne sources --only eastmoney_push2,sina,tdx_protocol
+cne sources probe --only eastmoney_push2,sina,tdx_protocol
 ```
 
 `--vantage` 是**必须认真填**的：它记录这次探测从哪个出口发出去。见下面「为什么视角决定结论」。每个 vantage 一个文件，页面把它们并排渲染。
@@ -56,8 +56,8 @@ cne sources --only eastmoney_push2,sina,tdx_protocol
 在两个网络里各跑一次，页面就有两列：
 
 ```bash
-cne sources --vantage cn          # 大陆出口
-cne sources --vantage overseas    # 挂代理 / 海外机器上再跑一次
+cne sources probe --vantage cn          # 大陆出口
+cne sources probe --vantage overseas    # 挂代理 / 海外机器上再跑一次
 ```
 
 文件名不决定列名，JSON 里的 `vantage` 字段才决定。同名会覆盖，所以同一个出口重复跑就是刷新那一列。
@@ -85,7 +85,7 @@ URL 常量、东财的鉴权头、上交所需要的 Chrome TLS 伪装、同花�
 **本地没有强制的定时发布。** 想每天自动跑就挂进你现有的调度里（见 [runbook](runbook.md)）：
 
 ```bash
-cne sources --vantage cn >> logs/source-health.log 2>&1
+cne sources probe --vantage cn >> logs/source-health.log 2>&1
 ```
 
 **探测失败不会让命令失败。** 源变红是这条命令的**输出**而不是它的错误；如果调度需要门禁，请解析 JSON 中的 `status`，按业务决定是否阻断日更。
@@ -93,7 +93,7 @@ cne sources --vantage cn >> logs/source-health.log 2>&1
 仓库还提供一个工作日关键源探测、每周全量探测的 GitHub Actions workflow：它从海外 runner
 探测 TDX、Sina、东财和巨潮，
 把文本摘要写入 Job Summary，并上传 JSON artifact。这个报告只代表
-`github-actions` 视角；大陆机器仍应运行 `cne sources --vantage cn`，不要把海外的 `blocked`
+`github-actions` 视角；大陆机器仍应运行 `cne sources probe --vantage cn`，不要把海外的 `blocked`
 误读成全局故障。
 
 该 workflow 会用唯一 run key 恢复并保存 `meta/source_health` 的 Actions cache，因此 30 日
@@ -102,12 +102,12 @@ artifact 留存；cache 丢失时 SLO 会因样本不足 fail-closed，不会把
 
 ## Source SLO 与韧性
 
-`cne sources` 默认同时写入 latest 与不可变的 vantage 历史样本；显式 `--out` 只用于一次性
+`cne sources probe` 默认同时写入 latest 与不可变的 vantage 历史样本；显式 `--out` 只用于一次性
 导出。累计样本后运行：
 
 ```bash
-cne source slo --window-days 30 --minimum-observations 10 --enforce
-cne source resilience --enforce
+cne sources slo --window-days 30 --minimum-observations 10 --enforce
+cne sources resilience --enforce
 ```
 
 第一条按 probe/vantage 分开计算，每个 UTC 日只采用最后一次非跳过探测；跳过项不算失败，
