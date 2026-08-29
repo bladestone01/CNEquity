@@ -475,14 +475,14 @@ class DailyBarOwnership:
     generic: list[str] = field(default_factory=list)
     delegated_delisted: list[str] = field(default_factory=list)
     expected_no_data: list[str] = field(default_factory=list)
+    placeholder: list[str] = field(default_factory=list)
 
 
 def classify_daily_bar_ownership(
     symbols: list[str],
     spans: dict[
         str,
-        tuple[date | None, date | None]
-        | tuple[date | None, date | None, str | None],
+        tuple[date | None, date | None] | tuple[date | None, date | None, str | None],
     ],
     start: date,
     end: date,
@@ -518,11 +518,10 @@ def classify_daily_bar_ownership(
             and bar_universe is not None
             and symbol not in bar_universe
         ):
-            # An ETF with no listing date and no traded bar in the lake is an
-            # issued-but-not-yet-listed placeholder (for example a subscription
-            # code). Requiring TDX rows for it would fail the whole batch; it has
-            # no tradable session to fetch.
-            out.expected_no_data.append(symbol)
+            # This is likely an issued-but-not-yet-listed fund code, but a
+            # delayed list_date enrichment is indistinguishable here. Keep it
+            # out of the fetch batch without claiming the absence was proven.
+            out.placeholder.append(symbol)
         else:
             out.generic.append(symbol)
     return out

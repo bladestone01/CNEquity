@@ -1,4 +1,4 @@
-"""TDX tip gaps route through EastMoney clist (ADR-0005), not per-symbol kline."""
+"""TDX tip gaps use clist first, then bounded kline recovery (ADR-0005)."""
 
 from __future__ import annotations
 
@@ -347,6 +347,99 @@ def test_historical_tip_backfill_validates_staged_end_not_job_as_of(tmp_path, mo
     assert result["rows_written"] == 1
 
 
+def test_tip_clist_leftover_uses_kline(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 8, 18)
+    expected = ["600519.SH", "161728.SZ"]
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
+        lambda *args, **kwargs: _bar_frame([expected[0]], tip),
+    )
+    kline_calls: list[list[str]] = []
+
+    def kline(symbols, start, end, **kwargs):
+        kline_calls.append(list(symbols))
+        return _bar_frame(list(symbols), tip)
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", kline)
+
+    result = _finish_daily_bars(
+        cfg,
+        tip,
+        run_id,
+        start=tip,
+        end=tip,
+        expected_tdx_symbols=expected,
+        tdx_result={
+            "rows_read": 0,
+            "rows_written": 0,
+            "had_error": True,
+            "failed_symbols": expected,
+        },
+        sina_result=None,
+    )
+
+    assert kline_calls == [[expected[1]]]
+    assert result["rows_written"] == 2
+    assert _staged_daily_bar_symbols(cfg, run_id, tip) == set(expected)
+
+
+def test_historical_tip_retry_uses_kline_not_live_clist(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core")
+    historical = date(2026, 8, 18)
+    current = date(2026, 8, 19)
+    batch_id = "2026-08-18_2026-08-18-batch-0"
+    manifest.start_batch(
+        run_id,
+        batch_id,
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=["161728.SZ"],
+        window_start=historical.isoformat(),
+        window_end=historical.isoformat(),
+    )
+    manifest.finish_batch(run_id, batch_id, "failed", error_message="TDX empty")
+
+    calls: list[tuple] = []
+
+    def no_clist(*args, **kwargs):
+        calls.append(("clist", args, kwargs))
+        return pl.DataFrame()
+
+    def kline(symbols, start, end, **kwargs):
+        calls.append(("kline", list(symbols), start, end))
+        return _bar_frame(list(symbols), historical)
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist", no_clist)
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", kline)
+
+    result = _finish_daily_bars(
+        cfg,
+        current,
+        run_id,
+        start=historical,
+        end=historical,
+        expected_tdx_symbols=["161728.SZ"],
+        tdx_result={
+            "rows_read": 0,
+            "rows_written": 0,
+            "had_error": True,
+            "failed_symbols": ["161728.SZ"],
+        },
+        sina_result=None,
+    )
+
+    assert "clist" not in [call[0] for call in calls]
+    assert ("kline", ["161728.SZ"], historical, historical) in calls
+    assert result["rows_written"] == 1
+    assert _staged_daily_bar_symbols(cfg, run_id, historical) == {"161728.SZ"}
+    assert manifest.get_batch(run_id, batch_id)["status"] == "success"
+
+
 def test_retry_routes_non_tdx_symbols_to_fallback(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     run_id = Manifest(cfg.manifest_path).start_run("daily:core")
@@ -388,6 +481,10 @@ def test_tip_total_loss_still_raises(tmp_path, monkeypatch):
         "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
         lambda trade_date, symbols=None, client=None, config=None: pl.DataFrame(),
     )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
     with pytest.raises(RuntimeError, match="produced no staged tip rows"):
         _finish_daily_bars(
             cfg,
@@ -412,8 +509,17 @@ def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, 
     # not fail the whole market-wide tip — regression test for a check that
     # used to raise on any single missing key, every day some symbol halted.
     cfg = _cfg(tmp_path)
-    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core")
     tip = date(2026, 7, 24)
+    manifest.start_batch(
+        run_id,
+        "tdx-partial",
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=["600519.SH", "000001.SZ"],
+    )
+    manifest.finish_batch(run_id, "tdx-partial", "failed", error_message="TDX partial")
     monkeypatch.setattr(
         "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
         lambda trade_date, symbols=None, client=None, config=None: pl.DataFrame(
@@ -428,6 +534,10 @@ def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, 
                 "amount": [1000.0],
             }
         ),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
     )
     result = _finish_daily_bars(
         cfg,
@@ -450,6 +560,7 @@ def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, 
         f["check"] == "daily_bars_tip_missing_symbols" and "000001.SZ" in f["message"]
         for f in findings
     )
+    assert manifest.get_batch(run_id, "tdx-partial")["status"] == "success"
 
 
 def test_tip_large_partial_miss_blocks_checkpoint(tmp_path, monkeypatch):
@@ -471,6 +582,10 @@ def test_tip_large_partial_miss_blocks_checkpoint(tmp_path, monkeypatch):
                 "amount": [1000.0],
             }
         ),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
     )
     with pytest.raises(RuntimeError, match="refusing to checkpoint"):
         _finish_daily_bars(

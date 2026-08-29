@@ -65,7 +65,10 @@ def fetch_index_constituents(
                 filter_expr=f'(INDEX_CODE="{index_code}")',
                 page_size=5000,
             )
-            matched = 0
+            # This report is a change log. Reconstruct the requested as-of
+            # membership from the latest valid effective row per security;
+            # never stamp an undated or future row onto the requested date.
+            latest: dict[str, tuple[date, dict]] = {}
             for item in raw:
                 returned_code = str(item.get("INDEX_CODE") or "").zfill(6)
                 if returned_code != index_code.zfill(6):
@@ -76,13 +79,30 @@ def fetch_index_constituents(
                     )
                     continue
                 returned_date = str(item.get("TRADE_DATE") or "")[:10]
-                if returned_date and returned_date > as_of_date.isoformat():
+                try:
+                    effective_date = date.fromisoformat(returned_date)
+                except ValueError:
+                    logger.warning(
+                        "EastMoney index constituents: ignoring invalid member date for %s: %s",
+                        index_code,
+                        returned_date or "<missing>",
+                    )
+                    continue
+                if effective_date > as_of_date:
                     logger.warning(
                         "EastMoney index constituents: ignoring future member date for %s: %s",
                         index_code,
                         returned_date,
                     )
                     continue
+                code = str(item.get("SECURITY_CODE", "")).zfill(6)
+                previous = latest.get(code)
+                if previous is None or effective_date > previous[0]:
+                    latest[code] = (effective_date, item)
+
+            matched = 0
+            for _effective_date, item in latest.values():
+                returned_code = str(item.get("INDEX_CODE") or "").zfill(6)
                 code = str(item.get("SECURITY_CODE", "")).zfill(6)
                 exch = exchange_from_datacenter(item)
                 sym = symbol_from_em(code, 1 if exch == "SH" else (2 if exch == "BJ" else 0))

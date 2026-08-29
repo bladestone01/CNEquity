@@ -858,6 +858,35 @@ def test_failed_symbol_is_retried_after_global_watermark_advances(adj_config, mo
     assert written.filter(pl.col("symbol") == "600519.SH")["factor"].to_list() == [0.7]
 
 
+def test_compute_adj_factors_fills_partial_watermark_partition(adj_config, monkeypatch):
+    """Late bars on the watermark date are not hidden by the date watermark."""
+    _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28), factor=0.5)
+    _write_factor_cache(adj_config, "000001.SZ", date(2024, 6, 27), factor=1.0)
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28), factor=0.5)
+    _write_adj_partition(adj_config, "000001.SZ", date(2024, 6, 27), factor=1.0)
+    _write_bar(adj_config, "000001.SZ", date(2024, 6, 28))
+
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [1.0]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+
+    assert result.rows == 1
+    assert calls == []
+    out = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
+    df = pl.read_parquet(out)
+    assert set(df["symbol"].to_list()) == {"600519.SH", "000001.SZ"}
+    assert df.filter(pl.col("symbol") == "600519.SH")["factor"][0] == 0.5
+
+
 # --- self-healing history ----------------------------------------------------
 # The derive is append-only from its watermark, so `cne backfill daily_bars`
 # lands history *behind* the watermark and never gets a factor. On a real lake

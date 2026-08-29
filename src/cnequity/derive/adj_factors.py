@@ -211,6 +211,12 @@ def _bars_for_derive(
     )
     if not incremental.is_empty():
         frames.append(incremental)
+    # The watermark records only the latest partition date, not whether that
+    # partition covers every bar. A retry or late compaction can add symbols to
+    # daily_bars on the watermark date after the first derive has completed.
+    missing = _bars_missing_factor_partition(config, watermark)
+    if not missing.is_empty():
+        frames.append(missing)
     # Ex-date / new-listing / explicit rebackfill: realign full history for those symbols.
     if refresh_set:
         refreshed = _load_daily_bar_dates(config, symbols=sorted(refresh_set))
@@ -223,6 +229,31 @@ def _bars_for_derive(
         .unique(subset=["symbol", "trade_date"], keep="last")
         .sort(["symbol", "trade_date"])
     )
+
+
+def _bars_missing_factor_partition(config: Config, watermark: date) -> pl.DataFrame:
+    """Bars on the watermark date missing from its factor partition."""
+    from cnequity.query.parquet_scan import dataset_has_parquet
+
+    bars = _load_daily_bar_dates(config, start=watermark).filter(pl.col("trade_date") == watermark)
+    if bars.is_empty():
+        return bars
+
+    cdr_symbols = [symbol for symbol in bars["symbol"].unique().to_list() if _is_cdr(symbol)]
+    if cdr_symbols:
+        bars = bars.filter(~pl.col("symbol").is_in(cdr_symbols))
+        if bars.is_empty():
+            return bars
+
+    part = config.derived_root / "adj_factors" / f"trade_date={watermark.isoformat()}"
+    if not dataset_has_parquet(part):
+        return bars
+
+    factors = pl.concat(
+        [pl.read_parquet(path).select("symbol") for path in sorted(part.rglob("*.parquet"))],
+        how="diagonal_relaxed",
+    ).unique()
+    return bars.join(factors, on="symbol", how="anti")
 
 
 def _align_factors_to_bars(

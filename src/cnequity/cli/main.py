@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -1607,13 +1609,8 @@ def status(config_path: str, show_datasets: bool):
     click.echo(json.dumps(summary, indent=2, default=str))
 
 
-@cli.command()
-@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-@click.option("--run-id", required=True)
-def retry(config_path: str, run_id: str):
-    """Retry failed batches and missing init steps for a run."""
-    cfg = _cfg(config_path)
-    engine = JobEngine(cfg)
+def _retry_single_run(engine: JobEngine, run_id: str) -> dict:
+    """Retry one run, print its result, and return it to the CLI caller."""
     run = engine.manifest.get_run(run_id)
     if run is None:
         raise click.ClickException(f"Unknown run_id: {run_id}")
@@ -1625,7 +1622,68 @@ def retry(config_path: str, run_id: str):
     except RunLockError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(result, indent=2, default=str))
-    if result.get("status") not in ("success",):
+    return result
+
+
+def _failed_daily_group_runs(engine: JobEngine) -> list[dict]:
+    """Return the latest failed run of each ``daily:*`` group."""
+    latest: dict[str, dict] = {}
+    for row in engine.manifest.list_runs():
+        run = dict(row)
+        job_name = str(run["job_name"])
+        if job_name.startswith("daily:"):
+            # Manifest order is newest first; an older failure must not be
+            # replayed once a newer run for that group has succeeded.
+            latest.setdefault(job_name, run)
+    return [latest[name] for name in sorted(latest) if latest[name]["status"] == "failed"]
+
+
+@cli.command()
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option("--run-id", default=None, help="Retry a specific run.")
+@click.option(
+    "--failed-groups",
+    is_flag=True,
+    help="Retry the latest failed run of each daily group.",
+)
+def retry(config_path: str, run_id: str | None, failed_groups: bool):
+    """Retry one run or every latest failed daily group."""
+    cfg = _cfg(config_path)
+    engine = JobEngine(cfg)
+    if failed_groups:
+        if run_id:
+            raise click.ClickException("use either --run-id or --failed-groups, not both")
+        runs = _failed_daily_group_runs(engine)
+        if not runs:
+            click.echo("No failed daily group run to retry.")
+            return
+        failed = False
+        for run in runs:
+            click.echo(f"Retrying failed daily group run {run['run_id']} ({run['job_name']})")
+            # Heavy groups retain sizeable Polars/Python arenas. A fresh child
+            # process per group releases that memory before the next retry.
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from cnequity.cli.main import cli; cli.main()",
+                    "retry",
+                    "--config",
+                    config_path,
+                    "--run-id",
+                    str(run["run_id"]),
+                ],
+                check=False,
+            )
+            if proc.returncode != 0:
+                failed = True
+        if failed:
+            raise SystemExit(1)
+        return
+    if not run_id:
+        raise click.ClickException("provide --run-id or --failed-groups")
+    result = _retry_single_run(engine, run_id)
+    if result.get("status") != "success":
         raise SystemExit(1)
 
 

@@ -285,9 +285,16 @@ cne derive trading_status --start 2001-01-01 --end 2001-12-31
 
 ---
 
-## cne retry --run-id \<id\>
+## cne retry
 
 重试失败 batch / 补 init 缺失 step。init run 走 `resume_init`。
+
+| 选项 | 说明 |
+|------|------|
+| `--run-id <id>` | 重试指定 run |
+| `--failed-groups` | 逐个独立进程重试每个 `daily:*` 分组最新的失败 run；若该分组已有更新的成功 run，则跳过旧失败 |
+
+两项必须且只能选择一项。
 
 成功退出 0；`RunLockError` 报错退出。
 

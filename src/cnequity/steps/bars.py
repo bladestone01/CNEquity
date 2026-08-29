@@ -128,27 +128,47 @@ def _ownership_context(
     from cnequity.steps.delisted import delisted_recovery_covers
 
     delegated_complete = delisted_recovery_covers(config, start, end, ownership.delegated_delisted)
-    finding = {
-        "dataset": "daily_bars",
-        "severity": "info" if delegated_complete else "warning",
-        "check": "daily_bars_source_ownership",
-        "message": (
-            f"generic={len(ownership.generic)}, "
-            f"delegated_delisted={len(ownership.delegated_delisted)}, "
-            f"expected_no_data={len(ownership.expected_no_data)}, "
-            f"delegated_complete={delegated_complete}"
-        ),
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-    }
+    findings = [
+        {
+            "dataset": "daily_bars",
+            "severity": "info" if delegated_complete else "warning",
+            "check": "daily_bars_source_ownership",
+            "message": (
+                f"generic={len(ownership.generic)}, "
+                f"delegated_delisted={len(ownership.delegated_delisted)}, "
+                f"expected_no_data={len(ownership.expected_no_data)}, "
+                f"placeholder={len(ownership.placeholder)}, "
+                f"delegated_complete={delegated_complete}"
+            ),
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+        }
+    ]
+    if ownership.placeholder:
+        preview = ", ".join(sorted(ownership.placeholder)[:8])
+        suffix = "..." if len(ownership.placeholder) > 8 else ""
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "warning",
+                "check": "daily_bars_etf_placeholder_skipped",
+                "message": (
+                    f"{len(ownership.placeholder)} undated ETF/LOF placeholder(s) "
+                    "skipped (no list_date and no traded bar; not verified "
+                    f"no-data): {preview}{suffix}"
+                ),
+                "symbols": sorted(ownership.placeholder),
+            }
+        )
     return {
         "daily_bars_ownership": {
             "generic": len(ownership.generic),
             "delegated_delisted": len(ownership.delegated_delisted),
             "expected_no_data": len(ownership.expected_no_data),
+            "placeholder": len(ownership.placeholder),
             "delegated_complete": delegated_complete,
         },
-        "audit_findings": [finding],
+        "audit_findings": findings,
     }, delegated_complete
 
 
@@ -429,6 +449,7 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
             ownership.generic.extend(routed.generic)
             ownership.delegated_delisted.extend(routed.delegated_delisted)
             ownership.expected_no_data.extend(routed.expected_no_data)
+            ownership.placeholder.extend(routed.placeholder)
             tdx_symbols, fallback_symbols = split_by_quote_source(routed.generic)
             if tdx_symbols:
                 remaining.append((batch_id, tdx_symbols, spec_start, spec_end))
@@ -444,15 +465,24 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
                     spec_end,
                     batch_id=delegated_id,
                 )
-            elif not routed.generic:
+            elif not routed.generic and not routed.placeholder:
                 # The original failed batch now has only proven no-data symbols.
                 from cnequity.orchestrator.manifest import Manifest
 
-                Manifest(config.manifest_path).finish_batch(
+                Manifest(config.manifest_path).supersede_batches(
                     run_id,
-                    batch_id,
-                    "success",
-                    error_message="all symbols are expected-no-data for this window",
+                    [batch_id],
+                    superseded_by="ownership-expected-no-data",
+                )
+            elif not routed.generic and routed.placeholder:
+                # Keep the audit distinction above, but do not leave the old
+                # worker failure blocking compaction forever.
+                from cnequity.orchestrator.manifest import Manifest
+
+                Manifest(config.manifest_path).supersede_batches(
+                    run_id,
+                    [batch_id],
+                    superseded_by="ownership-etf-placeholder",
                 )
         result = (
             fetch_daily_bars_parallel(
@@ -628,13 +658,31 @@ def _finish_daily_bars(
         findings.extend(sina_findings)
 
     tip = start == end
+    historical_tip = tip and end != trade_date
     if tip:
-        gap = _gapfill_tip_via_clist(
-            config, trade_date, run_id, expected_symbols=expected_tdx_symbols
-        )
-        rows_read += int(gap.get("rows_read", 0))
-        rows_written += int(gap.get("rows_written", 0))
-        findings.extend(gap.get("audit_findings") or [])
+        expected_symbols = set(expected_tdx_symbols) | set(expected_fallback_symbols or [])
+        if not historical_tip:
+            gap = _gapfill_tip_via_clist(config, end, run_id, expected_symbols=expected_tdx_symbols)
+            rows_read += int(gap.get("rows_read", 0))
+            rows_written += int(gap.get("rows_written", 0))
+            findings.extend(gap.get("audit_findings") or [])
+
+        missing_staged = sorted(expected_symbols - _staged_daily_bar_symbols(config, run_id, end))
+        if missing_staged:
+            # clist is a live snapshot: it can supplement today's close but
+            # must never be re-stamped onto an older retry date. Per-symbol
+            # kline is also the bounded second chance for today's clist misses.
+            kline = _gapfill_multiday_via_kline(
+                config,
+                run_id,
+                symbols=missing_staged,
+                start=end,
+                end=end,
+                require_complete=False,
+            )
+            rows_read += int(kline.get("rows_read", 0))
+            rows_written += int(kline.get("rows_written", 0))
+            findings.extend(kline.get("audit_findings") or [])
     elif failed_symbols or expected_tdx_symbols or expected_fallback_symbols:
         all_expected_symbols = list(
             dict.fromkeys((expected_tdx_symbols or []) + (expected_fallback_symbols or []))
@@ -689,7 +737,7 @@ def _finish_daily_bars(
         missing_staged = expected_symbols - staged
         if expected_symbols and not staged:
             raise RuntimeError(
-                f"daily_bars {end}: TDX failed and EastMoney clist gap-fill "
+                f"daily_bars {end}: primary/fallback and EastMoney clist/kline gap-fill "
                 "produced no staged tip rows"
             )
         if missing_staged:
@@ -708,7 +756,8 @@ def _finish_daily_bars(
                     "check": "daily_bars_tip_missing_symbols",
                     "message": (
                         f"daily_bars {end}: {len(missing_staged)} expected tip "
-                        "key(s) remain missing after TDX and EastMoney clist gap-fill "
+                        "key(s) remain missing after primary/fallback and EastMoney "
+                        "clist/kline gap-fill "
                         f"(may be suspended): {preview}{suffix}"
                     ),
                     "missing_keys": len(missing_staged),
@@ -725,7 +774,10 @@ def _finish_daily_bars(
                     f"after failover (allowed at most {allowed_missing}); refusing "
                     "to checkpoint a partial market snapshot"
                 )
-        if expected_symbols and not missing_staged:
+        if expected_symbols:
+            # Reaching here means any remaining misses are within the explicit
+            # market-wide tolerance after every source had a chance. Do not
+            # leave the original worker failure blocking compaction/retry.
             _resolve_recovered_daily_batches(
                 config,
                 run_id,
