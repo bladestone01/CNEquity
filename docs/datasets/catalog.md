@@ -171,7 +171,7 @@ bars_15m = (
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 补 list_date；baostock 回填退市股（`cne backfill instruments`）；merge 保留退市 |
+| instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 分别从 A 股与 ETF/LOF clist 补 list_date；baostock 回填退市股（`cne backfill instruments`）；merge 保留退市 |
 | trading_calendar | trade_date | trade_date | by_date | ✓ | exchange_calendar | 种子 CSV 2016–2027 |
 | trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST 回填；派生停牌写月分区 |
 
@@ -189,7 +189,7 @@ bars_15m = (
 两个日内数据集共用一组质量检查：主键重复（通用 `pk_unique`）、时段外 bar、`trade_date` 与 `bar_time` 不一致、会话缺口，以及**与日频的成交量+成交额双向对账**。
 | trade_ticks | trade_date | symbol, trade_date, tick_seq | by_date | ✓ | tdx_protocol | 分笔。**可选**，默认关；`[trade_ticks]` 独立配置；**不是逐笔成交**（见下）；源端回溯至 **2024-01-02**；watchlist 200 只约 7MB/日；required=false |
 | commodity_bars | trade_date | symbol, trade_date | by_date | ✓ | eastmoney+sina | 国内主连 + COMEX金 `GC0.CMX`；`cne backfill commodity_bars`；required=false |
-| adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`cne derive adj_factors` |
+| adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；股票读 `f`、ETF/LOF 读 `s`；`cne derive adj_factors` |
 | delisting_events | —（单文件 merge） | symbol | derived | — | sina | 每只退市股的结尾形态；`cne delisted backfill` 产出 |
 
 ---

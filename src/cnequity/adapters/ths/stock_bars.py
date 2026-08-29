@@ -1,8 +1,8 @@
-"""同花顺 per-stock daily bars — history older than the primary vendor carries.
+"""同花顺 security daily bars — history older than the primary vendor carries.
 
 TDX serves the lake from 2016; 同花顺 keeps per-year files back to each stock's
-listing (贵州茅台 to 2001, 平安银行 to 1991). This module exists to deepen the
-research window, not to replace the daily source.
+or ETF/LOF's listing (贵州茅台 to 2001, 平安银行 to 1991). This module exists
+to deepen the research window, not to replace the daily source.
 
 Two rules make the deeper history safe to mix with what is already stored:
 

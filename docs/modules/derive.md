@@ -23,6 +23,8 @@
 
 - 只拉取、只存储 **hfq**（后复权）因子
 - 来源：Sina（`[adj_factors].source`）
+- 股票 payload 使用 `f`；ETF/LOF payload 的 `f` 是占位值，真实累计因子在 `s`
+- ETF/LOF 的 hfq 直接使用 `s`，qfq 在查询期按 `1/s` 转换
 - qfq 在 `query/reader.py` 查询期派生
 
 ### 流程

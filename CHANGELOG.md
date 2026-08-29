@@ -8,6 +8,12 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **ETF/LOF adjustment factors and deep history are now complete.** Sina's
+  fund payloads use `s` (while `f` is only a placeholder); the adapter now maps
+  fund hfq directly from `s` and derives qfq as `1/s`. ETF/LOF symbols are
+  included in factor self-healing and coverage audits, EastMoney supplies their
+  listing dates, and the THS pre-2016 raw-history plan includes them while
+  continuing to exclude undated subscription placeholders.
 - **TDX instrument discovery excludes unlisted exchange placeholders.** SH/SZ
   security lists can advertise IPO and fund-application codes with a positive
   sub-tick `pre_close` sentinel. Those rows are now excluded before they enter

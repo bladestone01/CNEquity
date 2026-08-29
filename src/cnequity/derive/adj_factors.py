@@ -392,10 +392,10 @@ def _uncovered_symbols(config: Config) -> set[str]:
         | (pl.col("fac_first") > pl.col("bar_first"))
         | ((pl.col("fac_last") >= pl.col("bar_last")) & (pl.col("fac_days") < pl.col("bar_days")))
     )
-    # Only stocks. ETFs and LOFs have no hfq factor series to fetch — 91 of the
-    # 103 names left after the first self-heal run were ETFs, and without this
-    # they would be re-fetched on every run forever. CDRs go for the same
-    # reason: the task loop already drops them, so they can never be covered.
+    # Stocks and ETFs/LOFs. Sina serves fund factors in its ``s`` field (the
+    # adapter converts them), so ETF hfq series are real and must be self-healed
+    # like stocks. CDRs go for the same reason as before: the task loop already
+    # drops them, so they can never be covered.
     candidates = {s for s in uncovered["symbol"].to_list() if not _is_cdr(s)}
     inst_root = config.curated_root / "instruments"
     if dataset_has_parquet(inst_root):
@@ -403,12 +403,14 @@ def _uncovered_symbols(config: Config) -> set[str]:
             scan_parquet_root(inst_root), "instruments"
         ).collect()
         if "asset_type" in instruments.columns:
-            stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
+            priced = set(
+                instruments.filter(pl.col("asset_type").is_in(["stock", "etf"]))["symbol"].to_list()
+            )
             # An explicit asset_type column is authoritative even when the
-            # current catalog contains no stocks (for example an ETF-only
+            # current catalog contains no priced assets (for example an ETF-only
             # fixture or a fully filtered research scope). Falling back to
-            # every uncovered symbol would schedule non-stock factor fetches.
-            candidates &= stocks
+            # every uncovered symbol would schedule non-priced factor fetches.
+            candidates &= priced
     return candidates
 
 

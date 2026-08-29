@@ -685,11 +685,11 @@ def _iso(value) -> str:
 
 
 def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]:
-    """Flag exchanges whose stocks largely have no adjustment factor.
+    """Flag exchanges whose priced symbols largely lack adjustment factors.
 
-    See ``ADJ_COVERAGE_WARN_RATIO``. Scoped to ``asset_type='stock'``: ETFs and
-    LOFs legitimately have no hfq factor series and would otherwise bury the
-    signal this exists to raise.
+    See ``ADJ_COVERAGE_WARN_RATIO``. Scoped to ``asset_type`` in
+    (``stock``, ``etf``): stocks and ETFs/LOFs both carry Sina hfq factor
+    series, so a missing factor is a real coverage gap for either.
     """
     bars_root = config.curated_root / "daily_bars"
     fac_root = config.derived_root / "adj_factors"
@@ -704,8 +704,10 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     )
     if "asset_type" not in instruments.columns:
         return []
-    stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
-    if not stocks:
+    priced_assets = set(
+        instruments.filter(pl.col("asset_type").is_in(["stock", "etf"]))["symbol"].to_list()
+    )
+    if not priced_assets:
         return []
 
     bar_dates = _canonical_traded_bars(
@@ -713,7 +715,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
             bars_root,
             partition_col="trade_date",
             end=trade_date,
-            symbols=sorted(stocks),
+            symbols=sorted(priced_assets),
         )
     ).select("symbol", "trade_date")
     bar_summary = (
@@ -732,7 +734,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
             fac_root,
             partition_col="trade_date",
             end=trade_date,
-            symbols=sorted(stocks),
+            symbols=sorted(priced_assets),
         ),
         "adj_factors",
     )
@@ -771,7 +773,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     )
     findings: list[dict] = []
     by_exchange: dict[str, list[str]] = {}
-    for symbol in stocks & set(spans["symbol"].to_list()):
+    for symbol in priced_assets & set(spans["symbol"].to_list()):
         by_exchange.setdefault(symbol.rsplit(".", 1)[-1], []).append(symbol)
 
     for exchange, symbols in sorted(by_exchange.items()):
@@ -803,7 +805,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                     "exchange": exchange,
                     "message": (
                         f"{exchange}: {len(known_source_unavailable)} formally delisted "
-                        "stock(s) have an explicit source-unavailable factor evidence; "
+                        "priced symbol(s) have explicit source-unavailable factor evidence; "
                         "no exact adjusted history is currently reconstructable"
                     ),
                     "symbols_unavailable": len(known_source_unavailable),
@@ -837,7 +839,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                 "check": "adj_factor_coverage",
                 "exchange": exchange,
                 "message": (
-                    f"{exchange}: {missing} of {total} priced stocks lack a complete "
+                    f"{exchange}: {missing} of {total} priced symbols lack a complete "
                     f"adjustment-factor span ({ratio:.0%} covered; "
                     f"{without_factor} with no factor, {partial} partial, "
                     f"{internal_gaps} with internal gaps). "

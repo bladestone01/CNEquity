@@ -43,6 +43,49 @@ def test_delisted_etf_is_not_sent_to_stock_recovery_gate():
     assert result.delegated_delisted == ["600003.SH"]
 
 
+def test_unlisted_etf_placeholder_is_expected_no_data():
+    symbols = ["589430.SH", "588200.SH"]
+    spans = {
+        "589430.SH": (None, None, "etf"),
+        "588200.SH": (date(2022, 10, 26), None, "etf"),
+    }
+
+    result = classify_daily_bar_ownership(
+        symbols,
+        spans,
+        date(2026, 8, 18),
+        date(2026, 8, 18),
+        bar_universe={"588200.SH"},
+    )
+
+    assert result.expected_no_data == ["589430.SH"]
+    assert result.generic == ["588200.SH"]
+
+
+def test_traded_etf_without_list_date_stays_generic():
+    result = classify_daily_bar_ownership(
+        ["510300.SH"],
+        {"510300.SH": (None, None, "etf")},
+        date(2026, 8, 18),
+        date(2026, 8, 18),
+        bar_universe={"510300.SH"},
+    )
+
+    assert result.generic == ["510300.SH"]
+
+
+def test_unlisted_etf_without_bar_universe_stays_generic():
+    """Without a traded-bar universe the classifier stays conservative."""
+    result = classify_daily_bar_ownership(
+        ["589430.SH"],
+        {"589430.SH": (None, None, "etf")},
+        date(2026, 8, 18),
+        date(2026, 8, 18),
+    )
+
+    assert result.generic == ["589430.SH"]
+
+
 def test_incomplete_delisted_ownership_blocks_compaction_and_retries(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "data")
     run_id = "run-ownership"
