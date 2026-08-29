@@ -37,6 +37,9 @@ def test_revision_commit_publishes_receipt_and_state(tmp_path):
     assert receipt.files[0].size_bytes == len(b"first")
     state = store.state.get_payload("daily_bars")
     assert state["revision"] == 1
+    assert state["revision_receipt"] == (
+        f"revisions/daily_bars/{receipt.revision:08d}-{receipt.revision_id}.json"
+    )
     assert state["revision_id"] == receipt.revision_id
     assert state["content_digest"] == receipt.content_digest
     assert store.latest("daily_bars") == receipt

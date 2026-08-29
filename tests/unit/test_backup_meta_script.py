@@ -1,9 +1,13 @@
 import sqlite3
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
+import pytest
 
+
+@pytest.mark.skipif(sys.platform == "win32", reason="backup_meta.sh is a Unix shell script")
 def test_backup_meta_accepts_relative_root_and_preserves_evidence(tmp_path):
     data_root = tmp_path / "lake"
     meta_root = data_root / "meta"

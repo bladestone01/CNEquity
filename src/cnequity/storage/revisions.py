@@ -136,7 +136,9 @@ class RevisionStore:
             revision = current + 1
             committed_at = datetime.now(timezone.utc).isoformat()
             revision_id = uuid.uuid4().hex
-            partitions = tuple(sorted({str(Path(item.path).parent) for item in files}))
+            # File records are already POSIX; Path(str).parent would re-inject
+            # Windows separators into the published partition identity.
+            partitions = tuple(sorted({Path(item.path).parent.as_posix() for item in files}))
             receipt = DatasetRevision(
                 dataset=dataset,
                 revision=revision,
@@ -164,7 +166,7 @@ class RevisionStore:
                     "schema_version": schema_version,
                     "contract_fingerprint": contract_fingerprint,
                     "content_digest": receipt.content_digest,
-                    "revision_receipt": str(receipt_path.relative_to(self.meta_root)),
+                    "revision_receipt": receipt_path.relative_to(self.meta_root).as_posix(),
                     "changed_partitions": list(partitions),
                     "updated_at": committed_at,
                 }

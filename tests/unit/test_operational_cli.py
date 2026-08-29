@@ -8,13 +8,14 @@ from click.testing import CliRunner
 
 from cnequity.cli.main import cli
 from cnequity.config import Config
+from cnequity.config.bootstrap import path_for_toml
 from cnequity.orchestrator.manifest import Manifest
 
 
 def _config(tmp_path):
     data = tmp_path / "lake"
     path = tmp_path / "cnequity.toml"
-    path.write_text(f'[data]\nroot = "{data}"\n', encoding="utf-8")
+    path.write_text(f'[data]\nroot = "{path_for_toml(data)}"\n', encoding="utf-8")
     return Config(data_root=data), path
 
 
