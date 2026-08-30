@@ -160,9 +160,10 @@ class JobEngine:
             if not run_id:
                 run_id = self.manifest.start_run(job_name, metadata)
             else:
-                merged = self.manifest.get_run_metadata(run_id)
-                merged.update(metadata)
-                self.manifest.update_run_metadata(run_id, merged)
+                self.manifest.mutate_run_metadata(
+                    run_id,
+                    lambda merged: merged.update(metadata),
+                )
 
             wave_list = waves or self.config.daily_waves
             if steps and waves is None:
@@ -547,6 +548,12 @@ class JobEngine:
                 status=step_status,
                 out=out,
             )
+            self.manifest.record_stage_metrics(
+                run_id,
+                name,
+                elapsed,
+                self._step_metrics(out),
+            )
             logger.info(
                 "Step %s %s in %.1fs (%s rows)",
                 name,
@@ -576,8 +583,46 @@ class JobEngine:
                 status="failed",
                 error=exc,
             )
+            self.manifest.record_stage_metrics(run_id, name, elapsed)
             logger.exception("Step %s failed after %.1fs", name, elapsed)
             return {"step": name, "status": "failed", "error": str(exc), "elapsed": elapsed}
+
+    @staticmethod
+    def _step_metrics(out: dict[str, Any]) -> dict[str, Any]:
+        """Normalize optional step metrics plus common result counters."""
+        metrics = dict(out.get("metrics") or {})
+        for key in (
+            "requests",
+            "pages",
+            "cache_hits",
+            "fallback_requests",
+            "retries",
+            "failed_requests",
+            "rows_read",
+            "rows_written",
+            "bytes_read",
+            "bytes_written",
+            "changed_partitions",
+            "request_seconds",
+            "concurrency_wait_seconds",
+            "concurrency_peak",
+            "throughput_requests_per_second",
+            "source_metrics",
+            "peak_memory_bytes",
+        ):
+            if key in metrics:
+                continue
+            value = out.get(key)
+            if value is not None:
+                metrics[key] = value
+        # Result payloads often expose fallback work as a symbol list rather
+        # than a numeric counter.  Count the request scope without guessing a
+        # speedup or an upstream response size.
+        if "fallback_requests" not in metrics:
+            fallback = out.get("fallback_symbols") or out.get("fallback_symbol_names")
+            if isinstance(fallback, (list, tuple, set)):
+                metrics["fallback_requests"] = len(fallback)
+        return metrics
 
     def _is_init_run(self, run_id: str) -> bool:
         run = self.manifest.get_run(run_id)
@@ -1021,10 +1066,12 @@ class JobEngine:
             rows_written=rows_written,
             error_message=error_message,
         )
-        meta = self.manifest.get_run_metadata(run_id)
-        meta["phase_results"] = phase_results
-        meta["current_phase_status"] = current
-        self.manifest.update_run_metadata(run_id, meta)
+        self.manifest.mutate_run_metadata(
+            run_id,
+            lambda meta: meta.update(
+                {"phase_results": phase_results, "current_phase_status": current}
+            ),
+        )
         return status
 
     def _execute_init_phases(
@@ -1098,8 +1145,10 @@ class JobEngine:
         recorded = meta.get("history_start")
         if recorded and not getattr(self.config, "_backfill_start", None):
             self.config._backfill_start = date.fromisoformat(str(recorded))
-        meta["resumed_at"] = shanghai_today().isoformat()
-        self.manifest.update_run_metadata(run_id, meta)
+        meta = self.manifest.mutate_run_metadata(
+            run_id,
+            lambda current: current.update({"resumed_at": shanghai_today().isoformat()}),
+        )
 
         logger.info("Resuming init run %s", run_id)
         retry_result = self._retry_run(run_id, trade_date, auto_finalize=False)

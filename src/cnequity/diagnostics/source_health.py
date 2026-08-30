@@ -41,6 +41,7 @@ from urllib.parse import urlparse
 
 from cnequity.config import Config
 from cnequity.domain.market_time import shanghai_today
+from cnequity.domain.rate_limit import source_request
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ def _probe_em_datacenter(config: Config) -> str:
 def _probe_sina(config: Config) -> str:
     from cnequity.adapters.sina.bars import symbol_exists
 
-    last = symbol_exists("600519.SH")
+    last = symbol_exists("600519.SH", config=config)
     if last is None:
         raise ProbeEmpty("已知标的查不到任何 bar")
     return f"最新 bar {last.isoformat()}"
@@ -280,16 +281,17 @@ def _probe_cninfo(config: Config) -> str:
 
     day = _recent_weekday()
     with httpx.Client(timeout=TIMEOUT_SECONDS, headers={"User-Agent": "Mozilla/5.0"}) as client:
-        resp = client.post(
-            _CNINFO_URL,
-            data={
-                "pageNum": 1,
-                "pageSize": 5,
-                "column": "szse",
-                "tabName": "fulltext",
-                "seDate": f"{day.isoformat()}~{day.isoformat()}",
-            },
-        )
+        with source_request(config, "cninfo"):
+            resp = client.post(
+                _CNINFO_URL,
+                data={
+                    "pageNum": 1,
+                    "pageSize": 5,
+                    "column": "szse",
+                    "tabName": "fulltext",
+                    "seDate": f"{day.isoformat()}~{day.isoformat()}",
+                },
+            )
         resp.raise_for_status()
         payload = resp.json()
     total = int(payload.get("totalAnnouncement") or 0)
@@ -325,16 +327,17 @@ def _probe_baostock(config: Config) -> str:
     from cnequity.adapters.baostock._session import _login, import_baostock
 
     bs = import_baostock()
-    _login(bs)
+    _login(bs, config=config)
     try:
         day = _recent_weekday()
-        rs = bs.query_history_k_data_plus(
-            "sh.600519",
-            "date,close",
-            start_date=day.isoformat(),
-            end_date=day.isoformat(),
-            frequency="d",
-        )
+        with source_request(config, "baostock"):
+            rs = bs.query_history_k_data_plus(
+                "sh.600519",
+                "date,close",
+                start_date=day.isoformat(),
+                end_date=day.isoformat(),
+                frequency="d",
+            )
         if rs.error_code != "0":
             raise ProbeBlocked(f"error_code={rs.error_code} {rs.error_msg}")
         rows = 0
@@ -342,7 +345,8 @@ def _probe_baostock(config: Config) -> str:
             rs.get_row_data()
             rows += 1
     finally:
-        bs.logout()
+        with source_request(config, "baostock"):
+            bs.logout()
     if not rows:
         raise ProbeEmpty(f"{day.isoformat()} 无行情返回")
     return f"{rows} 行"
@@ -354,9 +358,10 @@ def _probe_sse(config: Config) -> str:
     # Chrome impersonation, exactly as the adapter does it: the exchange serves
     # a plain httpx request an interstitial, so a probe without it would report
     # an outage that the real fetch does not have.
-    resp = _client().get(
-        SSE_URL, headers=_SSE_HEADERS, impersonate="chrome", timeout=TIMEOUT_SECONDS
-    )
+    with source_request(config, "exchange"):
+        resp = _client().get(
+            SSE_URL, headers=_SSE_HEADERS, impersonate="chrome", timeout=TIMEOUT_SECONDS
+        )
     resp.raise_for_status()
     text = resp.content.decode("gbk", "ignore")
     rows = [ln for ln in text.splitlines()[1:] if ln.split("\t")[0].strip().isdigit()]
@@ -368,9 +373,10 @@ def _probe_sse(config: Config) -> str:
 def _probe_szse(config: Config) -> str:
     from cnequity.adapters.exchange.st_lists import _SZSE_HEADERS, SZSE_URL, _client
 
-    resp = _client().get(
-        SZSE_URL, headers=_SZSE_HEADERS, impersonate="chrome", timeout=TIMEOUT_SECONDS
-    )
+    with source_request(config, "exchange"):
+        resp = _client().get(
+            SZSE_URL, headers=_SZSE_HEADERS, impersonate="chrome", timeout=TIMEOUT_SECONDS
+        )
     resp.raise_for_status()
     payload = resp.content
     # An xlsx is a zip; a WAF page is HTML. Length alone would pass either.
@@ -382,7 +388,7 @@ def _probe_szse(config: Config) -> str:
 def _probe_pboc(config: Config) -> str:
     from cnequity.adapters.pboc._tables import STATS_INDEX, get_text
 
-    html = get_text(STATS_INDEX)
+    html = get_text(STATS_INDEX, config=config)
     if "社会融资" not in html:
         raise ProbeBlocked("调查统计司索引页里找不到社会融资条目")
     return f"{len(html)} 字节索引页"
@@ -391,7 +397,7 @@ def _probe_pboc(config: Config) -> str:
 def _probe_nbs(config: Config) -> str:
     from cnequity.adapters.nbs.pmi_release import find_latest_release
 
-    found = find_latest_release()
+    found = find_latest_release(config=config)
     if not found:
         raise ProbeEmpty("最新发布列表里没有 PMI")
     released, _url = found
@@ -409,7 +415,8 @@ def _probe_sw(config: Config) -> str:
     )
 
     with sw_client(timeout=TIMEOUT_SECONDS) as client:
-        resp = client.get(SW_INDUSTRY_XLS_URL, headers=_HEADERS)
+        with source_request(config, "sw"):
+            resp = client.get(SW_INDUSTRY_XLS_URL, headers=_HEADERS)
         resp.raise_for_status()
         body = resp.content
     # An XLS starts with the OLE2 magic; a WAF page starts with '<'.

@@ -105,6 +105,63 @@ def _watermarked_datasets() -> list[tuple[str, str]]:
     ]
 
 
+def _layer_file_identity(root: Path) -> dict[str, tuple[int, str]]:
+    """Capture parquet bytes without following links for a derive COW diff."""
+    from cnequity.storage.revisions import RevisionStore, sha256_file
+
+    if not root.exists():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): (path.stat().st_size, sha256_file(path))
+        for path in RevisionStore._walk_files(root)
+    }
+
+
+def _publish_derived_revision(
+    config: Config,
+    dataset: str,
+    run_id: str,
+    trade_date: date,
+    before: dict[str, tuple[int, str]],
+) -> dict | None:
+    """Publish one immutable COW generation for a derived dataset."""
+    from cnequity.domain.contracts import contract_fingerprint, dataset_contract
+    from cnequity.storage.revisions import RevisionStore
+
+    root = config.derived_root / dataset
+    after = _layer_file_identity(root)
+    changed = [
+        root / relative for relative, identity in after.items() if before.get(relative) != identity
+    ]
+    if not changed:
+        return None
+    contract = dataset_contract(dataset)
+    revision = RevisionStore(
+        config.meta_root,
+        config.curated_root,
+        config.derived_root,
+    ).commit(
+        dataset,
+        run_id=run_id,
+        changed_files=changed,
+        schema_version=int(contract["schema_version"]),
+        contract_fingerprint=contract_fingerprint(contract),
+        metadata={
+            "trade_date": trade_date.isoformat(),
+            "layer": "derived",
+            "rows_written": len(changed),
+        },
+    )
+    if revision is None:
+        return None
+    return {
+        "revision": revision.revision,
+        "revision_id": revision.revision_id,
+        "content_digest": revision.content_digest,
+        "changed_partitions": list(revision.changed_partitions),
+    }
+
+
 def _watermark_date_for(config: Config, dataset: str, partition_col: str) -> date | None:
     """Freshest date that is safe to claim as covered.
 
@@ -313,6 +370,12 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
 
         pcol = PARTITION_COLS[ds]
         changed_files: list[Path] = []
+        # Establish revision zero before touching the legacy-compatible
+        # curated path, then always merge against the immutable committed
+        # generation. A previous process may have died after replacing only
+        # some mutable partitions; it must never become the next compact's
+        # implicit base.
+        committed_root = revisions.ensure_current(ds)
         if ds == "instruments":
             rows, inst_findings = compact_instruments(
                 config.staging_root,
@@ -320,6 +383,7 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
                 run_id,
                 trade_date,
                 changed_files=changed_files,
+                base_root=committed_root,
             )
             if rows:
                 compacted.add(ds)
@@ -334,6 +398,7 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
                 run_id,
                 partition_col=pcol,
                 changed_files=changed_files,
+                base_root=committed_root,
             )
             if rows:
                 compacted.add(ds)
@@ -350,6 +415,59 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
         )
 
         if changed_files:
+            # Run the optional independent-source gate against the complete
+            # mutable candidate before publishing its immutable generation.
+            # ``diff_dataset`` normally resolves current.json, so pass the
+            # candidate root explicitly here; otherwise it would compare the
+            # previous committed day and allow a bad candidate through.
+            gate_spec = next(
+                (
+                    spec
+                    for spec in config.failover_datasets
+                    if spec.name == ds and spec.revision_gate
+                ),
+                None,
+            )
+            if gate_spec is not None:
+                from cnequity.quality.source_diff import (
+                    diff_dataset,
+                    source_diff_blocks_revision,
+                )
+
+                gate_findings = diff_dataset(
+                    config,
+                    gate_spec,
+                    trade_date=trade_date,
+                    candidate_root=config.curated_root / ds,
+                )
+                audit_findings.extend(gate_findings)
+                if source_diff_blocks_revision(gate_findings):
+                    quarantine = revisions.quarantine_candidate(
+                        ds,
+                        run_id=run_id,
+                        reason="source_diff_gate",
+                    )
+                    compacted.discard(ds)
+                    skipped.append(
+                        {
+                            "dataset": ds,
+                            "reason": "source_diff_gate",
+                            "findings": gate_findings,
+                            "quarantine": str(quarantine) if quarantine else None,
+                        }
+                    )
+                    _record_dataset_result(
+                        config,
+                        run_id,
+                        ds,
+                        "publish_revision",
+                        "blocked",
+                        criticality=_dataset_criticality(ds),
+                        rows_written=rows,
+                        error_code="source_diff_gate",
+                        error_message="independent source drift exceeds configured tolerance",
+                    )
+                    continue
             try:
                 contract = dataset_contract(ds)
                 revision = revisions.commit(
@@ -364,6 +482,12 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
                         "rows_written": rows,
                         **lineage,
                     },
+                    # ``_compact_locked`` already holds the shared compact
+                    # run lock, whose path is intentionally the same as the
+                    # low-level lake mutation lock.  Re-entering it would
+                    # deadlock on POSIX; direct RevisionStore callers still
+                    # acquire the lock through the default path.
+                    _locked=True,
                 )
             except Exception as exc:
                 _record_dataset_result(
@@ -463,8 +587,29 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
     )
 
     rebackfill = context.get("symbols_to_rebackfill") or []
+    from cnequity.storage.revisions import RevisionStore
+
+    derived_revisions = RevisionStore(
+        config.meta_root,
+        config.curated_root,
+        config.derived_root,
+    )
     try:
+        # Keep the mutable writer tree seeded from the last committed
+        # generation.  This is especially important after an operator removes
+        # the legacy derived path: an append-only derive must not publish only
+        # its new tip and lose retained history.
+        derived_revisions.ensure_current("adj_factors")
+        derived_revisions.materialize_current("adj_factors")
+        before_files = _layer_file_identity(config.derived_root / "adj_factors")
         result = compute_adj_factors(config, refresh_symbols=rebackfill)
+        published_revision = _publish_derived_revision(
+            config,
+            "adj_factors",
+            run_id,
+            trade_date,
+            before_files,
+        )
     except Exception as exc:
         _record_dataset_result(
             config,
@@ -480,6 +625,18 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
     out: dict = {"rows_read": result.rows, "rows_written": result.rows}
     if result.findings:
         out["context_updates"] = {"audit_findings": result.findings}
+    if published_revision is not None:
+        out["dataset_revision"] = published_revision
+        _record_dataset_result(
+            config,
+            run_id,
+            "adj_factors",
+            "publish_revision",
+            "success",
+            criticality="research",
+            revision_id=published_revision["revision_id"],
+            rows_written=result.rows,
+        )
     if result.failed:
         # A small failure ratio is allowed to keep the rest of the market
         # usable, but it is still retryable state and must not make the run
@@ -533,9 +690,25 @@ def step_derive_industry_index(
     config: Config, trade_date: date, run_id: str, context: dict
 ) -> dict:
     from cnequity.derive.industry_index import derive_industry_index
+    from cnequity.storage.revisions import RevisionStore
 
+    derived_revisions = RevisionStore(
+        config.meta_root,
+        config.curated_root,
+        config.derived_root,
+    )
     try:
+        derived_revisions.ensure_current("industry_index")
+        derived_revisions.materialize_current("industry_index")
+        before_files = _layer_file_identity(config.derived_root / "industry_index")
         summary = derive_industry_index(config)
+        published_revision = _publish_derived_revision(
+            config,
+            "industry_index",
+            run_id,
+            trade_date,
+            before_files,
+        )
     except Exception as exc:
         _record_dataset_result(
             config,
@@ -550,6 +723,18 @@ def step_derive_industry_index(
         raise
     rows = int(summary.get("rows") or 0)
     out: dict = {"rows_read": rows, "rows_written": rows}
+    if published_revision is not None:
+        out["dataset_revision"] = published_revision
+        _record_dataset_result(
+            config,
+            run_id,
+            "industry_index",
+            "publish_revision",
+            "success",
+            criticality="research",
+            revision_id=published_revision["revision_id"],
+            rows_written=rows,
+        )
     note = str(summary.get("note") or "")
     if rows == 0 and "already current" not in note and "no 申万 membership rows" not in note:
         out["status"] = "warning"

@@ -36,7 +36,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from cnequity.config import Config
-from cnequity.domain.datasets import DATASETS, DatasetSpec, is_dataset_enabled, is_stale
+from cnequity.domain.datasets import (
+    DATASETS,
+    DatasetSpec,
+    history_mode_for,
+    is_dataset_enabled,
+    is_stale,
+)
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
     list_partitions,
@@ -104,6 +110,12 @@ def _backfillable(spec: DatasetSpec) -> bool:
     Same gate the CLI applies: a snapshot dataset can only be replayed when a
     dedicated historical source is registered for it.
     """
+    # ``snapshot_only`` is an explicit data-contract boundary: replaying a
+    # current-state page against an older date would manufacture point-in-time
+    # values. Keep this guard here (rather than only in the CLI) so every
+    # caller of verify_lake receives the same honest repairability flag.
+    if history_mode_for(spec) == "snapshot_only":
+        return False
     return spec.fetch_semantics == "by_date" or spec.backfill_source is not None
 
 
@@ -429,3 +441,21 @@ def verify_lake(
         watermark = state.get_date(name) if spec.watermark else None
         out.extend(verify_dataset(config, spec, anchor=anchor, watermark=watermark))
     return out
+
+
+def repairable_gaps(
+    config: Config,
+    *,
+    anchor: date,
+    datasets: list[str] | None = None,
+    kinds: set[str] | None = None,
+) -> list[Gap]:
+    """Return only gaps with an honest registered repair path.
+
+    This is the programmatic counterpart used by scheduled ``daily`` and
+    ``stale-only`` repair modes. Snapshot-only datasets are excluded by
+    ``verify_dataset``'s contract gate, so a scheduler cannot accidentally
+    turn a live snapshot into historical data.
+    """
+    gaps = verify_lake(config, anchor=anchor, datasets=datasets)
+    return [gap for gap in gaps if gap.repairable and (kinds is None or gap.kind in kinds)]

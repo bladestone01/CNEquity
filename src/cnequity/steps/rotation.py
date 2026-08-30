@@ -15,7 +15,12 @@ from cnequity.adapters.eastmoney.rotation import (
 )
 from cnequity.config import Config
 from cnequity.orchestrator.registry import register_step
-from cnequity.steps.http_common import run_incremental_fetched, write_fetched
+from cnequity.steps.http_common import (
+    call_with_run_id,
+    run_incremental_fetched,
+    verify_raw_archive,
+    write_fetched,
+)
 
 # Board kline history depth for `cne backfill sector_bars` (~1y+ slack).
 _SECTOR_BARS_BACKFILL_DAYS = 400
@@ -71,7 +76,14 @@ def _run_rotation_step(
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
 
     def _bound(d: date):
-        return fetch_fn(d, config=config)
+        return call_with_run_id(
+            fetch_fn,
+            d,
+            pipeline_config=config,
+            dataset=dataset,
+            run_id=run_id,
+            config=config,
+        )
 
     return run_incremental_fetched(
         config,
@@ -82,13 +94,28 @@ def _run_rotation_step(
         source="eastmoney",
         allow_empty=allow_empty,
         date_col=date_col,
+        raw_archive_evidence_factory=lambda: verify_raw_archive(
+            config,
+            dataset,
+            run_id,
+            source="eastmoney",
+            request_scope=f"snapshot:{trade_date.isoformat()}",
+        ),
     )
 
 
 @register_step("hot_rank", group="research", depends_on=["instruments"])
 def step_hot_rank(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    def _fetch(d: date, *, config: Config):
-        return fetch_hot_rank(d, config=config, require_top_n=True)
+    def _fetch(d: date, *, config: Config, run_id: str):
+        return call_with_run_id(
+            fetch_hot_rank,
+            d,
+            pipeline_config=config,
+            dataset="hot_rank",
+            run_id=run_id,
+            config=config,
+            require_top_n=True,
+        )
 
     # The vendor endpoint is a live snapshot and can legally return its last
     # published session when the requested session has not been refreshed yet.
@@ -314,8 +341,15 @@ def step_sector_fund_flow(config: Config, trade_date: date, run_id: str, context
         trade_date,
         run_id,
         "sector_fund_flow",
-        lambda d, *, config: _validate_sector_fund_flow_snapshot(
-            fetch_sector_fund_flow(d, config=config)
+        lambda d, *, config, run_id: _validate_sector_fund_flow_snapshot(
+            call_with_run_id(
+                fetch_sector_fund_flow,
+                d,
+                pipeline_config=config,
+                dataset="sector_fund_flow",
+                run_id=run_id,
+                config=config,
+            )
         ),
     )
 

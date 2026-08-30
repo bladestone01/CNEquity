@@ -27,6 +27,11 @@ import polars as pl
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
 from cnequity.domain.schemas import validate_dataframe, with_provenance
+from cnequity.domain.trading_status import (
+    DELISTED_SOURCE,
+    STATUS_SUSPENDED,
+    normalize_legacy,
+)
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.storage.parquet import CuratedWriter
@@ -75,6 +80,11 @@ def status_evidence_rank(row: Mapping[str, Any]) -> int:
         ):
             return 0
         return 2
+    if source == DELISTED_SOURCE:
+        # A formal delisting is a fact about the security, not an observation
+        # of one session, so it outranks a current-state snapshot that simply
+        # never learned the name is gone.
+        return 0
     if source == _DERIVED_SOURCE:
         return 1
     return 0
@@ -198,7 +208,11 @@ def derive_suspension_history(
 
     rows = pairs.with_columns(
         pl.lit(False).alias("is_trading"),
-        pl.lit("suspended").alias("status"),
+        pl.lit(STATUS_SUSPENDED).alias("status"),
+        # A missing bar proves the security did not trade. It proves nothing
+        # about risk warning, so this stays null rather than asserting "clean";
+        # `st_coverage` is what tracks where ST evidence is actually absent.
+        pl.lit(None, dtype=pl.Boolean).alias("risk_warning"),
     )
     rows = with_provenance(rows, source=_DERIVED_SOURCE, data_version="v1")
     rows = validate_dataframe(rows, "trading_status")
@@ -221,7 +235,12 @@ def derive_suspension_history(
         stray_parts: list = []
         if existing_dir.exists():
             for f in existing_dir.rglob("*.parquet"):
-                frames.append(validate_dataframe(pl.read_parquet(f), "trading_status"))
+                # Existing partitions may predate the status/risk_warning
+                # split; normalize before validating so an old lake is
+                # migrated by the rewrite instead of failing the derive.
+                frames.append(
+                    validate_dataframe(normalize_legacy(pl.read_parquet(f)), "trading_status")
+                )
                 if f.name != "part-merged.parquet":
                     stray_parts.append(f)
         merged = pl.concat(frames, how="diagonal_relaxed")

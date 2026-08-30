@@ -97,6 +97,11 @@ def _init_history_start(profile: str, since_str: str | None, trade_date: date) -
     is_flag=True,
     help="Also derive Sina hfq factors and print a raw-vs-adjusted return (slower; needs Sina).",
 )
+@click.option(
+    "--sample",
+    is_flag=True,
+    help="Write a deterministic synthetic sample lake without network access.",
+)
 def demo_cmd(
     symbols: str,
     days: int,
@@ -105,16 +110,18 @@ def demo_cmd(
     config_out: str,
     intraday: bool,
     research: bool,
+    sample: bool,
 ):
-    """Fetch a tiny real-source lake so you can see progress and results quickly.
+    """Create a tiny lake so you can see progress and results quickly.
 
-    Not a full-market backfill — use `cne init` for that. Requires network access
-    to TDX hosts (mainland egress is more reliable overseas).
+    The default fetches real TDX data; --sample is deterministic and offline.
+    Neither is a full-market backfill — use `cne init` for that.
     """
-    from cnequity.cli.demo import run_demo
+    from cnequity.cli.demo import run_demo, run_sample_demo
 
     td = date.fromisoformat(trade_date_str) if trade_date_str else None
-    run_demo(
+    runner = run_sample_demo if sample else run_demo
+    runner(
         symbols=[s.strip() for s in symbols.split(",") if s.strip()],
         days=days,
         data_root=Path(data_root),
