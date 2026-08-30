@@ -43,6 +43,9 @@
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
 | 历史 ST 回补 | Baostock 覆盖 SH/SZ；可选 Tushare Pro `bak_basic`（2016）+ `stock_st`（2017-01-01 起）覆盖 BJ，需 token；缺少源端覆盖时审计保持 warning |
+| 列语义 | `status` 只表示交易状态（`normal`/`suspended`/`delisted`），ST/*ST 在独立列 `risk_warning`。两者正交：一只 ST 股停牌时两个字段同时成立 |
+| 退市标的 | 不向行情板询问（板答不了），由 `instruments.delist_date` 判定，写 `status=delisted`、`is_trading=false`、`source=derived_delisted`，`risk_warning` 取自最终简称 |
+| 已知限制 | ST 与 *ST 不做区分（喂本数据集的源都没有这个区分：Baostock 只有 `isST` 布尔，Tushare adapter 早已把 `ST`/`*ST` 归一）。更细的标识在交易所简称，经 `instruments.name` 获取 |
 
 #### daily_bars
 
@@ -167,8 +170,11 @@
 | 项 | 值 |
 |------|-------|
 | 分组 | capital@17:00 |
-| 主源 | eastmoney |
+| 主源 | exchange（上交所 `queryMargin` + 深交所 `1837_xxpl` tab2 融资融券交易明细） |
+| 备选 | eastmoney（`[margin_trading] source = "eastmoney"`，仅由人工切换） |
 | 主键 | (symbol, trade_date) |
+| 已知限制 | **上交所不公布融券余额**，SH 行 `short_balance` 为 null（不做本地推算）；深交所比上交所晚一个交易日发布，两边都发布后才写入该日，因此比东财路径滞后约一个交易日 |
+| 校验 | 2026-08-26 与东财 curated 逐字段比对：3,522 个共同标的四个字段全部完全一致（0 bps），且交易所侧覆盖 4,100 只 vs 东财 3,857 只 |
 
 #### valuation_metrics
 

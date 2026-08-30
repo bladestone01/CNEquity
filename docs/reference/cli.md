@@ -8,7 +8,7 @@
 
 ## cne demo
 
-一分钟真源小样（涨星 / 上手用）。拉少量流动性股票的近期日线，**不是**全市场 `cne init`。
+一分钟试玩，提供两条路径：默认拉少量流动性股票的真源近期日线；`--sample` 在完全离线时生成明确标记为 `source=mock` 的合成小湖。两者都**不是**全市场 `cne init`。
 
 | 选项 | 说明 |
 |------|------|
@@ -16,6 +16,7 @@
 | `--days` | 约多少个交易日的 `daily_bars`（默认 30） |
 | `--intraday` | 额外抓同一批标的的 1m 线（最多约 5 个交易日），打印一根完整会话 |
 | `--research` | 额外从 Sina 派生 hfq 因子，并打印 raw / hfq 收益对照；会把窗口扩展到约 3 年 |
+| `--sample` | 不访问网络，生成可用于验证安装、查询和 DuckDB 视图的合成样例；不可与 `--research` / `--intraday` 合用 |
 | `--data-root` | 独立湖根目录（默认 `data/cnequity-demo`） |
 | `--trade-date` | 截至日 YYYY-MM-DD（默认今天 / 最近交易日） |
 | `--config-out` | 写出供后续 `cne query` 使用的小配置（默认 `configs/cnequity.demo.toml`） |
@@ -29,6 +30,14 @@ cne demo --research --symbols 600519.SH
 ```
 
 `--research` 需要额外访问 Sina；网络受限时先运行不带该选项的基础 demo。
+
+完全无法访问 TDX 时，可先验证本地读写和查询链路：
+
+```bash
+cne demo --sample
+```
+
+合成行会醒目标记为 `source=mock`，质量审计不会把它们视为真实数据；请勿复用该 demo 的 `data_root` 做研究或生产。
 
 ---
 
@@ -529,8 +538,30 @@ cne serve                    # → http://127.0.0.1:8787/source-health
 | `create NAME --dataset D [--dataset D ...]` | 建快照；manifest 固化每个 Parquet 的大小/SHA-256、数据集 state、契约指纹和运行 lineage |
 | `verify NAME` | 逐文件校验大小与哈希；不通过退出 1 |
 | `restore NAME TARGET` | 恢复到新目录或空目录（拒绝活动湖根、不覆盖已有文件）。恢复后对 TARGET 跑 `cne status --datasets` 再切换 |
+| `export NAME [DEST]` | 打成一个可移植 tar 归档。`--compression auto` 有 zstd 就用 `tar.zst`，否则退到 `tar.gz`；先写同目录 `.part`，压缩器正常收尾后才原子改名 |
+| `import ARCHIVE` | 先校验后落地：逐个 tar member 拒绝绝对路径、`..`、重名、软硬链接和设备节点，解出的目录先按 manifest 全量校验，再原子改目录名发布。`--name` 覆盖快照名（默认取归档文件名），`--overwrite` 只在校验通过后才替换同名快照 |
 
 `--config` / `--snapshot-root` 各子命令通用；默认根为 `meta/snapshots`。
+
+### 增量包 `cne snapshot delta`
+
+整湖快照适合冻结实验依赖；**日常同步一个已有的湖用增量包**——只搬动变化的文件，
+且带足够的前置条件让"应用到错误的基线上"变成一次失败而不是一次静默污染。
+
+| 子命令 | 说明 |
+|--------|------|
+| `delta create NAME --from A --to B` | 把两个**数据根**（不是 `curated` 根）逐字节比对成不可变的 add/replace/delete 包。`--to` 默认当前配置的活动湖；`--dataset` 可重复，省略时取两根共有的数据集 |
+| `delta create NAME --from-revision N` | 以已提交的 revision 号作前置条件。revision receipt 记的是变更文件、不是旧湖副本，所以这一模式发的是带 `allow_missing` 的 `replace`；需要严格的旧文件哈希前置就用上面的双根模式 |
+| `delta verify NAME` | 校验每个 add/replace 载荷哈希与每条变更路径的语义 |
+| `delta apply NAME TARGET` | 应用到**非空**的 TARGET 湖根。`--dry-run` 只验前置条件不落盘 |
+
+`delta-create` 是 `delta create` 的兼容别名。
+
+apply 的安全边界值得单独说：add/replace/delete 逐条对基线指纹（revision 增量则对
+各数据集 revision）核验，写入走同目录临时文件，每个被覆盖的文件在整包变更与
+应用后的目标指纹都通过之前一直留着备份；中途抛异常会把已做的逐条回滚——调用方
+不会观察到一个已知的半成品状态。可写路径也被收窄到 `curated/`、`derived/` 和
+`meta/` 下的白名单，增量包无法借此在目标根里写任意文件。
 
 ---
 

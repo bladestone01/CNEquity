@@ -173,7 +173,7 @@ bars_15m = (
 |--------|--------|------|------|------|------|------|
 | instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 分别从 A 股与 ETF/LOF clist 补 list_date；baostock 回填退市股（`cne backfill instruments`）；merge 保留退市 |
 | trading_calendar | trade_date | trade_date | by_date | ✓ | exchange_calendar | 种子 CSV 2016–2027 |
-| trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST 回填；派生停牌写月分区 |
+| trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST 回填；派生停牌写月分区。`status`（normal/suspended/**delisted**）与 `risk_warning`（ST/*ST）是两列——旧版单列会让停牌冲掉 ST 标记；退市行由 `instruments` 判定并标 `derived_delisted`。旧湖读取自动兼容，物理迁移见 [schema](schema.md#trading_status) |
 
 ---
 
@@ -222,11 +222,18 @@ bars_15m = (
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | staleness |
 |--------|--------|------|------|------|------|-----------|
 | fund_flow | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 1d |
-| margin_trading | trade_date | symbol, trade_date | by_date | ✓ | eastmoney | 2d |
+| margin_trading | trade_date | symbol, trade_date | by_date | ✓ | exchange | 沪深交易所自行编制的融资融券明细；SH 无融券余额（`short_balance` 为 null），深交所晚一个交易日发布、两边齐了才写；`[margin_trading] source` 可切回 eastmoney |
 | northbound_holdings | trade_date | symbol, trade_date, channel | by_date | ✓ | eastmoney | 100d（季频） |
 | northbound_flows | trade_date | trade_date, channel | by_date | ✓ | eastmoney | 2d |
-| dragon_tiger | trade_date | symbol, trade_date, reason | by_date | ✓ | eastmoney | 1d |
-| block_trades | trade_date | symbol, trade_date, price, volume | by_date | ✓ | eastmoney | 1d |
+| dragon_tiger | trade_date | symbol, trade_date, reason | by_date | ✓ | eastmoney | 1d；见下「为什么这两个还在东财」 |
+| block_trades | trade_date | symbol, trade_date, price, volume | by_date | ✓ | eastmoney | 1d；同上 |
+
+**为什么这两个还在东财。** `margin_trading` 已按 [ADR-0006](../adr/0006-publishers-over-vendors.md)
+换成交易所自行发布的数据，龙虎榜与大宗交易本应同样处理——两者也都由交易所公开披露。但在这次改动中没有找到
+稳定的官方接口：深交所 `ShowReport` 的 `CATALOGID`（已确认 `1110` 股票列表、`1815_stock_snapshot`
+个股日行情、`1837_xxpl` 融资融券）没有对应这两项的条目，数字段 1800–1845 与 `main_*` 前缀的枚举也没有命中；
+上交所 `commonQuery.do` 的若干 `sqlId` 猜测全部返回 `total=0`。**没有换**，因为拿一个猜出来的解析器去替换
+一个能用的源，是把可用变成不可用。补上官方接口后再迁移。
 | institutional_holdings | report_period | symbol, holder_type, report_period | by_date | — | eastmoney | |
 
 ---
@@ -290,6 +297,36 @@ bars_15m = (
 |--------|------|------|
 | daily_bars | tdx_protocol | eastmoney |
 | corporate_actions | eastmoney | tdx_protocol |
+
+## 对发布方的核对（authority checks）
+
+主备比对的是两个转发方：它们一致只能说明两者不冲突，不能说明谁对。以下检查越过转发方，直接对上游发布机构，
+写入 `meta/quality/source_diffs/authority-<date>.json`，只报不拦（见 [ADR-0006](../adr/0006-publishers-over-vendors.md)）。
+
+| 检查 | 数据集 | 对照方 |
+|------|--------|--------|
+| `macro_pmi_vs_nbs` | macro_indicators | 国家统计局 PMI 发布稿 |
+| `st_labels_vs_exchange` | trading_status | 沪深交易所证券列表简称 |
+| `daily_bars_vs_exchange` | daily_bars | 沪深交易所自身发布的收盘行情 |
+| `adj_factor_corporate_action_divergence` | adj_factors | 由 `corporate_actions` 独立重算的复权因子步长 |
+
+三点实测结论（2026-08-28 / 08-26），也是各自容差的由来：
+
+- **OHLC 完全一致**：5,212 个共同标的、四个价格字段全部 0 bps。所以价格容差可以收紧（默认 10 bps），
+  超阈即 error。
+- **成交量/成交额单向偏低**：305 个 SZ 标的 curated 低于交易所公布值，方向全部一致——交易所日合计包含
+  连续竞价 bar 不含的成交。这是口径差异不是错误，因此按「偏离标的占比」判定（默认 15%），而不是逐只报。
+- **停牌占位不算缺口**：深交所会为停牌证券发布一行零成交（OHLC 等于前收），行情源则不出 bar。
+  `daily_bars_missing_vs_exchange` 只统计交易所侧有成交的标的。
+
+`adj_factors` 的重算基于除权除息日的连续性恒等式：
+
+```
+f_ex / f_prev = (1 + 送股 + 转股 + 配股) × 前收 / (前收 − 税前现金分红 + 配股比例 × 配股价)
+```
+
+没有除权日时右侧恒为 1，所以「因子在不该动的日子动了」和「该动的日子没动」都会被抓到。
+容差是重要性阈值不是等式检验（默认 50 bps，≥200 bps 升为 error），因为两个来源的取整方式不同。
 
 ---
 

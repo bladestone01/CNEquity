@@ -98,10 +98,33 @@ PIT 的双时态扩展列是可选列，旧 Parquet 没有这些列仍可读取�
 | symbol | string | |
 | trade_date | date | |
 | is_trading | bool | |
-| status | string | normal/suspended/st/*st |
-| source | string | |
+| status | string | **交易状态**：`normal` / `suspended` / `delisted` |
+| risk_warning | bool | **风险警示（ST/*ST）**，与 status 正交；可为 null（无证据） |
+| source | string | 退市行由 `instruments` 判定，标 `derived_delisted` |
 | data_version | string | |
 | fetched_at | timestamp | |
+
+`status` 与 `risk_warning` 是两件正交的事，必须分两列。旧版把两者塞进一个
+`status`，写入端用 `if 停牌 / elif ST` 解决冲突，结果**停牌会把 ST 标记冲掉**：
+000711.SZ（ST京蓝）2026-08-27 是 `st`、08-28 变 `suspended`，公司没摘帽，只是停牌，
+但那天的 ST 标识在库里没了。`derive/market_breadth.py` 正是靠它选 ±5% / ±10% 涨跌幅
+基准，所以停牌的 ST 股一直按 ±10% 算。
+
+`delisted` 是同一个问题的另一半。旧写入端把「既不停牌、又不在 ST 板」的标的一律写成
+`normal / is_trading=true`，没有退市概念——实测 2026-08-28 有 **611 只带 `delist_date`
+的标的**（最早一只 1999-07-12 退市）每天都被发布成正常交易。现在这些标的不再向行情板
+询问（板本来就答不了），而是由 `instruments` 直接判定，`risk_warning` 取自最终简称
+（如 `*ST精伦`）。
+
+**读旧湖不会出错。** 旧行把 ST 编码成 `status="st"`，`validate_dataframe` 在读入时
+自动升级（见 `cnequity/domain/trading_status.py`）。把物理 schema 统一过来跑：
+
+```bash
+scripts/migrate_trading_status_risk_warning.py --config configs/cnequity.toml --apply
+```
+
+迁移**不会**给历史补 `delisted` 行：某一天的状态是当时观测到的事实，用今天的退市日期
+倒填会凭空造出当时并不存在的 point-in-time 事实。要修某段历史，重跑那段日更即可。
 
 #### daily_bars
 

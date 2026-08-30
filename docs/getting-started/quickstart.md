@@ -18,6 +18,14 @@ cne demo
 # cne demo --intraday
 ```
 
+如果当前网络无法连接 TDX，可先用确定性的离线样例验证安装、Parquet 落盘和查询链路：
+
+```bash
+cne demo --sample
+```
+
+该模式不访问网络，生成的合成行全部标记为 `source=mock`，只能用于上手验证，不能用于研究。
+
 会写入独立的 `data/cnequity-demo/` 与 `configs/cnequity.demo.toml`。  
 **不要**把 demo 的 `data_root` 拿去跑全量 `cne init`。
 

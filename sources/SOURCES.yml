@@ -44,7 +44,7 @@ sources:
 
   exchange:
     owner: 上海证券交易所 / 深圳证券交易所 / 北京证券交易所（具体文件来源待核实）
-    access_type: official_public_file
+    access_type: official_public_file_and_http_endpoint
     tos_url: unknown
     tos_reviewed_at: unknown
     authentication: none_observed
@@ -55,7 +55,10 @@ sources:
     rate_limit: unknown
     retained_payloads: unknown
     legal_status: unknown
-    notes: 仅作为交易日历备源标签；具体 CSV 发布页、版权声明和再分发条件需要逐文件确认。
+    notes: 交易日历备源、ST 名称核对、daily_bars 权威比对（上交所 yunhq 收盘快照、深交所个股日行情报表）与
+      margin_trading 主源（上交所 queryMargin、深交所 1837_xxpl 融资融券交易明细）。这些是交易所自行编制并公开发布的
+      数据，权威性高于任何转发方；但具体发布页的版权声明、访问频率与再分发条件仍需逐接口确认，因此权限字段保持 unknown。
+      注意上交所不公布融券余额（rqylje 恒为空），SH 行的 short_balance 因此为 null，不做本地推算。
     derived: false
 
   eastmoney:
