@@ -1,7 +1,25 @@
+import sys
+
 import pytest
 
 from cnequity.config import load_config
 from cnequity.config.bootstrap import path_for_toml
+
+
+def pytest_configure(config):
+    """Keep Windows ProcessPoolExecutor teardown from aborting the suite.
+
+    A spawned worker that exits on Windows can inject ``CTRL_C_EVENT`` into
+    the parent's console group. pytest then raises ``KeyboardInterrupt``
+    mid-session — CI has seen this right after the rate-limiter process
+    tests, with every earlier test already green. Ignoring the console
+    signal is the usual workaround (CPython issue 33725).
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(None, True)
 
 
 @pytest.fixture

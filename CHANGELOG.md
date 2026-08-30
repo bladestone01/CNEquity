@@ -208,6 +208,10 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **Windows CI flaked the cross-process rate-limiter assertion.** `time.sleep`
   returned at 48% of a 50ms interval; the floor is now 30% of 100ms — still
   several times a no-op wait.
+- **Windows CI aborted the unit suite with `KeyboardInterrupt` after the
+  process-pool rate-limiter tests.** A worker exiting on Windows can inject
+  `CTRL_C_EVENT` into the parent's console group (CPython 33725); the session
+  now ignores that signal.
 
 - **A frame with no columns gained a row when it was stamped.** `pl.DataFrame()`
   is the codebase's "nothing to report" value, and polars broadcasts a literal
