@@ -211,7 +211,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **Windows CI aborted the unit suite with `KeyboardInterrupt` after the
   process-pool rate-limiter tests.** A worker exiting on Windows can inject
   `CTRL_C_EVENT` into the parent's console group (CPython 33725); the session
-  now ignores that signal.
+  now ignores that signal. A leftover worker atexit can still flip a fully
+  green run to exit code 1 — CI now reaps those processes and keeps pytest's
+  status.
 
 - **A frame with no columns gained a row when it was stamped.** `pl.DataFrame()`
   is the codebase's "nothing to report" value, and polars broadcasts a literal

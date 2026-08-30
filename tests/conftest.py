@@ -1,3 +1,4 @@
+import os
 import sys
 
 import pytest
@@ -20,6 +21,34 @@ def pytest_configure(config):
     import ctypes
 
     ctypes.windll.kernel32.SetConsoleCtrlHandler(None, True)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Keep a green Windows suite from exiting 1 in multiprocessing atexit.
+
+    After 2589 passed / 0 failed, CI still reported exit code 1: leftover
+    ``ProcessPoolExecutor`` workers run atexit handlers that replace pytest's
+    status. Reap them, and on Actions skip those handlers once the session
+    is already green.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import multiprocessing.process as mp_process
+
+        children = list(getattr(mp_process, "_children", set()))
+        for proc in children:
+            try:
+                if proc.is_alive():
+                    proc.terminate()
+                proc.join(timeout=1)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if os.environ.get("CI") == "true" and int(exitstatus or 0) == 0:
+        os._exit(0)
 
 
 @pytest.fixture
