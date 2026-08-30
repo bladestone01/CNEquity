@@ -23,6 +23,8 @@ from typing import Literal
 
 import polars as pl
 
+from cnequity.domain.frames import is_blank
+
 PitMode = Literal["strict", "best_effort"]
 PitQuality = Literal["strict", "reconstructed", "snapshot_only"]
 PIT_MODES: tuple[PitMode, ...] = ("strict", "best_effort")
@@ -129,6 +131,10 @@ def normalize_pit_storage_columns(
     therefore safe to backfill on every read; it is not itself evidence of an
     exact vintage.
     """
+    if is_blank(df):
+        # A column-less frame would gain four literal columns and, with them,
+        # a row that never existed. See domain/frames.py.
+        return df
 
     if dataset not in PIT_DATASET_NAMES:
         return df

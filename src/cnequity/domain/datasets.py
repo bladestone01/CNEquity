@@ -421,6 +421,25 @@ class DatasetSpec:
     # a live snapshot with no honest PIT replay.  ``pit_grade`` remains as the
     # legacy none/strict/partial spelling in exported 0.x contracts.
     pit_quality: PitQuality | None = None
+    # Number of already-covered observations to reconcile on every
+    # incremental run. A non-zero value deliberately re-reads the tail
+    # instead of assuming a source will never revise a settled row. The
+    # default keeps legacy append-only behaviour for sparse/event datasets.
+    reconciliation_lookback_days: int = 0
+    # ``trading_day`` counts exchange sessions through the watermark; the
+    # calendar form is useful for feeds whose date axis is not a market
+    # session. The name says ``days`` for API compatibility, but the unit is
+    # explicit so a weekend cannot accidentally consume a reconciliation slot.
+    reconciliation_lookback_mode: Literal["calendar", "trading_day"] = "calendar"
+    # Whether a source promises immutable rows once observed.  This is kept
+    # separate from the schema ``compatibility`` policy: a schema can be
+    # additive while the upstream still revises a settled business key.  A
+    # true value permits append-oriented consumers to skip a reconciliation
+    # sweep; all datasets whose source can correct/restate rows leave it false.
+    append_only: bool = False
+    # Default TTL for source-empty evidence when a caller has no more specific
+    # deployment setting. Config.negative_evidence_ttl_days overrides it.
+    negative_evidence_ttl_days: int = 7
 
     def __post_init__(self) -> None:
         """Materialise inferred contract fields without changing old APIs.
@@ -433,6 +452,16 @@ class DatasetSpec:
 
         if self.schema_version < 1:
             raise ValueError("schema_version must be >= 1")
+        if self.reconciliation_lookback_days < 0:
+            raise ValueError("reconciliation_lookback_days must be >= 0")
+        if self.reconciliation_lookback_mode not in {"calendar", "trading_day"}:
+            raise ValueError("reconciliation_lookback_mode must be 'calendar' or 'trading_day'")
+        if not isinstance(self.append_only, bool):
+            raise ValueError("append_only must be a bool")
+        if self.append_only and self.reconciliation_lookback_days:
+            raise ValueError("append_only datasets cannot have a reconciliation lookback")
+        if self.negative_evidence_ttl_days < 0:
+            raise ValueError("negative_evidence_ttl_days must be >= 0")
 
         if self.pit_quality is None:
             if self.pit_grade == "partial":
@@ -487,6 +516,16 @@ class DatasetSpec:
     @property
     def query_date_col(self) -> str | None:
         return self.date_col or self.partition_col
+
+    @property
+    def reconciliation_lookback(self) -> int:
+        """Compatibility alias for callers that omit the ``_days`` suffix."""
+        return self.reconciliation_lookback_days
+
+    @property
+    def reconciliation_lookback_basis(self) -> str:
+        """Compatibility alias for the explicit lookback unit."""
+        return self.reconciliation_lookback_mode
 
     def earliest_available(self, today: date, *, trading_days_per_year: int = 242) -> date | None:
         """Rough calendar date before which the source serves nothing.
@@ -555,6 +594,8 @@ _SPECS = [
         backup_source="eastmoney",
         tier="L1",
         partition_col="trade_date",
+        reconciliation_lookback_days=5,
+        reconciliation_lookback_mode="trading_day",
         coverage_mode="session_dense",
     ),
     DatasetSpec(
@@ -564,6 +605,8 @@ _SPECS = [
         tier="L1",
         partition_col="trade_date",
         partition_granularity="year",
+        reconciliation_lookback_days=5,
+        reconciliation_lookback_mode="trading_day",
         coverage_mode="session_dense",
     ),
     # 1-minute bars. Day partitions: ~240 bars × the configured scope, which is
@@ -589,6 +632,8 @@ _SPECS = [
         history_horizon_days=95,
         # Tip-paged: chunk by symbol, not by date (see backfill_chunk_symbols).
         backfill_chunk_symbols=200,
+        reconciliation_lookback_days=2,
+        reconciliation_lookback_mode="trading_day",
         intraday_frequency="1m",
         row_grain="1m",
     ),
@@ -622,6 +667,8 @@ _SPECS = [
         # Same tip-paged contract as 1m; 200 symbols × 48 bars × 491 days ≈
         # 4.7M rows per sub-run — comparable compact memory to 1m's chunk.
         backfill_chunk_symbols=200,
+        reconciliation_lookback_days=2,
+        reconciliation_lookback_mode="trading_day",
         intraday_frequency="5m",
         row_grain="5m",
     ),
@@ -656,6 +703,7 @@ _SPECS = [
         # today's tip and a date slice re-fetches everything newer than it.
         # 5 days × 200 symbols × ~2,700 rows ≈ 2.7M rows per sub-run.
         backfill_chunk_days=5,
+        append_only=True,
         # Intraday, but not a bar frequency — see DatasetSpec.row_grain for why
         # this is not `intraday_frequency`.
         row_grain="tick",
@@ -687,6 +735,7 @@ _SPECS = [
         partition_col="ex_date",
         partition_granularity="year",
         backfill_source="tdx_protocol",
+        reconciliation_lookback_days=30,
     ),
     DatasetSpec(
         "announcement_index",
@@ -694,6 +743,7 @@ _SPECS = [
         tier="L2",
         partition_col="announce_date",
         pit=True,
+        reconciliation_lookback_days=30,
     ),
     # Current-state timetable (revisions overwrite scheduled_date; not PIT).
     DatasetSpec(
@@ -703,6 +753,7 @@ _SPECS = [
         partition_col="report_period",
         partition_granularity="quarter",
         watermark=False,
+        reconciliation_lookback_days=120,
     ),
     # L3 fundamentals
     DatasetSpec(
@@ -718,6 +769,11 @@ _SPECS = [
         # useful for exploratory reads but cannot be advertised as exact PIT.
         pit_quality="reconstructed",
         pit_grade="partial",
+        # Daily ingestion is keyed by NOTICE_DATE while storage is keyed by
+        # report period.  Re-read the recent disclosure window so late
+        # filings/restatements are captured; the adapter's period backfill
+        # remains the source of truth for older reports.
+        reconciliation_lookback_days=30,
     ),
     # Shareholder structure — the dimensions the long-format statement table
     # cannot hold. `top_holders` is a ranked repeating group of ten, which no
@@ -741,6 +797,7 @@ _SPECS = [
         pit=True,
         pit_quality="reconstructed",
         pit_grade="partial",
+        reconciliation_lookback_days=30,
     ),
     DatasetSpec(
         "shareholder_counts",
@@ -755,6 +812,7 @@ _SPECS = [
         pit=True,
         pit_quality="reconstructed",
         pit_grade="partial",
+        reconciliation_lookback_days=30,
     ),
     DatasetSpec(
         "top_holders",
@@ -775,6 +833,7 @@ _SPECS = [
         pit=True,
         pit_quality="reconstructed",
         pit_grade="partial",
+        reconciliation_lookback_days=240,
     ),
     DatasetSpec(
         "valuation_metrics",
@@ -783,6 +842,7 @@ _SPECS = [
         partition_col="trade_date",
         fetch_semantics="snapshot",
         backfill_source="baostock",
+        # Snapshot values are allowed to settle/retry on the same session.
     ),
     DatasetSpec(
         "analyst_consensus",
@@ -814,6 +874,7 @@ _SPECS = [
         tier="L4",
         partition_col="trade_date",
         max_staleness_days=100,
+        reconciliation_lookback_days=5,
     ),
     DatasetSpec(
         "northbound_flows",
@@ -830,6 +891,7 @@ _SPECS = [
         # are dropped rather than zero-filled. The lake holds everything that
         # exists, so this is not staleness and no backfill can change it.
         source_retired_date=date(2024, 8, 16),
+        reconciliation_lookback_days=3,
     ),
     DatasetSpec(
         "dragon_tiger",
@@ -993,6 +1055,7 @@ _SPECS = [
         tier="L8",
         partition_col="event_date",
         partition_granularity="year",
+        reconciliation_lookback_days=30,
     ),
     # derived — ``layer`` is where the parquet lives, ``tier`` what the data is
     # for, so these carry the tier of the question they answer, not "derived".
