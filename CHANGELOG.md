@@ -197,6 +197,18 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Python 3.10 could not import the CNINFO adapter.** `datetime.UTC` is 3.11+;
+  announcements and its tests now use `timezone.utc`, as the rest of the tree
+  already does. That import is on the package path, so 3.10 CI never reached
+  collection.
+- **Windows refused the raw-archive symlink-boundary fixture.** POSIX
+  `rename()` replaces an empty destination directory; Windows raises
+  `FileExistsError`. The test now moves the dataset directory onto a path that
+  does not already exist.
+- **Windows CI flaked the cross-process rate-limiter assertion.** `time.sleep`
+  returned at 48% of a 50ms interval; the floor is now 30% of 100ms — still
+  several times a no-op wait.
+
 - **A frame with no columns gained a row when it was stamped.** `pl.DataFrame()`
   is the codebase's "nothing to report" value, and polars broadcasts a literal
   against a zero-*column* frame to length one — so stamping provenance onto it

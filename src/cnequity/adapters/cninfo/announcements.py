@@ -10,7 +10,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -393,8 +393,8 @@ def _checkpoint_completed_is_fresh(record: dict[str, Any], *, ttl_days: int | No
     except ValueError:
         return False
     if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    return datetime.now(UTC) - timestamp <= timedelta(days=ttl_days)
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - timestamp <= timedelta(days=ttl_days)
 
 
 def _checkpoint_running_is_fresh(
@@ -424,8 +424,8 @@ def _checkpoint_running_is_fresh(
     except ValueError:
         return False
     if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    return datetime.now(UTC) - timestamp <= timedelta(days=ttl_days)
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - timestamp <= timedelta(days=ttl_days)
 
 
 def invalidate_cninfo_checkpoint(path: str | Path) -> None:
@@ -440,7 +440,7 @@ def invalidate_cninfo_checkpoint(path: str | Path) -> None:
 def _write_checkpoint(path: Path | None, payload: dict[str, Any]) -> None:
     if path is None:
         return
-    updated_at = datetime.now(UTC).isoformat()
+    updated_at = datetime.now(timezone.utc).isoformat()
     payload["updated_at"] = updated_at
     slices = payload.get("slices")
     if isinstance(slices, dict):
@@ -706,7 +706,7 @@ def _archive_cninfo_response(
         wire,
         source="cninfo",
         request_params=request_params,
-        captured_at=datetime.now(UTC),
+        captured_at=datetime.now(timezone.utc),
         run_id=run_id,
         url=response_url,
         response_status=response_status,
@@ -846,8 +846,8 @@ def _fetch_page_slice(
                 "reported_pages": None,
                 "completed_at": None,
                 "raw_row_count": 0,
-                "started_at": datetime.now(UTC).isoformat(),
-                "updated_at": datetime.now(UTC).isoformat(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
                 "source_revision": source_revision,
                 "raw_archives": [],
                 "capture_id": uuid.uuid4().hex,
@@ -884,8 +884,8 @@ def _fetch_page_slice(
                 "reported_pages": None,
                 "completed_at": None,
                 "raw_row_count": 0,
-                "started_at": datetime.now(UTC).isoformat(),
-                "updated_at": datetime.now(UTC).isoformat(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
                 "source_revision": source_revision,
                 "raw_archives": [],
                 "capture_id": uuid.uuid4().hex,
@@ -910,8 +910,8 @@ def _fetch_page_slice(
                     "reported_pages": None,
                     "completed_at": None,
                     "raw_row_count": 0,
-                    "started_at": datetime.now(UTC).isoformat(),
-                    "updated_at": datetime.now(UTC).isoformat(),
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                     "raw_archives": [],
                     "capture_id": uuid.uuid4().hex,
                 }
@@ -975,8 +975,8 @@ def _fetch_page_slice(
             "reported_pages": None,
             "completed_at": None,
             "raw_row_count": 0,
-            "started_at": datetime.now(UTC).isoformat(),
-            "updated_at": datetime.now(UTC).isoformat(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "source_revision": source_revision,
             "raw_archives": [],
             "capture_id": uuid.uuid4().hex,
@@ -1000,8 +1000,8 @@ def _fetch_page_slice(
                     "reported_pages": None,
                     "completed_at": None,
                     "raw_row_count": 0,
-                    "started_at": datetime.now(UTC).isoformat(),
-                    "updated_at": datetime.now(UTC).isoformat(),
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                     "raw_archives": [],
                     "capture_id": uuid.uuid4().hex,
                 }
@@ -1256,7 +1256,7 @@ def _fetch_page_slice(
     record["expected_total"] = expected_total
     record["reported_pages"] = reported_pages
     record["raw_row_count"] = len(raw_rows)
-    record["completed_at"] = datetime.now(UTC).isoformat()
+    record["completed_at"] = datetime.now(timezone.utc).isoformat()
     _write_checkpoint(checkpoint_path, state)
     if metrics is not None:
         metrics["slices_completed"] = int(metrics.get("slices_completed", 0)) + 1

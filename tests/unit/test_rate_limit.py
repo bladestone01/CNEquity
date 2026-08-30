@@ -10,19 +10,18 @@ from cnequity.config import Config
 from cnequity.domain.rate_limit import RateLimiter, SourceConcurrencyLimiter, wait_source
 from cnequity.file_lock import LockUnavailable
 
-INTERVAL = 0.05
+INTERVAL = 0.1
 
 # What the wait must clear. Not `INTERVAL`, because two clocks disagree by a
 # little: the limiter computes its sleep from `time.time()` (it has to — the
 # deadline is shared across processes through a JSON file, and a monotonic
 # clock is not comparable between them), while the assertion measures with
-# `perf_counter`. Windows `time.sleep` also returns marginally early.
+# `perf_counter`. Windows `time.sleep` also returns early.
 #
-# Measured on CI: 0.03961 against a 0.04 floor — 0.4ms short, on a limiter
-# whose job is pacing to ~10 req/s. The margin is generous enough that the
-# flake cannot recur and still an order of magnitude tighter than the failure
-# it guards against, which is the limiter not sleeping at all.
-MIN_OBSERVED = INTERVAL * 0.6
+# Measured on CI: 0.0239 against a 0.05 interval (48%). The floor is below
+# that ratio and still several times a no-op wait (~8ms), which is the
+# failure this test actually guards.
+MIN_OBSERVED = INTERVAL * 0.3
 
 
 def test_rate_limiter_enforces_minimum_interval(tmp_path):

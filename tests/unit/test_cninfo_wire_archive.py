@@ -249,9 +249,9 @@ def test_raw_archive_rejects_symlinked_roots_and_payload_boundaries(tmp_path):
     external_raw.rename(raw)
 
     # Replacing the raw dataset directory with an external link must block
-    # both enumeration and a subsequent write; the external tree stays empty.
+    # both enumeration and a subsequent write; the external tree stays unchanged.
+    # Do not mkdir first: POSIX rename replaces an empty dest, Windows refuses.
     external_dataset = tmp_path / "external-dataset"
-    external_dataset.mkdir()
     dataset_root.rename(external_dataset)
     before_external = sorted(
         path.relative_to(external_dataset) for path in external_dataset.rglob("*")

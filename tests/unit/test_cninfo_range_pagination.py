@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -318,7 +318,7 @@ def test_cninfo_checkpoint_refresh_revision_and_ttl_absorb_same_date_corrections
     assert len(revised_source.calls) == 2
 
     saved = json.loads(checkpoint.read_text())
-    old = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
     for record in saved["slices"].values():
         record["completed_at"] = old
     checkpoint.write_text(json.dumps(saved))
