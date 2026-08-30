@@ -26,7 +26,7 @@ def _rows(symbol: str) -> pl.DataFrame:
 
 
 def test_corporate_actions_stages_successful_chunks_for_retry(tmp_path, monkeypatch):
-    cfg = Config(data_root=tmp_path / "lake", batch_size=2)
+    cfg = Config(data_root=tmp_path / "lake", batch_size=2, raw_archive_enabled=False)
     cfg._backfill = True
     cfg._backfill_start = date(2024, 1, 1)
     cfg._backfill_end = date(2024, 6, 28)
@@ -62,7 +62,7 @@ def test_corporate_actions_stages_successful_chunks_for_retry(tmp_path, monkeypa
 
 
 def test_engine_retry_only_fetches_unreceipted_chunks(tmp_path, monkeypatch):
-    cfg = Config(data_root=tmp_path / "lake", batch_size=2)
+    cfg = Config(data_root=tmp_path / "lake", batch_size=2, raw_archive_enabled=False)
     cfg._backfill = True
     cfg._backfill_start = date(2024, 1, 1)
     cfg._backfill_end = date(2024, 6, 28)

@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 import cnequity.steps  # noqa: F401 — register steps
 from cnequity.config import (
     Config,
@@ -243,6 +245,141 @@ def test_validate_config_allows_multiprocess_on_windows(tmp_path, monkeypatch):
         daily_waves=[WaveConfig(name="core", parallel=True, steps=["instruments"])],
     )
     assert validate_config(cfg) == []
+
+
+def test_load_config_parses_independent_tdx_http_and_group_budgets(tmp_path, monkeypatch):
+    """The macOS global process guard must not collapse source-local pools."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    path = tmp_path / "split.toml"
+    path.write_text(
+        f'''
+[data]
+root = "{path_for_toml(tmp_path / "data")}"
+
+[orchestrator]
+workers = 1
+tdx_daily_workers = 3
+tdx_daily_backend = "auto"
+adj_factor_workers = 5
+derive_workers = 6
+http_workers = {{ sina = 2 }}
+
+[sources.sina]
+max_concurrency = 4
+
+[[job.daily.waves]]
+name = "w"
+steps = ["instruments"]
+
+[job.daily.groups.core]
+at = "16:00"
+steps = ["instruments"]
+''',
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+
+    assert cfg.workers == 1
+    assert cfg.tdx_daily_worker_count() == 3
+    assert cfg.tdx_daily_executor() == "thread"
+    assert cfg.adj_factor_worker_count() == 5
+    # Source-local configuration has precedence over the legacy alias map.
+    assert cfg.source_concurrency_for("sina", 6) == 4
+    assert cfg.schedule_groups["core"].parallel is True
+    assert validate_config(cfg) == []
+
+
+def test_validate_config_rejects_invalid_specialized_worker_budget(tmp_path):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        tdx_daily_workers=0,
+        adj_factor_workers=0,
+        derive_workers=0,
+        source_concurrency={"sina": 0},
+        daily_waves=[WaveConfig(name="w", parallel=True, steps=["instruments"])],
+    )
+    errors = validate_config(cfg)
+    assert any("tdx_daily_workers" in error for error in errors)
+    assert any("adj_factor_workers" in error for error in errors)
+    assert any("derive_workers" in error for error in errors)
+    assert any("source concurrency" in error for error in errors)
+
+
+def test_validate_config_rejects_malformed_source_concurrency_without_fallback(tmp_path):
+    path = tmp_path / "invalid-source-limit.toml"
+    path.write_text(
+        f'''
+[data]
+root = "{path_for_toml(tmp_path / "data")}"
+
+[orchestrator]
+source_concurrency = {{ sina = "not-an-integer" }}
+
+[sources.sina]
+max_concurrency = 0
+
+[[job.daily.waves]]
+name = "w"
+steps = ["instruments"]
+''',
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    errors = validate_config(cfg)
+
+    assert any("source_concurrency['sina']" in error for error in errors)
+    # The source-local zero is retained in the canonical map and must not be
+    # silently replaced by the global worker budget.
+    assert cfg.source_concurrency["sina"] == 0
+    with pytest.raises(ValueError, match="positive integer"):
+        cfg.source_concurrency_for("sina")
+
+
+def test_validate_config_rejects_non_mapping_source_concurrency(tmp_path):
+    path = tmp_path / "invalid-source-map.toml"
+    path.write_text(
+        f'''
+[data]
+root = "{path_for_toml(tmp_path / "data")}"
+
+[orchestrator]
+source_concurrency = "not-a-map"
+
+[[job.daily.waves]]
+name = "w"
+steps = ["instruments"]
+''',
+        encoding="utf-8",
+    )
+
+    errors = validate_config(load_config(path))
+
+    assert any("source concurrency" in error and "not-a-map" in error for error in errors)
+
+
+def test_programmatic_relative_data_root_matches_load_config_resolution(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    expected = (tmp_path / "relative-lake").resolve()
+
+    cfg = Config(data_root="relative-lake")
+
+    assert cfg.data_root == expected
+    assert cfg.data_root.is_absolute()
+
+
+def test_raw_archive_policy_defaults_to_critical_datasets_and_honors_allowlist(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+
+    assert cfg.should_archive_raw("daily_bars") is False
+    assert cfg.should_archive_raw("announcement_index") is True
+    assert cfg.should_archive_raw("financial_statement_items") is True
+    assert cfg.should_archive_raw("corporate_actions") is True
+
+    cfg.raw_archive_datasets = ["daily_bars"]
+    assert cfg.should_archive_raw("daily_bars") is True
+    assert cfg.should_archive_raw("financial_statement_items") is False
+    cfg.raw_archive_enabled = False
+    assert cfg.should_archive_raw("daily_bars") is False
 
 
 def test_unknown_intraday_frequency_is_rejected(tmp_path):

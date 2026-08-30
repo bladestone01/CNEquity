@@ -94,6 +94,45 @@ def test_snapshot_cli_round_trip(tmp_path):
     assert (target / "curated/daily_bars/trade_date=2026-08-28/part.parquet").is_file()
 
 
+def test_snapshot_archive_cli_wraps_expected_errors_without_traceback(tmp_path):
+    cfg, path = _config(tmp_path)
+    runner = CliRunner()
+    bad_archive = tmp_path / "bad.tar"
+    bad_archive.write_bytes(b"not a tar archive")
+
+    exported = runner.invoke(
+        cli,
+        [
+            "snapshot",
+            "export",
+            "missing",
+            "--config",
+            str(path),
+            "--snapshot-root",
+            str(tmp_path / "snapshots"),
+        ],
+    )
+    imported = runner.invoke(
+        cli,
+        [
+            "snapshot",
+            "import",
+            str(bad_archive),
+            "--config",
+            str(path),
+            "--snapshot-root",
+            str(tmp_path / "snapshots"),
+        ],
+    )
+
+    assert exported.exit_code != 0
+    assert imported.exit_code != 0
+    assert "Traceback" not in exported.output
+    assert "Traceback" not in imported.output
+    assert "Error:" in exported.output
+    assert "Error:" in imported.output
+
+
 def _stability_lake(tmp_path, *, sessions: int = 20, skip: int | None = None):
     """A lake with `sessions` trading days and a core run on each but `skip`."""
     cfg, path = _config(tmp_path)

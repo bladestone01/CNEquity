@@ -319,6 +319,73 @@ def test_tip_tdx_fail_clist_recovers_step(tmp_path, monkeypatch):
     assert manifest.get_batch(run_id, "tdx-batch-0")["status"] == "success"
 
 
+def test_clean_primary_tip_still_captures_daily_peer_snapshot(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg.failover_datasets[0].snapshot_cadence = "daily"
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 7, 24)
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-batch-0", _bar_frame(["600519.SH"], tip)
+    )
+    calls = []
+    monkeypatch.setattr(
+        "cnequity.quality.failover.snapshot_daily_bars_clist",
+        lambda *args, **kwargs: calls.append(kwargs) or pl.DataFrame(),
+    )
+
+    result = _finish_daily_bars(
+        cfg,
+        tip,
+        run_id,
+        start=tip,
+        end=tip,
+        expected_tdx_symbols=["600519.SH"],
+        tdx_result={"rows_read": 1, "rows_written": 1},
+        sina_result=None,
+    )
+
+    assert result["rows_written"] == 1
+    assert calls and calls[0]["symbols"] == ["600519.SH"]
+    finding = next(
+        item
+        for item in result["context_updates"]["audit_findings"]
+        if item["check"] == "backup_snapshot_unavailable"
+    )
+    assert finding["peer_unavailable"] is True
+    assert finding["retryable"] is True
+
+
+def test_peer_snapshot_failure_is_observable_but_does_not_invalidate_primary(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg.failover_datasets[0].snapshot_cadence = "daily"
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 7, 24)
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-batch-0", _bar_frame(["600519.SH"], tip)
+    )
+    monkeypatch.setattr(
+        "cnequity.quality.failover.snapshot_daily_bars_clist",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("peer down")),
+    )
+
+    result = _finish_daily_bars(
+        cfg,
+        tip,
+        run_id,
+        start=tip,
+        end=tip,
+        expected_tdx_symbols=["600519.SH"],
+        tdx_result={"rows_read": 1, "rows_written": 1},
+        sina_result=None,
+    )
+
+    findings = result["context_updates"]["audit_findings"]
+    finding = next(item for item in findings if item["check"] == "backup_snapshot_unavailable")
+    assert finding["severity"] == "warning"
+    assert finding["peer_unavailable"] is True
+    assert finding["retryable"] is True
+
+
 def test_historical_tip_backfill_validates_staged_end_not_job_as_of(tmp_path, monkeypatch):
     """A weekend/as-of date must not hide a successfully staged past session."""
     cfg = _cfg(tmp_path)
@@ -503,11 +570,10 @@ def test_tip_total_loss_still_raises(tmp_path, monkeypatch):
         )
 
 
-def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, monkeypatch):
-    # A symbol can still be legitimately missing after both TDX and the clist
-    # gap-fill had a shot at it (e.g. a trading halt/suspension). That must
-    # not fail the whole market-wide tip — regression test for a check that
-    # used to raise on any single missing key, every day some symbol halted.
+def test_tip_partial_miss_after_gapfill_stays_strict_for_unknown_symbol(tmp_path, monkeypatch):
+    # A market-sized response cannot prove that one remaining symbol had no
+    # data.  Without listing/status/source-empty evidence the unknown key must
+    # keep the checkpoint blocked; there is no market-level 5% allowance.
     cfg = _cfg(tmp_path)
     manifest = Manifest(cfg.manifest_path)
     run_id = manifest.start_run("daily:core")
@@ -539,28 +605,23 @@ def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, 
         "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
         lambda *args, **kwargs: pl.DataFrame(),
     )
-    result = _finish_daily_bars(
-        cfg,
-        tip,
-        run_id,
-        start=tip,
-        end=tip,
-        expected_tdx_symbols=["600519.SH", "000001.SZ"],
-        tdx_result={
-            "rows_read": 0,
-            "rows_written": 0,
-            "had_error": True,
-            "failed_symbols": ["600519.SH", "000001.SZ"],
-        },
-        sina_result=None,
-    )
-    assert result["rows_written"] == 1
-    findings = result["context_updates"]["audit_findings"]
-    assert any(
-        f["check"] == "daily_bars_tip_missing_symbols" and "000001.SZ" in f["message"]
-        for f in findings
-    )
-    assert manifest.get_batch(run_id, "tdx-partial")["status"] == "success"
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            tip,
+            run_id,
+            start=tip,
+            end=tip,
+            expected_tdx_symbols=["600519.SH", "000001.SZ"],
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": ["600519.SH", "000001.SZ"],
+            },
+            sina_result=None,
+        )
+    assert manifest.get_batch(run_id, "tdx-partial")["status"] == "failed"
 
 
 def test_tip_large_partial_miss_blocks_checkpoint(tmp_path, monkeypatch):
@@ -676,26 +737,15 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
     assert result["rows_written"] == 7
 
 
-def test_multiday_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, monkeypatch):
-    # A symbol can stay genuinely missing after TDX, Sina, and the kline
-    # gap-fill have all had a shot (suspension, or a name none of the three
-    # sources cover that day). That must not fail the whole multi-day
-    # window — same tolerance the tip path already applies, see
-    # test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step.
-    # Regression test for a check that used to raise on any single leftover
-    # key in this path, so one stubborn symbol reds the whole core gate.
-    #
-    # Uses a 20-symbol universe rather than a 2-symbol one: this branch has
-    # no min-1 floor (see test_multiday_single_symbol_scope_still_raises for
-    # why), so the tolerance only exists once the expected set is large
-    # enough for 5% to round up to at least 1.
+def test_multiday_partial_miss_after_gapfill_stays_strict_for_unknown_symbol(tmp_path, monkeypatch):
+    # Even a large multi-day response cannot certify one unresolved symbol
+    # without symbol-level metadata/status/empty evidence.
     cfg = _cfg(tmp_path)
     run_id = Manifest(cfg.manifest_path).start_run("daily:core")
     start, end = date(2024, 6, 20), date(2024, 6, 21)
     days = [date(2024, 6, 20), date(2024, 6, 21)]
     expected = [f"600{i:03d}.SH" for i in range(20)]
     missing = expected[-1]
-    resolved = expected[:-1]
 
     def _kline(symbols, s, e, **k):
         rows = [
@@ -727,27 +777,22 @@ def test_multiday_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_p
         },
     )
 
-    result = _finish_daily_bars(
-        cfg,
-        end,
-        run_id,
-        start=start,
-        end=end,
-        expected_tdx_symbols=expected,
-        tdx_result={
-            "rows_read": 0,
-            "rows_written": 0,
-            "had_error": True,
-            "failed_symbols": expected,
-        },
-        sina_result=None,
-    )
-    assert result["rows_written"] == len(resolved) * len(days)
-    findings = result["context_updates"]["audit_findings"]
-    assert any(
-        f["check"] == "daily_bars_window_missing_symbols" and missing in f["message"]
-        for f in findings
-    )
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            end,
+            run_id,
+            start=start,
+            end=end,
+            expected_tdx_symbols=expected,
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": expected,
+            },
+            sina_result=None,
+        )
 
 
 def test_multiday_single_symbol_scope_still_raises(tmp_path, monkeypatch):

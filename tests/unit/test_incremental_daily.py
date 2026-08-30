@@ -546,7 +546,7 @@ def test_run_incremental_fetched_rejects_universe_with_no_overlap(tmp_path, monk
 
 
 def test_step_fund_flow_snapshot_gap_only_fetches_run_day(tmp_path, monkeypatch):
-    cfg = Config(data_root=tmp_path / "data")
+    cfg = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
     _seed_trading_calendar(cfg, date(2024, 6, 24), date(2024, 6, 28))
     StateStore(cfg.meta_root).set_date("fund_flow", date(2024, 6, 25))
     fetched: list[date] = []
@@ -575,7 +575,7 @@ def test_step_fund_flow_snapshot_gap_only_fetches_run_day(tmp_path, monkeypatch)
 
 
 def test_step_fund_flow_single_day_when_caught_up(tmp_path, monkeypatch):
-    cfg = Config(data_root=tmp_path / "data")
+    cfg = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
     StateStore(cfg.meta_root).set_date("fund_flow", date(2024, 6, 27))
     fetched: list[date] = []
 

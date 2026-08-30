@@ -170,6 +170,8 @@ def test_validate_rejects_blank_required_provenance():
                 "trade_date": date(2024, 6, 28),
                 "is_trading": True,
                 "status": None,
+                # Nullable by design: a derived bar-gap row has no ST evidence.
+                "risk_warning": None,
                 "source": "eastmoney",
                 "data_version": "v1",
                 "fetched_at": datetime(2024, 6, 28, tzinfo=timezone.utc),

@@ -14,6 +14,9 @@ site/
 .coverage
 coverage.json
 coverage.xml
+
+# scripts/probe_blank_frame_broadcast.py output
+blank_frame_broadcasts.txt
 htmlcov/
 
 # Virtual environments

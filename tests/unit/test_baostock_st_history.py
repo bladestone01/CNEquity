@@ -72,7 +72,8 @@ def test_emits_traded_st_and_normal_evidence():
     assert bs.logged_out is True
     assert failed == []
     assert df.height == 3
-    assert df.sort("trade_date")["status"].to_list() == ["normal", "st", "st"]
+    assert df.sort("trade_date")["status"].to_list() == ["normal", "normal", "normal"]
+    assert df.sort("trade_date")["risk_warning"].to_list() == [False, True, True]
     assert df["is_trading"].unique().to_list() == [True]
     # columns are the curated trading_status contract minus provenance
     assert set(df.columns) == set(TRADING_STATUS_SCHEMA) - {"source", "data_version", "fetched_at"}

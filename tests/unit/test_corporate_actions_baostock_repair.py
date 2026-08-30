@@ -26,7 +26,11 @@ def _repair_rows() -> pl.DataFrame:
 
 
 def test_baostock_repair_is_scoped_to_delisted_sh_sz_and_keeps_provenance(tmp_path, monkeypatch):
-    cfg = Config(data_root=tmp_path / "lake", sources={"baostock": True})
+    cfg = Config(
+        data_root=tmp_path / "lake",
+        sources={"baostock": True},
+        raw_archive_enabled=False,
+    )
     cfg._backfill = True
     cfg._backfill_start = date(2020, 1, 1)
     cfg._backfill_end = date(2020, 12, 31)

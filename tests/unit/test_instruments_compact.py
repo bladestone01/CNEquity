@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import date, datetime, timezone
 
 import polars as pl
@@ -259,6 +260,46 @@ def test_compact_instruments_removes_stale_siblings(tmp_path):
     )
 
     assert [p.name for p in canonical.parent.rglob("*.parquet")] == ["part-merged.parquet"]
+
+
+def test_compact_instruments_does_not_rewrite_mutable_file_for_immutable_base_refresh(tmp_path):
+    """An immutable generation is a merge base, not a mutable fragment."""
+
+    cfg = Config(data_root=tmp_path / "data")
+    writer = StagingWriter(cfg.staging_root)
+    first = _instrument("600519.SH", list_date=date(2001, 8, 27))
+    writer.write_batch("instruments", "run-instruments-v1", "batch-0", pl.DataFrame([first]))
+    changed: list = []
+    compact_instruments(
+        cfg.staging_root,
+        cfg.curated_root,
+        "run-instruments-v1",
+        date(2024, 6, 28),
+        changed_files=changed,
+    )
+    mutable = cfg.curated_root / "instruments" / "part-merged.parquet"
+    immutable = tmp_path / "immutable"
+    immutable.mkdir(parents=True)
+    shutil.copy2(mutable, immutable / mutable.name)
+
+    refreshed = dict(first)
+    refreshed["fetched_at"] = datetime(2024, 6, 29, tzinfo=timezone.utc)
+    writer.write_batch("instruments", "run-instruments-v2", "batch-0", pl.DataFrame([refreshed]))
+    before_bytes = mutable.read_bytes()
+    before_mtime = mutable.stat().st_mtime_ns
+    second_changed: list = []
+    compact_instruments(
+        cfg.staging_root,
+        cfg.curated_root,
+        "run-instruments-v2",
+        date(2024, 6, 29),
+        changed_files=second_changed,
+        base_root=immutable,
+    )
+
+    assert second_changed == []
+    assert mutable.read_bytes() == before_bytes
+    assert mutable.stat().st_mtime_ns == before_mtime
 
 
 def test_compact_instruments_preserves_rows_from_nested_legacy_fragments(tmp_path):

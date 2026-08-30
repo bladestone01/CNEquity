@@ -43,6 +43,9 @@ def _setup(monkeypatch, cfg: Config, *, empty_days: set[date] = frozenset()):
             return pl.DataFrame()
         return _fake_rows(d)
 
+    # These cover the date walk, not the vendor. `margin_trading` now defaults
+    # to the exchange path, so say which one this exercise is about.
+    cfg.margin_trading_source = "eastmoney"
     monkeypatch.setattr("cnequity.steps.capital.fetch_margin_trading", fake_fetch)
     monkeypatch.setattr("cnequity.adapters.eastmoney.em_auth.EastMoneyClient", _DummyClient)
     monkeypatch.setattr(cfg, "rate_limit", lambda source: None)
@@ -124,6 +127,7 @@ def test_partial_response_is_not_staged_and_is_retryable(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "data")
     cfg._backfill_start = date(2026, 6, 1)
     cfg._backfill_end = date(2026, 6, 1)
+    cfg.margin_trading_source = "eastmoney"
     monkeypatch.setattr(
         "cnequity.steps.capital.fetch_margin_trading",
         lambda d, **kwargs: pl.DataFrame([_fake_row(d)]),

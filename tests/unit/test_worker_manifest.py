@@ -61,6 +61,66 @@ def test_worker_pool_records_symbol_batches(worker_config, monkeypatch):
     }
 
 
+def test_programmatic_config_stays_in_process_with_effective_tdx_settings(tmp_path, monkeypatch):
+    """A Config without a TOML path must not lose its runtime-only settings."""
+    import polars as pl
+
+    from cnequity.config import Config
+
+    cfg = Config(
+        data_root=tmp_path / "data",
+        workers=1,
+        batch_size=1,
+        tdx_daily_workers=2,
+        tdx_daily_backend="process",
+        tdx_servers="fixture.example:7709",
+        tdx_connect_timeout_sec=37,
+        tdx_enabled=False,
+        source_concurrency={"tdx_protocol": 1},
+    )
+    init_data_layout(cfg)
+    run_id = Manifest(cfg.manifest_path).start_run("programmatic")
+    seen: list[object] = []
+
+    def _fetch(symbols, start, end, **kwargs):
+        seen.append(kwargs["config"])
+        return pl.DataFrame(
+            {
+                "symbol": symbols,
+                "trade_date": [start] * len(symbols),
+                "open": [1.0] * len(symbols),
+                "high": [1.0] * len(symbols),
+                "low": [1.0] * len(symbols),
+                "close": [1.0] * len(symbols),
+                "volume": [100] * len(symbols),
+                "amount": [100.0] * len(symbols),
+            }
+        )
+
+    monkeypatch.setattr("cnequity.orchestrator.worker_pool.fetch_daily_bars", _fetch)
+    monkeypatch.setattr(
+        "cnequity.orchestrator.worker_pool.ProcessPoolExecutor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("process pool used")),
+    )
+
+    result = fetch_daily_bars_parallel(
+        cfg,
+        ["600519.SH", "000001.SZ"],
+        date(2024, 6, 27),
+        date(2024, 6, 27),
+        run_id,
+        "daily_bars",
+    )
+
+    assert result["had_error"] is False
+    assert result["rows_written"] == 2
+    assert seen and all(item is cfg for item in seen)
+    assert cfg.tdx_servers == "fixture.example:7709"
+    assert cfg.tdx_connect_timeout_sec == 37
+    assert cfg.tdx_enabled is False
+    assert cfg.source_concurrency_for("tdx_protocol") == 1
+
+
 def test_manifest_accepts_str_db_path(tmp_path):
     """Process-pool workers pass manifest_path as str across the boundary."""
     db = tmp_path / "meta" / "manifest.db"

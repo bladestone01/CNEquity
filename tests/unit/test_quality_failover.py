@@ -30,6 +30,7 @@ def _cfg(tmp_path, **overrides) -> Config:
     kwargs = {
         "data_root": tmp_path / "data",
         "tdx_enabled": False,
+        "raw_archive_enabled": False,
         "failover_enabled": True,
         "sources": {"eastmoney": True, "tdx_protocol": True},
         "failover_datasets": [
@@ -208,7 +209,7 @@ def test_snapshot_corporate_actions_backup_noop_when_fetch_empty(tmp_path, monke
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(
         "cnequity.quality.failover.fetch_corporate_actions_eastmoney",
-        lambda trade_date, backfill, config=None: pl.DataFrame(),
+        lambda trade_date, backfill, config=None, **kwargs: pl.DataFrame(),
     )
     fo.snapshot_corporate_actions_backup(
         cfg, trade_date=date(2024, 6, 28), run_id="run-1", backfill=True
@@ -233,7 +234,7 @@ def test_snapshot_corporate_actions_backup_writes_snapshot(tmp_path, monkeypatch
     )
     monkeypatch.setattr(
         "cnequity.quality.failover.fetch_corporate_actions_eastmoney",
-        lambda trade_date, backfill, config=None: ca_df,
+        lambda trade_date, backfill, config=None, **kwargs: ca_df,
     )
     fo.snapshot_corporate_actions_backup(
         cfg, trade_date=date(2024, 6, 28), run_id="run-1", backfill=True

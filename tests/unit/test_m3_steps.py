@@ -46,7 +46,11 @@ def test_fund_flow_schema_normalization():
 
 @pytest.fixture
 def cfg(tmp_path):
-    return Config(data_root=tmp_path / "data")
+    # These step tests use normalized vendor fakes; exact-wire archive
+    # contracts are covered by the adapter/archive tests below.  Keep the
+    # wrapper tests explicit so a captureless fake cannot accidentally look
+    # like a production archive path.
+    return Config(data_root=tmp_path / "data", raw_archive_enabled=False)
 
 
 def test_step_fund_flow_writes_staging(cfg, monkeypatch):
@@ -90,6 +94,9 @@ def test_capital_steps_reject_empty_canonical_feeds(
     from cnequity.storage.state import StateStore
 
     StateStore(cfg.meta_root).set_date(dataset, date(2024, 6, 27))
+    # These assert the empty-feed guard, not the vendor. margin_trading now
+    # defaults to the exchange path, so pin the source the fetch is patched on.
+    cfg.margin_trading_source = "eastmoney"
     monkeypatch.setattr(cap, fetch_name, lambda *_args, **_kwargs: pl.DataFrame())
     with pytest.raises(RuntimeError, match=f"{dataset}: no rows returned"):
         getattr(cap, step_name)(cfg, date(2024, 6, 28), "run-empty", {})
@@ -100,6 +107,7 @@ def test_margin_trading_rejects_partial_daily_feed(cfg, monkeypatch):
     from cnequity.storage.state import StateStore
 
     StateStore(cfg.meta_root).set_date("margin_trading", date(2024, 6, 27))
+    cfg.margin_trading_source = "eastmoney"
     monkeypatch.setattr(
         cap,
         "fetch_margin_trading",
@@ -548,9 +556,11 @@ def test_backup_snapshot_failure_does_not_abort_the_ca_backfill(tmp_path, monkey
         )
 
     monkeypatch.setattr(events, "fetch_corporate_actions", _fake_tdx)
-    monkeypatch.setattr(events, "write_simple", lambda *a, **k: {"rows_read": 1, "rows_written": 1})
-
-    cfg = Config(data_root=tmp_path / "lake", failover_backfill_snapshots=True)
+    cfg = Config(
+        data_root=tmp_path / "lake",
+        failover_backfill_snapshots=True,
+        raw_archive_enabled=False,
+    )
     cfg._backfill = True
     out = events.step_corporate_actions(cfg, date(2024, 6, 28), "run-1", {})
 
@@ -573,13 +583,7 @@ def test_ca_backfill_skips_optional_backup_snapshot_by_default(tmp_path, monkeyp
 
     monkeypatch.setattr(events, "snapshot_corporate_actions_backup", _unexpected)
     monkeypatch.setattr(events, "fetch_corporate_actions", lambda *a, **k: pl.DataFrame())
-    monkeypatch.setattr(
-        events,
-        "write_simple",
-        lambda *a, **k: {"rows_read": 0, "rows_written": 0},
-    )
-
-    cfg = Config(data_root=tmp_path / "lake")
+    cfg = Config(data_root=tmp_path / "lake", raw_archive_enabled=False)
     cfg._backfill = True
     out = events.step_corporate_actions(cfg, date(2024, 6, 28), "run-1", {})
 

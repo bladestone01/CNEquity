@@ -930,3 +930,60 @@ def test_backfill_success_compacts(cfg_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert finished["status"] == "success"
     assert "bf-ok" in result.output
+
+
+def test_backfill_workers_rejects_unsupported_date_walk(cfg_path):
+    result = CliRunner().invoke(
+        cli,
+        ["backfill", "daily_bars", "--config", cfg_path, "--workers", "2"],
+    )
+
+    assert result.exit_code != 0
+    assert "supported only for margin_trading" in result.output
+
+
+def test_backfill_workers_help_describes_shared_limiter(cfg_path):
+    result = CliRunner().invoke(cli, ["backfill", "--help"])
+
+    assert result.exit_code == 0
+    assert "shared source" in result.output
+    assert "bypassing" not in result.output
+
+
+def test_run_group_help_lists_ticks(cfg_path):
+    result = CliRunner().invoke(cli, ["run", "daily", "--help"])
+
+    assert result.exit_code == 0
+    assert "ticks" in result.output
+
+
+def test_run_rejects_invalid_source_concurrency_as_click_error(tmp_path):
+    cfg_path = tmp_path / "invalid-source.toml"
+    cfg_path.write_text(
+        f'''
+[data]
+root = "{path_for_toml(tmp_path / "data")}"
+
+[orchestrator]
+workers = 1
+source_concurrency = {{ sina = 0 }}
+
+[tdx_protocol]
+allow_mock = true
+
+[[job.daily.waves]]
+name = "w"
+parallel = false
+steps = ["compact"]
+''',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["run", "daily", "--config", str(cfg_path), "--trade-date", "2026-08-28"],
+    )
+
+    assert result.exit_code == 1
+    assert "source concurrency" in result.output
+    assert "Traceback" not in result.output

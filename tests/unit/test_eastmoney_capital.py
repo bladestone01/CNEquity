@@ -10,6 +10,7 @@ import pytest
 
 from cnequity.adapters.eastmoney import capital as cap
 from cnequity.config import Config
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive
 
 
 def test_channel_and_margin_symbol():
@@ -517,7 +518,9 @@ def test_capital_adapters_drop_rows_from_a_different_trade_date(monkeypatch):
 
 def test_fetch_fund_flow_and_margin_pass_config_to_client(monkeypatch, tmp_path):
     """Daily capital must not build a bare EastMoneyClient (1s in-process only)."""
-    cfg = Config(data_root=tmp_path / "data")
+    # This test exercises client construction with normalized pagination
+    # doubles; exact-wire capture is covered by the adapter archive tests.
+    cfg = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
     seen: list[object] = []
 
     class FakeClient:
@@ -535,3 +538,120 @@ def test_fetch_fund_flow_and_margin_pass_config_to_client(monkeypatch, tmp_path)
     cap.fetch_margin_trading(date(2025, 1, 2), config=cfg)
 
     assert seen == [cfg, cfg]
+
+
+class _FundFlowResponse:
+    status_code = 200
+    headers = {"content-type": "application/json"}
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+
+    def __init__(self, payload, wire: bytes | None):
+        self._payload = payload
+        self.content = wire
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FundFlowClient:
+    def __init__(self, response):
+        self.response = response
+        self.urls: list[str] = []
+
+    def get(self, url, **kwargs):
+        self.urls.append(url)
+        return self.response
+
+
+def _fund_flow_payload():
+    return {
+        "data": {
+            "total": 1,
+            "diff": [
+                {
+                    "f12": "600519",
+                    "f13": 1,
+                    "f62": "1",
+                    "f66": "2",
+                    "f72": "3",
+                    "f78": "4",
+                    "f84": "5",
+                }
+            ],
+        }
+    }
+
+
+def test_fund_flow_archives_exact_wire_and_envelope_metadata(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    wire = b'{"data":{"total":1,"diff":[{"f12":"600519"}]}}\n'
+    client = _FundFlowClient(_FundFlowResponse(_fund_flow_payload(), wire))
+
+    out = cap.fetch_fund_flow(date(2025, 1, 2), client=client, config=cfg, run_id="fund-flow-run")
+    assert out.height == 1
+    records = RawPayloadArchive(cfg.meta_root).records("fund_flow")
+    assert len(records) == 1
+    record = records[0]
+    assert RawPayloadArchive(cfg.meta_root).read(record) == wire
+    assert record.run_id == "fund-flow-run"
+    assert record.payload_format == "bytes"
+    assert record.http_metadata["wire_exact"] is True
+    assert record.http_metadata["response_envelope"] == "json"
+    assert record.request_params["page"] == 1
+
+
+def test_fund_flow_archive_missing_wire_fails_loudly_but_disabled_archive_does_not(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    response = _FundFlowResponse(_fund_flow_payload(), None)
+    with pytest.raises(RawArchiveError, match="exact wire bytes"):
+        cap.fetch_fund_flow(date(2025, 1, 2), client=_FundFlowClient(response), config=cfg)
+
+    cfg.raw_archive_enabled = False
+    out = cap.fetch_fund_flow(date(2025, 1, 2), client=_FundFlowClient(response), config=cfg)
+    assert out.height == 1
+    assert not (cfg.meta_root / "raw").exists()
+
+
+def test_fund_flow_required_archive_rejects_captureless_adapter(monkeypatch, tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    monkeypatch.setattr(
+        cap,
+        "fetch_clist_pages",
+        lambda *args, **kwargs: _fund_flow_payload()["data"]["diff"],
+    )
+    with pytest.raises(RawArchiveError, match="no exact wire observation"):
+        cap.fetch_fund_flow(
+            date(2025, 1, 2),
+            client=SimpleNamespace(close=lambda: None),
+            config=cfg,
+            run_id="captureless-run",
+        )
+    assert not (cfg.staging_root / "fund_flow").exists()
+    assert not (cfg.meta_root / "raw").exists()
+
+
+def test_fund_flow_same_wire_gets_distinct_run_sidecars(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    wire = b'{"data":{"total":1,"diff":[{"f12":"600519"}]}}\n'
+
+    cap.fetch_fund_flow(
+        date(2025, 1, 2),
+        client=_FundFlowClient(_FundFlowResponse(_fund_flow_payload(), wire)),
+        config=cfg,
+        run_id="fund-flow-run-1",
+    )
+    cap.fetch_fund_flow(
+        date(2025, 1, 2),
+        client=_FundFlowClient(_FundFlowResponse(_fund_flow_payload(), wire)),
+        config=cfg,
+        run_id="fund-flow-run-2",
+    )
+
+    records = RawPayloadArchive(cfg.meta_root).records("fund_flow")
+    assert {record.run_id for record in records} == {"fund-flow-run-1", "fund-flow-run-2"}
+    assert all(
+        record.observation_id and "anonymous" not in record.observation_id for record in records
+    )

@@ -113,6 +113,30 @@ def test_market_breadth_is_session_dense():
     assert get_dataset("industry_index").coverage_mode == "session_dense"
 
 
+def test_revisable_datasets_declare_rolling_windows_and_append_only_feeds():
+    """The registry is the source of truth for incremental reconciliation.
+
+    Feeds whose source can revise an already-published key must overlap a
+    bounded window; genuinely append-only feeds must opt out explicitly so a
+    future fetcher cannot accidentally treat them as revisable.
+    """
+    assert get_dataset("daily_bars").reconciliation_lookback_days == 5
+    assert get_dataset("daily_bars").reconciliation_lookback_mode == "trading_day"
+    assert get_dataset("corporate_actions").reconciliation_lookback_days == 30
+    assert get_dataset("announcement_index").reconciliation_lookback_days == 30
+    assert get_dataset("financial_statement_items").reconciliation_lookback_days == 30
+    assert get_dataset("share_structure").reconciliation_lookback_days == 30
+
+    trade_ticks = get_dataset("trade_ticks")
+    assert trade_ticks.append_only is True
+    assert trade_ticks.reconciliation_lookback_days == 0
+
+    for spec in DATASETS.values():
+        assert spec.reconciliation_lookback_days >= 0
+        if spec.append_only:
+            assert spec.reconciliation_lookback_days == 0
+
+
 def test_every_dataset_lands_in_exactly_one_tier():
     grouped = datasets_by_tier()
     assert set(grouped) == set(TIERS)

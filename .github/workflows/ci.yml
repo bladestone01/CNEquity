@@ -33,6 +33,11 @@ jobs:
           ruff format --check .
           shellcheck scripts/*.sh
 
+      - name: Offline benchmark check
+        # Synthetic fixture only: this guards limiter/telemetry regressions and
+        # deliberately makes no claim about vendor speed or availability.
+        run: python scripts/benchmark_offline.py --check --max-elapsed-seconds 10 --max-concurrency 2
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
