@@ -7,7 +7,7 @@ import os
 import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO
 
@@ -165,3 +165,171 @@ class StateStore:
                 payload.pop(field, None)
             payload["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._write_payload(path, payload)
+
+    def get_negative_evidence(
+        self,
+        dataset: str,
+        *,
+        identity: dict | None = None,
+        now: datetime | None = None,
+    ) -> list[dict]:
+        """Return live, identity-matching negative evidence for *dataset*.
+
+        Negative evidence is deliberately kept in the dataset state file
+        rather than in an untracked process cache.  Each record is a small
+        symbol/window claim (for example, ``Sina returned an empty response``)
+        with an expiry and the instrument/status revision it was based on.
+        Expired records and records based on a newer catalog revision are
+        removed while reading, so a newly-listed or otherwise changed
+        instrument is never hidden by an old absence claim.
+
+        ``identity=None`` is useful to inspect the raw live cache.  Callers
+        that use the evidence for routing should always provide the current
+        identity so catalog changes invalidate old claims.
+        """
+        clock = _utc_now(now)
+        path = self._path(dataset)
+        with self._dataset_lock(dataset):
+            payload = self._read_payload(path)
+            raw = payload.get("negative_evidence", [])
+            if not isinstance(raw, list):
+                raw = []
+            retained: list[dict] = []
+            changed = not isinstance(payload.get("negative_evidence"), list)
+            for item in raw:
+                if not isinstance(item, dict):
+                    changed = True
+                    continue
+                expires_at = _parse_utc(item.get("expires_at"))
+                if expires_at is None or expires_at <= clock:
+                    changed = True
+                    continue
+                if identity is not None and item.get("identity") != identity:
+                    changed = True
+                    continue
+                retained.append(dict(item))
+            if changed or len(retained) != len(raw):
+                if retained:
+                    payload["negative_evidence"] = retained
+                else:
+                    payload.pop("negative_evidence", None)
+                payload["updated_at"] = clock.isoformat()
+                self._write_payload(path, payload)
+            return retained
+
+    def record_negative_evidence(
+        self,
+        dataset: str,
+        entries: Iterable[dict],
+        *,
+        ttl_days: int,
+        identity: dict | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """Persist bounded negative observations for a dataset.
+
+        Records are merged by symbol, requested window, reason and source.
+        A zero/negative TTL disables persistence, which is useful for tests or
+        deployments that prefer every missing key to be retried immediately.
+        The method accepts plain dictionaries to keep the state payload
+        forward-compatible with newer evidence fields.
+        """
+        if ttl_days <= 0:
+            return
+        clock = _utc_now(now)
+        expires = clock + timedelta(days=ttl_days)
+        normalized: list[dict] = []
+        for raw in entries:
+            if not isinstance(raw, dict):
+                continue
+            symbol = str(raw.get("symbol", "")).strip().upper()
+            start = str(raw.get("window_start", raw.get("start", ""))).strip()
+            end = str(raw.get("window_end", raw.get("end", ""))).strip()
+            if not symbol or not start or not end:
+                continue
+            item = dict(raw)
+            item["symbol"] = symbol
+            item["window_start"] = start
+            item["window_end"] = end
+            item["expires_at"] = expires.isoformat()
+            if identity is not None:
+                item["identity"] = dict(identity)
+            elif "identity" in item and not isinstance(item["identity"], dict):
+                item.pop("identity", None)
+            normalized.append(item)
+        if not normalized:
+            return
+
+        path = self._path(dataset)
+        with self._dataset_lock(dataset):
+            payload = self._read_payload(path)
+            raw_existing = payload.get("negative_evidence", [])
+            existing = [item for item in raw_existing if isinstance(item, dict)]
+            # Purge stale records even when no caller happened to read the
+            # cache first. This bounds state-file growth on long-lived lakes.
+            live: list[dict] = []
+            for item in existing:
+                expires_at = _parse_utc(item.get("expires_at"))
+                if expires_at is None or expires_at <= clock:
+                    continue
+                if identity is not None and item.get("identity") != identity:
+                    # A catalog revision invalidates the old claim. Drop it
+                    # at write time as well as read time so state does not
+                    # accumulate one dead copy per instruments revision.
+                    continue
+                live.append(dict(item))
+            merged: dict[tuple[str, str, str, str, str], dict] = {}
+            for item in live + normalized:
+                key = (
+                    str(item.get("symbol", "")),
+                    str(item.get("window_start", "")),
+                    str(item.get("window_end", "")),
+                    str(item.get("reason", "")),
+                    str(item.get("source", "")),
+                )
+                merged[key] = item
+            values = sorted(
+                merged.values(),
+                key=lambda item: (
+                    str(item.get("symbol", "")),
+                    str(item.get("window_start", "")),
+                    str(item.get("window_end", "")),
+                    str(item.get("reason", "")),
+                    str(item.get("source", "")),
+                ),
+            )
+            payload["negative_evidence"] = values
+            payload["updated_at"] = clock.isoformat()
+            self._write_payload(path, payload)
+
+    def clear_negative_evidence(self, dataset: str) -> None:
+        """Remove all negative evidence for *dataset* while preserving state."""
+        path = self._path(dataset)
+        with self._dataset_lock(dataset):
+            payload = self._read_payload(path)
+            if "negative_evidence" not in payload:
+                return
+            payload.pop("negative_evidence", None)
+            payload["updated_at"] = _utc_now().isoformat()
+            self._write_payload(path, payload)
+
+
+def _utc_now(value: datetime | None = None) -> datetime:
+    """Return an aware UTC clock value suitable for state comparisons."""
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        raise ValueError("negative evidence clock must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _parse_utc(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)

@@ -13,6 +13,7 @@ from cnequity.domain.symbols import (
     EXCLUDED_PREFIXES,
     PREFIX_WHITELIST,
 )
+from cnequity.domain.trading_status import risk_warning_expr
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import (
     collect_parquet_root,
@@ -20,8 +21,19 @@ from cnequity.query.parquet_scan import (
     list_partitions,
     scan_parquet_root,
 )
+from cnequity.storage.revisions import resolve_committed_root
 
-EXCLUDED_STATUSES = frozenset({"st", "*st", "suspended"})
+# Statuses a tradable-universe query drops. ST no longer lives in `status`, so
+# the risk-warning test is a separate predicate (`_excluded_status_expr`) that
+# also understands the legacy encoding.
+EXCLUDED_STATUSES = frozenset({"suspended", "delisted", "st", "*st"})
+
+
+def _excluded_status_expr(columns) -> pl.Expr:
+    """Rows a tradable universe must drop: halted, delisted or risk-warned."""
+    return pl.col("status").is_in(list(EXCLUDED_STATUSES)) | risk_warning_expr(columns)
+
+
 SUPPORTED_UNIVERSES = frozenset({"all_a", "all_a_sh_sz"})
 
 
@@ -61,11 +73,14 @@ def _all_a_symbol_expr(symbol_col: str = "symbol", *, universe: str = "all_a") -
 
 def _load_instruments(config: Config) -> pl.DataFrame:
     root = config.curated_root / "instruments"
-    if not root.exists():
-        return pl.DataFrame()
     try:
         return dedupe_by_primary_key(
-            collect_parquet_root(root, hive=False),
+            collect_parquet_root(
+                root,
+                hive=False,
+                dataset="instruments",
+                meta_root=config.meta_root,
+            ),
             "instruments",
         )
     except FileNotFoundError:
@@ -78,8 +93,6 @@ def _load_trading_status(
     trade_date: date | None = None,
 ) -> pl.DataFrame:
     root = config.curated_root / "trading_status"
-    if not root.exists():
-        return pl.DataFrame()
     try:
         return dedupe_by_primary_key(
             collect_parquet_root(
@@ -87,6 +100,8 @@ def _load_trading_status(
                 partition_col="trade_date",
                 start=trade_date,
                 end=trade_date,
+                dataset="trading_status",
+                meta_root=config.meta_root,
             ),
             "trading_status",
         )
@@ -101,7 +116,11 @@ def coverage_start_date(
     date_col: str = "trade_date",
 ) -> date | None:
     """Earliest *date_col* present in curated *dataset*, if any."""
-    root = config.curated_root / dataset
+    root = resolve_committed_root(
+        config.curated_root / dataset,
+        dataset=dataset,
+        meta_root=config.meta_root,
+    )
     if not root.exists():
         return None
 
@@ -109,7 +128,7 @@ def coverage_start_date(
     # month/year/quarter directory is only a container, though: using its
     # theoretical start would claim coverage before the first real row. Mixed
     # layouts and loose root-level files need the same exact scan.
-    parts = list_partitions(root, date_col)
+    parts = list_partitions(root, date_col, resolve=False)
     if (
         dataset != "daily_bars"
         and parts
@@ -134,6 +153,9 @@ def coverage_start_date(
                 start=part.start,
                 end=part.end,
                 traded_only=True,
+                dataset=dataset,
+                meta_root=config.meta_root,
+                committed=False,
             )
             value = scan.select(pl.col(date_col).min()).collect().item()
             if value is not None:
@@ -144,6 +166,9 @@ def coverage_start_date(
             root,
             partition_col=date_col,
             traded_only=dataset == "daily_bars" and date_col == "trade_date",
+            dataset=dataset,
+            meta_root=config.meta_root,
+            committed=False,
         )
         return scan.select(pl.col(date_col).min()).collect().item()
     except FileNotFoundError:
@@ -162,10 +187,14 @@ def coverage_end_date(
     mixed layouts must use the date stored in the row; otherwise a partial
     current month/year can make an incomplete research window look complete.
     """
-    root = config.curated_root / dataset
+    root = resolve_committed_root(
+        config.curated_root / dataset,
+        dataset=dataset,
+        meta_root=config.meta_root,
+    )
     if not root.exists():
         return None
-    parts = list_partitions(root, date_col)
+    parts = list_partitions(root, date_col, resolve=False)
     if (
         dataset != "daily_bars"
         and parts
@@ -191,6 +220,9 @@ def coverage_end_date(
                 start=part.start,
                 end=part.end,
                 traded_only=True,
+                dataset=dataset,
+                meta_root=config.meta_root,
+                committed=False,
             )
             value = scan.select(pl.col(date_col).max()).collect().item()
             if value is not None:
@@ -201,6 +233,9 @@ def coverage_end_date(
             root,
             partition_col=date_col,
             traded_only=dataset == "daily_bars" and date_col == "trade_date",
+            dataset=dataset,
+            meta_root=config.meta_root,
+            committed=False,
         )
         return scan.select(pl.col(date_col).max()).collect().item()
     except FileNotFoundError:
@@ -219,16 +254,26 @@ def st_coverage_start(config: Config) -> date | None:
     descriptive positive-label boundary; strict historical research must use a
     complete versioned ST evidence receipt instead of this minimum date.
     """
-    root = config.curated_root / "trading_status"
+    root = resolve_committed_root(
+        config.curated_root / "trading_status",
+        dataset="trading_status",
+        meta_root=config.meta_root,
+    )
     if not root.exists():
         return None
     try:
+        status = dedupe_lazy_by_primary_key(
+            scan_parquet_root(
+                root,
+                partition_col="trade_date",
+                dataset="trading_status",
+                meta_root=config.meta_root,
+                committed=False,
+            ),
+            "trading_status",
+        )
         return (
-            dedupe_lazy_by_primary_key(
-                scan_parquet_root(root, partition_col="trade_date"),
-                "trading_status",
-            )
-            .filter(pl.col("status").is_in(["st", "*st"]))
+            status.filter(risk_warning_expr(status.collect_schema().names()))
             .select(pl.col("trade_date").min())
             .collect()
             .item()
@@ -288,9 +333,7 @@ def tradable_symbols_on_date(
                 f"symbol(s) for {trade_date.isoformat()}, first={missing_symbols[0]}"
             )
 
-    bad = status.filter((~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES)))[
-        "symbol"
-    ]
+    bad = status.filter((~pl.col("is_trading")) | _excluded_status_expr(status.columns))["symbol"]
     if not bad.is_empty():
         out = out.filter(~pl.col("symbol").is_in(bad))
     return out
@@ -360,6 +403,8 @@ def apply_universe_filter(
                 partition_col="trade_date",
                 start=status_start,
                 end=status_end,
+                dataset="trading_status",
+                meta_root=config.meta_root,
             ),
             "trading_status",
         )
@@ -419,7 +464,9 @@ def apply_universe_filter(
             )
 
     bad = (
-        status.filter((~pl.col("is_trading")) | pl.col("status").is_in(list(EXCLUDED_STATUSES)))
+        status.filter(
+            (~pl.col("is_trading")) | _excluded_status_expr(status.collect_schema().names())
+        )
         .select(["symbol", pl.col("trade_date").alias(date_col)])
         .collect()
     )
