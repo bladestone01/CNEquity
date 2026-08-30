@@ -26,6 +26,8 @@ import math
 import re
 from datetime import date
 
+from cnequity.domain.rate_limit import source_request
+
 logger = logging.getLogger(__name__)
 
 BASE = "https://www.stats.gov.cn"
@@ -45,10 +47,14 @@ _SCRIPT_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S)
 _SPACE_RE = re.compile(r"[\s　\xa0]+")
 
 
-def _get(url: str) -> str:
+def _get(url: str, *, config=None) -> str:
     from curl_cffi import requests as cr
 
-    resp = cr.get(url, impersonate="chrome", timeout=_TIMEOUT_SECONDS)
+    # The release index and the release page are two separate wire requests.
+    # Keep the lease around exactly one curl call so a slow page consumes one
+    # NBS slot, while another worker can proceed once that call returns.
+    with source_request(config, "nbs"):
+        resp = cr.get(url, impersonate="chrome", timeout=_TIMEOUT_SECONDS)
     resp.raise_for_status()
     resp.encoding = "utf-8"
     return resp.text
@@ -64,9 +70,9 @@ def _plain_text(html: str) -> str:
     return _SPACE_RE.sub("", _TAG_RE.sub(" ", _SCRIPT_RE.sub("", html)))
 
 
-def find_latest_release(index_html: str | None = None) -> tuple[date, str] | None:
+def find_latest_release(index_html: str | None = None, *, config=None) -> tuple[date, str] | None:
     """Newest 采购经理指数 release as ``(observation month end, absolute url)``."""
-    html = index_html if index_html is not None else _get(RELEASE_INDEX)
+    html = index_html if index_html is not None else _get(RELEASE_INDEX, config=config)
     best: tuple[date, str] | None = None
     for href, title in _RELEASE_LINK_RE.findall(html):
         match = _TITLE_MONTH_RE.search(_SPACE_RE.sub("", title))
@@ -98,15 +104,13 @@ def fetch_latest_pmi(*, config=None) -> dict | None:
     Never raises: this backs a cross-check, and a statistics-bureau page being
     unreachable is not a reason to fail a data run.
     """
-    if config is not None:
-        config.rate_limit("nbs")
     try:
-        latest = find_latest_release()
+        latest = find_latest_release(config=config)
         if latest is None:
             logger.warning("NBS: no 采购经理指数 release found on %s", RELEASE_INDEX)
             return None
         obs_date, url = latest
-        value = parse_pmi(_get(url))
+        value = parse_pmi(_get(url, config=config))
     except Exception as exc:
         logger.warning("NBS PMI release unavailable: %s", exc)
         return None

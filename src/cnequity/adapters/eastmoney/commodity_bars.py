@@ -290,7 +290,7 @@ def fetch_commodity_bars_range(
         )
 
         try:
-            offshore = fetch_offshore_commodity_bars_range(start, end, strict=strict)
+            offshore = fetch_offshore_commodity_bars_range(start, end, config=config, strict=strict)
         except Exception as exc:
             logger.warning(
                 "commodity_bars: offshore fetch failed: %s: %s",

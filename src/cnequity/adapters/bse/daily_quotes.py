@@ -20,6 +20,7 @@ import httpx
 import polars as pl
 
 from cnequity.adapters.numeric import finite_int64
+from cnequity.domain.rate_limit import source_request
 
 logger = logging.getLogger(__name__)
 
@@ -144,15 +145,14 @@ def fetch_daily_quotes(
         # The first request establishes the WAF cookie.  It may answer 302 to
         # the same URL; do not follow that redirect because it loops on some
         # overseas CDNs, and the cookie is enough for the JSONP endpoint.
-        client.get(_QUOTATION_PAGE)
+        with source_request(config, "bse"):
+            client.get(_QUOTATION_PAGE)
         first_page = True
         total = 0
         page = 0
         while first_page or page * _PAGE_SIZE < total:
             if page >= _MAX_PAGES:
                 raise BseMarketDataError("BSE quotation pagination exceeded safety limit")
-            if config is not None:
-                config.rate_limit("bse")
             request_data = {
                 "page": page,
                 "type_en": '["B"]',
@@ -161,13 +161,16 @@ def fetch_daily_quotes(
                 "xxfcbj_en": "[2]",
                 "zqdm": "",
             }
-            response = client.post(_QUOTATION_API, data=request_data)
+            with source_request(config, "bse"):
+                response = client.post(_QUOTATION_API, data=request_data)
             if getattr(response, "status_code", 200) in {301, 302, 307, 308}:
                 # The site occasionally refreshes its WAF cookie with a
                 # same-URL redirect. Re-establish the page cookie once; never
                 # follow an arbitrary Location header into another endpoint.
-                client.get(_QUOTATION_PAGE)
-                response = client.post(_QUOTATION_API, data=request_data)
+                with source_request(config, "bse"):
+                    client.get(_QUOTATION_PAGE)
+                with source_request(config, "bse"):
+                    response = client.post(_QUOTATION_API, data=request_data)
             response.raise_for_status()
             page_rows, total = _parse_page(response.text)
             for raw in page_rows:

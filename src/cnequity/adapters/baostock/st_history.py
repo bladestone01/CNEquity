@@ -25,6 +25,8 @@ from cnequity.adapters.baostock._session import (
     fetch_per_symbol,
     to_baostock_symbol,
 )
+from cnequity.domain.rate_limit import source_request
+from cnequity.domain.trading_status import STATUS_NORMAL
 
 __all__ = ["fetch_st_history", "to_baostock_symbol"]
 
@@ -37,23 +39,25 @@ _OUTPUT_SCHEMA = {
     "trade_date": pl.Date,
     "is_trading": pl.Boolean,
     "status": pl.Utf8,
+    "risk_warning": pl.Boolean,
 }
 
 
-def _fetch_one_st(bs, symbol: str, start: date, end: date) -> list[dict] | None:
+def _fetch_one_st(bs, symbol: str, start: date, end: date, *, config=None) -> list[dict] | None:
     """Trading-day ST/normal evidence, or ``None`` on a retryable error.
 
     Unexpected ``isST`` vocabulary fails the entire symbol closed. Treating an
     unknown value as ``normal`` would manufacture negative evidence.
     """
-    rs = bs.query_history_k_data_plus(
-        to_baostock_symbol(symbol),
-        _ST_FIELDS,
-        start_date=start.isoformat(),
-        end_date=end.isoformat(),
-        frequency="d",
-        adjustflag="3",  # ST flag is adjust-independent
-    )
+    with source_request(config, "baostock"):
+        rs = bs.query_history_k_data_plus(
+            to_baostock_symbol(symbol),
+            _ST_FIELDS,
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            frequency="d",
+            adjustflag="3",  # ST flag is adjust-independent
+        )
     if getattr(rs, "error_code", "0") != "0":
         return None
     out: list[dict] = []
@@ -84,7 +88,8 @@ def _fetch_one_st(bs, symbol: str, start: date, end: date) -> list[dict] | None:
                 "symbol": symbol,
                 "trade_date": trade_date,
                 "is_trading": True,
-                "status": "st" if is_st == "1" else "normal",
+                "status": STATUS_NORMAL,
+                "risk_warning": is_st == "1",
             }
         )
     if identity_mismatches:
@@ -113,16 +118,21 @@ def fetch_st_history(
     ``bs`` / ``sleep`` / ``config`` are injectable for offline tests. Pass
     ``config`` in production for ``[sources.baostock]`` pacing.
     """
+
+    def fetch_one(bs_session, symbol: str, window_start: date, window_end: date):
+        return _fetch_one_st(bs_session, symbol, window_start, window_end, config=config)
+
     rows, failed = fetch_per_symbol(
         symbols,
         start,
         end,
-        _fetch_one_st,
+        fetch_one,
         bs=bs,
         sleep=sleep,
         label="baostock ST",
         config=config,
         rest_after_batch=rest_after_batch,
+        request_managed=True,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     if not df.is_empty():

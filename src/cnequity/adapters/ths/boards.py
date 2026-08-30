@@ -37,6 +37,7 @@ import httpx
 
 from cnequity.adapters.numeric import finite_int64
 from cnequity.domain.market_time import shanghai_today
+from cnequity.domain.rate_limit import source_request
 from cnequity.storage.atomic import write_json_atomic
 
 if TYPE_CHECKING:
@@ -102,6 +103,11 @@ def _throttle(url: str, config: Config | None) -> None:
     """Pace requests, per host — see the note on the two limiters above."""
     is_page = _PAGE_HOST in url
     if config is not None:
+        if getattr(config, "source_request", None) is not None:
+            # The request context below reserves both the host-specific QPS
+            # lane and the shared THS concurrency lease. Keep this legacy hook
+            # observable for lightweight config doubles only.
+            return
         config.rate_limit(_PAGE_SOURCE if is_page else "ths")
         return
     time.sleep(_DEFAULT_PAGE_MIN_INTERVAL if is_page else _DEFAULT_MIN_INTERVAL)
@@ -112,7 +118,9 @@ def _get(url: str, *, config: Config | None, timeout: float = 20.0) -> str:
     for attempt in range(_MAX_RETRIES):
         _throttle(url, config)
         try:
-            resp = httpx.get(url, headers=_HEADERS, timeout=timeout, follow_redirects=True)
+            source = _PAGE_SOURCE if _PAGE_HOST in url else "ths"
+            with source_request(config, source):
+                resp = httpx.get(url, headers=_HEADERS, timeout=timeout, follow_redirects=True)
         except Exception as exc:  # noqa: BLE001 — retried below, raised as ThsError
             last_exc = exc
         else:

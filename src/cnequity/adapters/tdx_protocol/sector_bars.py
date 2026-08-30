@@ -1,6 +1,6 @@
 """TDX sector/board index bars (88xxxx) — optional offline helper.
 
-Not used by ``sector_bars`` ingestion (pure EastMoney). Kept for ad-hoc probes
+Not used by ``sector_bars`` ingestion (production source is 同花顺/THS). Kept for ad-hoc probes
 and experimental routing via ``cne derive sector_routing``.
 """
 
@@ -13,7 +13,7 @@ import polars as pl
 
 from cnequity.adapters.tdx_protocol.bars import fetch_bars_paginated
 from cnequity.adapters.tdx_protocol.client import TdxSourceError, _quotes_client
-from cnequity.adapters.tdx_protocol.session import TDX_SESSION_LOCK, close_quotes_client
+from cnequity.adapters.tdx_protocol.session import close_quotes_client
 from cnequity.config import Config
 
 logger = logging.getLogger(__name__)
@@ -52,20 +52,19 @@ def fetch_sector_index_bars(
     sym = _sym_for_tdx_code(tdx_code)
     rate_limit = config.tdx_rate_limit_spec()
 
-    with TDX_SESSION_LOCK:
-        client = _quotes_client(config)
-        try:
-            raw = fetch_bars_paginated(
-                client,
-                sym,
-                start,
-                end,
-                rate_limit=rate_limit,
-                backfill=backfill,
-                is_index=True,
-            )
-        finally:
-            close_quotes_client(client)
+    client = _quotes_client(config)
+    try:
+        raw = fetch_bars_paginated(
+            client,
+            sym,
+            start,
+            end,
+            rate_limit=rate_limit,
+            backfill=backfill,
+            is_index=True,
+        )
+    finally:
+        close_quotes_client(client)
 
     if not raw:
         return []

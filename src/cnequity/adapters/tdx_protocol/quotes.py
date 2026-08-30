@@ -84,6 +84,20 @@ class Quotes:
         except Exception:  # noqa: BLE001 — close must never mask the real error
             pass
 
+    @property
+    def last_response_wire(self) -> bytes | None:
+        """Exact bytes received by the most recent protocol request.
+
+        ``TdxWireClient`` parsers operate on its socket object, so the
+        response capture is exposed through that object rather than the
+        normalized row-returning facade.  Test doubles may provide the same
+        property directly on themselves.
+        """
+        wire = getattr(self._client, "last_response_wire", None)
+        if wire is None:
+            wire = getattr(getattr(self._client, "client", None), "last_response_wire", None)
+        return wire
+
     def __enter__(self) -> Quotes:
         return self
 

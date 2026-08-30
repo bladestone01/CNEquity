@@ -14,12 +14,15 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import date
 from html.parser import HTMLParser
+from inspect import signature
 
 import httpx
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import parse_symbol
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive, begin_capture
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,64 @@ _ALLOTMENT_PRICE_RE = re.compile(r"配股(?:价|价格)\s*([0-9]+(?:\.[0-9]+)?)\
 
 class ThsCorporateActionsError(RuntimeError):
     """同花顺企业行动页面无法读取或无法识别。"""
+
+
+def _configured_archive(
+    config,
+    dataset: str,
+    *,
+    run_id: str | None = None,
+    request_scope: str | None = None,
+) -> RawPayloadArchive | None:
+    if config is None or not hasattr(config, "meta_root"):
+        return None
+    should_archive = getattr(config, "should_archive_raw", None)
+    if callable(should_archive) and not should_archive(dataset):
+        return None
+    if not bool(getattr(config, "raw_archive_enabled", True)):
+        return None
+    scope = str(request_scope or f"dataset:{dataset}")
+    nonce = begin_capture(config, dataset, run_id, source="ths", request_scope=scope)
+    return RawPayloadArchive(
+        config.meta_root,
+        enabled=True,
+        datasets=[dataset],
+        compression=getattr(config, "raw_archive_compression", "gzip"),
+        max_payload_bytes=getattr(config, "raw_archive_max_payload_bytes", None),
+        capture_owner=config,
+        capture_run_id=run_id,
+        capture_source="ths",
+        capture_scope=scope,
+        capture_nonce=nonce,
+    )
+
+
+def _page_wire(value: object) -> bytes | None:
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, bytes):
+        return value
+    content = getattr(value, "content", None)
+    if isinstance(content, bytearray):
+        return bytes(content)
+    if isinstance(content, memoryview):
+        return content.tobytes()
+    if isinstance(content, bytes):
+        return content
+    return None
+
+
+def _page_html(value: object, wire: bytes | None) -> str:
+    if wire is not None:
+        return wire.decode("gb18030", errors="ignore")
+    if isinstance(value, str):
+        return value
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return text
+    raise RawArchiveError("THS corporate_actions page has no readable response body")
 
 
 class _BonusTableParser(HTMLParser):
@@ -197,7 +258,14 @@ def _rows_from_page(symbol: str, html: str, start: date, end: date) -> list[dict
     return rows
 
 
-def _fetch_page(code: str, *, config: Config | None = None) -> str:
+def _fetch_page(
+    code: str,
+    *,
+    config: Config | None = None,
+    archive: RawPayloadArchive | None = None,
+    run_id: str | None = None,
+    request_scope: str | None = None,
+) -> str:
     """Fetch and decode one page; the endpoint is GB18030 despite weak headers."""
     retries = config.max_retries if config is not None else _MAX_RETRIES
     backoff = float(config.retry_backoff_seconds if config is not None else 2.0)
@@ -205,22 +273,45 @@ def _fetch_page(code: str, *, config: Config | None = None) -> str:
     last_exc: Exception | None = None
     url = _URL.format(code=code)
     for attempt in range(max(1, retries)):
-        if config is not None:
-            config.rate_limit("ths_bonus")
-        else:
+        if config is None:
             time.sleep(_DEFAULT_MIN_INTERVAL)
         try:
-            response = httpx.get(
-                url,
-                headers=_HEADERS,
-                timeout=timeout,
-                follow_redirects=True,
-            )
+            with source_request(config, "ths_bonus"):
+                response = httpx.get(
+                    url,
+                    headers=_HEADERS,
+                    timeout=timeout,
+                    follow_redirects=True,
+                )
         except Exception as exc:  # noqa: BLE001 — retry and report symbol failure
             last_exc = exc
         else:
             if response.status_code == 200:
-                return response.content.decode("gb18030", errors="ignore")
+                wire = _page_wire(response)
+                if archive is not None and archive.enabled:
+                    if wire is None:
+                        raise RawArchiveError(
+                            f"THS corporate_actions {code}: response has no exact wire bytes"
+                        )
+                    archive.archive(
+                        "corporate_actions",
+                        wire,
+                        source="ths",
+                        request_params={"code": code},
+                        run_id=run_id,
+                        url=url,
+                        response_status=response.status_code,
+                        payload_format="bytes",
+                        http_metadata={"wire_exact": True, "protocol": "http"},
+                        observation_id=(
+                            f"{run_id or 'anonymous'}:bonus:{code}:"
+                            f"scope={request_scope or 'scope-unknown'}"
+                        ),
+                        request_scope=request_scope,
+                    )
+                if wire is None:
+                    raise ThsCorporateActionsError(f"{url} -> HTTP 200 without response content")
+                return wire.decode("gb18030", errors="ignore")
             if response.status_code in (401, 403):
                 raise ThsCorporateActionsError(
                     f"{url} -> HTTP {response.status_code} (token-gated endpoint)"
@@ -241,6 +332,9 @@ def fetch_corporate_actions_ths(
     config: Config | None = None,
     symbol_windows: Mapping[str, tuple[date, date]] | None = None,
     page_fetcher: Callable[[str], str] | None = None,
+    run_id: str | None = None,
+    archive: RawPayloadArchive | None = None,
+    request_scope: str | None = None,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Fetch explicit per-symbol THS repairs and return ``(rows, failures)``.
 
@@ -248,6 +342,17 @@ def fetch_corporate_actions_ths(
     request to each instrument's actual listing/delisting interval so an old
     page cannot create events outside the symbol's observed life.
     """
+    if archive is None:
+        scope = request_scope or f"repair:ths:{start.isoformat()}:{end.isoformat()}"
+        archive = _configured_archive(
+            config,
+            "corporate_actions",
+            run_id=run_id,
+            request_scope=scope,
+        )
+    if archive is not None and archive.enabled and not run_id:
+        raise RawArchiveError("THS corporate_actions archive requires a non-empty run_id")
+
     rows: list[dict] = []
     failed: list[str] = []
     seen: set[str] = set()
@@ -266,13 +371,56 @@ def fetch_corporate_actions_ths(
         if window[0] > window[1]:
             continue
         try:
-            html = (
-                page_fetcher(info.code)
-                if page_fetcher is not None
-                else _fetch_page(info.code, config=config)
-            )
+            if page_fetcher is not None:
+                try:
+                    parameters = signature(page_fetcher).parameters
+                except (TypeError, ValueError):
+                    parameters = {}
+                accepts_run_id = "run_id" in parameters or any(
+                    parameter.kind is parameter.VAR_KEYWORD for parameter in parameters.values()
+                )
+                if archive is not None and archive.enabled and not accepts_run_id:
+                    raise RawArchiveError(
+                        "THS corporate_actions page adapter cannot receive run_id"
+                    )
+                page = (
+                    page_fetcher(info.code, run_id=run_id)
+                    if accepts_run_id
+                    else page_fetcher(info.code)
+                )
+                wire = _page_wire(page)
+                if archive is not None and archive.enabled:
+                    if wire is None:
+                        raise RawArchiveError(
+                            f"THS corporate_actions {symbol}: page has no exact wire bytes"
+                        )
+                    archive.archive(
+                        "corporate_actions",
+                        wire,
+                        source="ths",
+                        request_params={"code": info.code},
+                        run_id=run_id,
+                        url=_URL.format(code=info.code),
+                        payload_format="bytes",
+                        http_metadata={"wire_exact": True, "protocol": "http"},
+                        observation_id=(
+                            f"{run_id}:bonus:{info.code}:scope={request_scope or 'scope-unknown'}"
+                        ),
+                        request_scope=request_scope,
+                    )
+                html = _page_html(page, wire)
+            else:
+                html = _fetch_page(
+                    info.code,
+                    config=config,
+                    archive=archive,
+                    run_id=run_id,
+                    request_scope=request_scope,
+                )
             rows.extend(_rows_from_page(symbol, html, window[0], window[1]))
         except Exception as exc:  # noqa: BLE001 — preserve other symbols for retry
+            if isinstance(exc, RawArchiveError):
+                raise
             failed.append(symbol)
             logger.warning("ths corporate_actions: failed for %s: %s", symbol, exc)
 

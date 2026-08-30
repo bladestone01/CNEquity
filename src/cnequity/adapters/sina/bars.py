@@ -42,6 +42,7 @@ import polars as pl
 
 from cnequity.adapters.numeric import finite_int64
 from cnequity.adapters.sina.adj_factors import to_sina_symbol
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.schemas import DAILY_BARS_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,8 @@ def _request(
     symbol: str,
     datalen: int,
     client: httpx.Client | None,
+    *,
+    config=None,
 ) -> list[dict] | None:
     params = {
         "symbol": to_sina_symbol(symbol),
@@ -113,7 +116,11 @@ def _request(
     if client is None:
         client = httpx.Client(timeout=30.0)
     try:
-        resp = client.get(_KLINE_URL, params=params, headers=_HEADERS)
+        # A probe and a full-history confirmation are independent requests;
+        # acquire the lease here rather than around ``symbol_exists`` so a
+        # long probe cannot occupy a slot while it performs its second call.
+        with source_request(config, "sina_bars"):
+            resp = client.get(_KLINE_URL, params=params, headers=_HEADERS)
         resp.raise_for_status()
         return _parse_payload(resp.text)
     finally:
@@ -167,7 +174,7 @@ def _without_synthetic_terminal_copies(rows: list[dict]) -> list[dict]:
     return cleaned
 
 
-def symbol_exists(symbol: str, *, client: httpx.Client | None = None) -> date | None:
+def symbol_exists(symbol: str, *, client: httpx.Client | None = None, config=None) -> date | None:
     """Last trading date Sina has for *symbol*, or None if it never traded.
 
     A short tail request is cheap enough to sweep the whole A-share code space
@@ -176,7 +183,10 @@ def symbol_exists(symbol: str, *, client: httpx.Client | None = None) -> date | 
     discovered without treating the vendor's final record as unquestioned
     evidence.
     """
-    rows = _request(symbol, _PROBE_TAIL_LEN, client)
+    if config is None:
+        rows = _request(symbol, _PROBE_TAIL_LEN, client)
+    else:
+        rows = _request(symbol, _PROBE_TAIL_LEN, client, config=config)
     if not rows:
         return None
 
@@ -198,7 +208,10 @@ def symbol_exists(symbol: str, *, client: httpx.Client | None = None) -> date | 
     # A long terminal suspension can fill the cheap probe window with
     # zero-volume placeholders. Confirm that case with the full history before
     # permanently filing the code as never-issued.
-    full_rows = _request(symbol, _FULL_HISTORY_LEN, client)
+    if config is None:
+        full_rows = _request(symbol, _FULL_HISTORY_LEN, client)
+    else:
+        full_rows = _request(symbol, _FULL_HISTORY_LEN, client, config=config)
     return _last_positive(full_rows or [])
 
 
@@ -209,6 +222,7 @@ def fetch_daily_bars_sina(
     end: date | None = None,
     datalen: int = _FULL_HISTORY_LEN,
     client: httpx.Client | None = None,
+    config=None,
 ) -> pl.DataFrame:
     """Unadjusted daily bars for *symbol*, in the curated ``daily_bars`` shape.
 
@@ -216,7 +230,10 @@ def fetch_daily_bars_sina(
     sweeping the code space depends on being able to tell "never issued" from
     "request failed", and a transport failure still raises.
     """
-    rows = _request(symbol, datalen, client)
+    if config is None:
+        rows = _request(symbol, datalen, client)
+    else:
+        rows = _request(symbol, datalen, client, config=config)
     if not rows:
         return pl.DataFrame(schema={c: DAILY_BARS_SCHEMA[c] for c in _OUTPUT_COLS})
     rows = _without_synthetic_terminal_copies(rows)

@@ -33,7 +33,7 @@ from datetime import date, datetime, time
 from cnequity.adapters.tdx_protocol._wire import MAX_TICK_PAGE
 from cnequity.adapters.tdx_protocol._wire.constants import SECURITY_COEFFICIENT
 from cnequity.adapters.tdx_protocol._wire.helper import get_security_type
-from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
+from cnequity.domain.rate_limit import RateLimitSpec, source_request_slot_spec, wait_spec
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +162,10 @@ def fetch_trade_ticks(
     for _page in range(MAX_SESSION_PAGES):
         wait_spec(rate_limit)
         try:
-            page = client.ticks_history(
-                code, trade_date, market=market, start=start, offset=MAX_TICK_PAGE
-            )
+            with source_request_slot_spec(rate_limit):
+                page = client.ticks_history(
+                    code, trade_date, market=market, start=start, offset=MAX_TICK_PAGE
+                )
         except Exception as exc:
             raise TdxTradeTicksError(
                 f"{symbol} {trade_date}: transaction page failed at start={start}"

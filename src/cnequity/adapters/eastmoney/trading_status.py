@@ -9,6 +9,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
+from cnequity.domain.trading_status import STATUS_NORMAL, STATUS_SUSPENDED
 
 # Risk-warning board (ST / *ST), the fs behind quote.eastmoney.com st_board.
 # Do NOT use all-A market fs here.
@@ -130,36 +131,25 @@ def fetch_trading_status_eastmoney(
         st_set = _fetch_st_symbols(client)
         suspended = _fetch_suspended_symbols(client, trade_date)
 
-        rows = []
-        for sym in symbols:
-            if sym in suspended:
-                rows.append(
-                    {
-                        "symbol": sym,
-                        "trade_date": trade_date,
-                        "is_trading": False,
-                        "status": "suspended",
-                    }
-                )
-            elif sym in st_set:
-                rows.append(
-                    {
-                        "symbol": sym,
-                        "trade_date": trade_date,
-                        "is_trading": True,
-                        "status": "st",
-                    }
-                )
-            else:
-                rows.append(
-                    {
-                        "symbol": sym,
-                        "trade_date": trade_date,
-                        "is_trading": True,
-                        "status": "normal",
-                    }
-                )
-        return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
+        # Halting and risk warning are independent, so they are read
+        # independently. This used to be an if/elif over one `status` column,
+        # which meant a halted ST name was published as merely "suspended" and
+        # its designation was lost for that day — see domain/trading_status.py.
+        # Delisting is not knowable from these two boards; the step adds it
+        # from `instruments`.
+        rows = [
+            {
+                "symbol": sym,
+                "trade_date": trade_date,
+                "is_trading": sym not in suspended,
+                "status": STATUS_SUSPENDED if sym in suspended else STATUS_NORMAL,
+                "risk_warning": sym in st_set,
+            }
+            for sym in symbols
+        ]
+        return pl.DataFrame(rows, schema_overrides={"risk_warning": pl.Boolean}).unique(
+            subset=["symbol", "trade_date"], keep="last"
+        )
     finally:
         if owns:
             client.close()

@@ -8,6 +8,7 @@ from typing import Literal
 import httpx
 import polars as pl
 
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import parse_symbol
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ def fetch_adj_factor_series(
     adjust_type: AdjustType = "qfq",
     *,
     client: httpx.Client | None = None,
+    config=None,
 ) -> pl.DataFrame:
     """Fetch external cumulative adjustment factors from Sina Finance.
 
@@ -102,7 +104,8 @@ def fetch_adj_factor_series(
         client = httpx.Client(timeout=20.0)
 
     try:
-        response = client.get(url)
+        with source_request(config, "sina"):
+            response = client.get(url)
         response.raise_for_status()
         rows = _parse_sina_factor_payload(response.text)
         fund_mode = any(row.get("_factor_mode") == "fund" for row in rows)

@@ -42,7 +42,7 @@ import polars as pl
 
 from cnequity.adapters.numeric import finite_int64
 from cnequity.adapters.tdx_protocol._decode import decoded_quantity_or_none
-from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
+from cnequity.domain.rate_limit import RateLimitSpec, source_request_slot_spec, wait_spec
 
 logger = logging.getLogger(__name__)
 
@@ -241,13 +241,14 @@ def fetch_minute_bars_paginated(
             break
         wait_spec(rate_limit)
         try:
-            raw = client.bars(
-                symbol=code,
-                frequency=category,
-                market=market,
-                start=offset_pos,
-                offset=_PAGE_SIZE,
-            )
+            with source_request_slot_spec(rate_limit):
+                raw = client.bars(
+                    symbol=code,
+                    frequency=category,
+                    market=market,
+                    start=offset_pos,
+                    offset=_PAGE_SIZE,
+                )
         except Exception as exc:
             # A later-page failure means the already collected rows are only
             # a prefix of the requested window. Returning them as a successful
