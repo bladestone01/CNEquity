@@ -150,7 +150,7 @@ def _write_demo_instruments(cfg: Config, symbols: list[str]) -> list[str]:
     if kept.is_empty():
         raise click.ClickException(
             "None of the demo symbols were returned by TDX. "
-            "Check connectivity with `cne servers test` or pass --symbols."
+            "Check connectivity with `cne sources probe --only tdx_protocol` or pass --symbols."
         )
     df = validate_dataframe(
         with_provenance(kept, source="tdx_protocol", data_version="v1"),

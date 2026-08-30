@@ -40,7 +40,7 @@ cne demo                   # real data: 5 names × 30 sessions
 ```
 
 Measured at about 25 seconds. Needs **TDX quote hosts** reachable (mainland access is more reliable);
-if it fails, try `cne sources --only tdx_protocol`. The demo writes to its own
+if it fails, try `cne sources probe --only tdx_protocol`. The demo writes to its own
 `data/cnequity-demo/` directory and never touches a full lake.
 
 <p align="center">
@@ -190,7 +190,7 @@ whole daily job:
 ```bash
 cne status          # per-dataset freshness: FRESH / STALE / EMPTY
 cne serve           # http://127.0.0.1:8787 — coverage, size, tiers
-cne sources         # health of the 14 upstream hosts
+cne sources probe         # health of the 14 upstream hosts
 cne retry <run_id>  # re-run only the failed batches
 ```
 
@@ -232,7 +232,7 @@ Once the lake is up, `cne serve` shows coverage, freshness, and bytes by tier
 
 ```bash
 cne serve     # http://127.0.0.1:8787
-cne sources   # health of 14 upstream hosts (probe on CLI, display on serve)
+cne sources probe   # health of 14 upstream hosts (probe on CLI, display on serve)
 ```
 
 Details: [serve](docs/modules/serve.md) ·
@@ -262,7 +262,7 @@ in `load(adjust="qfq")`
 ([ADR-0004](docs/adr/0004-store-hfq-derive-qfq-at-query.md)).
 
 **Q: EastMoney 403 / connection reset?**
-Run `cne sources --only eastmoney_push2,eastmoney_push2his` first. Daily-path
+Run `cne sources probe --only eastmoney_push2,eastmoney_push2his` first. Daily-path
 bars come from TDX, outside that WAF blast radius.
 
 **Q: Why can't I get minute bars from two years ago?**

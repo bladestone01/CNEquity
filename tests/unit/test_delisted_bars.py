@@ -69,7 +69,7 @@ def test_shanghai_000_is_an_index_shenzhen_000_is_a_stock():
     assert _is_stock("sh.688981")
     assert _is_stock("sz.300104")
     assert not _is_stock("sh.999999")
-    assert not _is_stock("bj.430047")  # 北交所 has no adjustment factors
+    assert not _is_stock("bj.430047")  # 北交所 is outside Baostock's stock-recovery route
 
 
 def test_symbol_conversion_round_trip():

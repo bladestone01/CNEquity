@@ -138,7 +138,7 @@ def test_retired_packages_are_not_declared_as_dependencies(package):
 def test_vendored_client_satisfies_every_callback_the_wire_expects():
     """The trimmed client must still answer everything vendored code calls by name.
 
-    `TdxWireClient` keeps 5 of tdxpy's 22 methods. Anything the vendored modules
+    `TdxWireClient` keeps 7 of tdxpy's 22 methods. Anything the vendored modules
     reach for on the client — `HeartBeatThread` calls `api.do_heartbeat()` on a
     timer — is invisible to both imports and unit tests unless something asserts
     it, and only surfaces as a background thread throwing every interval.
@@ -165,3 +165,36 @@ def test_vendored_client_satisfies_every_callback_the_wire_expects():
     client = TdxWireClient()
     missing = sorted(n for n in expected if not hasattr(client, n))
     assert not missing, f"vendored code calls these, but the client lacks them: {missing}"
+
+
+def test_the_kept_wire_calls_are_exactly_the_documented_set():
+    """Pin what the trim kept, so the count cannot rot the way it already did.
+
+    The tree described itself as "the five calls this project makes" long after
+    `get_transaction_data` and `get_history_transaction_data` were added for
+    `trade_ticks`. A number in a docstring is not a contract; this list is.
+
+    Restoring a call from tdxpy is a real decision — it re-enlarges the vendored
+    surface, and everything in it is code this project now owns and must audit —
+    so it should cost an edit here rather than happening by accident.
+    """
+    from cnequity.adapters.tdx_protocol._wire import TdxWireClient
+
+    kept = {
+        "get_history_transaction_data",
+        "get_index_bars",
+        "get_security_bars",
+        "get_security_count",
+        "get_security_list",
+        "get_transaction_data",
+        "get_xdxr_info",
+    }
+    # Not wire calls: `setup` bundles the three handshake commands, `do_heartbeat`
+    # is the keepalive the vendored timer thread calls back into, and `to_df`
+    # exists only to raise — the lake builds polars frames from the dicts.
+    plumbing = {"setup", "do_heartbeat", "to_df"}
+
+    declared = {name for name in vars(TdxWireClient) if not name.startswith("_")}
+
+    assert declared - plumbing == kept
+    assert plumbing <= declared, "the wire calls these by name; none may be dropped"

@@ -6,8 +6,160 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Machine-readable dataset contracts.** `DatasetSpec` now carries
+  `schema_version`, `contract_level`, `pit_quality`, `availability_col`,
+  `unit_contract` and a compatibility policy, inferred so existing positional
+  constructors are unaffected. `cne contract show/export/validate/diff` (and
+  `cnequity.domain.contracts`) render the registry, schemas and primary keys
+  into a deterministic fingerprinted JSON document; `diff` classifies column
+  drops, type and primary-key changes, and unit/PIT/history changes as
+  breaking. See `docs/datasets/contract.md`.
+- **Point-in-time query mode.** `load(..., pit_mode="strict")` returns only
+  vintages whose disclosure, publication/availability and lake observation are
+  all provably on or before `as_of`, and excludes reconstructed backfill rows;
+  `"best_effort"` keeps them and adds `pit_is_exact` / `pit_quality`. Four
+  optional bitemporal columns (`available_at`, `source_published_at`,
+  `observed_at`, `revision_id`) are filled on read, and
+  `scripts/migrate_pit_vintages.py` writes them into old files in place.
+- **Versioned universe profiles.** `cnequity.domain.universe_profiles` is a
+  registry of reproducible research scopes (`cn_a_sh_sz_research_v1`,
+  `cn_a_all_experimental_v1`, plus legacy records) with a stable `scope_hash`.
+  `load(profile=...)` binds exchange/board, CDR/ETF, ST and delisting-evidence
+  rules and enables the strict checks. `cne profile list/show`. See
+  `docs/reference/universe-profiles.md`.
+- **Committed dataset revisions and portable snapshots.** Compaction now
+  commits a monotonic `revision` plus a content digest and per-file hashes
+  when curated files change, exposed through `StateStore` and
+  `cnequity.query.dataset_state` so a cache invalidates on a repair that never
+  moves the watermark. `cne snapshot create/verify/restore` produces
+  checksummed, immutable lake snapshots that also carry the contract
+  fingerprint and run lineage.
+- **Run-level dataset receipts.** A `dataset_results` table records one row
+  per logical dataset and stage (fetch/stage/compact/derive/audit/
+  publish_revision) with core/research/advisory criticality, with an additive
+  migration for hand-copied manifests. `cne status --run <id|latest>` reports
+  it.
+- **Source-use policy register.** `sources/SOURCES.yml` records access type,
+  terms-review status and a conservative use conclusion per source label; an
+  unreviewed permission is the literal `unknown` and never satisfies an allow
+  check. `cnequity.compliance.source_policy` and `cne sources policy` evaluate
+  it and fail closed. See `docs/legal/source-matrix.md`.
+- **Source SLO, resilience and stability gates.** `cne sources slo` turns
+  stored probe history into per-source availability SLOs and de-duplicated
+  incident payloads; `cne sources resilience` derives source concentration,
+  failure domains and a fail-closed backup gate for the core datasets from the
+  registry with no network calls; `cne stability` checks consecutive clean
+  trading days without filling gaps. Each supports `--enforce`.
+- **Run provenance on receipts.** Revision and snapshot receipts carry
+  non-secret code and config identity (package version, git commit, config
+  fingerprint) via `cnequity.provenance`.
+- **Supply-chain CI.** A new `security.yml` workflow runs `pip-audit` and
+  emits a CycloneDX SBOM on dependency changes and weekly. `docs/development/
+  release-governance.md` records the version and data-contract policy.
+
+### Changed
+
+- **Run status contract.** A step-level `warning` is now reported as
+  `degraded` at run level. `cne status` and the run commands
+  (`run daily`, `run --stale-only`, `init`, `retry`) exit `2` for a degraded
+  run — the core spine completed, research/advisory work did not — and `1`
+  only for a core failure; a bare `cne status` previously always exited `0`.
+- **Research-source failures no longer fail the run.** An `adj_factors` or
+  `industry_index` derive whose source is unavailable degrades a run and keeps
+  the committed raw `daily_bars` revision, instead of marking the whole run
+  failed.
+- **`list_datasets()` gains columns** `pit_quality`, `pit_storage_columns`,
+  `revision`, `revision_id`, `schema_version` and `contract_fingerprint`.
+- **PyYAML is now a direct runtime dependency** (used to parse
+  `sources/SOURCES.yml`) and ships as a wheel data file.
+- **The CLI surface is 33 commands, down from 43.** An audit found 58% of it was
+  reachable from neither the README nor any automation — one-off tooling that a
+  published CLI turns into a permanent compatibility obligation. Nothing lost a
+  capability:
+    - `cne servers test` (a deprecated, hidden alias) is **removed**; use
+      `cne sources --only tdx_protocol`, which asserts real bars came back.
+    - `cne stats refresh` → `cne stats rebuild --if-stale`. Its `--force` was
+      already what plain `rebuild` does. `--if-stale` cannot be combined with
+      `--dataset`: it decides on the whole lake's watermark.
+    - `cne contract export` → `cne contract show --out PATH`. Same document,
+      differing only in whether it was written to a file.
+    - `cne catalog` → the no-stats fallback of `cne stats show`, with `--json`
+      as its output. A lake that has never built its stats tables should not
+      need a build step to answer what is in it.
+    - `cne run catchup` → `scripts/run_catchup.py`; `cne repartition` →
+      `scripts/repartition.py`; `cne delisted discover/reconcile/repair/coverage`
+      → `scripts/delisted_ops.py`. Composition and one-off migrations, which is
+      what `scripts/` is for. `cne delisted status` and `cne delisted backfill`
+      stayed.
+- **`cne sources` is now a group; the probe is `cne sources probe`.** This is
+  the one breaking rename here: `cne sources` has shipped since the source
+  health board landed, and scripts calling it need the extra word. The `slo`,
+  `resilience` and `policy` subcommands join it under the same plural noun —
+  they were added earlier in this same unreleased cycle as `cne source <sub>`
+  and never shipped under the singular, so nothing that exists in a release is
+  affected by that half.
+
+  The reason: `source` and `sources` were two top-level entries one letter
+  apart, and typing the wrong one runs a different command rather than erroring.
+  `cne source --help` had to spend a sentence saying which was which, which is
+  what a naming defect looks like. Renamed before 1.0 deliberately — afterwards
+  it would need a deprecation cycle.
+- **`cli/main.py` is split by what a command does.** One 2,828-line module
+  became `setup_cmds`, `run_cmds`, `backfill_cmds`, `maintain_cmds`,
+  `quality_cmds`, `govern_cmds`, `consume_cmds` and `delisted_cmds`, with the
+  group in `_root` and shared pieces in `_shared`; `main` only imports them to
+  register. `--config`, hand-written 34 times, is now one `config_option`
+  decorator. Tests patch the module that binds the name — `main` deliberately
+  no longer re-exports internals, so a stale patch target raises instead of
+  silently patching a name nothing reads.
+- **The vendored TDX tree is excluded file by file, not wholesale.** Ruff,
+  `coverage` and Codecov skipped everything under `adapters/tdx_protocol/_wire`
+  on the rationale that it is upstream code kept byte-close for re-syncing. Two
+  of those files are ports that fix three tdxpy defects and return raw prices,
+  and `_wire/__init__.py` (`TdxWireClient`, the page caps, the heartbeat choice)
+  never existed upstream at all — and tdxpy, unmaintained since 2024, is why the
+  tree is vendored, so there is nothing to re-sync from. Those three are now
+  linted and measured like the rest of the package; the genuinely untouched
+  files are still listed and still skipped.
+
+### Deprecated
+
+- **`universe="all_a"` in the query layer.** It still resolves and keeps its
+  permissive legacy semantics but emits a `DeprecationWarning`; choose an
+  explicit profile such as `cn_a_sh_sz_research_v1`.
+- **`load()` without an explicit `pit_mode` for PIT datasets.** The omitted
+  case keeps the old `fetched_at` cutoff and makes no exactness guarantee.
+  Research code should pass `pit_mode` and record the choice.
+
 ### Fixed
 
+- **`cne snapshot`'s three subcommands had no help text at all.** `create`,
+  `verify` and `restore` listed as bare names with no description and no option
+  help — the only commands in the CLI with none.
+- **`cne stability` and `cne sources policy` had no CLI test.** Both are
+  fail-closed gates whose exit code is the entire point, and `stability` runs in
+  `scripts/daily_pipeline.sh` every day. A wrapper that stopped raising would
+  have reported the failure and still exited 0.
+- **The two TDX transaction parsers had no test.** `trade_ticks` is a
+  single-source dataset whose prices are delta-encoded per page, so one
+  mis-read field corrupts every later row — and the only verification was a
+  one-off byte comparison against a live server that CI cannot repeat.
+  `tests/unit/test_tdx_tick_parsers.py` now pins the wire layout both parsers
+  assume: field order, the four filler bytes only the historical response
+  carries, the absent per-record trade count, integer quantities, and undivided
+  prices.
+- **The vendored tree described itself as keeping "the five calls this project
+  makes"** after the two transaction commands brought it to seven.
+  `test_tdx_decoupling` now pins the kept set, so the count is a contract rather
+  than a comment.
+- **ETF/LOF adjustment factors and deep history are now complete.** Sina's
+  fund payloads use `s` (while `f` is only a placeholder); the adapter now maps
+  fund hfq directly from `s` and derives qfq as `1/s`. ETF/LOF symbols are
+  included in factor self-healing and coverage audits, EastMoney supplies their
+  listing dates, and the THS pre-2016 raw-history plan includes them while
+  continuing to exclude undated subscription placeholders.
 - **TDX instrument discovery excludes unlisted exchange placeholders.** SH/SZ
   security lists can advertise IPO and fund-application codes with a positive
   sub-tick `pre_close` sentinel. Those rows are now excluded before they enter

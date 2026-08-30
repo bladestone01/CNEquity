@@ -147,7 +147,7 @@ cne demo
 `cne demo` 默认拉取 5 只股票最近约 30 个交易日的真实数据，写入独立目录 `data/cnequity-demo/`，不会覆盖正式数据湖。需要能访问 TDX 行情主机；如果连接失败，可以先检查：
 
 ```bash
-cne sources --only tdx_protocol
+cne sources probe --only tdx_protocol
 ```
 
 <p align="center">
@@ -237,8 +237,9 @@ roe = load(
 cne run daily                 # 执行当天全部日更分组
 cne status                    # 查看 FRESH / STALE / EMPTY
 cne serve                     # 打开 http://127.0.0.1:8787
-cne sources                   # 检查上游数据源健康度
+cne sources probe                   # 检查上游数据源健康度
 cne retry --run-id <run_id>   # 只重试失败批次
+cne retry --failed-groups     # 重试各 daily 分组最新的失败 run
 ```
 
 单个 step 失败时，系统会记录 failed batch，其他步骤继续落盘；重试不会把整条任务重新跑一遍。浏览器控制台可以查看覆盖、新鲜度、容量、跑批和质量结果。
@@ -322,7 +323,7 @@ cne backfill daily_bars --start 2001-01-01
 <details>
 <summary><b>东财返回 403 或连接重置怎么办？</b></summary>
 
-先运行 `cne sources --only eastmoney_push2,eastmoney_push2his`。日更主路径行情走 TDX，不受东财行情接口风控影响。
+先运行 `cne sources probe --only eastmoney_push2,eastmoney_push2his`。日更主路径行情走 TDX，不受东财行情接口风控影响。
 
 </details>
 

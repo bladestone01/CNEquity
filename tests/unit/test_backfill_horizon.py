@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import click
 import polars as pl
 import pytest
 
-from cnequity.cli import main as cli_main
+from cnequity.cli import backfill_cmds
+from cnequity.cli.main import cli
 from cnequity.domain.datasets import DatasetSpec, get_dataset
 from cnequity.domain.market_time import shanghai_today
 
@@ -17,8 +19,8 @@ def test_horizon_guard_refuses_a_window_the_source_cannot_serve():
     spec = get_dataset("minute_bars")
     today = shanghai_today()
     too_old = spec.earliest_available(today) - timedelta(days=1)
-    with pytest.raises(cli_main.click.ClickException) as excinfo:
-        cli_main._guard_history_horizon("minute_bars", too_old)
+    with pytest.raises(click.ClickException) as excinfo:
+        backfill_cmds._guard_history_horizon("minute_bars", too_old)
     message = str(excinfo.value)
     # The error has to say the data does not exist, not that the run failed —
     # otherwise it reads as a lake bug rather than a vendor limit.
@@ -29,13 +31,13 @@ def test_horizon_guard_refuses_a_window_the_source_cannot_serve():
 
 def test_horizon_guard_allows_a_window_inside_the_horizon():
     inside = get_dataset("minute_bars").earliest_available(shanghai_today()) + timedelta(days=1)
-    cli_main._guard_history_horizon("minute_bars", inside)
+    backfill_cmds._guard_history_horizon("minute_bars", inside)
 
 
 def test_horizon_guard_is_a_no_op_without_a_horizon():
     # daily_bars has no vendor ceiling; a 2001 start must stay legal.
-    cli_main._guard_history_horizon("daily_bars", date(2001, 1, 1))
-    cli_main._guard_history_horizon("minute_bars", None)
+    backfill_cmds._guard_history_horizon("daily_bars", date(2001, 1, 1))
+    backfill_cmds._guard_history_horizon("minute_bars", None)
 
 
 def test_earliest_available_converts_trading_days_to_calendar_days():
@@ -85,10 +87,10 @@ def _reset_engines():
 
 
 def test_chunked_backfill_slices_the_window_and_compacts_each_slice(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
+    monkeypatch.setattr(backfill_cmds, "JobEngine", FakeEngine)
     cfg = type("Cfg", (), {})()
 
-    result = cli_main._backfill_chunked(
+    result = backfill_cmds._backfill_chunked(
         cfg, "minute_bars", date(2026, 7, 1), date(2026, 7, 25), chunk_days=10
     )
 
@@ -113,10 +115,10 @@ def test_chunked_backfill_stops_at_a_failed_slice_and_reports_where_to_resume(
         def _status(self, index):
             return "failed" if index == 2 else "success"
 
-    monkeypatch.setattr(cli_main, "JobEngine", FailingSecond)
+    monkeypatch.setattr(backfill_cmds, "JobEngine", FailingSecond)
     cfg = type("Cfg", (), {})()
 
-    result = cli_main._backfill_chunked(
+    result = backfill_cmds._backfill_chunked(
         cfg, "minute_bars", date(2026, 7, 1), date(2026, 7, 25), chunk_days=10
     )
 
@@ -139,7 +141,7 @@ def test_finish_backfill_run_compacts_on_failure():
     engine = FakeEngine(cfg=None)
     result = {"run_id": "run-x", "status": "failed", "rows_read": 5, "rows_written": 5}
 
-    out = cli_main._finish_backfill_run(engine, result)
+    out = backfill_cmds._finish_backfill_run(engine, result)
 
     assert out["compact"] == {"rows_written": 10}
     assert engine.compacted == ["run-x"]
@@ -154,7 +156,7 @@ def test_finish_backfill_run_surfaces_compact_warning():
     engine = WarningCompact(cfg=None)
     result = {"run_id": "run-warning", "status": "success", "rows_written": 5}
 
-    out = cli_main._finish_backfill_run(engine, result)
+    out = backfill_cmds._finish_backfill_run(engine, result)
 
     assert out["status"] == "warning"
     assert engine.compacted == ["run-warning"]
@@ -199,7 +201,7 @@ def test_all_intraday_scope_excludes_symbols_outside_listing_window(monkeypatch)
 
 
 def test_symbol_chunked_backfill_walks_full_window_per_symbol_batch(monkeypatch):
-    monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
+    monkeypatch.setattr(backfill_cmds, "JobEngine", FakeEngine)
     symbols = [f"{i:06d}.SH" for i in range(250)]
     monkeypatch.setattr("cnequity.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = type(
@@ -211,7 +213,7 @@ def test_symbol_chunked_backfill_walks_full_window_per_symbol_batch(monkeypatch)
         },
     )()
 
-    result = cli_main._backfill_symbol_chunked(
+    result = backfill_cmds._backfill_symbol_chunked(
         cfg, "minute_bars", date(2026, 3, 11), date(2026, 8, 1), chunk_symbols=200
     )
 
@@ -236,7 +238,7 @@ def test_symbol_chunked_backfill_stops_and_reports_resume_symbol(monkeypatch):
         def _status(self, index):
             return "failed" if index == 2 else "success"
 
-    monkeypatch.setattr(cli_main, "JobEngine", FailingSecond)
+    monkeypatch.setattr(backfill_cmds, "JobEngine", FailingSecond)
     symbols = [f"{i:06d}.SH" for i in range(250)]
     monkeypatch.setattr("cnequity.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = type(
@@ -245,7 +247,7 @@ def test_symbol_chunked_backfill_stops_and_reports_resume_symbol(monkeypatch):
         {"minute_bars_scope": "all", "minute_bars_symbols": []},
     )()
 
-    result = cli_main._backfill_symbol_chunked(
+    result = backfill_cmds._backfill_symbol_chunked(
         cfg, "minute_bars", date(2026, 3, 11), date(2026, 8, 1), chunk_symbols=200
     )
 
@@ -276,13 +278,13 @@ def test_symbols_flag_overrides_scope_for_intraday(tmp_path, monkeypatch):
         seen["cfg"] = config
         return {"status": "success", "rows_written": 0}
 
-    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
-    monkeypatch.setattr(cli_main, "_backfill_once", fake_backfill)
+    monkeypatch.setattr(backfill_cmds, "_cfg", lambda _p: cfg)
+    monkeypatch.setattr(backfill_cmds, "_backfill_once", fake_backfill)
 
     from click.testing import CliRunner
 
     result = CliRunner().invoke(
-        cli_main.cli,
+        cli,
         _backfill_argv("minute_bars_5m", "--symbols", "600519.sh, 000001.SZ"),
     )
     assert result.exit_code == 0, result.output
@@ -298,18 +300,16 @@ def test_symbols_flag_scopes_daily_bar_repairs(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     cfg = SimpleNamespace()
-    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+    monkeypatch.setattr(backfill_cmds, "_cfg", lambda _p: cfg)
     monkeypatch.setattr(
-        cli_main,
+        backfill_cmds,
         "_backfill_once",
         lambda config, dataset: {"status": "success", "rows_written": 0},
     )
 
     from click.testing import CliRunner
 
-    result = CliRunner().invoke(
-        cli_main.cli, _backfill_argv("daily_bars", "--symbols", "600519.SH")
-    )
+    result = CliRunner().invoke(cli, _backfill_argv("daily_bars", "--symbols", "600519.SH"))
     assert result.exit_code == 0, result.output
     assert cfg._backfill_symbols == ["600519.SH"]
 
@@ -318,9 +318,9 @@ def test_bse_tip_repair_requires_one_session_and_symbols(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     cfg = SimpleNamespace()
-    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+    monkeypatch.setattr(backfill_cmds, "_cfg", lambda _p: cfg)
     monkeypatch.setattr(
-        cli_main,
+        backfill_cmds,
         "_backfill_once",
         lambda config, dataset: {"status": "success", "rows_written": 1},
     )
@@ -329,7 +329,7 @@ def test_bse_tip_repair_requires_one_session_and_symbols(tmp_path, monkeypatch):
 
     runner = CliRunner()
     missing_symbols = runner.invoke(
-        cli_main.cli,
+        cli,
         _backfill_argv(
             "daily_bars",
             "--start",
@@ -343,7 +343,7 @@ def test_bse_tip_repair_requires_one_session_and_symbols(tmp_path, monkeypatch):
     assert "requires --symbols" in missing_symbols.output
 
     different_days = runner.invoke(
-        cli_main.cli,
+        cli,
         _backfill_argv(
             "daily_bars",
             "--start",
@@ -369,13 +369,13 @@ def test_symbols_flag_points_each_dataset_at_its_own_config_block():
     from cnequity.config import Config
 
     cfg = Config(data_root=Path("/tmp/lake"))
-    cli_main._override_scope(cfg, "trade_ticks", ["600519.SH", "000001.SZ"])
+    backfill_cmds._override_scope(cfg, "trade_ticks", ["600519.SH", "000001.SZ"])
     assert cfg.trade_ticks_enabled is True
     assert cfg.trade_ticks_scope == "watchlist"
     assert cfg.trade_ticks_symbols == ["600519.SH", "000001.SZ"]
     assert cfg.minute_bars_enabled is False
 
-    cli_main._override_scope(cfg, "minute_bars_5m", ["600519.SH"])
+    backfill_cmds._override_scope(cfg, "minute_bars_5m", ["600519.SH"])
     assert cfg.minute_bars_enabled is True
     assert cfg.minute_bars_symbols == ["600519.SH"]
     assert "5m" in cfg.minute_bars_frequencies
@@ -387,7 +387,7 @@ def test_symbols_flag_lifts_the_tick_ceiling_for_a_hand_typed_list():
 
     cfg = Config(data_root=Path("/tmp/lake"))
     cfg.trade_ticks_max_symbols = 2
-    cli_main._override_scope(cfg, "trade_ticks", ["600519.SH", "000001.SZ", "300750.SZ"])
+    backfill_cmds._override_scope(cfg, "trade_ticks", ["600519.SH", "000001.SZ", "300750.SZ"])
     assert cfg.trade_ticks_max_symbols == 3
 
 
@@ -399,8 +399,8 @@ def test_tick_horizon_guard_does_not_suggest_narrowing_the_scope():
     Repeating that advice here would send someone editing a setting that cannot
     help them.
     """
-    with pytest.raises(cli_main.click.ClickException) as excinfo:
-        cli_main._guard_history_horizon("trade_ticks", date(2023, 1, 1))
+    with pytest.raises(click.ClickException) as excinfo:
+        backfill_cmds._guard_history_horizon("trade_ticks", date(2023, 1, 1))
     message = str(excinfo.value)
     assert "history floor" in message
     assert "narrow" not in message
@@ -420,8 +420,8 @@ def test_top_holders_floor_is_the_pit_boundary_not_the_data_boundary():
     from cnequity.domain.datasets import get_dataset
 
     assert get_dataset("top_holders").history_floor_date == date(2003, 1, 1)
-    with pytest.raises(cli_main.click.ClickException) as excinfo:
-        cli_main._guard_history_horizon("top_holders", date(2001, 1, 1))
+    with pytest.raises(click.ClickException) as excinfo:
+        backfill_cmds._guard_history_horizon("top_holders", date(2001, 1, 1))
     message = str(excinfo.value)
     assert "history floor" in message
     assert "2003-01-01" in message
@@ -431,8 +431,8 @@ def test_top_holders_floor_is_the_pit_boundary_not_the_data_boundary():
 def test_northbound_flows_declares_the_exchange_opening_floor():
     spec = get_dataset("northbound_flows")
     assert spec.history_floor_date == date(2014, 11, 17)
-    with pytest.raises(cli_main.click.ClickException) as excinfo:
-        cli_main._guard_history_horizon("northbound_flows", date(2014, 11, 16))
+    with pytest.raises(click.ClickException) as excinfo:
+        backfill_cmds._guard_history_horizon("northbound_flows", date(2014, 11, 16))
     message = str(excinfo.value)
     assert "history floor" in message
     assert "2014-11-17" in message
@@ -444,10 +444,10 @@ def test_chunked_backfill_keeps_a_warning_status_across_later_successes(monkeypa
         def _status(self, index):
             return "warning" if index == 2 else "success"
 
-    monkeypatch.setattr(cli_main, "JobEngine", WarnsSecond)
+    monkeypatch.setattr(backfill_cmds, "JobEngine", WarnsSecond)
     cfg = type("Cfg", (), {})()
 
-    result = cli_main._backfill_chunked(
+    result = backfill_cmds._backfill_chunked(
         cfg, "minute_bars", date(2026, 7, 1), date(2026, 7, 25), chunk_days=10
     )
     # A warning does not stop the sweep, and a later success must not paper
@@ -461,7 +461,7 @@ def test_cli_backfill_takes_the_symbol_chunked_path_when_both_dates_given(monkey
 
     from click.testing import CliRunner
 
-    monkeypatch.setattr(cli_main, "JobEngine", FakeEngine)
+    monkeypatch.setattr(backfill_cmds, "JobEngine", FakeEngine)
     symbols = [f"{i:06d}.SH" for i in range(250)]
     monkeypatch.setattr("cnequity.steps.intraday.resolve_scope", lambda _cfg: symbols)
     cfg = types.SimpleNamespace(
@@ -470,10 +470,10 @@ def test_cli_backfill_takes_the_symbol_chunked_path_when_both_dates_given(monkey
         minute_bars_enabled=True,
         minute_bars_frequencies=["1m"],
     )
-    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+    monkeypatch.setattr(backfill_cmds, "_cfg", lambda _p: cfg)
 
     result = CliRunner().invoke(
-        cli_main.cli,
+        cli,
         _backfill_argv("minute_bars", "--start", "2026-07-01", "--end", "2026-07-25"),
     )
     assert result.exit_code == 0, result.output
@@ -494,7 +494,7 @@ def test_cli_backfill_exits_nonzero_when_the_result_is_not_success(monkeypatch):
         def _status(self, index):
             return "failed"
 
-    monkeypatch.setattr(cli_main, "JobEngine", AllFail)
+    monkeypatch.setattr(backfill_cmds, "JobEngine", AllFail)
     monkeypatch.setattr("cnequity.steps.intraday.resolve_scope", lambda _cfg: ["600519.SH"])
     cfg = types.SimpleNamespace(
         minute_bars_scope="watchlist",
@@ -502,10 +502,10 @@ def test_cli_backfill_exits_nonzero_when_the_result_is_not_success(monkeypatch):
         minute_bars_enabled=True,
         minute_bars_frequencies=["1m"],
     )
-    monkeypatch.setattr(cli_main, "_cfg", lambda _p: cfg)
+    monkeypatch.setattr(backfill_cmds, "_cfg", lambda _p: cfg)
 
     result = CliRunner().invoke(
-        cli_main.cli,
+        cli,
         _backfill_argv("minute_bars", "--start", "2026-07-01", "--end", "2026-07-10"),
     )
     assert result.exit_code == 1

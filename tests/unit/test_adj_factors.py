@@ -81,6 +81,68 @@ def test_fetch_adj_factor_series_qfq():
     assert df["factor"].to_list() == [0.5, 0.5]
 
 
+def test_fetch_adj_factor_series_etf_hfq_uses_hfq_s_directly():
+    payload = {
+        "data": [
+            {"d": "2026-07-06", "f": "1", "s": "3.0"},
+            {"d": "1900-01-01", "f": "1", "s": "1.0"},
+        ]
+    }
+    body = f"var foo = {json.dumps(payload)};"
+    requested: list[str] = []
+
+    class FakeResponse:
+        text = body
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def get(self, url):
+            requested.append(url)
+            return FakeResponse()
+
+        def close(self):
+            return None
+
+    df = fetch_adj_factor_series("588170.SH", "hfq", client=FakeClient())
+
+    assert len(requested) == 1
+    assert "hfq.js" in requested[0]
+    assert df.sort("trade_date")["factor"].to_list() == [1.0, 3.0]
+
+
+def test_fetch_adj_factor_series_etf_qfq_converts_s_divisor():
+    payload = {
+        "data": [
+            {"d": "2026-07-06", "f": "1", "s": "1.0"},
+            {"d": "1900-01-01", "f": "1", "s": "3.0"},
+        ]
+    }
+    body = f"var foo = {json.dumps(payload)};"
+    requested: list[str] = []
+
+    class FakeResponse:
+        text = body
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def get(self, url):
+            requested.append(url)
+            return FakeResponse()
+
+        def close(self):
+            return None
+
+    df = fetch_adj_factor_series("588170.SH", "qfq", client=FakeClient())
+
+    assert len(requested) == 1
+    assert "qfq.js" in requested[0]
+    assert df.sort("trade_date")["factor"].to_list() == [1 / 3, 1.0]
+
+
 def test_fetch_adj_factor_series_skips_invalid_dates_and_dedupes():
     payload = {
         "data": [
@@ -319,6 +381,29 @@ def test_compute_adj_factors_writes_derived(adj_config):
     assert df["factor"][0] == 0.5
     assert df["adjust_type"][0] == "hfq"
     assert df["source"][0] == "sina"
+
+
+def test_compute_adj_factors_includes_etf_bars(adj_config, monkeypatch):
+    _write_bar(adj_config, "510300.SH", date(2024, 6, 28))
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [2.0]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+
+    assert result.failed == []
+    assert "510300.SH" in calls
+    out = pl.read_parquet(
+        adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
+    )
+    assert out.filter(pl.col("symbol") == "510300.SH")["factor"].to_list() == [2.0]
 
 
 def test_write_adj_partitions_merges_all_shards_and_cleans_stale_siblings(tmp_path):
@@ -773,6 +858,35 @@ def test_failed_symbol_is_retried_after_global_watermark_advances(adj_config, mo
     assert written.filter(pl.col("symbol") == "600519.SH")["factor"].to_list() == [0.7]
 
 
+def test_compute_adj_factors_fills_partial_watermark_partition(adj_config, monkeypatch):
+    """Late bars on the watermark date are not hidden by the date watermark."""
+    _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28), factor=0.5)
+    _write_factor_cache(adj_config, "000001.SZ", date(2024, 6, 27), factor=1.0)
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28), factor=0.5)
+    _write_adj_partition(adj_config, "000001.SZ", date(2024, 6, 27), factor=1.0)
+    _write_bar(adj_config, "000001.SZ", date(2024, 6, 28))
+
+    calls: list[str] = []
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        calls.append(symbol)
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [1.0]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+
+    assert result.rows == 1
+    assert calls == []
+    out = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-28" / "part-0.parquet"
+    df = pl.read_parquet(out)
+    assert set(df["symbol"].to_list()) == {"600519.SH", "000001.SZ"}
+    assert df.filter(pl.col("symbol") == "600519.SH")["factor"][0] == 0.5
+
+
 # --- self-healing history ----------------------------------------------------
 # The derive is append-only from its watermark, so `cne backfill daily_bars`
 # lands history *behind* the watermark and never gets a factor. On a real lake
@@ -792,7 +906,23 @@ def test_uncovered_symbols_finds_history_behind_the_watermark(adj_config):
     assert _uncovered_symbols(adj_config) == {"600519.SH"}
 
 
-def test_uncovered_symbols_uses_newest_instrument_revision(adj_config):
+def test_uncovered_symbols_includes_etfs(adj_config):
+    from cnequity.derive.adj_factors import _uncovered_symbols
+
+    _write_bar(adj_config, "510300.SH", date(2024, 6, 28))
+    inst_dir = adj_config.curated_root / "instruments"
+    inst_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["510300.SH", "600519.SH"],
+            "asset_type": ["etf", "stock"],
+        }
+    ).write_parquet(inst_dir / "part-merged.parquet")
+
+    assert "510300.SH" in _uncovered_symbols(adj_config)
+
+
+def test_uncovered_symbols_uses_newest_nonpriced_instrument_revision(adj_config):
     from cnequity.derive.adj_factors import _uncovered_symbols
 
     _write_bar(adj_config, "600519.SH", date(2016, 1, 4))
@@ -803,7 +933,7 @@ def test_uncovered_symbols_uses_newest_instrument_revision(adj_config):
     pl.DataFrame(
         {
             "symbol": ["600519.SH", "600519.SH"],
-            "asset_type": ["stock", "etf"],
+            "asset_type": ["stock", "index"],
             "fetched_at": [
                 datetime(2024, 6, 28, 7, tzinfo=timezone.utc),
                 datetime(2024, 6, 28, 8, tzinfo=timezone.utc),

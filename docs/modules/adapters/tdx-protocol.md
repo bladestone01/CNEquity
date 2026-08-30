@@ -32,7 +32,7 @@
 - `servers = "host:port"`：固定单服
 - `allow_mock = false`（生产）：连接失败抛异常，不造假数据
 
-`cne servers test` 验证连通性。
+`cne sources probe --only tdx_protocol` 验证连通性。
 
 ---
 
@@ -91,7 +91,7 @@
 
 原先依赖 `mootdx`（它又依赖 `tdxpy`）。两者同属一个作者，均于 2024 年后停止发布；`mootdx` 还锁死 `httpx<0.26`，并引入编译型 V8 绑定 `py-mini-racer`。上游没有可修复的版本。
 
-`_wire/` 从 tdxpy 裁剪出本项目实际用到的 5 个标准市场调用（1618 行 / 原 4929 行），砍掉本地文件 reader、财务爬虫、扩展市场与 pandas 依赖。TDX 线协议是冻结的传统二进制格式，内容是定长 `struct.unpack`，不随上游变动。
+`_wire/` 从 tdxpy 裁剪出本项目实际用到的 7 个标准市场调用（`get_security_bars` / `get_index_bars` / `get_security_count` / `get_security_list` / `get_transaction_data` / `get_history_transaction_data` / `get_xdxr_info`，1832 行 / 原 4929 行），砍掉本地文件 reader、财务爬虫、扩展市场与 pandas 依赖。TDX 线协议是冻结的传统二进制格式，内容是定长 `struct.unpack`，不随上游变动。保留哪几个由 `test_tdx_decoupling.py` 固定，不靠这段话。
 
 迁移时以真实服务器逐字节对拍验证过：解析结果与上游 tdxpy 完全一致，门面输出与 mootdx 完全一致（含 51478 行全量证券列表零差异）。`tests/unit/test_tdx_decoupling.py` 持续守卫，防止依赖回流。
 

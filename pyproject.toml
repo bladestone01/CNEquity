@@ -53,6 +53,7 @@ dependencies = [
   "curl_cffi>=0.7",
   "polars>=1.0",
   "pyarrow>=15.0",
+  "PyYAML>=6.0",
   # No AkShare. Its two call sites wrapped endpoints already queried directly —
   # the ST board (push2 clist) and the PMI / 货币供应量 datacenter reports — so it
   # bought a parsing layer, 14 transitive packages and the mini-racer collision
@@ -113,6 +114,9 @@ cne = "cnequity.cli.main:cli"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.data-files]
+"share/cnequity" = ["sources/SOURCES.yml"]
+
 [tool.setuptools.package-data]
 cnequity = [
     "py.typed",
@@ -137,10 +141,35 @@ cnequity = [
 line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
-# Vendored upstream code (tdxpy, MIT). Kept byte-close to its source so it can be
-# re-synced or diffed against upstream; reformatting it to our rules would only
-# make that harder, and the style is not ours to own.
-extend-exclude = ["src/cnequity/adapters/tdx_protocol/_wire"]
+# Vendored upstream code (tdxpy, MIT), file by file rather than by directory.
+# There is no upstream to re-sync from — tdxpy's last release was 2024 and its
+# being unmaintained is why the tree is vendored at all — so the exclusion is
+# not about keeping a diff cheap. It is about not owning a style: these files
+# are still byte-close to tdxpy, and reformatting them would rewrite code
+# nobody here has read line by line.
+#
+# Deliberately NOT listed, because they are ours and only live here:
+#   _wire/__init__.py                      — TdxWireClient, page caps, heartbeat
+#   parser/std/get_transaction_data.py     — three upstream defects fixed
+#   parser/std/get_history_transaction_data.py — ditto, and raw prices
+# A new file under _wire is ours by default and gets linted; add it below only
+# if it is a fresh port of upstream code.
+extend-exclude = [
+  "src/cnequity/adapters/tdx_protocol/_wire/constants.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/exceptions.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/heartbeat.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/helper.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/logger.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/socket_client.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/parser/base.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/parser/raw_parser.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/parser/setup_commands.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_index_bars.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_security_bars.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_security_count.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_security_list.py",
+  "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_xdxr_info.py",
+]
 # extend-exclude alone only applies while ruff walks a directory. Anything that
 # passes filenames explicitly — pre-commit, an editor-on-save action, a manual
 # `ruff format <path>` — bypasses it and would reformat the vendored tree.
@@ -174,9 +203,27 @@ markers = [
 [tool.coverage.run]
 source = ["cnequity"]
 branch = true
-# Vendored upstream (tdxpy, MIT). Same boundary as ruff extend-exclude: we own
-# the facade around it, not every struct.unpack line inside.
-omit = ["*/adapters/tdx_protocol/_wire/*", "*/adapters/tdx_protocol/_wire/**"]
+# Vendored upstream (tdxpy, MIT). Same boundary as ruff extend-exclude, and the
+# same three exceptions: `_wire/__init__.py` and the two transaction parsers are
+# first-party code that happens to sit in the vendored tree, so they are
+# measured like everything else. Omitting them hid the one place in this package
+# where a parsing regression corrupts every later row of a page.
+omit = [
+  "*/adapters/tdx_protocol/_wire/constants.py",
+  "*/adapters/tdx_protocol/_wire/exceptions.py",
+  "*/adapters/tdx_protocol/_wire/heartbeat.py",
+  "*/adapters/tdx_protocol/_wire/helper.py",
+  "*/adapters/tdx_protocol/_wire/logger.py",
+  "*/adapters/tdx_protocol/_wire/socket_client.py",
+  "*/adapters/tdx_protocol/_wire/parser/base.py",
+  "*/adapters/tdx_protocol/_wire/parser/raw_parser.py",
+  "*/adapters/tdx_protocol/_wire/parser/setup_commands.py",
+  "*/adapters/tdx_protocol/_wire/parser/std/get_index_bars.py",
+  "*/adapters/tdx_protocol/_wire/parser/std/get_security_bars.py",
+  "*/adapters/tdx_protocol/_wire/parser/std/get_security_count.py",
+  "*/adapters/tdx_protocol/_wire/parser/std/get_security_list.py",
+  "*/adapters/tdx_protocol/_wire/parser/std/get_xdxr_info.py",
+]
 
 [tool.coverage.report]
 show_missing = true

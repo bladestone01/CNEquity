@@ -11,7 +11,7 @@
 | 能力 | 脚本 | 作用 |
 |------|------|------|
 | 调度 | `scripts/daily_pipeline.sh` | 串行跑 6 个 schedule group + 健康检查 + 备份 |
-| 调度 | `scripts/install_scheduler.sh` | 安装 macOS launchd（Helsinki 每天 11:15） |
+| 调度 | `scripts/install_scheduler.sh` | 安装 macOS launchd（每天 11:15 本机时间） |
 | 调度 | `scripts/uninstall_scheduler.sh` | 卸载 launchd |
 | 告警 | `scripts/health_notify.sh` | `audit --full` + `status --datasets` + macOS 通知 |
 | 备份 | `scripts/backup_meta.sh` | manifest + state + quality 的 tar 轮换 |
@@ -28,13 +28,14 @@ scripts/install_scheduler.sh
 ```
 
 - 生成 `~/Library/LaunchAgents/com.cnequity.daily.plist`
-- **Europe/Helsinki 每天 11:15** 触发（夏令时 16:15 CST、冬令时 17:15 CST，均在收盘后）
+- **每天 11:15 本机时间**触发；按本机时区选一个稳在 A 股 15:00 收盘之后的时间
+  （UTC+2/+3 机器约合 16:15/17:15 CST）。改时间编辑 plist 模板后重装。
 - 非交易日自动跳过（退出 0）
-- **漏跑 / 周末补数**：`uv run cne run catchup`（门禁 core + breadth；水位已齐则
+- **漏跑 / 周末补数**：`uv run python scripts/run_catchup.py`（门禁 core + breadth；水位已齐则
   `skipped_already_fresh`），或 `scripts/daily_pipeline.sh YYYY-MM-DD` /
   `CNE_TRADE_DATE=...`（全组定点）
 - **海外 Mac**：保 `core`（+ 本地 derive breadth）即可；东财组留给
-  国内机器 `catchup --all-groups` / 全组 pipeline。SOCKS 出口不够，见
+  国内机器 `scripts/run_catchup.py --all-groups` / 全组 pipeline。SOCKS 出口不够，见
   [troubleshooting](troubleshooting.md#云主机--socks-能开-ipinfo-但东财-empty-reply)。
 
 ```bash
@@ -113,7 +114,10 @@ core → capital → signals → fundamentals → macro_risk → research
 ```bash
 cne status --datasets          # 新鲜度；STALE 时退出 1
 cne audit --full               # 湖级健康；UNHEALTHY 退出 1
-cne catalog                    # 行数概览
+cne stats show                 # 行数概览
+cne sources slo --enforce        # 30 日关键源可用性（缺历史也 fail-closed）
+cne sources resilience --enforce # 核心数据集独立备援门禁与单源爆炸半径
+cne stability --days 20 --enforce # 连续交易日运行证据
 ```
 
 ---
@@ -141,7 +145,8 @@ cne catalog                    # 行数概览
 
 ## 备份与恢复
 
-**备份**：`manifest.db` + `meta/state/` + `meta/quality/`
+**元数据备份**：`manifest.db` + `meta/state/` + `meta/quality/` + `meta/revisions/` +
+`meta/source_snapshots/` + `meta/source_health/` + `meta/stability/`
 
 **不备份**：`adj_factors_cache`（可 derive 重算）、`locks`、curated parquet（可重采）
 
@@ -160,6 +165,26 @@ cne run daily --group core   # 增量续采
 ```
 
 默认备份在湖内，磁盘级容灾请将 `CNE_BACKUP_DIR` 指到湖外。
+
+需要冻结可复现实验所依赖的 Parquet 时，使用带校验和、revision receipt、契约指纹和
+运行 lineage 的可移植快照：
+
+```bash
+cne snapshot create research-20260828 \
+  --dataset daily_bars --dataset instruments --dataset trading_status
+cne snapshot verify research-20260828
+cne snapshot restore research-20260828 /new/empty/cnequity-restore
+```
+
+恢复命令只接受新目录或空目录，拒绝活动湖根目录，也不会覆盖已有文件。恢复后对新目录运行
+`cne status --datasets` 与研究消费者契约测试，再执行切换。
+
+## 20 个交易日验收
+
+`cne stability` 从权威 `trading_calendar` 取最近窗口，并按 logical trade date 选择最新
+`daily:core` attempt。缺 run、核心 stage 失败、或只有旧 `warning` 且没有 dataset receipt，
+都会失败；研究/建议层单独降级只有在 receipt 能证明核心无失败时才计为通过。报告写入
+`meta/stability/latest.json` 和不可变历史目录。不得手工补写或把日历日当交易日。
 
 ---
 
@@ -227,6 +252,8 @@ cne run daily --group core   # 增量续采
 |---|---|---|
 | `CNE_STALE_RETRY` | `1` | 设 `0` 关闭 |
 | `CNE_STALE_RETRY_DELAY_SEC` | `1800` | 补抓前等多久 |
+| `CNE_SOURCE_HEALTH` | `1` | 每日日更后串行探测并积累源 SLO；设 `0` 关闭 |
+| `CNE_SOURCE_VANTAGE` | `local` | 当前出口的稳定标签；不要把海外样本标成 `cn` |
 
 **为什么需要它。** `snapshot` 数据集（`valuation_metrics`、`fund_flow`、`sector_members`、`analyst_consensus` 等）只抓 run 当天——源端在那一个调度窗口里中断，那天就**永久没了**，后面任何一次 run 都补不回来（重放会伪造行，这是 `fetch_semantics` 的设计）。
 

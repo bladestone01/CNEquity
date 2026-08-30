@@ -62,7 +62,7 @@ uv run cne status --datasets   # valuation 不应再停在稀疏 tip
 
 | 现象 | 原因 | 处理 |
 |------|------|------|
-| `cne status` 显示 `orphaned_running_runs > 0` | 进程被杀 / OOM，旧代码未在 `finally` 里 `finish_run`；status 从不自动 reconcile | **已修**：每次 `cne run` / `cne retry` 入口心跳感知 reconcile；retry 全绿也会 `finish_run` |
+| `cne status` 显示 `orphaned_running_runs > 0` | 进程被杀 / OOM，旧代码未在 `finally` 里 `finish_run`；status 从不自动 reconcile | **已修**：每次 `cne run daily` / `cne retry` 入口心跳感知 reconcile；retry 全绿也会 `finish_run` |
 | 需要立刻清理 | — | `cne clean --reconcile-runs`（跳过仍持锁的 live run） |
 
 长任务（baostock 回填）靠 **batch heartbeat** 保活，不会仅因 `started_at` 超过 1h 被误杀。
@@ -95,7 +95,7 @@ uv run cne status --datasets   # valuation 不应再停在稀疏 tip
 1. `cne status` 查看 `run_summary` 与 failed batches
 2. 查看日志 `error_message`（TDX 断连、HTTP 429、schema 校验失败等）
 3. `cne retry --run-id <id>`
-4. 若 TDX 问题：`cne servers test`；换 `[tdx_protocol.hosts].standard`
+4. 若 TDX 问题：`cne sources probe --only tdx_protocol`；换 `[tdx_protocol.hosts].standard`
 5. 若单数据集持续失败：`cne backfill <dataset>`（需支持 backfill）
 
 ### daily_bars：TDX 批次失败但 tip 仍有数据
@@ -112,10 +112,10 @@ uv run cne status --datasets   # valuation 不应再停在稀疏 tip
 - **处理**（补 core + `market_breadth`）：
 
   ```bash
-  uv run cne run catchup                      # 默认：最近一个交易日
-  uv run cne run catchup --trade-date 2026-07-17
+  uv run python scripts/run_catchup.py                      # 默认：最近一个交易日
+  uv run python scripts/run_catchup.py --trade-date 2026-07-17
   # 国内出口再补 capital/research（东财失败不挡门禁 exit 0）：
-  uv run cne run catchup --trade-date 2026-07-17 --all-groups
+  uv run python scripts/run_catchup.py --trade-date 2026-07-17 --all-groups
   # 或分步：
   uv run cne run daily --group core --trade-date 2026-07-17
   ```
@@ -127,7 +127,7 @@ uv run cne status --datasets   # valuation 不应再停在稀疏 tip
 
 ### 东财 502 / 连接被重置（海外出口）
 
-- **现象**：`cne sources` 里 `eastmoney_push2` 报 `HTTP 502`、`eastmoney_push2his`
+- **现象**：`cne sources probe` 里 `eastmoney_push2` 报 `HTTP 502`、`eastmoney_push2his`
   报 `Connection closed abruptly`；日更 core 正常（行情走 TDX），资金面 / 板块组失败。
 - **原因**：东财对非大陆出口做风控。**大陆网络下这一整类问题不存在**，无需任何配置。
 - **处理**：给 `[sources.eastmoney]` 配一个有大陆出口的 HTTP(S) 代理——Clash、
@@ -139,7 +139,7 @@ uv run cne status --datasets   # valuation 不应再停在稀疏 tip
   ```
 
   代理对**所有**东财主机生效（push2 / push2his / datacenter / reportapi）。
-  改完用 `cne sources --only eastmoney_push2,eastmoney_push2his` 验证。
+  改完用 `cne sources probe --only eastmoney_push2,eastmoney_push2his` 验证。
   不想改配置也可以走 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。
 
   **代理挂了不会重试**：`ProxyError` 归入 fail-fast，一次失败即放弃该请求，
@@ -185,7 +185,7 @@ rsync -avz --progress user@VPS:~/cnequity/data/cnequity/ \
 | Finding 类型 | 含义 | 处理 |
 |--------------|------|------|
 | `pk_unique` | curated PK 重复（当前分区抽样） | 查最近 compact；必要时 backfill 重跑该分区 |
-| `mixed_partition_granularity` | 盘上仍有细粒度分区叠在年/月分区上，同一 PK 跨粒度重复 | 优先 `cne repartition <dataset>`（或 `--all`）按 `DatasetSpec` 原子重写；仅在工具无法跑时再把细粒度目录移到 `_quarantine/`。`trading_status` 历史派生须走 `partition_for`（月分区），勿再写日目录 |
+| `mixed_partition_granularity` | 盘上仍有细粒度分区叠在年/月分区上，同一 PK 跨粒度重复 | 优先 `python scripts/repartition.py <dataset>`（或 `--all`）按 `DatasetSpec` 原子重写；仅在工具无法跑时再把细粒度目录移到 `_quarantine/`。`trading_status` 历史派生须走 `partition_for`（月分区），勿再写日目录 |
 | `mock_source` | 生产环境 mock 数据 | 关闭 `allow_mock`；清 mock 分区重采 |
 | `adj_close_discontinuity` | 复权收益异常 | `cne derive adj_factors`；查 Sina 源 |
 | `missing_corporate_action` | 除权日无 corp action | `cne backfill corporate_actions` |
@@ -259,10 +259,10 @@ cne audit --full
 
 ```bash
 cne config validate
-cne servers test
+cne sources probe --only tdx_protocol
 cne status
 cne status --datasets
-cne catalog
+cne stats show --json
 cne audit --full
 cne retry --run-id <id>
 cne clean --dry-run
