@@ -358,26 +358,38 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
 def step_regulatory_events(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("cninfo", True):
         raise RuntimeError("regulatory_events: cninfo source disabled in config")
+
+    adapter_findings: list[dict] = []
+
+    def _fetch(d):
+        return fetch_regulatory_events(d, config=config, findings=adapter_findings)
+
     if getattr(config, "_backfill", False):
         from cnequity.steps.common import walk_day_backfill
 
-        return walk_day_backfill(
+        result = walk_day_backfill(
             config,
             trade_date,
             run_id,
             "regulatory_events",
-            lambda d: fetch_regulatory_events(d, config=config),
+            _fetch,
             source="cninfo",
             date_col="event_date",
             floor=date(2010, 1, 1),
         )
-    return run_incremental_fetched(
-        config,
-        trade_date,
-        run_id,
-        "regulatory_events",
-        lambda d: fetch_regulatory_events(d, config=config),
-        source="cninfo",
-        allow_empty=True,
-        date_col="event_date",
-    )
+    else:
+        result = run_incremental_fetched(
+            config,
+            trade_date,
+            run_id,
+            "regulatory_events",
+            _fetch,
+            source="cninfo",
+            allow_empty=True,
+            date_col="event_date",
+        )
+    if adapter_findings:
+        context_updates = result.setdefault("context_updates", {})
+        context_updates.setdefault("audit_findings", []).extend(adapter_findings)
+        result.setdefault("status", "warning")
+    return result

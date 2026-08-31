@@ -5,9 +5,18 @@ from datetime import date
 import pytest
 
 from cnequity.adapters.cninfo import announcements as cninfo_announcements
+from cnequity.adapters.cninfo.announcements import _CNINFO_CATEGORIES
 from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
 from cnequity.adapters.eastmoney import clist
 from cnequity.adapters.eastmoney.clist import fetch_clist_pages
+
+_B0 = _CNINFO_CATEGORIES[0]
+
+
+def _expect_total_requests(*non_empty_page_counts: int) -> int:
+    """Total POSTs across a full category-bucket sweep (see
+    test_cninfo_announcements for the same helper)."""
+    return (len(_CNINFO_CATEGORIES) - len(non_empty_page_counts)) + sum(non_empty_page_counts)
 
 
 class _Resp:
@@ -228,7 +237,7 @@ class _OverrunClient:
     def post(self, url, **kwargs):
         self.calls += 1
         data = kwargs["data"]
-        if data["column"] == "sse":
+        if data["category"] != _B0:
             return _Response({"announcements": [], "hasMore": False, "totalpages": 0})
         item = {
             "secCode": "000001",
@@ -245,7 +254,7 @@ class _OverrunClient:
 def test_regulatory_stops_at_totalpages_even_when_hasmore_lies():
     client = _OverrunClient(total_pages=3)
     df = fetch_regulatory_events(date(2024, 1, 31), client=client)
-    assert client.calls == 4  # szse pages 1..3, then sse's single (empty) page
+    assert client.calls == _expect_total_requests(3)  # _B0 pages 1..3
     assert df.height == 3
 
 
@@ -280,8 +289,8 @@ def test_regulatory_uses_totalpages_when_hasmore_is_false():
 
         def post(self, url, **kwargs):
             self.calls += 1
-            column = kwargs["data"]["column"]
-            if column == "sse":
+            category = kwargs["data"]["category"]
+            if category != _B0:
                 return _Response({"announcements": [], "hasMore": False, "totalpages": 0})
             page = kwargs["data"]["pageNum"]
             item = {
@@ -293,7 +302,7 @@ def test_regulatory_uses_totalpages_when_hasmore_is_false():
 
     client = StaleHasMoreClient()
     df = fetch_regulatory_events(date(2024, 1, 31), client=client)
-    assert client.calls == 3
+    assert client.calls == _expect_total_requests(2)
     assert set(df["event_id"].to_list()) == {"reg-R1", "reg-R2"}
 
 

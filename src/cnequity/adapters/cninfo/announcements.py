@@ -38,6 +38,44 @@ _PAGE_SIZE = 30
 _POST_RETRIES = 6
 _POST_BACKOFF_SECONDS = 5.0
 
+# CNINFO announcement-category buckets (``category_<name>_szsh`` codes). The
+# ``hisAnnouncement/query`` endpoint serves at most 100 pages (pageSize=30 ->
+# 3000 rows) for a single query — past that it re-serves page 1's rows while
+# ``totalpages``/``hasMore`` keep reporting more (measured 2026-08-28 szse,
+# totalAnnouncement=6538 -> totalpages=217, page 101+ identical to page 1).
+# Unlike ``column`` (=szse/sse/bj, which the A-share fulltext search ignores
+# and returns the same set for every value), ``category`` genuinely subdivides
+# the day: the bucket union covers ~98.5% of rows and the largest bucket stays
+# under the 100-page cap. Bucket codes match akshare's ``__get_category_dict``.
+_CNINFO_CATEGORIES: tuple[str, ...] = (
+    "category_ndbg_szsh",  # 年报
+    "category_bndbg_szsh",  # 半年报
+    "category_yjdbg_szsh",  # 一季报
+    "category_sjdbg_szsh",  # 三季报
+    "category_yjygjxz_szsh",  # 业绩预告
+    "category_qyfpxzcs_szsh",  # 权益分派
+    "category_dshgg_szsh",  # 董事会
+    "category_jshgg_szsh",  # 监事会
+    "category_gddh_szsh",  # 股东大会
+    "category_rcjy_szsh",  # 日常经营
+    "category_gszl_szsh",  # 公司治理
+    "category_zj_szsh",  # 中介报告
+    "category_sf_szsh",  # 首发
+    "category_zf_szsh",  # 增发
+    "category_gqjl_szsh",  # 股权激励
+    "category_pg_szsh",  # 配股
+    "category_jj_szsh",  # 解禁
+    "category_gszq_szsh",  # 公司债
+    "category_kzzq_szsh",  # 可转债
+    "category_qtrz_szsh",  # 其他融资
+    "category_gqbd_szsh",  # 股权变动
+    "category_bcgz_szsh",  # 补充更正
+    "category_cqdq_szsh",  # 澄清致歉
+    "category_fxts_szsh",  # 风险提示
+    "category_tbclts_szsh",  # 特别处理和退市
+    "category_tszlq_szsh",  # 退市整理期
+)
+
 
 def post_with_retry(client: httpx.Client, url: str, *, data: dict) -> dict:
     last_exc: Exception | None = None
@@ -183,11 +221,127 @@ def _pagination_page_signature(batch: list[dict]) -> str:
     return json.dumps(batch, sort_keys=True, default=str, separators=(",", ":"))
 
 
+def _cninfo_payload(ds: str, *, page: int, category: str) -> dict:
+    """HissAnnouncement/query request body for one category bucket."""
+    return {
+        "pageNum": page,
+        "pageSize": 30,
+        "column": "szse",
+        "tabName": "fulltext",
+        "plate": "",
+        "stock": "",
+        "searchkey": "",
+        "secid": "",
+        "category": category,
+        "trade": "",
+        "seDate": f"{ds}~{ds}",
+    }
+
+
+def _truncation_finding(*, dataset: str, bucket: str, page: int) -> dict:
+    return {
+        "dataset": dataset,
+        "severity": "warning",
+        "check": "cninfo_truncation_at_100_pages",
+        "message": (
+            f"CNINFO {dataset} {bucket} hit the server's 100-page cap at page "
+            f"{page}; rows past page {page - 1} are not fetchable for this day"
+        ),
+        "bucket": bucket,
+        "page": page,
+    }
+
+
+def _iter_bucket_pages(
+    client: httpx.Client,
+    ds: str,
+    *,
+    bucket: str,
+    label: str,
+    dataset: str,
+    findings: list[dict] | None = None,
+    config=None,
+) -> iter[tuple[int, list[dict]]]:
+    """Yield ``(page, batch)`` while walking one CNINFO category bucket.
+
+    Encapsulates the pagination decisions both CNINFO fetchers share. ``label``
+    is the noun used in failure messages ("announcement" / "regulatory");
+    ``dataset`` names the finding's owning dataset.
+
+    The server caps a single query at 100 effective pages; past that it
+    re-serves an earlier page, so a repeated page signature means truncation,
+    not a broken source: the bucket is stopped and a
+    ``cninfo_truncation_at_100_pages`` finding is recorded instead of raising.
+    Transport / malformed-metadata / empty-before-end failures still raise.
+    """
+    page = 1
+    seen_page_signatures: set[str] = set()
+    while True:
+        if config is not None:
+            config.rate_limit("cninfo")
+        payload = _cninfo_payload(ds, page=page, category=bucket)
+        try:
+            data = post_with_retry(client, _CNINFO_URL, data=payload)
+            batch = _announcement_batch(data, column=bucket, page=page)
+            total_pages = _pagination_total_pages(data, column=bucket, page=page)
+            has_more = _pagination_has_more(data, column=bucket, page=page)
+            has_more_present = data.get("hasMore") is not None
+            if batch:
+                page_signature = _pagination_page_signature(batch)
+                if page_signature in seen_page_signatures:
+                    if findings is not None:
+                        findings.append(
+                            _truncation_finding(dataset=dataset, bucket=bucket, page=page)
+                        )
+                    return
+                seen_page_signatures.add(page_signature)
+        except Exception as exc:  # noqa: BLE001 - retried in post_with_retry, re-raised below
+            logger.warning("CNINFO %s page failed (%s p%s): %s", label, bucket, page, exc)
+            raise RuntimeError(
+                f"CNINFO {label} pagination failed for {bucket} page {page}: {exc}"
+            ) from exc
+
+        if not batch:
+            if (isinstance(total_pages, int) and total_pages > 0 and page <= total_pages) or (
+                total_pages is None and has_more
+            ):
+                raise RuntimeError(
+                    f"CNINFO {label} returned an empty page before the "
+                    f"reported end for {bucket} page {page}"
+                )
+            return
+        yield page, batch
+        if isinstance(total_pages, int) and page >= total_pages:
+            # `hasMore` cannot be trusted past the server's own reported
+            # total: measured live, requesting page 2000 of a 105-page
+            # day still returns page 1's rows with hasMore still true —
+            # an infinite loop with no other exit. total_pages stays
+            # correct even on those overshot pages, so it is the one
+            # authoritative stop condition.
+            return
+        if isinstance(total_pages, int):
+            # When the server supplies a page count, it is also the safer
+            # continuation signal: a stale false `hasMore` would otherwise
+            # silently drop the remaining pages.
+            page += 1
+            continue
+        if not has_more:
+            # Some CNINFO responses omit both continuation fields. A full
+            # page is then evidence that another request may be needed;
+            # stopping on it silently truncates a busy disclosure day.
+            if total_pages is None and not has_more_present and len(batch) >= _PAGE_SIZE:
+                page += 1
+                continue
+            return
+        page += 1
+
+
 def fetch_announcement_index(
     trade_date: date,
     *,
     client: httpx.Client | None = None,
     config=None,
+    findings: list[dict] | None = None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
@@ -195,108 +349,41 @@ def fetch_announcement_index(
 
     ds = trade_date.strftime("%Y-%m-%d")
     rows: list[dict] = []
-    for column in ("szse", "sse"):
-        page = 1
-        seen_page_signatures: set[str] = set()
-        while True:
-            if config is not None:
-                config.rate_limit("cninfo")
-            payload = {
-                "pageNum": page,
-                "pageSize": 30,
-                "column": column,
-                "tabName": "fulltext",
-                "plate": "",
-                "stock": "",
-                "searchkey": "",
-                "secid": "",
-                "category": "",
-                "trade": "",
-                "seDate": f"{ds}~{ds}",
-            }
-            try:
-                data = post_with_retry(client, _CNINFO_URL, data=payload)
-                batch = _announcement_batch(data, column=column, page=page)
-                total_pages = _pagination_total_pages(data, column=column, page=page)
-                has_more = _pagination_has_more(data, column=column, page=page)
-                has_more_present = data.get("hasMore") is not None
-                if batch and total_pages == 0:
-                    raise RuntimeError(
-                        f"CNINFO announcements for {column} page {page} declared "
-                        "totalpages=0 but returned rows"
-                    )
-                if batch:
-                    page_signature = _pagination_page_signature(batch)
-                    if page_signature in seen_page_signatures:
-                        raise RuntimeError(
-                            f"CNINFO announcements pagination repeated page for "
-                            f"{column} page {page}"
+    try:
+        for bucket in _CNINFO_CATEGORIES:
+            for _, batch in _iter_bucket_pages(
+                client,
+                ds,
+                bucket=bucket,
+                label="announcement",
+                dataset="announcement_index",
+                findings=findings,
+                config=config,
+            ):
+                for item in batch:
+                    _validate_source_date(item, trade_date, column=bucket)
+                    sym = _symbol_from_cninfo(str(item.get("secCode", "")))
+                    if not sym:
+                        continue
+                    ann_id = _announcement_id(item)
+                    if ann_id is None:
+                        logger.warning(
+                            "CNINFO announcement missing announcementId and adjunctUrl; skipping"
                         )
-                    seen_page_signatures.add(page_signature)
-            except Exception as exc:
-                logger.warning("CNINFO announcement page failed (%s p%s): %s", column, page, exc)
-                if owns:
-                    client.close()
-                raise RuntimeError(
-                    f"CNINFO announcement pagination failed for {column} page {page}: {exc}"
-                ) from exc
-
-            if not batch:
-                if (isinstance(total_pages, int) and total_pages > 0 and page <= total_pages) or (
-                    total_pages is None and has_more
-                ):
-                    raise RuntimeError(
-                        f"CNINFO announcements returned an empty page before the "
-                        f"reported end for {column} page {page}"
+                        continue
+                    rows.append(
+                        {
+                            "announcement_id": ann_id,
+                            "symbol": sym,
+                            "title": str(item.get("announcementTitle") or ""),
+                            "announce_date": trade_date,
+                            "category": str(item.get("announcementType") or ""),
+                            "url": str(item.get("adjunctUrl") or ""),
+                        }
                     )
-                break
-            for item in batch:
-                _validate_source_date(item, trade_date, column=column)
-                sym = _symbol_from_cninfo(str(item.get("secCode", "")))
-                if not sym:
-                    continue
-                ann_id = _announcement_id(item)
-                if ann_id is None:
-                    logger.warning(
-                        "CNINFO announcement missing announcementId and adjunctUrl; skipping"
-                    )
-                    continue
-                rows.append(
-                    {
-                        "announcement_id": ann_id,
-                        "symbol": sym,
-                        "title": str(item.get("announcementTitle") or ""),
-                        "announce_date": trade_date,
-                        "category": str(item.get("announcementType") or ""),
-                        "url": str(item.get("adjunctUrl") or ""),
-                    }
-                )
-            if isinstance(total_pages, int) and page >= total_pages:
-                # `hasMore` cannot be trusted past the server's own reported
-                # total: measured live, requesting page 2000 of a 105-page
-                # day still returns page 1's rows with hasMore still true —
-                # an infinite loop with no other exit. total_pages stays
-                # correct even on those overshot pages, so it is the one
-                # authoritative stop condition.
-                break
-            if isinstance(total_pages, int):
-                # When the server supplies a page count, it is also the safer
-                # continuation signal: a stale false `hasMore` would otherwise
-                # silently drop the remaining pages.
-                page += 1
-                continue
-            if not has_more:
-                # Some CNINFO responses omit both continuation fields. A full
-                # page is then evidence that another request may be needed;
-                # stopping on it silently truncates a busy disclosure day.
-                if total_pages is None and not has_more_present and len(batch) >= _PAGE_SIZE:
-                    page += 1
-                    continue
-                break
-            page += 1
-
-    if owns:
-        client.close()
+    finally:
+        if owns:
+            client.close()
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(subset=["announcement_id"], keep="last")

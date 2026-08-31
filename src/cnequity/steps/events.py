@@ -588,29 +588,48 @@ def step_earnings_disclosure_schedule(
     return write_fetched(config, run_id, "earnings_disclosure_schedule", df, source="eastmoney")
 
 
+def _merge_cninfo_findings(result: dict, adapter_findings: list[dict]) -> dict:
+    """Attach adapter-level CNINFO findings (e.g. 100-page truncation) to a step result."""
+    if not adapter_findings:
+        return result
+    context_updates = result.setdefault("context_updates", {})
+    audit_findings = context_updates.setdefault("audit_findings", [])
+    audit_findings.extend(adapter_findings)
+    result.setdefault("status", "warning")
+    return result
+
+
 @register_step("announcement_index", group="capital", depends_on=["instruments"])
 def step_announcement_index(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("cninfo", True):
         raise RuntimeError("announcement_index: cninfo source disabled in config")
+
+    adapter_findings: list[dict] = []
+
+    def _fetch(d):
+        return fetch_announcement_index(d, config=config, findings=adapter_findings)
+
     if getattr(config, "_backfill", False):
         from cnequity.steps.common import walk_day_backfill
 
-        return walk_day_backfill(
+        result = walk_day_backfill(
             config,
             trade_date,
             run_id,
             "announcement_index",
-            lambda d: fetch_announcement_index(d, config=config),
+            _fetch,
             source="cninfo",
             date_col="announce_date",
             floor=date(2010, 1, 1),
         )
-    return run_incremental_fetched(
-        config,
-        trade_date,
-        run_id,
-        "announcement_index",
-        lambda d: fetch_announcement_index(d, config=config),
-        source="cninfo",
-        date_col="announce_date",
-    )
+    else:
+        result = run_incremental_fetched(
+            config,
+            trade_date,
+            run_id,
+            "announcement_index",
+            _fetch,
+            source="cninfo",
+            date_col="announce_date",
+        )
+    return _merge_cninfo_findings(result, adapter_findings)

@@ -6,6 +6,22 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **CNINFO announcement/regulatory category-bucketed pagination with 100-page
+  truncation tolerance.** The `hisAnnouncement/query` server hard-caps a single
+  query at 100 pages (3000 rows) while `totalpages`/`hasMore` keep reporting
+  past it (measured: day with 6538 announcements reports 217 pages, page 101+
+  re-serves page 1). `fetch_announcement_index` and `fetch_regulatory_events`
+  now walk the 26 `category_*_szsh` buckets (each safely under the cap) instead
+  of the `column` walk, which the A-share full-text search ignores. A repeated
+  page signature is now treated as the server's truncation, not a broken
+  source: the bucket stops, rows collected so far are kept, and a
+  `cninfo_truncation_at_100_pages` audit finding is recorded; a busy disclosure
+  day writes thousands of rows instead of aborting the whole step with 0 rows.
+
+### Fixed
+
 ## [0.7.3] — 2026-08-23
 
 ### Added

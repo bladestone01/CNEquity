@@ -190,7 +190,7 @@ def test_macro_risk_guards_and_writes(cfg, monkeypatch):
     monkeypatch.setattr(
         macro_risk,
         "fetch_regulatory_events",
-        lambda d, config=None: pl.DataFrame(
+        lambda d, config=None, findings=None: pl.DataFrame(
             {
                 "event_id": ["e1"],
                 "symbol": ["600519.SH"],
