@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -45,6 +46,8 @@ logger = logging.getLogger(__name__)
 AdjustType = Literal["qfq", "hfq"]
 UniverseType = Literal["all_a", "all_a_sh_sz"]
 UniverseProfileLike = str | UniverseProfile
+RevisionRef = int | str
+RevisionSelection = RevisionRef | Mapping[str, RevisionRef]
 
 # All derived from the DatasetSpec registry (domain/datasets.py).
 CURATED_DATASETS = curated_dataset_names()
@@ -70,6 +73,71 @@ ADJUSTABLE_DATASETS = {"daily_bars", "trade_ticks"} | set(intraday_dataset_names
 
 class ReaderError(ValueError):
     """Raised when load() arguments or dataset state are invalid."""
+
+
+def _merge_revision_selection(
+    revision: RevisionSelection | None,
+    revision_map: Mapping[str, RevisionRef] | None,
+) -> RevisionSelection | None:
+    """Combine the scalar compatibility argument with an explicit map.
+
+    A scalar revision historically identified the dataset being loaded.  An
+    adjusted read touches a second independently versioned dataset, however,
+    so treating that same integer as ``adj_factors`` is incorrect.  Callers
+    can pin each dataset with ``revision={"daily_bars": 7,
+    "adj_factors": 12}`` (or the ``revision_map=`` alias); retaining a scalar
+    here keeps old unadjusted reads source-compatible.
+    """
+
+    if revision_map is None:
+        return revision
+    if revision is None:
+        return dict(revision_map)
+    if isinstance(revision, Mapping):
+        merged = dict(revision)
+        overlap = set(merged) & set(revision_map)
+        for key in overlap:
+            if merged[key] != revision_map[key]:
+                raise ReaderError(f"revision and revision_map disagree for dataset {key!r}")
+        merged.update(revision_map)
+        return merged
+    # A scalar is the legacy selection for the primary dataset.  Keep it in a
+    # distinguished key so a revision map can add (for example) the factor
+    # vintage without accidentally applying the scalar to every dataset.
+    merged = dict(revision_map)
+    merged.setdefault("__primary__", revision)
+    return merged
+
+
+def _revision_for_dataset(
+    selection: RevisionSelection | None,
+    dataset: str,
+    *,
+    fallback_primary: bool = True,
+) -> RevisionRef | None:
+    """Resolve one dataset's revision from a scalar or per-dataset map."""
+
+    if selection is None:
+        return None
+    if not isinstance(selection, Mapping):
+        return selection
+    # Accept both the compact map and a serialized research-manifest shape.
+    nested = selection.get("datasets")
+    if isinstance(nested, Mapping) and dataset in nested:
+        return nested[dataset]
+    if dataset in selection:
+        return selection[dataset]
+    wildcard = selection.get("*")
+    if wildcard is not None and not isinstance(wildcard, Mapping):
+        return wildcard
+    global_selection = selection.get("global")
+    if isinstance(global_selection, Mapping) and dataset in global_selection:
+        return global_selection[dataset]
+    if global_selection is not None and not isinstance(global_selection, Mapping):
+        return global_selection
+    if fallback_primary and dataset != "__primary__":
+        return selection.get("__primary__")
+    return None
 
 
 def _resolve_reader_scope(
@@ -211,7 +279,15 @@ def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None,
     """
     spec = DATASETS[dataset]
     root = _dataset_root(config, dataset)
-    if not dataset_has_parquet(root) or spec.partition_col is None:
+    if (
+        not dataset_has_parquet(
+            root,
+            dataset=dataset,
+            meta_root=config.meta_root,
+            revision=None,
+        )
+        or spec.partition_col is None
+    ):
         return None, None
 
     from cnequity.query.parquet_scan import list_partitions
@@ -240,6 +316,8 @@ def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None,
             partition_col=spec.partition_col,
             hive=day_hive,
             traded_only=dataset == "daily_bars",
+            dataset=dataset,
+            meta_root=config.meta_root,
         )
         if date_col not in lf.collect_schema().names():
             return None, None
@@ -271,9 +349,15 @@ def _read_dataset(
     symbols: list[str] | None = None,
     universe: UniverseType | str | None = None,
     strict_universe: bool = False,
+    revision: RevisionRef | None = None,
 ) -> pl.DataFrame:
     root = _dataset_root(config, dataset)
-    if not dataset_has_parquet(root):
+    if not dataset_has_parquet(
+        root,
+        dataset=dataset,
+        meta_root=config.meta_root,
+        revision=revision,
+    ):
         raise ReaderError(
             f"no parquet data for dataset {dataset!r} under {root} (data_root={config.data_root})"
         )
@@ -286,6 +370,9 @@ def _read_dataset(
             start=start,
             end=end,
             symbols=symbols,
+            dataset=dataset,
+            meta_root=config.meta_root,
+            revision=revision,
         )
     except FileNotFoundError as exc:
         raise ReaderError(
@@ -428,11 +515,18 @@ def _apply_adjustment(
     end: date | None,
     *,
     strict_adj: bool = False,
+    revision: RevisionRef | None = None,
 ) -> pl.DataFrame:
     if bars.is_empty():
         return bars
 
-    factors = _read_dataset(config, "adj_factors", start=start, end=end)
+    factors = _read_dataset(
+        config,
+        "adj_factors",
+        start=start,
+        end=end,
+        revision=revision,
+    )
     if factors.is_empty():
         out = bars.with_columns(
             *[pl.col(c).alias(f"adj_{c}") for c in PRICE_COLS if c in bars.columns],
@@ -533,6 +627,8 @@ def load(
     pit_mode: PitMode | None = None,
     config: Config | None = None,
     data_root: str | Path | None = None,
+    revision: RevisionSelection | None = None,
+    revision_map: Mapping[str, RevisionRef] | None = None,
 ) -> pl.DataFrame:
     """Load a curated dataset with optional adjustment, universe, and PIT filters.
 
@@ -602,8 +698,14 @@ def load(
     config, data_root:
         Lake location; auto-detects ``configs/cnequity.toml`` when omitted.
         Raises ``ReaderError`` if config or dataset parquet files are missing.
+    revision:
+        Optional committed dataset revision number or revision id.  When
+        supplied, the query reads that retained immutable generation rather
+        than whatever is current at collection time; omitted reads pin the
+        current pointer when the LazyFrame is constructed.
     """
     cfg = resolve_config(config=config, data_root=data_root)
+    revision_selection = _merge_revision_selection(revision, revision_map)
     effective_universe, resolved_profile, effective_strict_universe = _resolve_reader_scope(
         universe=universe,
         profile=profile,
@@ -633,7 +735,12 @@ def load(
     if dataset in PIT_DATASETS:
         if as_of_d is None:
             raise ReaderError(f"{dataset} requires as_of= for point-in-time queries")
-        df = _read_dataset(cfg, dataset, symbols=symbols)
+        df = _read_dataset(
+            cfg,
+            dataset,
+            symbols=symbols,
+            revision=_revision_for_dataset(revision_selection, dataset),
+        )
         df = _apply_pit_filters(
             df,
             dataset,
@@ -658,6 +765,7 @@ def load(
         symbols=symbols,
         universe=effective_universe,
         strict_universe=effective_strict_universe,
+        revision=_revision_for_dataset(revision_selection, dataset),
     )
     if resolved_profile is not None and dataset == "daily_bars":
         _require_profile_delisting_evidence(cfg, df, resolved_profile)
@@ -668,7 +776,28 @@ def load(
     # reason daily ones are — the factor series can be recomputed, a price
     # written adjusted cannot be undone.
     if adjust and dataset in ADJUSTABLE_DATASETS:
-        df = _apply_adjustment(df, cfg, adjust, start_d, end_d, strict_adj=strict_adj)
+        df = _apply_adjustment(
+            df,
+            cfg,
+            adjust,
+            start_d,
+            end_d,
+            strict_adj=strict_adj,
+            # A scalar revision belongs to the primary dataset.  Adjustment
+            # factors have their own revision sequence; absent an explicit
+            # map, use their current committed generation for backwards
+            # compatibility instead of interpreting (say) daily revision 7 as
+            # factor revision 7.  Research callers can pin both explicitly.
+            revision=(
+                _revision_for_dataset(
+                    revision_selection,
+                    "adj_factors",
+                    fallback_primary=False,
+                )
+                if isinstance(revision_selection, Mapping)
+                else None
+            ),
+        )
 
     # Intraday rows sort by symbol then timestamp: trade_date alone would leave
     # a session's 240 bars in whatever order the pages arrived, and grouping by
@@ -698,6 +827,8 @@ def scan(
     symbols: list[str] | None = None,
     config: Config | None = None,
     data_root: str | Path | None = None,
+    revision: RevisionSelection | None = None,
+    revision_map: Mapping[str, RevisionRef] | None = None,
 ) -> pl.LazyFrame:
     """Return a LazyFrame over a dataset with hive partition pruning.
 
@@ -706,10 +837,16 @@ def scan(
     the partition scan.
     """
     cfg = resolve_config(config=config, data_root=data_root)
+    revision_selection = _merge_revision_selection(revision, revision_map)
     if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
         raise ReaderError(f"unknown dataset {dataset!r}")
     root = _dataset_root(cfg, dataset)
-    if not dataset_has_parquet(root):
+    if not dataset_has_parquet(
+        root,
+        dataset=dataset,
+        meta_root=cfg.meta_root,
+        revision=_revision_for_dataset(revision_selection, dataset),
+    ):
         raise ReaderError(
             f"no parquet data for dataset {dataset!r} under {root} (data_root={cfg.data_root})"
         )
@@ -719,6 +856,9 @@ def scan(
         start=_parse_date(start),
         end=_parse_date(end),
         symbols=symbols,
+        dataset=dataset,
+        meta_root=cfg.meta_root,
+        revision=_revision_for_dataset(revision_selection, dataset),
     )
 
 
@@ -753,7 +893,11 @@ def list_datasets(
     for name, spec in sorted(DATASETS.items()):
         state_payload = state.get_payload(name)
         root = (cfg.derived_root if spec.layer == "derived" else cfg.curated_root) / name
-        has_data = dataset_has_parquet(root)
+        has_data = dataset_has_parquet(
+            root,
+            dataset=name,
+            meta_root=cfg.meta_root,
+        )
         first_part = last_part = None
         if has_data and spec.partition_col:
             try:
@@ -784,6 +928,15 @@ def list_datasets(
                 "coverage_end": last_part,
                 "watermarked": spec.watermark,
                 "watermark": state.get_date(name) if spec.watermark else None,
+                # Snapshot-only feeds have no PIT watermark.  This capture
+                # marker records when the rolling live window was last
+                # observed so stale scheduling can recover a missed day
+                # without pretending that a future event is historical data.
+                "snapshot_date": (
+                    state.get_date(name, field="last_snapshot_date")
+                    if not spec.watermark and spec.fetch_semantics == "snapshot"
+                    else None
+                ),
                 "revision": state_payload.get("revision"),
                 "revision_id": state_payload.get("revision_id"),
                 "schema_version": state_payload.get("schema_version"),

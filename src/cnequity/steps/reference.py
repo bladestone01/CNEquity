@@ -16,12 +16,18 @@ from cnequity.adapters.tdx_protocol.client import (
     normalize_with_source,
 )
 from cnequity.config import Config
+from cnequity.domain.frames import with_columns_unless_blank
 from cnequity.domain.schemas import with_provenance
 from cnequity.domain.symbols import (
     is_all_a_symbol,
     is_cdr_symbol,
     is_tdx_servable,
     parse_symbol,
+)
+from cnequity.domain.trading_status import (
+    DELISTED_SOURCE,
+    STATUS_DELISTED,
+    STATUS_SUSPENDED,
 )
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.registry import register_step
@@ -39,6 +45,7 @@ from cnequity.steps.common import (
     BACKFILL_START,
     fetch_incremental_daily,
     load_bar_universe,
+    load_curated_instruments,
     load_symbols,
     write_simple,
 )
@@ -146,8 +153,7 @@ def _merge_delisted_instruments(config: Config, df: pl.DataFrame) -> pl.DataFram
 
     from cnequity.adapters.baostock.instruments import fetch_instrument_basics
 
-    config.rate_limit("baostock")
-    basics = fetch_instrument_basics()
+    basics = fetch_instrument_basics(config=config)
     if basics.is_empty():
         raise RuntimeError(
             "baostock query_stock_basic returned no rows; refusing to write a "
@@ -243,6 +249,76 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
     return write_simple(config, run_id, "trading_calendar", df)
 
 
+# Rows for securities that had already left the market. The daily feeds cannot
+# supply these: EastMoney's boards answer "is it halted" and "is it on the risk
+# board", and a delisted name is on neither, so the old `else` branch published
+# it as normally trading. Measured 2026-08-28 on a full lake, that was 611
+# symbols — every symbol carrying a `delist_date`, one of them since 1999-07-12.
+#
+# The classification comes from `instruments`, not from a vendor snapshot, so
+# the rows carry their own source rather than being stamped as EastMoney's
+# answer. `derive/trading_status_history.py` ranks it explicitly.
+
+
+def _delisted_instruments(config: Config) -> pl.DataFrame:
+    """``symbol, delist_date, risk_warning`` for every formally delisted name.
+
+    ``risk_warning`` is read from the final 简称 the catalog carries — a name
+    such as ``*ST元成`` is the exchange's own designation at the point trading
+    stopped, and it is the only evidence available once the boards drop the
+    symbol.
+    """
+    from cnequity.adapters.exchange.st_lists import is_st_name
+
+    frame = load_curated_instruments(config)
+    if frame is None or frame.is_empty():
+        return pl.DataFrame(
+            schema={"symbol": pl.Utf8, "delist_date": pl.Date, "risk_warning": pl.Boolean}
+        )
+    if not {"symbol", "delist_date"}.issubset(frame.columns):
+        return pl.DataFrame(
+            schema={"symbol": pl.Utf8, "delist_date": pl.Date, "risk_warning": pl.Boolean}
+        )
+    name_col = pl.col("name") if "name" in frame.columns else pl.lit(None, dtype=pl.Utf8)
+    return (
+        frame.filter(pl.col("delist_date").is_not_null())
+        .select(
+            "symbol",
+            "delist_date",
+            name_col.map_elements(
+                lambda value: is_st_name(value) if value else False, return_dtype=pl.Boolean
+            ).alias("risk_warning"),
+        )
+        .unique(subset=["symbol"], keep="last")
+    )
+
+
+def _delisted_status_rows(
+    delisted: pl.DataFrame, symbols: list[str], days: list[date]
+) -> pl.DataFrame:
+    """One ``status=delisted`` row per (symbol, day) already past delisting."""
+    if delisted.is_empty() or not symbols or not days:
+        return pl.DataFrame()
+    scoped = delisted.filter(pl.col("symbol").is_in(symbols))
+    if scoped.is_empty():
+        return pl.DataFrame()
+    rows = scoped.join(pl.DataFrame({"trade_date": days}), how="cross").filter(
+        pl.col("delist_date") <= pl.col("trade_date")
+    )
+    if rows.is_empty():
+        return pl.DataFrame()
+    return rows.select(
+        "symbol",
+        "trade_date",
+        pl.lit(False).alias("is_trading"),
+        pl.lit(STATUS_DELISTED).alias("status"),
+        "risk_warning",
+        # Only the owner is stamped here. The run-level provenance is applied
+        # once, to every row, after the fetch.
+        pl.lit(DELISTED_SOURCE).alias("source"),
+    )
+
+
 @register_step("trading_status", group="core")
 def step_trading_status(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_backfill", False):
@@ -254,8 +330,24 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
         )
 
     symbols = context.get("symbols") or load_symbols(config)
-    expected_symbols = set(symbols)
     rl = config.tdx_rate_limit_spec()
+
+    # A delisted security is not something the daily boards can report on, so
+    # it is removed from the request and written separately below. Scoped per
+    # day rather than once for the step: a watermark catch-up spans several
+    # sessions, and a name delisted inside that span was genuinely live for the
+    # earlier ones.
+    delisted = _delisted_instruments(config)
+    delist_dates: dict[str, date] = (
+        dict(zip(delisted["symbol"], delisted["delist_date"], strict=True))
+        if not delisted.is_empty()
+        else {}
+    )
+
+    def _live_symbols(day: date) -> list[str]:
+        if not delist_dates:
+            return symbols
+        return [sym for sym in symbols if (gone := delist_dates.get(sym)) is None or gone > day]
 
     # EastMoney is the only daily ST feed. An AkShare union used to sit here as a
     # "second source", but `ak.stock_zh_a_st_em` requests the same push2 clist
@@ -309,31 +401,64 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
                     _CACHED_TRADING_STATUS_MAX_AGE,
                 )
                 return None
-            cached_snapshot = history.filter(pl.col("trade_date") == latest).select(
-                "symbol", "is_trading", "status"
-            )
+            columns = ["symbol", "is_trading", "status"]
+            if "risk_warning" in history.columns:
+                columns.append("risk_warning")
+            cached_snapshot = history.filter(pl.col("trade_date") == latest).select(columns)
 
         known = {
             row["symbol"]: row for row in cached_snapshot.iter_rows(named=True) if row.get("symbol")
         }
         rows = []
-        for symbol in symbols:
+        for symbol in _live_symbols(day):
             previous = known.get(symbol)
             rows.append(
                 {
                     "symbol": symbol,
                     "trade_date": day,
                     "is_trading": bool(previous["is_trading"]) if previous else False,
-                    "status": previous["status"] if previous else "suspended",
+                    "status": previous["status"] if previous else STATUS_SUSPENDED,
+                    # An outage must not clear a risk-warning label. Unknown
+                    # stays unknown rather than becoming a claim of "clean".
+                    "risk_warning": previous.get("risk_warning") if previous else None,
                 }
             )
-        return pl.DataFrame(rows)
+        return pl.DataFrame(rows, schema_overrides={"risk_warning": pl.Boolean})
 
     def _fetch(day: date):
+        """Vendor rows for the live universe plus this day's delisted rows.
+
+        The two are merged here rather than after the fetch so that a day whose
+        whole universe has delisted still produces rows, and so that each row
+        carries the owner that actually knows the fact.
+        """
+        gone = _delisted_status_rows(delisted, symbols, [day])
+        vendor = _fetch_vendor(day)
+        # `with_columns_unless_blank`: a session whose whole universe had
+        # delisted returns the column-less empty frame, and stamping it would
+        # add a row with no symbol and no date (see domain/frames.py).
+        vendor = with_columns_unless_blank(
+            vendor.drop("source", strict=False),
+            pl.lit(None, dtype=pl.Utf8).alias("source"),
+        )
+        if gone.is_empty():
+            return vendor
+        if vendor.is_empty():
+            return gone
+        return pl.concat([vendor, gone], how="diagonal_relaxed")
+
+    def _fetch_vendor(day: date):
         nonlocal cached_snapshot
+        day_symbols = _live_symbols(day)
+        if not day_symbols:
+            # Every name in the universe had already delisted by this session.
+            # Asking the boards about nothing is a wasted request, not a state
+            # the adapters are expected to handle.
+            return pl.DataFrame()
+        expected_symbols = set(day_symbols)
         try:
             frame = fetch_trading_status(
-                symbols,
+                day_symbols,
                 day,
                 rate_limit=rl,
                 allow_mock=config.tdx_allow_mock,
@@ -400,7 +525,11 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
     # exposed through the TDX facade. Preserve the actual evidence owner so
     # downstream PIT precedence never mistakes it for exchange history.
     source = "eastmoney_cached" if fallback_days else "eastmoney"
-    df = with_provenance(df.drop("source", strict=False), source=source, data_version="v1")
+    # Rows that named their own owner keep it — a delisting is a fact from
+    # `instruments`, not the vendor's answer. Everything else is the snapshot.
+    if "source" in df.columns:
+        df = df.with_columns(pl.col("source").fill_null(source))
+    df = with_provenance(df, source=source, data_version="v1")
     result = write_simple(config, run_id, "trading_status", df)
     if findings:
         result["context_updates"] = {"audit_findings": findings}

@@ -1,7 +1,7 @@
-"""Sector OHLC source routing: EastMoney BK universe × TDX 88xxxx index map.
+"""Legacy sector OHLC routing artifact (not the production THS feed).
 
 Optional offline artifact (``cne derive sector_routing``). Does **not** drive
-``sector_bars`` ingestion — daily/backfill use EastMoney only.
+``sector_bars`` ingestion — production daily/backfill use 同花顺 (THS).
 """
 
 from __future__ import annotations

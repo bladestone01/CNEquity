@@ -26,6 +26,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from cnequity.domain.rate_limit import source_request
+
 if TYPE_CHECKING:
     from cnequity.config import Config
 
@@ -68,7 +70,7 @@ _CHROME_UA = (
 )
 
 
-def fetch_nid(client: httpx.Client | None = None) -> str:
+def fetch_nid(client: httpx.Client | None = None, *, config: Config | None = None) -> str:
     """Handshake for the ``nid`` cookie the datacenter endpoints like to see.
 
     Pass the caller's client whenever there is one: anonflow2 is an EastMoney
@@ -90,7 +92,8 @@ def fetch_nid(client: httpx.Client | None = None) -> str:
     if own:
         client = httpx.Client(timeout=10.0)
     try:
-        resp = client.post(url, json=payload)
+        with source_request(config, "eastmoney"):
+            resp = client.post(url, json=payload)
         for cookie in resp.cookies.jar:
             if cookie.name == "nid":
                 return cookie.value or ""
@@ -102,11 +105,16 @@ def fetch_nid(client: httpx.Client | None = None) -> str:
     return ""
 
 
-def get_nid(client: httpx.Client | None = None) -> str:
+def get_nid(client: httpx.Client | None = None, *, config: Config | None = None) -> str:
     """Cached nid cookie. *client* should be the caller's own — see fetch_nid."""
     now = time.time()
     if now > _NID_CACHE["expires"]:
-        nid = fetch_nid(client)
+        if config is None:
+            # Keep the small public helper compatible with callers that inject
+            # a one-argument fetcher in tests/integrations.
+            nid = fetch_nid(client)
+        else:
+            nid = fetch_nid(client, config=config)
         if nid:
             _NID_CACHE["nid"] = nid
             _NID_CACHE["expires"] = now + _NID_TTL_SECONDS
@@ -116,7 +124,9 @@ def get_nid(client: httpx.Client | None = None) -> str:
     return _NID_CACHE["nid"] or ""
 
 
-def build_eastmoney_headers(url: str, client: httpx.Client | None = None) -> dict[str, str]:
+def build_eastmoney_headers(
+    url: str, client: httpx.Client | None = None, *, config: Config | None = None
+) -> dict[str, str]:
     headers = {
         "User-Agent": _CHROME_UA,
         "Accept": "*/*",
@@ -129,7 +139,12 @@ def build_eastmoney_headers(url: str, client: httpx.Client | None = None) -> dic
         # Don't recurse: the nid handshake is itself an EastMoney URL.
         if "anonflow2.eastmoney.com" in url:
             return headers
-        nid = get_nid(client)
+        if config is None:
+            # Preserve the helper's historical call shape for lightweight
+            # monkeypatches while configured clients pass their limiter below.
+            nid = get_nid(client)
+        else:
+            nid = get_nid(client, config=config)
         if nid:
             headers["Cookie"] = f"nid={nid}"
     return headers
@@ -230,6 +245,9 @@ class EastMoneyClient:
 
     def _throttle(self) -> None:
         if self.config is not None:
+            # Kept as a public compatibility hook for callers that explicitly
+            # invoke it. ``get``/``post`` use source_request directly when a
+            # Config is present, avoiding a duplicate pacing reservation.
             self.config.rate_limit("eastmoney")
             return
         if self.min_interval <= 0:
@@ -240,9 +258,14 @@ class EastMoneyClient:
         self._last_request = time.time()
 
     def get(self, url: str, **kwargs) -> httpx.Response:
-        self._throttle()
+        if self.config is None:
+            # Bare clients retain their historical per-instance pacing. A
+            # configured client gets both pacing and the shared lease from the
+            # request context below, so calling _throttle there would reserve
+            # every slot twice.
+            self._throttle()
         headers = kwargs.pop("headers", {})
-        headers.update(build_eastmoney_headers(url, self._client))
+        headers.update(build_eastmoney_headers(url, self._client, config=self.config))
         params = apply_push2_token(url, kwargs.pop("params", None))
         if params is not None:
             # Merge into the URL ourselves rather than handing `params` to httpx.
@@ -255,13 +278,16 @@ class EastMoneyClient:
             # httpx>=0.25, so a fresh `pip install cnequity` hit exactly this.
             # copy_merge_params behaves identically on both versions.
             url = str(httpx.URL(url).copy_merge_params(params))
-        return self._client.get(url, headers=headers, **kwargs)
+        with source_request(self.config, "eastmoney"):
+            return self._client.get(url, headers=headers, **kwargs)
 
     def post(self, url: str, **kwargs) -> httpx.Response:
-        self._throttle()
+        if self.config is None:
+            self._throttle()
         headers = kwargs.pop("headers", {})
-        headers.update(build_eastmoney_headers(url, self._client))
-        return self._client.post(url, headers=headers, **kwargs)
+        headers.update(build_eastmoney_headers(url, self._client, config=self.config))
+        with source_request(self.config, "eastmoney"):
+            return self._client.post(url, headers=headers, **kwargs)
 
     def close(self) -> None:
         self._client.close()

@@ -31,6 +31,7 @@ import httpx
 import polars as pl
 
 from cnequity.adapters.numeric import finite_int64
+from cnequity.domain.rate_limit import source_request
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +194,9 @@ def fetch_domestic_commodity_bars_range(
     rows: list[dict] = []
     try:
         for symbol, sina_sym, name, exchange in universe:
-            if config is not None:
-                config.rate_limit("sina")
             try:
-                resp = client.get(_URL, params={"symbol": sina_sym})
+                with source_request(config, "sina"):
+                    resp = client.get(_URL, params={"symbol": sina_sym})
                 resp.raise_for_status()
                 payload = _parse_jsonp(resp.text)
                 if not payload:

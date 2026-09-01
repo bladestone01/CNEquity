@@ -20,9 +20,15 @@ from cnequity.adapters.eastmoney.corporate_actions import fetch_corporate_action
 from cnequity.adapters.eastmoney.trading_status import fetch_trading_status_eastmoney
 from cnequity.adapters.tdx_protocol.bars import fetch_bars_paginated
 from cnequity.adapters.tdx_protocol.corporate_actions import fetch_corporate_actions_tdx
-from cnequity.adapters.tdx_protocol.session import TDX_SESSION_LOCK, close_quotes_client
+from cnequity.adapters.tdx_protocol.session import TDX_DISCOVERY_LOCK, close_quotes_client
 from cnequity.config import Config
-from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
+from cnequity.domain.frames import with_columns_unless_blank
+from cnequity.domain.rate_limit import (
+    RateLimitSpec,
+    source_request,
+    source_request_slot_spec,
+    wait_spec,
+)
 from cnequity.domain.schemas import MOCK_SOURCE, data_version_for, with_provenance
 from cnequity.domain.symbols import (
     ETF_PREFIXES,
@@ -31,6 +37,7 @@ from cnequity.domain.symbols import (
     is_cdr_symbol,
     is_etf_symbol,
 )
+from cnequity.storage.raw_archive import RawArchiveError
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +92,8 @@ _TDX_MIN_LISTED_PRE_CLOSE = 0.001
 def reset_tdx_server_cache() -> None:
     """Forget the cached TDX server so the next client re-probes (on failure)."""
     global _TDX_SERVER_CACHE
-    _TDX_SERVER_CACHE = None
+    with TDX_DISCOVERY_LOCK:
+        _TDX_SERVER_CACHE = None
 
 
 def _reachable(host: str, port: int, timeout: float = _TDX_TCP_TIMEOUT) -> bool:
@@ -163,8 +171,17 @@ def _pick_reachable_server(config: Config | None = None, timeout: int = 10) -> t
     if not candidates:
         raise TdxSourceError("no TDX candidate servers configured or bundled")
 
+    def _probe_one(host: str, port: int) -> bool:
+        # Discovery is a real TDX wire request too.  Bound it with the same
+        # source lease as ordinary pages so a concurrent DAG wave cannot probe
+        # an unbounded number of hosts while workers are already in flight.
+        from cnequity.domain.rate_limit import source_request
+
+        with source_request(config, "tdx_protocol"):
+            return _probe(host, port, timeout)
+
     with ThreadPoolExecutor(max_workers=min(len(candidates), _TDX_PROBE_CONCURRENCY)) as pool:
-        futures = {pool.submit(_probe, h, p, timeout): (h, p) for h, p in candidates}
+        futures = {pool.submit(_probe_one, h, p): (h, p) for h, p in candidates}
         try:
             for fut in _as_completed(futures):
                 if fut.result():
@@ -194,9 +211,15 @@ def _quotes_client(config: Config | None = None):
         "timeout": timeout,
     }
     if servers.lower() == "auto":
-        if _TDX_SERVER_CACHE is None:
-            _TDX_SERVER_CACHE = _pick_reachable_server(config, timeout=timeout)
-        kwargs["server"] = _TDX_SERVER_CACHE
+        # Discovery can be expensive and publication of the process-local
+        # cache must be atomic.  Keep this narrow critical section around the
+        # discovery/cache operation only; the returned client owns an
+        # independent socket and all subsequent requests run concurrently.
+        with TDX_DISCOVERY_LOCK:
+            if _TDX_SERVER_CACHE is None:
+                _TDX_SERVER_CACHE = _pick_reachable_server(config, timeout=timeout)
+            server = _TDX_SERVER_CACHE
+        kwargs["server"] = server
     else:
         host, sep, port = servers.partition(":")
         if not sep:
@@ -204,7 +227,11 @@ def _quotes_client(config: Config | None = None):
                 f"invalid [tdx_protocol].servers {servers!r}; use 'auto' or host:port"
             )
         kwargs["server"] = (host.strip(), int(port.strip()))
-    return Quotes.factory(**kwargs)
+    # ``Quotes.factory`` performs the TCP connect and the initial protocol
+    # setup packets. Keep that handshake inside the same source budget as
+    # ordinary pages; later page calls use the pickle-friendly spec below.
+    with source_request(config, "tdx_protocol"):
+        return Quotes.factory(**kwargs)
 
 
 def quotes_client_factory(config: Config | None = None):
@@ -319,7 +346,9 @@ def _filter_instrument_frame(pdf: pl.DataFrame, exch: str) -> pl.DataFrame:
 
 
 def _mark_mock(df: pl.DataFrame) -> pl.DataFrame:
-    return df.with_columns(pl.lit(MOCK_SOURCE).alias("source"))
+    # An empty symbol list makes a column-less frame, which would otherwise
+    # gain one fabricated row labelled `source="mock"`.
+    return with_columns_unless_blank(df, pl.lit(MOCK_SOURCE).alias("source"))
 
 
 def _mock_instruments() -> pl.DataFrame:
@@ -398,6 +427,7 @@ def _fetch_symbol_bars_signal_bounded(
     rate_limit: RateLimitSpec | None,
     backfill: bool,
     on_heartbeat: Callable[[], None] | None,
+    metrics: dict[str, int] | None = None,
 ) -> list[dict]:
     """Bound a native socket call from the process' main thread.
 
@@ -426,6 +456,7 @@ def _fetch_symbol_bars_signal_bounded(
                 rate_limit=rate_limit,
                 backfill=backfill,
                 on_page=on_heartbeat,
+                metrics=metrics,
             )
         except _TdxSignalTimeout as exc:
             raise TdxSymbolRequestTimeout(
@@ -449,6 +480,7 @@ def _fetch_symbol_bars_bounded(
     rate_limit: RateLimitSpec | None,
     backfill: bool,
     on_heartbeat: Callable[[], None] | None,
+    metrics: dict[str, int] | None = None,
 ) -> list[dict]:
     """Run one blocking wire request behind a closeable watchdog.
 
@@ -468,6 +500,7 @@ def _fetch_symbol_bars_bounded(
                 rate_limit=rate_limit,
                 backfill=backfill,
                 on_heartbeat=on_heartbeat,
+                metrics=metrics,
             )
         except (AttributeError, OSError):
             # Signal timers are unavailable outside a normal POSIX main
@@ -489,6 +522,7 @@ def _fetch_symbol_bars_bounded(
                         rate_limit=rate_limit,
                         backfill=backfill,
                         on_page=on_heartbeat,
+                        metrics=metrics,
                     ),
                 )
             )
@@ -524,37 +558,42 @@ def fetch_instruments(
     allow_mock: bool = False,
     config: Config | None = None,
 ) -> pl.DataFrame:
+    if rate_limit is None and config is not None:
+        rate_limit = config.tdx_rate_limit_spec()
     if allow_mock:
         return _fail_or_mock("instruments", _MOCK_SHORT_CIRCUIT, True, _mock_instruments())
-    wait_spec(rate_limit)
     client = None
     try:
-        with TDX_SESSION_LOCK:
-            client = _quotes_client(config)
-            frames = []
-            market_errors: list[str] = []
-            for market, exch in _TDX_STOCK_MARKETS:
-                try:
+        # ``Quotes`` is owned by this invocation.  Do not hold a global
+        # protocol lock while reading the two security-list pages: another
+        # worker owns a different socket and can safely make progress.
+        client = _quotes_client(config)
+        frames = []
+        market_errors: list[str] = []
+        for market, exch in _TDX_STOCK_MARKETS:
+            try:
+                wait_spec(rate_limit)
+                with source_request_slot_spec(rate_limit):
                     raw = client.stocks(market=market)
-                except Exception as exc:
-                    market_errors.append(f"{exch}: {exc}")
-                    continue
-                if raw is None or len(raw) == 0:
-                    market_errors.append(f"{exch}: empty response")
-                    continue
-                pdf = pl.from_pandas(raw) if hasattr(raw, "columns") else pl.DataFrame(raw)
-                part = _filter_instrument_frame(pdf, exch)
-                if part.height:
-                    frames.append(part)
-                else:
-                    market_errors.append(f"{exch}: no qualifying instruments")
-            if market_errors:
-                reason = "market fetch failed: " + "; ".join(market_errors)
-                return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
-            if not frames:
-                reason = "TDX returned no instruments"
-                return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
-            return pl.concat(frames, how="diagonal_relaxed").unique(subset=["symbol"], keep="last")
+            except Exception as exc:
+                market_errors.append(f"{exch}: {exc}")
+                continue
+            if raw is None or len(raw) == 0:
+                market_errors.append(f"{exch}: empty response")
+                continue
+            pdf = pl.from_pandas(raw) if hasattr(raw, "columns") else pl.DataFrame(raw)
+            part = _filter_instrument_frame(pdf, exch)
+            if part.height:
+                frames.append(part)
+            else:
+                market_errors.append(f"{exch}: no qualifying instruments")
+        if market_errors:
+            reason = "market fetch failed: " + "; ".join(market_errors)
+            return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
+        if not frames:
+            reason = "TDX returned no instruments"
+            return _fail_or_mock("instruments", reason, allow_mock, _mock_instruments())
+        return pl.concat(frames, how="diagonal_relaxed").unique(subset=["symbol"], keep="last")
     except ImportError:
         reason = "TDX wire client unavailable"
     except Exception as exc:
@@ -600,50 +639,61 @@ def fetch_daily_bars(
     backfill: bool = False,
     config: Config | None = None,
     on_heartbeat: Callable[[], None] | None = None,
+    metrics: dict[str, int] | None = None,
 ) -> pl.DataFrame:
+    if rate_limit is None and config is not None:
+        rate_limit = config.tdx_rate_limit_spec()
     if allow_mock:
         return _fail_or_mock(
             "daily_bars", _MOCK_SHORT_CIRCUIT, True, _mock_bars(symbols, start, end)
         )
     client = None
     try:
-        with TDX_SESSION_LOCK:
-            client = _quotes_client(config)
-            rows = []
-            for sym in symbols:
-                if on_heartbeat is not None:
-                    on_heartbeat()
-                try:
-                    rows.extend(
-                        _fetch_symbol_bars_bounded(
-                            client,
-                            sym,
-                            start,
-                            end,
-                            rate_limit=rate_limit,
-                            backfill=backfill,
-                            on_heartbeat=on_heartbeat,
-                        )
+        # Each parallel worker invokes this function independently and owns
+        # its own Quotes/socket.  A process-wide lock here would serialize all
+        # those workers and defeat the macOS thread backend.
+        client = _quotes_client(config)
+        rows = []
+        for sym in symbols:
+            if on_heartbeat is not None:
+                on_heartbeat()
+            try:
+                rows.extend(
+                    _fetch_symbol_bars_bounded(
+                        client,
+                        sym,
+                        start,
+                        end,
+                        rate_limit=rate_limit,
+                        backfill=backfill,
+                        on_heartbeat=on_heartbeat,
+                        metrics=metrics,
                     )
-                except TdxSymbolRequestTimeout as exc:
-                    # Closing the client interrupts the stuck native socket;
-                    # the remaining symbols stay unresolved for the worker's
-                    # coverage validator and secondary source failover.
-                    logger.warning("TDX daily bars circuit opened: %s", exc)
-                    reset_tdx_server_cache()
-                    _close_quotes_client(client)
-                    client = None
-                    break
-                except Exception as exc:
-                    # A page failure belongs to this symbol. Keeping already
-                    # fetched rows lets the worker's coverage validator narrow
-                    # the retry/failover scope instead of discarding a whole
-                    # market batch because one code timed out.
-                    logger.warning("TDX daily bars failed for %s: %s", sym, exc)
-                    reset_tdx_server_cache()
-            if rows:
-                return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
-            reason = "TDX returned no bars"
+                )
+            except TdxSymbolRequestTimeout as exc:
+                # Closing the client interrupts the stuck native socket; the
+                # remaining symbols stay unresolved for coverage validation
+                # and secondary source failover.
+                logger.warning("TDX daily bars circuit opened: %s", exc)
+                reset_tdx_server_cache()
+                _close_quotes_client(client)
+                client = None
+                break
+            except Exception as exc:
+                # A page failure belongs to this symbol. Keeping already
+                # fetched rows lets coverage validation narrow the retry/
+                # failover scope instead of discarding a whole batch.
+                logger.warning("TDX daily bars failed for %s: %s", sym, exc)
+                reset_tdx_server_cache()
+        if rows:
+            frame = pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
+            if metrics is not None:
+                metrics["rows_read"] = max(int(metrics.get("rows_read", 0)), frame.height)
+                metrics["bytes_read"] = max(
+                    int(metrics.get("bytes_read", 0)), frame.estimated_size()
+                )
+            return frame
+        reason = "TDX returned no bars"
     except ImportError:
         reason = "TDX wire client unavailable"
     except Exception as exc:
@@ -693,6 +743,9 @@ def fetch_minute_bars(
     opt-in and empty by default, so a fabricated intraday series would buy
     nothing and could be mistaken for a real 240-bar session.
     """
+    if rate_limit is None and config is not None:
+        rate_limit = config.tdx_rate_limit_spec()
+
     from cnequity.adapters.tdx_protocol.minute_bars import fetch_minute_bars_paginated
 
     def _fetch_one(client, sym: str) -> list[dict]:
@@ -714,25 +767,23 @@ def fetch_minute_bars(
     clients: list = []
     lanes = max(1, min(int(workers), len(symbols))) if symbols else 1
     try:
-        # Held for the whole batch, as every TDX caller does: it keeps other
-        # steps out of the protocol while we run. Inside it we own TDX, so the
-        # extra connections below are ours alone and each is touched by exactly
-        # one thread — which is the property the lock's comment is about.
-        with TDX_SESSION_LOCK:
-            if lanes == 1:
-                clients = [_connect_with_retry(config)]
-                for sym in symbols:
-                    if on_heartbeat is not None:
-                        on_heartbeat()
-                    try:
-                        rows.extend(_fetch_one(clients[0], sym))
-                    except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
-                        logger.warning("%s failed for %s: %s", frequency, sym, exc)
-                        failed.append(sym)
-            else:
-                rows, failed = _fetch_threaded(
-                    symbols, lanes, config, _fetch_one, clients, on_heartbeat, frequency
-                )
+        # Each lane owns one independent client.  No process-wide protocol
+        # lock surrounds the sweep: it would serialize daily/minute/tick
+        # requests from otherwise independent workers.
+        if lanes == 1:
+            clients = [_connect_with_retry(config)]
+            for sym in symbols:
+                if on_heartbeat is not None:
+                    on_heartbeat()
+                try:
+                    rows.extend(_fetch_one(clients[0], sym))
+                except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                    logger.warning("%s failed for %s: %s", frequency, sym, exc)
+                    failed.append(sym)
+        else:
+            rows, failed = _fetch_threaded(
+                symbols, lanes, config, _fetch_one, clients, on_heartbeat, frequency
+            )
     except ImportError as exc:
         raise TdxSourceError("minute_bars: TDX wire client unavailable") from exc
     except Exception as exc:
@@ -822,6 +873,9 @@ def fetch_trade_ticks_batch(
     No mock path. The dataset is opt-in and empty by default, so fabricated
     ticks would buy nothing and could be mistaken for a real session.
     """
+    if rate_limit is None and config is not None:
+        rate_limit = config.tdx_rate_limit_spec()
+
     from cnequity.adapters.tdx_protocol.trade_ticks import fetch_trade_ticks
 
     def _lane(client, lane_symbols: list[str], beat) -> tuple[list[dict], list[str]]:
@@ -842,33 +896,32 @@ def fetch_trade_ticks_batch(
     clients: list = []
     lanes = max(1, min(int(workers), len(symbols))) if symbols else 1
     try:
-        with TDX_SESSION_LOCK:
-            if lanes == 1:
-                clients = [_connect_with_retry(config)]
-                rows, failed = _lane(clients[0], symbols, on_heartbeat or (lambda: None))
-            else:
-                import threading
-                from concurrent.futures import ThreadPoolExecutor
+        if lanes == 1:
+            clients = [_connect_with_retry(config)]
+            rows, failed = _lane(clients[0], symbols, on_heartbeat or (lambda: None))
+        else:
+            import threading
+            from concurrent.futures import ThreadPoolExecutor
 
-                for _ in range(lanes):
-                    clients.append(_connect_with_retry(config))
-                # The manifest heartbeat writes to SQLite; serialise it so
-                # concurrent lanes cannot interleave inside it.
-                heartbeat_lock = threading.Lock()
+            for _ in range(lanes):
+                clients.append(_connect_with_retry(config))
+            # The manifest heartbeat writes to SQLite; serialise it so
+            # concurrent lanes cannot interleave inside it.
+            heartbeat_lock = threading.Lock()
 
-                def _beat() -> None:
-                    if on_heartbeat is None:
-                        return
-                    with heartbeat_lock:
-                        on_heartbeat()
+            def _beat() -> None:
+                if on_heartbeat is None:
+                    return
+                with heartbeat_lock:
+                    on_heartbeat()
 
-                with ThreadPoolExecutor(max_workers=lanes) as pool:
-                    results = pool.map(
-                        lambda i: _lane(clients[i], symbols[i::lanes], _beat), range(lanes)
-                    )
-                    for lane_rows, lane_failed in results:
-                        rows.extend(lane_rows)
-                        failed.extend(lane_failed)
+            with ThreadPoolExecutor(max_workers=lanes) as pool:
+                results = pool.map(
+                    lambda i: _lane(clients[i], symbols[i::lanes], _beat), range(lanes)
+                )
+                for lane_rows, lane_failed in results:
+                    rows.extend(lane_rows)
+                    failed.extend(lane_failed)
     except ImportError as exc:
         raise TdxSourceError("trade_ticks: TDX wire client unavailable") from exc
     except Exception as exc:
@@ -917,50 +970,53 @@ def fetch_index_bars(
     backfill: bool = False,
     config: Config | None = None,
 ) -> pl.DataFrame:
+    if rate_limit is None and config is not None:
+        rate_limit = config.tdx_rate_limit_spec()
     symbols = [format_symbol(c, e) for c, e in INDEX_SYMBOLS]
     if allow_mock:
         return _fail_or_mock(
             "index_bars",
             _MOCK_SHORT_CIRCUIT,
             True,
-            _mock_bars(symbols, start, end).with_columns(pl.lit("1d").alias("frequency")),
+            with_columns_unless_blank(
+                _mock_bars(symbols, start, end), pl.lit("1d").alias("frequency")
+            ),
         )
 
     def _fetch_once() -> tuple[list[dict], list[str]]:
-        with TDX_SESSION_LOCK:
-            client = _quotes_client(config)
-            rows: list[dict] = []
-            missing: list[str] = []
-            try:
-                for sym in symbols:
-                    try:
-                        sym_rows = fetch_bars_paginated(
-                            client,
-                            sym,
-                            start,
-                            end,
-                            rate_limit=rate_limit,
-                            backfill=backfill,
-                            is_index=True,
-                        )
-                    except Exception as exc:
-                        if backfill:
-                            # Rotate server and retry the whole set — some TDX hosts
-                            # return corrupt bytes for deep index history.
-                            raise TdxSourceError(f"index bars failed for {sym}: {exc}") from exc
-                        # Daily mode: treat hard failures as missing so a partial
-                        # set cannot advance the watermark (lake previously kept
-                        # only 000852.SH on some days while other indices failed).
-                        logger.warning("TDX index bars failed for %s: %s", sym, exc)
-                        missing.append(sym)
-                        continue
-                    if not sym_rows:
-                        missing.append(sym)
-                        continue
-                    rows.extend(sym_rows)
-            finally:
-                _close_quotes_client(client)
-            return rows, missing
+        client = _quotes_client(config)
+        rows: list[dict] = []
+        missing: list[str] = []
+        try:
+            for sym in symbols:
+                try:
+                    sym_rows = fetch_bars_paginated(
+                        client,
+                        sym,
+                        start,
+                        end,
+                        rate_limit=rate_limit,
+                        backfill=backfill,
+                        is_index=True,
+                    )
+                except Exception as exc:
+                    if backfill:
+                        # Rotate server and retry the whole set — some TDX hosts
+                        # return corrupt bytes for deep index history.
+                        raise TdxSourceError(f"index bars failed for {sym}: {exc}") from exc
+                    # Daily mode: treat hard failures as missing so a partial
+                    # set cannot advance the watermark (lake previously kept
+                    # only 000852.SH on some days while other indices failed).
+                    logger.warning("TDX index bars failed for %s: %s", sym, exc)
+                    missing.append(sym)
+                    continue
+                if not sym_rows:
+                    missing.append(sym)
+                    continue
+                rows.extend(sym_rows)
+        finally:
+            _close_quotes_client(client)
+        return rows, missing
 
     reason = "TDX returned no index bars"
     try:
@@ -996,7 +1052,7 @@ def fetch_index_bars(
         "index_bars",
         reason,
         allow_mock,
-        _mock_bars(symbols, start, end).with_columns(pl.lit("1d").alias("frequency")),
+        with_columns_unless_blank(_mock_bars(symbols, start, end), pl.lit("1d").alias("frequency")),
     )
 
 
@@ -1012,7 +1068,11 @@ def fetch_corporate_actions(
     on_progress=None,
     fail_loud: bool = False,
     allow_empty: bool = False,
+    run_id: str | None = None,
+    request_scope: str | None = None,
 ) -> pl.DataFrame:
+    if rate_limit is None and config is not None:
+        rate_limit = config.tdx_rate_limit_spec()
     empty = pl.DataFrame(
         schema={
             "symbol": pl.Utf8,
@@ -1025,6 +1085,10 @@ def fetch_corporate_actions(
             "allotment_price": pl.Float64,
         }
     )
+    if allow_mock and config is not None and config.should_archive_raw("corporate_actions"):
+        raise RawArchiveError(
+            "corporate_actions: mock rows cannot satisfy the required exact-wire archive"
+        )
     if allow_mock:
         return _fail_or_mock("corporate_actions", _MOCK_SHORT_CIRCUIT, True, empty)
     frames: list[pl.DataFrame] = []
@@ -1038,6 +1102,9 @@ def fetch_corporate_actions(
                 rate_limit=rate_limit,
                 strict=backfill and primary_only,
                 on_progress=on_progress,
+                config=config,
+                run_id=run_id,
+                request_scope=request_scope,
             )
             if tdx_df.height:
                 frames.append(tdx_df.with_columns(pl.lit("tdx_protocol").alias("source")))
@@ -1052,7 +1119,13 @@ def fetch_corporate_actions(
 
     try:
         if not primary_only:
-            em_df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill, config=config)
+            em_df = fetch_corporate_actions_eastmoney(
+                trade_date,
+                backfill=backfill,
+                config=config,
+                run_id=run_id,
+                request_scope=request_scope,
+            )
             if em_df.height:
                 frames.append(em_df.with_columns(pl.lit("eastmoney").alias("source")))
     except Exception as exc:

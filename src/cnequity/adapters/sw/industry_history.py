@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 import polars as pl
 
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ def _code_to_symbol(code: str) -> str | None:
     return format_symbol(code, exchange)
 
 
-def fetch_sw_industry_intervals(*, client: httpx.Client | None = None) -> pl.DataFrame:
+def fetch_sw_industry_intervals(*, client: httpx.Client | None = None, config=None) -> pl.DataFrame:
     """Download Shenwan stock→industry interval history (one row per classification spell)."""
     try:
         import pandas as pd  # noqa: PLC0415 — optional; Excel parse only
@@ -99,7 +100,8 @@ def fetch_sw_industry_intervals(*, client: httpx.Client | None = None) -> pl.Dat
     if client is None:
         client = sw_client()
     try:
-        resp = client.get(SW_INDUSTRY_XLS_URL, headers=_HEADERS)
+        with source_request(config, "sw"):
+            resp = client.get(SW_INDUSTRY_XLS_URL, headers=_HEADERS)
         resp.raise_for_status()
     finally:
         if owns:

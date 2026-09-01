@@ -5,12 +5,15 @@ import polars as pl
 import pytest
 
 import cnequity.steps  # noqa: F401
-from cnequity.config import Config
+from cnequity.config import Config, FailoverDatasetSpec
 from cnequity.steps.events import step_corporate_actions
+from cnequity.storage.raw_archive import RawArchiveError
 
 
 def test_corporate_actions_daily_uses_eastmoney(tmp_path):
-    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": True})
+    cfg = Config(
+        data_root=tmp_path / "data", sources={"eastmoney": True}, raw_archive_enabled=False
+    )
     em_df = pl.DataFrame(
         {
             "symbol": ["600519.SH"],
@@ -37,7 +40,9 @@ def test_corporate_actions_daily_uses_eastmoney(tmp_path):
 
 
 def test_corporate_actions_daily_empty_is_ok(tmp_path):
-    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": True})
+    cfg = Config(
+        data_root=tmp_path / "data", sources={"eastmoney": True}, raw_archive_enabled=False
+    )
     with patch(
         "cnequity.steps.events.fetch_corporate_actions_eastmoney",
         return_value=pl.DataFrame(),
@@ -48,8 +53,88 @@ def test_corporate_actions_daily_empty_is_ok(tmp_path):
     assert result["rows_written"] == 0
 
 
+def test_clean_corporate_actions_day_captures_daily_tdx_peer(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"eastmoney": True, "tdx_protocol": True},
+        tdx_enabled=True,
+        raw_archive_enabled=False,
+        failover_enabled=True,
+        failover_datasets=[
+            FailoverDatasetSpec(
+                name="corporate_actions",
+                primary="eastmoney",
+                backup="tdx_protocol",
+                snapshot_cadence="daily",
+            )
+        ],
+    )
+    calls = []
+    monkeypatch.setattr(
+        "cnequity.steps.events.snapshot_corporate_actions_tdx_backup",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+    with patch(
+        "cnequity.steps.events.fetch_corporate_actions_eastmoney",
+        return_value=pl.DataFrame(),
+    ):
+        result = step_corporate_actions(
+            cfg, date(2024, 6, 28), "run-clean-peer", {"symbols": ["600519.SH"]}
+        )
+
+    assert result["rows_written"] == 0
+    assert calls and calls[0]["symbols"] == ["600519.SH"]
+    finding = next(
+        item
+        for item in result["context_updates"]["audit_findings"]
+        if item["check"] == "backup_snapshot_unavailable"
+    )
+    assert finding["peer_unavailable"] is True
+    assert finding["retryable"] is True
+
+
+def test_corporate_actions_peer_failure_is_warning_not_primary_error(tmp_path, monkeypatch):
+    cfg = Config(
+        data_root=tmp_path / "data",
+        sources={"eastmoney": True, "tdx_protocol": True},
+        tdx_enabled=True,
+        raw_archive_enabled=False,
+        failover_enabled=True,
+        failover_datasets=[
+            FailoverDatasetSpec(
+                name="corporate_actions",
+                primary="eastmoney",
+                backup="tdx_protocol",
+                snapshot_cadence="daily",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "cnequity.steps.events.snapshot_corporate_actions_tdx_backup",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("peer down")),
+    )
+    with patch(
+        "cnequity.steps.events.fetch_corporate_actions_eastmoney",
+        return_value=pl.DataFrame(),
+    ):
+        result = step_corporate_actions(
+            cfg, date(2024, 6, 28), "run-peer-down", {"symbols": ["600519.SH"]}
+        )
+
+    finding = next(
+        item
+        for item in result["context_updates"]["audit_findings"]
+        if item["check"] == "backup_snapshot_unavailable"
+    )
+    assert finding["severity"] == "warning"
+    assert finding["peer_unavailable"] is True
+    assert finding["retryable"] is True
+
+
 def test_corporate_actions_daily_preserves_incremental_findings(tmp_path, monkeypatch):
-    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": True})
+    cfg = Config(
+        data_root=tmp_path / "data", sources={"eastmoney": True}, raw_archive_enabled=False
+    )
     row = pl.DataFrame(
         {
             "symbol": ["600519.SH"],
@@ -76,7 +161,9 @@ def test_corporate_actions_daily_preserves_incremental_findings(tmp_path, monkey
 def test_corporate_actions_backfill_rejects_source_rows_outside_requested_window(
     tmp_path, monkeypatch
 ):
-    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": True})
+    cfg = Config(
+        data_root=tmp_path / "data", sources={"eastmoney": True}, raw_archive_enabled=False
+    )
     cfg._backfill = True
     cfg._backfill_start = date(2024, 1, 1)
     cfg._backfill_end = date(2024, 6, 30)
@@ -101,7 +188,7 @@ def test_corporate_actions_backfill_rejects_source_rows_outside_requested_window
 
 
 def test_corporate_actions_backfill_default_reaches_research_floor(tmp_path, monkeypatch):
-    cfg = Config(data_root=tmp_path / "data")
+    cfg = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
     cfg._backfill = True
     monkeypatch.setattr("cnequity.steps.events.load_symbols", lambda _cfg: ["600849.SH"])
     rows = pl.DataFrame(
@@ -122,6 +209,33 @@ def test_corporate_actions_backfill_default_reaches_research_floor(tmp_path, mon
     result = step_corporate_actions(cfg, date(2026, 8, 21), "run-floor", {})
 
     assert result["rows_written"] == 1
+
+
+def test_corporate_actions_captureless_backfill_fails_before_staging(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 6, 28)
+    monkeypatch.setattr("cnequity.steps.events.load_symbols", lambda _cfg: ["600519.SH"])
+    monkeypatch.setattr(
+        "cnequity.steps.events.fetch_corporate_actions",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "ex_date": [date(2024, 6, 28)],
+                "action_type": ["cash_dividend"],
+                "cash_dividend": [1.0],
+                "bonus_ratio": [0.0],
+                "transfer_ratio": [0.0],
+                "allotment_ratio": [None],
+                "allotment_price": [None],
+            }
+        ),
+    )
+
+    with pytest.raises(RawArchiveError, match="(no exact wire observation|capture is not active)"):
+        step_corporate_actions(cfg, date(2024, 6, 28), "run-captureless", {})
+    assert not (cfg.staging_root / "corporate_actions").exists()
 
 
 def test_parse_row_maps_current_eastmoney_columns():

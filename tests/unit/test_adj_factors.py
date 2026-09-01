@@ -598,6 +598,53 @@ def test_compute_adj_factors_parallel_tracks_success_by_future_symbol(adj_config
     }
 
 
+def test_compute_adj_factors_uses_independent_source_capped_workers(adj_config, monkeypatch):
+    """The HTTP derive budget is independent from the legacy TDX workers."""
+    import threading
+    import time
+
+    _write_bar(adj_config, "000001.SZ", date(2024, 6, 28))
+    _write_bar(adj_config, "000858.SZ", date(2024, 6, 28))
+    adj_config.workers = 1
+    adj_config.adj_factor_workers = 3
+    adj_config.source_concurrency = {"sina": 2}
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+    overlapped = threading.Event()
+
+    def fake_fetch(symbol, adjust_type, client=None):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            # The first two tasks must hold slots at the same time.  An event
+            # makes this proof deterministic while allowing the fixture's
+            # third symbol to run after one of those slots is released.
+            with lock:
+                if active >= 2:
+                    overlapped.set()
+            if not overlapped.wait(timeout=1):
+                raise AssertionError("source concurrency cap prevented overlap")
+            time.sleep(0.02)
+        finally:
+            with lock:
+                active -= 1
+        return pl.DataFrame({"trade_date": [date(2024, 6, 28)], "factor": [0.5]})
+
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        fake_fetch,
+    )
+
+    result = compute_adj_factors(adj_config)
+
+    assert result.failed == []
+    assert result.rows == 3
+    assert peak == 2
+
+
 def test_compute_adj_factors_reuses_cache_on_non_event_day(adj_config, monkeypatch):
     _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28))
     _write_bar(adj_config, "600519.SH", date(2024, 6, 29))
@@ -978,3 +1025,221 @@ def test_uncovered_symbols_detects_a_middle_factor_gap(adj_config):
     _write_adj_partition(adj_config, "600519.SH", days[2])
 
     assert _uncovered_symbols(adj_config) == {"600519.SH"}
+
+
+# --- Recomputed-factor cross-check ------------------------------------------
+
+
+def _write_bars(cfg, symbol, days, close):
+    for day in days:
+        part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "symbol": [symbol],
+                "trade_date": [day],
+                "open": [close],
+                "high": [close],
+                "low": [close],
+                "close": [close],
+                "volume": [100],
+                "amount": [close * 100],
+            }
+        ).write_parquet(part / f"{symbol}.parquet")
+
+
+def _write_action(cfg, symbol, ex_date, **terms):
+    part = cfg.curated_root / "corporate_actions" / f"ex_date={ex_date.isoformat()}"
+    part.mkdir(parents=True, exist_ok=True)
+    row = {
+        "symbol": [symbol],
+        "ex_date": [ex_date],
+        "action_type": [terms.pop("action_type", "dividend")],
+        "cash_dividend": [terms.pop("cash_dividend", 0.0)],
+        "bonus_ratio": [terms.pop("bonus_ratio", 0.0)],
+        "transfer_ratio": [terms.pop("transfer_ratio", 0.0)],
+        "allotment_ratio": [terms.pop("allotment_ratio", 0.0)],
+        "allotment_price": [terms.pop("allotment_price", 0.0)],
+    }
+    assert not terms, terms
+    pl.DataFrame(row).write_parquet(part / f"{symbol}-{row['action_type'][0]}.parquet")
+
+
+def _factor_frame(symbol, days, factors):
+    return pl.DataFrame(
+        {
+            "symbol": [symbol] * len(days),
+            "trade_date": list(days),
+            "adjust_type": ["hfq"] * len(days),
+            "factor": list(factors),
+        }
+    )
+
+
+@pytest.fixture
+def crosscheck_config(tmp_path):
+    cfg_path = tmp_path / "crosscheck.toml"
+    cfg_path.write_text(
+        f"""
+[data]
+root = "{path_for_toml(tmp_path / "data")}"
+
+[adj_factors]
+source = "sina"
+adjust_types = ["hfq"]
+"""
+    )
+    return load_config(cfg_path)
+
+
+_DAYS = (date(2024, 6, 26), date(2024, 6, 27), date(2024, 6, 28))
+
+
+def test_crosscheck_accepts_a_step_that_matches_the_dividend(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    _write_bars(crosscheck_config, "600519.SH", _DAYS, 10.0)
+    _write_action(crosscheck_config, "600519.SH", _DAYS[1], cash_dividend=0.5)
+    exact = 10.0 / (10.0 - 0.5)
+    out = _factor_frame("600519.SH", _DAYS, [1.0, exact, exact])
+
+    assert _corporate_action_crosscheck_findings(crosscheck_config, out) == []
+
+
+def test_crosscheck_flags_a_dividend_the_vendor_series_missed(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    _write_bars(crosscheck_config, "600519.SH", _DAYS, 10.0)
+    _write_action(crosscheck_config, "600519.SH", _DAYS[1], cash_dividend=0.5)
+    out = _factor_frame("600519.SH", _DAYS, [1.0, 1.0, 1.0])
+
+    findings = _corporate_action_crosscheck_findings(crosscheck_config, out)
+    assert len(findings) == 1
+    assert findings[0]["check"] == "adj_factor_corporate_action_divergence"
+    assert findings[0]["trade_date"] == "2024-06-27"
+    assert findings[0]["expected_ratio"] == pytest.approx(10.0 / 9.5)
+    assert findings[0]["actual_ratio"] == pytest.approx(1.0)
+    assert findings[0]["divergence_bps"] == pytest.approx(500.0, abs=1.0)
+    # 500 bps clears the 200 bps error threshold.
+    assert findings[0]["severity"] == "error"
+
+
+def test_crosscheck_flags_a_step_on_a_day_with_no_action(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    _write_bars(crosscheck_config, "600519.SH", _DAYS, 10.0)
+    out = _factor_frame("600519.SH", _DAYS, [1.0, 1.0, 1.2])
+
+    findings = _corporate_action_crosscheck_findings(crosscheck_config, out)
+    assert len(findings) == 1
+    assert findings[0]["trade_date"] == "2024-06-28"
+    assert findings[0]["expected_ratio"] == pytest.approx(1.0)
+    assert "no ex-date" in findings[0]["message"]
+
+
+def test_crosscheck_handles_bonus_transfer_and_allotment_together(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    # One ex-date carrying two action rows: the ratios add, and the allotment
+    # returns ratio*price of cash to the holder.
+    _write_bars(crosscheck_config, "000001.SZ", _DAYS, 20.0)
+    _write_action(
+        crosscheck_config,
+        "000001.SZ",
+        _DAYS[1],
+        action_type="dividend",
+        cash_dividend=0.4,
+        bonus_ratio=0.3,
+        transfer_ratio=0.2,
+    )
+    _write_action(
+        crosscheck_config,
+        "000001.SZ",
+        _DAYS[1],
+        action_type="allotment",
+        allotment_ratio=0.5,
+        allotment_price=6.0,
+    )
+    expected = (1 + 0.3 + 0.2 + 0.5) * 20.0 / (20.0 - 0.4 + 0.5 * 6.0)
+    out = _factor_frame("000001.SZ", _DAYS, [1.0, expected, expected])
+
+    assert _corporate_action_crosscheck_findings(crosscheck_config, out) == []
+
+
+def test_crosscheck_reads_back_the_prior_partition_for_an_append_run(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    # The daily case: one new date, whose predecessor is only in the already
+    # written derived partitions. Without the read-back there is no step to
+    # measure and a missed ex-date passes silently.
+    _write_bars(crosscheck_config, "600519.SH", _DAYS[:2], 10.0)
+    _write_action(crosscheck_config, "600519.SH", _DAYS[1], cash_dividend=0.5)
+    prior = crosscheck_config.derived_root / "adj_factors" / f"trade_date={_DAYS[0].isoformat()}"
+    prior.mkdir(parents=True)
+    _factor_frame("600519.SH", _DAYS[:1], [1.0]).write_parquet(prior / "part-0.parquet")
+
+    out = _factor_frame("600519.SH", _DAYS[1:2], [1.0])
+    findings = _corporate_action_crosscheck_findings(crosscheck_config, out)
+    assert len(findings) == 1
+    assert findings[0]["trade_date"] == "2024-06-27"
+
+
+def test_crosscheck_flags_an_action_row_implying_a_nonpositive_price(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    _write_bars(crosscheck_config, "000001.SZ", _DAYS, 10.0)
+    _write_action(crosscheck_config, "000001.SZ", _DAYS[1], cash_dividend=99.0)
+    out = _factor_frame("000001.SZ", _DAYS, [1.0, 1.0, 1.0])
+
+    findings = _corporate_action_crosscheck_findings(crosscheck_config, out)
+    assert [f["check"] for f in findings] == ["adj_factor_action_implies_nonpositive_price"]
+    assert findings[0]["severity"] == "error"
+
+
+def test_crosscheck_stays_within_tolerance_for_vendor_rounding(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    _write_bars(crosscheck_config, "600519.SH", _DAYS, 10.0)
+    _write_action(crosscheck_config, "600519.SH", _DAYS[1], cash_dividend=0.5)
+    # 20 bps off the exact ratio: below the 50 bps materiality threshold.
+    rounded = (10.0 / 9.5) * 1.002
+    out = _factor_frame("600519.SH", _DAYS, [1.0, rounded, rounded])
+
+    assert _corporate_action_crosscheck_findings(crosscheck_config, out) == []
+
+
+def test_crosscheck_can_be_disabled(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    _write_bars(crosscheck_config, "600519.SH", _DAYS, 10.0)
+    _write_action(crosscheck_config, "600519.SH", _DAYS[1], cash_dividend=0.5)
+    out = _factor_frame("600519.SH", _DAYS, [1.0, 1.0, 1.0])
+    crosscheck_config.adj_factors_crosscheck_enabled = False
+
+    assert _corporate_action_crosscheck_findings(crosscheck_config, out) == []
+
+
+def test_crosscheck_reports_one_finding_per_symbol_with_a_day_count(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    _write_bars(crosscheck_config, "600519.SH", _DAYS, 10.0)
+    # Two bad steps, neither backed by an action; only the worst is reported.
+    out = _factor_frame("600519.SH", _DAYS, [1.0, 1.1, 1.43])
+
+    findings = _corporate_action_crosscheck_findings(crosscheck_config, out)
+    assert len(findings) == 1
+    assert findings[0]["divergent_days"] == 2
+    assert findings[0]["trade_date"] == "2024-06-28"
+
+
+def test_compute_adj_factors_surfaces_crosscheck_findings(adj_config, monkeypatch):
+    _write_action(adj_config, "600519.SH", date(2024, 6, 28), cash_dividend=0.5)
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors._prior_factor_rows",
+        lambda config, symbols, before: _factor_frame("600519.SH", [date(2024, 6, 27)], [1.0]),
+    )
+    _write_bars(adj_config, "600519.SH", [date(2024, 6, 27)], 1.0)
+
+    result = compute_adj_factors(adj_config)
+    checks = {f["check"] for f in result.findings}
+    assert "adj_factor_corporate_action_divergence" in checks

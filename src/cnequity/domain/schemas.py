@@ -149,11 +149,19 @@ TRADING_CALENDAR_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# `status` and `risk_warning` are two orthogonal facts and must stay two
+# columns: a security can be halted *and* under risk warning at once, and the
+# single-column encoding resolved that by dropping the ST label. See
+# `domain/trading_status.py` for the whole story and the legacy read path.
 TRADING_STATUS_SCHEMA = {
     "symbol": pl.Utf8,
     "trade_date": pl.Date,
     "is_trading": pl.Boolean,
+    # normal | suspended | delisted
     "status": pl.Utf8,
+    # ST / *ST designation. Nullable: a derived bar-gap suspension row has no
+    # evidence either way, and saying `False` there would invent a fact.
+    "risk_warning": pl.Boolean,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
     "fetched_at": FETCHED_AT_DTYPE,
@@ -876,6 +884,17 @@ def validate_dataframe(
     if df.is_empty():
         return pl.DataFrame(schema=schema)
 
+    if dataset == "trading_status":
+        # Rows written before ST moved out of `status` into its own column are
+        # upgraded here rather than at each of the half-dozen read paths
+        # (reader, compact, repartition, derive, audit). Idempotent, so it also
+        # no-ops on an already migrated lake; delete this once
+        # `scripts/migrate_trading_status_risk_warning.py` has been run
+        # everywhere. See domain/trading_status.py.
+        from cnequity.domain.trading_status import normalize_legacy
+
+        df = normalize_legacy(df)
+
     missing = [col for col in schema if col not in df.columns]
     if allow_missing_optional:
         required = required_columns_for_dataset(dataset, schema)
@@ -983,6 +1002,22 @@ def utc_now_iso() -> str:
 
 
 def with_provenance(df: pl.DataFrame, source: str, data_version: str) -> pl.DataFrame:
+    """Stamp source / data_version / fetched_at onto every row of *df*.
+
+    A frame with **no columns at all** is returned untouched. Polars broadcasts
+    a literal against a zero-column frame to length one, so stamping a bare
+    ``pl.DataFrame()`` — the codebase's ordinary "nothing to report" value —
+    would manufacture a row carrying provenance and no business fields. That
+    row has no primary key, so a strict validate rejects it, but a diagonal
+    concat with a real day's rows first fills its keys with nulls and launders
+    it into the lake. A zero-*row* frame that has a schema is unaffected and
+    still gets its columns.
+    """
+    from cnequity.domain.frames import is_blank
+
+    if is_blank(df):
+        return df
+
     # An adapter may pre-set `source` (e.g. MOCK_SOURCE) to flag row origin;
     # that marker must survive normalization.
     cols = [

@@ -19,6 +19,8 @@ pip install cnequity
 cne demo
 ```
 
+海外或受限网络无法连接 TDX 时，可先运行 `cne demo --sample`。它不访问网络，生成的合成行全部标记为 `source=mock`，仅用于验证安装、Parquet 落盘和查询链路。
+
 写入 `data/cnequity-demo/`（几只流动性股票 × 约 30 个交易日），并打印样例表。
 
 要验证复权口径，可运行 `cne demo --research --symbols 600519.SH`；它会额外读取 Sina 复权因子，

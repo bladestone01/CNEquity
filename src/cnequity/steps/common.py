@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 
@@ -13,6 +15,7 @@ from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 from cnequity.adapters.tdx_protocol.client import fetch_instruments
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS, fetch_semantics
+from cnequity.domain.frames import with_columns_unless_blank
 from cnequity.domain.schemas import data_version_for, with_provenance
 from cnequity.domain.symbols import is_subscription_placeholder
 from cnequity.storage import StagingWriter
@@ -22,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 INCREMENTAL_LOOKBACK_DAYS = 5
 BACKFILL_START = date(2016, 1, 1)
+
+# These feeds are rolling *calendar*-date disclosures.  A weekend or exchange
+# holiday can still contain a publication, so using ``list_trading_dates``
+# here would silently make those rows impossible to fetch.  Keep this small
+# and explicit rather than weakening the trading-day contract for market
+# observations such as bars, flow, and breadth.
+CALENDAR_DATE_DATASETS = frozenset({"announcement_index", "regulatory_events"})
 
 
 class SnapshotBackfillError(RuntimeError):
@@ -42,9 +52,44 @@ def write_simple(
 
 
 def incremental_window(config: Config, dataset: str, trade_date: date) -> date:
-    """Start date for incremental fetch: day after watermark, or lookback window."""
+    """Return the start of a dataset's incremental reconciliation window.
+
+    Most event/snapshot feeds retain the historical ``watermark + 1``
+    behaviour.  Datasets whose source can revise settled rows declare a
+    ``reconciliation_lookback_days`` on their :class:`DatasetSpec`; those
+    datasets deliberately overlap the tail on every run.  A
+    ``trading_day`` lookback counts sessions from the curated exchange
+    calendar, while ``calendar`` counts literal date distance.  The lookback
+    includes the watermark (and, when there is no watermark, the as-of day),
+    so a value of five fetches the latest five observations and then any new
+    sessions after the watermark.
+    """
     state = StateStore(config.meta_root)
     watermark = state.get_date(dataset)
+    spec = DATASETS.get(dataset)
+    lookback = max(int(getattr(spec, "reconciliation_lookback_days", 0) or 0), 0)
+    mode = getattr(spec, "reconciliation_lookback_mode", "calendar")
+
+    if lookback:
+        anchor = min(watermark, trade_date) if watermark is not None else trade_date
+        if mode == "trading_day":
+            # Probe a generously padded calendar interval.  The calendar
+            # helper itself excludes weekends, exchange holidays, and any
+            # curated holiday overrides, so the returned count is a true
+            # session count rather than a weekday approximation.
+            probe_days = max(lookback * 4 + 14, lookback + 7)
+            probe_start = anchor - timedelta(days=probe_days)
+            sessions = [
+                day for day in list_trading_dates(config, probe_start, anchor) if day <= anchor
+            ]
+            if sessions:
+                start = sessions[max(0, len(sessions) - lookback)]
+            else:
+                start = anchor - timedelta(days=lookback - 1)
+        else:
+            start = anchor - timedelta(days=lookback - 1)
+        return min(start, trade_date)
+
     if watermark is not None:
         return min(watermark + timedelta(days=1), trade_date)
     return trade_date - timedelta(days=INCREMENTAL_LOOKBACK_DAYS)
@@ -220,8 +265,15 @@ def list_trading_dates(config: Config, start: date, end: date) -> list[date]:
 
 
 def incremental_trade_dates(config: Config, dataset: str, trade_date: date) -> list[date]:
-    """Trading days to fetch for a daily dataset: [watermark+1, trade_date]."""
+    """Dates to fetch for a daily dataset: [watermark+1, trade_date].
+
+    Event calendars use literal calendar dates because disclosures are not
+    constrained to exchange sessions.  All other by-date datasets retain the
+    strict curated trading-session walk.
+    """
     start = incremental_window(config, dataset, trade_date)
+    if dataset in CALENDAR_DATE_DATASETS:
+        return [start + timedelta(days=offset) for offset in range((trade_date - start).days + 1)]
     return list_trading_dates(config, start, trade_date)
 
 
@@ -410,7 +462,13 @@ def fetch_incremental_daily(
         findings.append(_dense_empty_day_finding(dataset, empty_days))
     if not frames:
         return pl.DataFrame(), findings
-    return pl.concat(frames, how="diagonal_relaxed"), findings
+    combined = pl.concat(frames, how="diagonal_relaxed")
+    # Rolling reconciliation windows intentionally overlap the watermark. The
+    # canonical PK collapse keeps a revised row once while preserving the
+    # source/provenance precedence used by lake reads.
+    from cnequity.query.canonical import dedupe_by_primary_key
+
+    return dedupe_by_primary_key(combined, dataset), findings
 
 
 def load_symbols(config: Config) -> list[str]:
@@ -464,18 +522,206 @@ def instrument_metadata(config: Config) -> pl.DataFrame:
         ("asset_type", pl.Utf8),
     ):
         if name not in out.columns:
-            out = out.with_columns(pl.lit(None, dtype=dtype).alias(name))
+            out = with_columns_unless_blank(out, pl.lit(None, dtype=dtype).alias(name))
     return out
+
+
+def load_curated_trading_status(
+    config: Config,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    symbols: list[str] | None = None,
+) -> pl.DataFrame | None:
+    """Load the available status evidence without making a network request.
+
+    ``trading_status`` is an advisory but independently fetched daily
+    snapshot.  Daily-bar routing may use it to prove that a missing symbol was
+    suspended; it must never synthesize a status by treating an absent row as
+    ``normal``.  A corrupt or absent status root therefore returns ``None``
+    and leaves the symbol in the strict unknown bucket.
+    """
+    root = config.curated_root / "trading_status"
+    if not root.exists() or not any(root.rglob("*.parquet")):
+        return None
+    try:
+        from cnequity.query.canonical import dedupe_by_primary_key
+        from cnequity.query.parquet_scan import collect_parquet_root
+
+        frame = collect_parquet_root(
+            root,
+            partition_col="trade_date",
+            start=start,
+            end=end,
+            symbols=symbols,
+        )
+    except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+        logger.warning("curated trading_status scan failed; status evidence unavailable: %s", exc)
+        return None
+    required = {"symbol", "trade_date", "is_trading"}
+    if not required.issubset(frame.columns):
+        logger.warning(
+            "curated trading_status lacks required evidence columns: %s",
+            sorted(required - set(frame.columns)),
+        )
+        return None
+    return dedupe_by_primary_key(frame, "trading_status")
+
+
+def _instrument_identity(config: Config, metadata: pl.DataFrame | None = None) -> dict:
+    """Build the identity carried by negative evidence records.
+
+    Revisions are the cheap authoritative invalidation signal after a normal
+    compact.  The metadata digest is a fallback for direct step invocations
+    and older lakes that predate revision receipts; changing a list/delist
+    span or asset type still invalidates an old absence claim there.
+    """
+    state = StateStore(config.meta_root)
+    revision = state.get_revision("instruments")
+    frame = metadata if metadata is not None else instrument_metadata(config)
+    rows = []
+    if frame is not None and not frame.is_empty() and "symbol" in frame.columns:
+        columns = [
+            column
+            for column in ("symbol", "list_date", "delist_date", "asset_type")
+            if column in frame.columns
+        ]
+        for row in frame.select(columns).sort("symbol").iter_rows(named=True):
+            rows.append(
+                {
+                    column: (value.isoformat() if isinstance(value, date) else value)
+                    for column, value in row.items()
+                }
+            )
+    encoded = json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str).encode()
+
+    # A cached "no rows" claim is also invalid when trading status changes.
+    # Catalog identity alone is insufficient: a symbol can remain the same
+    # instrument while moving from suspended to trading (or vice versa).  Use
+    # both the authoritative compact revision and a content fingerprint so
+    # direct step calls and older lakes without receipts are covered too.
+    status_revision = state.get_revision("trading_status")
+    status_frame = load_curated_trading_status(config)
+    status_rows: list[dict] = []
+    if status_frame is not None and not status_frame.is_empty():
+        volatile = {"source", "data_version", "fetched_at", "run_id", "capture_id"}
+        status_columns = [column for column in status_frame.columns if column not in volatile]
+        if status_columns:
+            for row in (
+                status_frame.select(status_columns).sort(status_columns).iter_rows(named=True)
+            ):
+                status_rows.append(
+                    {
+                        column: (value.isoformat() if isinstance(value, date) else value)
+                        for column, value in row.items()
+                    }
+                )
+    status_encoded = json.dumps(
+        status_rows, sort_keys=True, separators=(",", ":"), default=str
+    ).encode()
+    return {
+        "instruments_revision": revision,
+        "instruments_fingerprint": hashlib.sha256(encoded).hexdigest(),
+        "trading_status_revision": status_revision,
+        "trading_status_fingerprint": hashlib.sha256(status_encoded).hexdigest(),
+    }
+
+
+def negative_evidence_ttl_days(config: Config, dataset: str) -> int:
+    """Resolve deployment TTL, falling back to the dataset contract."""
+    configured = getattr(config, "negative_evidence_ttl_days", None)
+    if configured is not None:
+        return max(int(configured), 0)
+    spec = DATASETS.get(dataset)
+    return max(int(getattr(spec, "negative_evidence_ttl_days", 0) or 0), 0)
+
+
+def load_negative_evidence(
+    config: Config,
+    dataset: str,
+    *,
+    metadata: pl.DataFrame | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Return current negative records for a dataset under its identity."""
+    identity = _instrument_identity(config, metadata)
+    return StateStore(config.meta_root).get_negative_evidence(
+        dataset,
+        identity=identity,
+        now=now,
+    )
+
+
+def record_negative_evidence(
+    config: Config,
+    dataset: str,
+    symbols: Iterable[str],
+    start: date,
+    end: date,
+    *,
+    reason: str,
+    source: str,
+    metadata: pl.DataFrame | None = None,
+    details: dict | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Persist a source-empty/no-data claim for each symbol in a window."""
+    unique = sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+    if not unique:
+        return
+    entries = [
+        {
+            "symbol": symbol,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "reason": reason,
+            "source": source,
+            **(details or {}),
+        }
+        for symbol in unique
+    ]
+    StateStore(config.meta_root).record_negative_evidence(
+        dataset,
+        entries,
+        ttl_days=negative_evidence_ttl_days(config, dataset),
+        identity=_instrument_identity(config, metadata),
+        now=now,
+    )
+
+
+def negative_evidence_covers(
+    entry: dict,
+    symbol: str,
+    start: date,
+    end: date,
+) -> bool:
+    """Whether one persisted claim covers the complete requested window."""
+    if str(entry.get("symbol", "")).strip().upper() != str(symbol).strip().upper():
+        return False
+    try:
+        claimed_start = date.fromisoformat(str(entry.get("window_start", entry.get("start"))))
+        claimed_end = date.fromisoformat(str(entry.get("window_end", entry.get("end"))))
+    except (TypeError, ValueError):
+        return False
+    return claimed_start <= start and claimed_end >= end
 
 
 @dataclass
 class DailyBarOwnership:
-    """One window's explicit generic/dedicated/no-data ownership split."""
+    """One window's explicit generic/dedicated/no-data ownership split.
+
+    ``unknown`` is intentionally separate from ``expected_no_data``. The
+    former must remain a fetch/retry obligation; only the latter may be
+    omitted from a session-dense expected key set.
+    """
 
     generic: list[str] = field(default_factory=list)
     delegated_delisted: list[str] = field(default_factory=list)
     expected_no_data: list[str] = field(default_factory=list)
     placeholder: list[str] = field(default_factory=list)
+    unknown: list[str] = field(default_factory=list)
+    negative_cached: list[str] = field(default_factory=list)
+    no_data_reasons: dict[str, str] = field(default_factory=dict)
 
 
 def classify_daily_bar_ownership(
@@ -488,42 +734,144 @@ def classify_daily_bar_ownership(
     end: date,
     *,
     bar_universe: set[str] | None = None,
+    trading_status: pl.DataFrame | None = None,
+    trading_sessions: Iterable[date] | None = None,
+    negative_evidence: Iterable[dict] | None = None,
 ) -> DailyBarOwnership:
-    """Route symbols without treating a silent exclusion as completion."""
+    """Route symbols using explicit metadata and evidence, never a ratio.
+
+    A symbol is ``expected_no_data`` only when one of these independently
+    inspectable facts holds: its listing/delisting span excludes the complete
+    requested window; every covered session has an explicit non-trading status;
+    or a still-live, identity-matching negative-evidence record covers the
+    complete window. An absent status row, malformed instrument metadata, or
+    an incomplete source response remains ``unknown`` and must be retried.
+
+    ``bar_universe`` is historical positive-volume evidence. It is used for
+    the narrow undated-ETF placeholder case, where a symbol with no observed
+    traded bar is not safe to send through the expensive per-symbol fallback.
+    """
     from cnequity.domain.symbols import is_etf_symbol, parse_symbol
 
     out = DailyBarOwnership()
+    normalized_spans = {
+        str(symbol).strip().upper(): span for symbol, span in spans.items() if str(symbol).strip()
+    }
+    normalized_bar_universe = (
+        {str(symbol).strip().upper() for symbol in bar_universe if str(symbol).strip()}
+        if bar_universe is not None
+        else None
+    )
+    sessions = set(trading_sessions or ())
+    status_by_symbol: dict[str, dict[date, bool | None]] = {}
+    if trading_status is not None and not trading_status.is_empty():
+        required = {"symbol", "trade_date", "is_trading"}
+        if required.issubset(trading_status.columns):
+            for row in trading_status.select("symbol", "trade_date", "is_trading").iter_rows(
+                named=True
+            ):
+                normalized = str(row["symbol"]).strip().upper()
+                raw_day = row["trade_date"]
+                if not normalized or not isinstance(raw_day, date):
+                    continue
+                value = row["is_trading"]
+                status_by_symbol.setdefault(normalized, {})[raw_day] = (
+                    bool(value) if value is not None else None
+                )
+    evidence = list(negative_evidence or ())
     for symbol in symbols:
-        span = spans.get(symbol, (None, None, None))
+        normalized = str(symbol).strip().upper()
+        if not normalized:
+            continue
+        if normalized not in normalized_spans:
+            out.unknown.append(normalized)
+            continue
+        span = normalized_spans[normalized]
         list_date, delist_date = span[:2]
         asset_type = span[2] if len(span) >= 3 else None
+        positive_status = normalized in status_by_symbol and any(
+            value is True
+            for day, value in status_by_symbol[normalized].items()
+            if not sessions or day in sessions
+        )
         if list_date is not None and list_date > end:
-            out.expected_no_data.append(symbol)
+            out.expected_no_data.append(normalized)
+            out.no_data_reasons[normalized] = "not_listed"
         elif delist_date is not None and delist_date < start:
-            out.expected_no_data.append(symbol)
+            out.expected_no_data.append(normalized)
+            out.no_data_reasons[normalized] = "delisted_before_window"
         elif delist_date is not None and delist_date <= end:
             # Delisted-recovery receipts cover equities/CDRs, not funds. ETF
             # instruments can receive a terminal date from the live snapshot
             # when a subscription/redemption code disappears; routing those
             # codes to the stock-only recovery gate blocks compaction forever.
             try:
-                info = parse_symbol(symbol)
+                info = parse_symbol(normalized)
                 is_fund = is_etf_symbol(info.code, info.exchange)
             except ValueError:
                 is_fund = False
-            (out.generic if is_fund else out.delegated_delisted).append(symbol)
+            (out.generic if is_fund else out.delegated_delisted).append(normalized)
+        elif sessions and normalized in status_by_symbol:
+            status = status_by_symbol[normalized]
+            # A missing session in the status table is unknown, not a silent
+            # non-trading assertion. False is accepted only when every
+            # requested exchange session is explicitly covered.
+            if sessions.issubset(status) and all(status[day] is False for day in sessions):
+                out.expected_no_data.append(normalized)
+                out.no_data_reasons[normalized] = "trading_status_non_trading"
+                continue
+            if positive_status:
+                # Positive status evidence means a missing bar is a real
+                # coverage obligation, even if an old negative cache exists.
+                if len(span) >= 3 and asset_type is None:
+                    out.unknown.append(normalized)
+                else:
+                    out.generic.append(normalized)
+                continue
+            elif sessions.intersection(status):
+                out.unknown.append(normalized)
+                continue
+            else:
+                # A status file that has rows for this symbol but none for
+                # the requested sessions is not evidence of a suspension.
+                # Keep the key in the strict retry set instead of letting the
+                # ``elif`` chain silently drop it.
+                out.unknown.append(normalized)
+                continue
+        elif len(span) >= 3 and asset_type is None:
+            # A real instrument row with no asset classification cannot be
+            # routed safely: treating it as an equity would either miss a
+            # dedicated fallback or certify the wrong no-data reason.
+            out.unknown.append(normalized)
         elif (
             asset_type == "etf"
             and list_date is None
             and bar_universe is not None
-            and symbol not in bar_universe
+            and normalized not in normalized_bar_universe
         ):
             # This is likely an issued-but-not-yet-listed fund code, but a
             # delayed list_date enrichment is indistinguishable here. Keep it
             # out of the fetch batch without claiming the absence was proven.
-            out.placeholder.append(symbol)
+            out.placeholder.append(normalized)
         else:
-            out.generic.append(symbol)
+            out.generic.append(normalized)
+
+        # Cached evidence also applies when status data exists but does not
+        # cover the complete requested range. Positive status evidence above
+        # intentionally wins, so a newly traded day cannot be hidden by an
+        # older cache record.
+        if (
+            normalized not in out.expected_no_data
+            and normalized not in out.unknown
+            and not positive_status
+        ):
+            if any(negative_evidence_covers(item, normalized, start, end) for item in evidence):
+                for bucket in (out.generic, out.placeholder):
+                    if normalized in bucket:
+                        bucket.remove(normalized)
+                out.expected_no_data.append(normalized)
+                out.negative_cached.append(normalized)
+                out.no_data_reasons[normalized] = "negative_evidence"
     return out
 
 
@@ -544,20 +892,24 @@ def load_bar_universe(config: Config) -> set[str]:
     "cannot reconcile" and skip filtering rather than dropping every row.
     """
     bars_root = config.curated_root / "daily_bars"
-    files = list(bars_root.glob("**/*.parquet")) if bars_root.exists() else []
-    if not files:
-        return set()
     # Canonicalize the daily-bar identity before applying the volume contract.
     # Filtering each file first lets an old positive retry keep a symbol in the
     # valuation universe beside a newer zero-volume canonical row. The shared
     # scanner preserves row-based semantics for legacy files without volume.
     from cnequity.query.parquet_scan import scan_parquet_root
 
-    scan = scan_parquet_root(
-        bars_root,
-        partition_col="trade_date",
-        traded_only=True,
-    )
+    try:
+        scan = scan_parquet_root(
+            bars_root,
+            partition_col="trade_date",
+            traded_only=True,
+            dataset="daily_bars",
+            meta_root=config.meta_root,
+        )
+    except FileNotFoundError:
+        return set()
+    if "symbol" not in scan.collect_schema().names():
+        return set()
     return set(scan.select("symbol").unique().collect()["symbol"].to_list())
 
 
@@ -583,6 +935,8 @@ def walk_day_backfill(
     floor: date = BACKFILL_START,
     flush_days: int = 60,
     existing_dates_fn: Callable[[list[date]], set[date]] | None = None,
+    calendar_days: bool = False,
+    publish_fn: Callable[[pl.DataFrame, str], object] | None = None,
 ) -> dict:
     """Walk trading days for a dataset whose fetch answers one day at a time.
 
@@ -602,7 +956,15 @@ def walk_day_backfill(
     """
     start = getattr(config, "_backfill_start", None) or floor
     end = getattr(config, "_backfill_end", None) or trade_date
-    days = list_trading_dates(config, start, min(end, trade_date))
+    bounded_end = min(end, trade_date)
+    if calendar_days:
+        days = (
+            [start + timedelta(days=offset) for offset in range((bounded_end - start).days + 1)]
+            if start <= bounded_end
+            else []
+        )
+    else:
+        days = list_trading_dates(config, start, bounded_end)
     have = (
         existing_dates_fn(days)
         if existing_dates_fn is not None
@@ -612,7 +974,12 @@ def walk_day_backfill(
     if not todo:
         return {"rows_read": 0, "rows_written": 0, "days_skipped": len(days)}
 
-    writer = StagingWriter(config.staging_root)
+    # Most historical callers use the plain writer.  Critical range-aware
+    # adapters (CNINFO announcements/regulatory) supply ``publish_fn`` so the
+    # publish boundary can verify the adapter's exact-wire receipt before a
+    # staging file is created.  Keep the legacy writer only as the explicit
+    # compatibility default for non-archived datasets.
+    writer = StagingWriter(config.staging_root) if publish_fn is None else None
     frames: list[pl.DataFrame] = []
     rows_written = 0
     empty_days: list[date] = []
@@ -627,7 +994,14 @@ def walk_day_backfill(
             source=source,
             data_version=data_version_for(dataset),
         )
-        writer.write_batch(dataset, run_id, f"bf-{n_parts:04d}", part)
+        batch_id = f"bf-{n_parts:04d}"
+        if publish_fn is None:
+            assert writer is not None
+            writer.write_batch(dataset, run_id, batch_id, part)
+        else:
+            # The callback owns the complete staging boundary.  In particular
+            # it must validate any source evidence before writing ``part``.
+            publish_fn(part, batch_id)
         n_parts += 1
         rows_written += part.height
         frames = []

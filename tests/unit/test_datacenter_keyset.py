@@ -52,9 +52,14 @@ class FakeDatacenter:
             return _Resp({"success": False, "message": "服务器繁忙", "code": 9701})
 
         rows = self.rows
-        bound = re.search(r'SECUCODE>="([^"]+)"', filter_expr)
-        if bound:
-            rows = [r for r in rows if r["SECUCODE"] >= bound.group(1)]
+        # Production uses a strict continuation; equality is the explicit
+        # recovery request for a duplicate-key group split at the cap.
+        equality = re.search(r"SECUCODE='([^']+)'", filter_expr)
+        strict = re.search(r"SECUCODE>'([^']+)'", filter_expr)
+        if equality:
+            rows = [r for r in rows if r["SECUCODE"] == equality.group(1)]
+        elif strict:
+            rows = [r for r in rows if r["SECUCODE"] > strict.group(1)]
 
         start = (page - 1) * size
         data = rows[start : start + size]
@@ -102,14 +107,14 @@ def test_it_actually_had_to_re_anchor():
     """Guards the test above from passing because the cap never got hit."""
     client = FakeDatacenter(_table())
     _fetch(client, keyset_column="SECUCODE")
-    anchored = [f for f in client.filters if "SECUCODE>=" in f]
+    anchored = [f for f in client.filters if "SECUCODE>'" in f]
     assert anchored, "expected at least one re-anchored shard"
     # One entry per request, so a shard's pages repeat its bound; collapse to
     # the sequence of shards. Bounds must strictly advance, or the sweep would
     # re-request the same shard forever.
     bounds: list[str] = []
     for f in anchored:
-        bound = re.search(r'SECUCODE>="([^"]+)"', f).group(1)
+        bound = re.search(r"SECUCODE>'([^']+)'", f).group(1)
         if not bounds or bounds[-1] != bound:
             bounds.append(bound)
     assert bounds == sorted(bounds)
@@ -141,7 +146,10 @@ def test_the_anchored_filter_is_encoded_exactly_once():
     for query in anchored:
         assert "%25" not in query, f"double-encoded filter: {query}"
         assert "%27" in query, f"lost the quoting of the date literal: {query}"
-        assert "%3E" in query, f"`>` left raw for httpx to re-quote: {query}"
+        decoded = unquote(query)
+        assert " AND " in decoded, f"keyset predicate was not joined to base filter: {decoded}"
+    strict = [query for query in anchored if "%3E" in query]
+    assert strict, "expected a strict keyset continuation on the wire"
 
 
 def test_without_a_keyset_column_it_names_the_cap_instead_of_blaming_load():
@@ -153,7 +161,7 @@ def test_without_a_keyset_column_it_names_the_cap_instead_of_blaming_load():
 def test_a_shard_that_is_all_one_key_raises_rather_than_looping():
     """Re-anchoring on the only key present would re-request the same shard."""
     client = FakeDatacenter([{"SECUCODE": "S000", "HOLDER_RANK": i} for i in range(2000)])
-    with pytest.raises(EastMoneyDatacenterError, match=r"cannot re-anchor"):
+    with pytest.raises(EastMoneyDatacenterError, match=r"cannot re-anchor|more than 100 pages"):
         _fetch(client, keyset_column="SECUCODE")
 
 

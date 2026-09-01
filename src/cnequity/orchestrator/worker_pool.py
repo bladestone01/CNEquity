@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from datetime import date
 from pathlib import Path
@@ -78,6 +78,22 @@ def _empty_pool_result() -> dict[str, Any]:
         "rows_written": 0,
         "had_error": False,
         "failed_symbols": [],
+        "metrics": {
+            "requests": 0,
+            "pages": 0,
+            "cache_hits": 0,
+            "fallback_requests": 0,
+            "retries": 0,
+            "failed_requests": 0,
+            "rows_read": 0,
+            "rows_written": 0,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "changed_partitions": 0,
+            "request_seconds": 0.0,
+            "concurrency_wait_seconds": 0.0,
+            "concurrency_peak": 0,
+        },
     }
 
 
@@ -182,7 +198,29 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
     rl = RateLimitSpec(*rate_limit) if rate_limit else None
     manifest = Manifest(manifest_path) if manifest_path else None
 
+    batch_metrics: dict[str, Any] = {}
     if manifest:
+        previous = manifest.get_batch(run_id, batch_id)
+        # A worker may start after another process has already committed this
+        # batch (for example, a retry racing a pool teardown).  Success is
+        # terminal: do not demote it to running, fetch it again, or count its
+        # rows twice in the parent aggregate.
+        if previous is not None and previous["status"] == "success":
+            rows_read = int(previous["rows_read"] or 0)
+            rows_written = int(previous["rows_written"] or 0)
+            return {
+                "rows_read": rows_read,
+                "rows_written": rows_written,
+                "batch_id": batch_id,
+                "failed_symbols": [],
+                "already_success": True,
+                "metrics": {
+                    "rows_read": rows_read,
+                    "rows_written": rows_written,
+                },
+            }
+        if previous is not None:
+            batch_metrics["retries"] = int(previous["retry_count"] or 0)
         manifest.start_batch(
             run_id,
             batch_id,
@@ -212,6 +250,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             backfill=backfill,
             config=tdx_cfg,
             on_heartbeat=_heartbeat,
+            metrics=batch_metrics,
         )
         df = normalize_with_source(df, dataset=dataset)
         _require_daily_bar_date_coverage(df, start, end)
@@ -221,6 +260,10 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             _stage_daily_bar_rows(staging_root, run_id, batch_id, df)
             raise
         _stage_daily_bar_rows(staging_root, run_id, batch_id, df)
+        batch_metrics["rows_read"] = max(int(batch_metrics.get("rows_read", 0)), df.height)
+        batch_metrics["rows_written"] = df.height
+        batch_metrics["bytes_written"] = df.estimated_size()
+        batch_metrics["changed_partitions"] = 1
         if manifest:
             manifest.finish_batch(
                 run_id,
@@ -234,6 +277,7 @@ def _worker_fetch_batch(args: tuple) -> dict[str, Any]:
             "rows_written": df.height,
             "batch_id": batch_id,
             "failed_symbols": [],
+            "metrics": batch_metrics,
         }
     except Exception as exc:
         failed_scope = _failed_symbols_for_error(exc, symbols)
@@ -280,8 +324,36 @@ def fetch_daily_bars_parallel(
     total_read = 0
     total_written = 0
     failed_symbols: list[str] = []
+    metrics: dict[str, Any] = {
+        "requests": 0,
+        "pages": 0,
+        "cache_hits": 0,
+        "fallback_requests": 0,
+        "retries": 0,
+        "failed_requests": 0,
+        "rows_read": 0,
+        "rows_written": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "changed_partitions": 0,
+        "request_seconds": 0.0,
+        "concurrency_wait_seconds": 0.0,
+        "concurrency_peak": 0,
+    }
     rl = config.tdx_rate_limit_spec()
-    rate_limit_tuple = (rl.state_dir, rl.source, rl.min_interval, rl.lock_timeout) if rl else None
+    rate_limit_tuple = (
+        (
+            rl.state_dir,
+            rl.source,
+            rl.min_interval,
+            rl.lock_timeout,
+            rl.concurrency_limit,
+            rl.concurrency_state_dir,
+            rl.concurrency_lock_timeout,
+        )
+        if rl
+        else None
+    )
 
     def _run_batch(
         batch_id: str,
@@ -290,6 +362,10 @@ def fetch_daily_bars_parallel(
         batch_end: date,
     ) -> dict[str, Any]:
         backfill = _window_backfill(config, batch_start)
+        previous = manifest.get_batch(run_id, batch_id)
+        batch_metrics: dict[str, Any] = {
+            "retries": int(previous["retry_count"] or 0) if previous is not None else 0
+        }
         manifest.start_batch(
             run_id,
             batch_id,
@@ -314,6 +390,7 @@ def fetch_daily_bars_parallel(
                 backfill=backfill,
                 config=config,
                 on_heartbeat=_heartbeat,
+                metrics=batch_metrics,
             )
             df = normalize_with_source(df, dataset=dataset)
             _require_daily_bar_date_coverage(df, batch_start, batch_end)
@@ -323,6 +400,10 @@ def fetch_daily_bars_parallel(
                 _stage_daily_bar_rows(staging_root, run_id, batch_id, df)
                 raise
             _stage_daily_bar_rows(staging_root, run_id, batch_id, df)
+            batch_metrics["rows_read"] = max(int(batch_metrics.get("rows_read", 0)), df.height)
+            batch_metrics["rows_written"] = df.height
+            batch_metrics["bytes_written"] = df.estimated_size()
+            batch_metrics["changed_partitions"] = 1
             manifest.finish_batch(
                 run_id,
                 batch_id,
@@ -335,6 +416,7 @@ def fetch_daily_bars_parallel(
                 "rows_written": df.height,
                 "batch_id": batch_id,
                 "failed_symbols": [],
+                "metrics": batch_metrics,
             }
         except Exception as exc:
             failed_scope = _failed_symbols_for_error(exc, batch_symbols)
@@ -348,7 +430,37 @@ def fetch_daily_bars_parallel(
             "rows_written": total_written,
             "had_error": had_error,
             "failed_symbols": list(dict.fromkeys(failed_symbols)),
+            "metrics": dict(metrics),
         }
+
+    def _merge_metrics(result: dict[str, Any]) -> None:
+        result_metrics = result.get("metrics") or {}
+        if not isinstance(result_metrics, dict):
+            result_metrics = {}
+        else:
+            result_metrics = dict(result_metrics)
+        # Lightweight process-pool doubles and legacy workers may return only
+        # the common row totals.  Include those once without changing the
+        # richer metrics emitted by current workers.
+        for key in ("rows_read", "rows_written"):
+            result_metrics.setdefault(key, result.get(key, 0))
+        for key in metrics:
+            if key == "concurrency_peak":
+                try:
+                    metrics[key] = max(
+                        int(metrics.get(key, 0) or 0),
+                        int(result_metrics.get(key, 0) or 0),
+                    )
+                except (TypeError, ValueError):
+                    pass
+                continue
+            try:
+                if key in {"request_seconds", "concurrency_wait_seconds"}:
+                    metrics[key] += float(result_metrics.get(key, 0.0) or 0.0)
+                else:
+                    metrics[key] += int(result_metrics.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
 
     # A full-market bar sweep is ~54 batches and can run for an hour. Without a
     # line per batch the whole thing is silent until it ends, which is
@@ -374,13 +486,31 @@ def fetch_daily_bars_parallel(
             _hms(remaining),
         )
 
-    if config.workers <= 1 or len(batches) == 1:
+    daily_workers = config.tdx_daily_worker_count()
+    executor_kind = config.tdx_daily_executor()
+    # A programmatic Config may contain proxy/timeout/source limits that have
+    # never been serialized to a TOML file.  A spawned process reconstructed
+    # only from ``data_root`` would silently lose those effective settings.
+    # Keep such calls in-process; this is still parallel and preserves the
+    # exact Config object (including test/offline source doubles).
+    if not config.config_path:
+        executor_kind = "thread"
+    if daily_workers <= 1 or len(batches) == 1:
         had_error = False
         for batch_id, batch_symbols, batch_start, batch_end in batches:
+            existing = manifest.get_batch(run_id, batch_id)
+            if existing is not None and existing["status"] == "success":
+                total_read += int(existing["rows_read"] or 0)
+                total_written += int(existing["rows_written"] or 0)
+                metrics["rows_read"] += int(existing["rows_read"] or 0)
+                metrics["rows_written"] += int(existing["rows_written"] or 0)
+                _progress(batch_symbols)
+                continue
             try:
                 result = _run_batch(batch_id, batch_symbols, batch_start, batch_end)
                 total_read += result["rows_read"]
                 total_written += result["rows_written"]
+                _merge_metrics(result)
                 _progress(batch_symbols)
             except Exception as exc:
                 had_error = True
@@ -406,17 +536,94 @@ def fetch_daily_bars_parallel(
             str(config.config_path) if config.config_path else "",
         )
 
+    # A caller may resume or replay a run after a worker has already committed
+    # a batch.  Never demote that success by submitting the same batch again.
+    # Keep the check outside the executor-specific branches so process and
+    # thread backends have identical idempotency semantics.
+    pending = {batch[0]: batch for batch in batches}
+    for batch_id, batch in list(pending.items()):
+        existing = manifest.get_batch(run_id, batch_id)
+        if existing is None or existing["status"] != "success":
+            continue
+        total_read += int(existing["rows_read"] or 0)
+        total_written += int(existing["rows_written"] or 0)
+        metrics["rows_read"] += int(existing["rows_read"] or 0)
+        metrics["rows_written"] += int(existing["rows_written"] or 0)
+        pending.pop(batch_id, None)
+        _progress(batch[1])
+    if not pending:
+        return _outcome(False)
+
+    if executor_kind == "thread":
+        # The vendored TDX client owns a heartbeat thread and a live socket.
+        # Forking a process after either has been imported is unsafe on macOS;
+        # use one invocation (and therefore one client) per executor thread.
+        # Calling the in-process runner also preserves a Config object created
+        # by a caller without a config file, which the process boundary cannot
+        # serialize faithfully.
+        had_error = False
+        try:
+            with ThreadPoolExecutor(max_workers=min(daily_workers, len(pending))) as pool:
+                futures = {
+                    pool.submit(_run_batch, batch[0], batch[1], batch[2], batch[3]): batch[0]
+                    for batch in pending.values()
+                }
+                for fut in as_completed(futures):
+                    batch_id = futures[fut]
+                    batch = pending.pop(batch_id, None)
+                    try:
+                        result = fut.result()
+                        total_read += result["rows_read"]
+                        total_written += result["rows_written"]
+                        _merge_metrics(result)
+                        _progress(batch[1] if batch else [])
+                    except Exception as exc:
+                        had_error = True
+                        if batch is not None:
+                            failed_symbols.extend(_failed_symbols_for_error(exc, batch[1]))
+                        _progress(batch[1] if batch else [], failed=True)
+                        logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
+        except Exception as exc:
+            # A thread-pool construction failure is unusual (the normal batch
+            # exceptions are handled above), but serially draining the pending
+            # work keeps a transient executor failure from losing a run.
+            had_error = True
+            logger.warning(
+                "%s: thread pool failed (%s); retrying %d batch(es) serially",
+                dataset,
+                exc,
+                len(pending),
+            )
+            for batch in list(pending.values()):
+                try:
+                    result = _run_batch(batch[0], batch[1], batch[2], batch[3])
+                    total_read += result["rows_read"]
+                    total_written += result["rows_written"]
+                    _merge_metrics(result)
+                    pending.pop(batch[0], None)
+                    _progress(batch[1])
+                except Exception as retry_exc:
+                    failed_symbols.extend(_failed_symbols_for_error(retry_exc, batch[1]))
+                    pending.pop(batch[0], None)
+                    _progress(batch[1], failed=True)
+                    logger.warning(
+                        "%s batch %s failed on serial retry: %s",
+                        dataset,
+                        batch[0],
+                        retry_exc,
+                    )
+        return _outcome(had_error)
+
     had_error = False
     # A worker killed by the OS (memory pressure under load) raises
     # BrokenProcessPool, which poisons the *whole* pool: every not-yet-collected
     # future then fails too, turning one dead batch into a wiped run. Track which
     # batches actually produced a result so the survivors of a broken pool can be
     # retried serially instead of lost with it.
-    pending = {batch[0]: batch for batch in batches}
     try:
         futures: dict = {}
-        with ProcessPoolExecutor(max_workers=min(config.workers, len(batches))) as pool:
-            for batch in batches:
+        with ProcessPoolExecutor(max_workers=min(daily_workers, len(pending))) as pool:
+            for batch in pending.values():
                 futures[pool.submit(_worker_fetch_batch, _task_for(batch))] = batch[0]
             for fut in as_completed(futures):
                 batch_id = futures[fut]
@@ -430,6 +637,7 @@ def fetch_daily_bars_parallel(
                     result = fut.result()
                     total_read += result["rows_read"]
                     total_written += result["rows_written"]
+                    _merge_metrics(result)
                     batch = pending.pop(batch_id, None)
                     _progress(batch[1] if batch else [])
                 except BrokenProcessPool:
@@ -463,6 +671,8 @@ def fetch_daily_bars_parallel(
             if existing is not None and existing["status"] == "success":
                 total_read += int(existing["rows_read"] or 0)
                 total_written += int(existing["rows_written"] or 0)
+                metrics["rows_read"] += int(existing["rows_read"] or 0)
+                metrics["rows_written"] += int(existing["rows_written"] or 0)
                 pending.pop(batch_id, None)
                 logger.info(
                     "%s batch %s already success in manifest; skipping serial re-fetch",
@@ -474,6 +684,7 @@ def fetch_daily_bars_parallel(
                 result = _run_batch(batch_id, batch[1], batch[2], batch[3])
                 total_read += result["rows_read"]
                 total_written += result["rows_written"]
+                _merge_metrics(result)
                 pending.pop(batch_id, None)
             except Exception as exc:
                 had_error = True

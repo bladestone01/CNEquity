@@ -42,6 +42,12 @@ def _watermark(config, dataset: str, day: date) -> None:
     StateStore(config.meta_root).set_date(dataset, day)
 
 
+def _snapshot_capture(config, dataset: str, day: date) -> None:
+    from cnequity.storage.state import StateStore
+
+    StateStore(config.meta_root).set_date(dataset, day, field="last_snapshot_date")
+
+
 @pytest.fixture
 def lake(config):
     _write(config, "daily_bars", ANCHOR)
@@ -80,6 +86,10 @@ def test_nothing_stale_is_a_clean_no_op(config, monkeypatch):
     """Safe on a timer: it must not create a run when there is nothing to do."""
     _write(config, "daily_bars", ANCHOR)
     _watermark(config, "daily_bars", ANCHOR)
+    # Watermarkless rolling snapshots are considered stale until a capture
+    # marker proves that their finite window was observed.
+    _snapshot_capture(config, "economic_calendar", ANCHOR)
+    _snapshot_capture(config, "share_unlock_schedule", ANCHOR)
     monkeypatch.setattr("cnequity.cli.run_cmds._last_trading_day", lambda cfg, today: ANCHOR)
 
     result = CliRunner().invoke(

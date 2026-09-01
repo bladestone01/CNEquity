@@ -12,6 +12,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.clist import fetch_clist_pages
 from cnequity.adapters.eastmoney.common import _to_float, _to_int
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.raw import archive_response, configured_archive
 from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,12 @@ def _news_market(code: str) -> str:
 
 
 def fetch_hot_rank(
-    trade_date: date, *, top_n: int = _HOT_SOURCE_LIMIT, config=None, require_top_n: bool = False
+    trade_date: date,
+    *,
+    top_n: int = _HOT_SOURCE_LIMIT,
+    config=None,
+    require_top_n: bool = False,
+    run_id: str | None = None,
 ) -> pl.DataFrame:
     if top_n < 0:
         raise ValueError("hot rank top_n must be non-negative")
@@ -96,6 +102,12 @@ def fetch_hot_rank(
     page_size = 100
     page = 1
     seen_pages: set[str] = set()
+    archive = configured_archive(
+        config,
+        "hot_rank",
+        run_id=run_id,
+        request_scope=f"snapshot:{trade_date.isoformat()}",
+    )
     client_kwargs = {"config": config} if config is not None else {}
     with EastMoneyClient(**client_kwargs) as client:
         while len(rows_by_symbol) < top_n:
@@ -123,6 +135,16 @@ def fetch_hot_rank(
             if not isinstance(payload, dict):
                 raise RuntimeError("EastMoney hot rank response is not an object")
             batch = _object_rows(payload.get("data"), source="hot rank")
+            archive_response(
+                archive,
+                "hot_rank",
+                resp,
+                request_params={"page": page, "page_size": page_size, "body": body.decode()},
+                run_id=run_id,
+                url=_HOT_RANK_URL,
+                observation_id=f"{run_id or 'anonymous'}:hot-rank:{page}",
+                pagination={"page": page, "page_size": page_size},
+            )
             if not batch:
                 break
             fingerprint = json.dumps(batch, sort_keys=True, default=str, separators=(",", ":"))
@@ -161,9 +183,25 @@ def fetch_hot_rank(
     )
 
 
-def _fetch_board_rows(client: EastMoneyClient, fs: str, board_type: str) -> list[dict]:
+def _fetch_board_rows(
+    client: EastMoneyClient,
+    fs: str,
+    board_type: str,
+    *,
+    archive=None,
+    archive_dataset: str | None = None,
+    archive_run_id: str | None = None,
+) -> list[dict]:
     # Smaller pages: pz=5000 often trips push2 502 mid-universe; 100 is stable.
-    raw = fetch_clist_pages(client, fields=_BOARD_FIELDS, fs=fs, page_size=100)
+    raw = fetch_clist_pages(
+        client,
+        fields=_BOARD_FIELDS,
+        fs=fs,
+        page_size=100,
+        archive=archive,
+        archive_dataset=archive_dataset,
+        archive_run_id=archive_run_id,
+    )
     missing_codes = sum(1 for item in raw if not str(item.get("f12") or "").strip())
     if missing_codes:
         raise RuntimeError(
@@ -183,12 +221,35 @@ def _fetch_board_rows(client: EastMoneyClient, fs: str, board_type: str) -> list
     return rows
 
 
-def fetch_sector_fund_flow(trade_date: date, *, config=None) -> pl.DataFrame:
+def fetch_sector_fund_flow(
+    trade_date: date,
+    *,
+    config=None,
+    run_id: str | None = None,
+) -> pl.DataFrame:
     rows: list[dict] = []
     client_kwargs = {"config": config} if config is not None else {}
+    archive = configured_archive(
+        config,
+        "sector_fund_flow",
+        run_id=run_id,
+        request_scope=f"snapshot:{trade_date.isoformat()}",
+    )
     with EastMoneyClient(**client_kwargs) as client:
-        boards = _fetch_board_rows(client, _CONCEPT_FS, "concept") + _fetch_board_rows(
-            client, _INDUSTRY_FS, "industry"
+        boards = _fetch_board_rows(
+            client,
+            _CONCEPT_FS,
+            "concept",
+            archive=archive,
+            archive_dataset="sector_fund_flow",
+            archive_run_id=run_id,
+        ) + _fetch_board_rows(
+            client,
+            _INDUSTRY_FS,
+            "industry",
+            archive=archive,
+            archive_dataset="sector_fund_flow",
+            archive_run_id=run_id,
         )
         for b in boards:
             item = b["item"]
@@ -210,12 +271,25 @@ def fetch_sector_fund_flow(trade_date: date, *, config=None) -> pl.DataFrame:
     )
 
 
-def fetch_news_headlines(trade_date: date, *, page_size: int = 200, config=None) -> pl.DataFrame:
+def fetch_news_headlines(
+    trade_date: date,
+    *,
+    page_size: int = 200,
+    config=None,
+    run_id: str | None = None,
+    archive_dataset: str = "news_headlines",
+) -> pl.DataFrame:
     if page_size <= 0:
         raise ValueError("news page_size must be positive")
     rows: list[dict] = []
     target = trade_date.isoformat()
     client_kwargs = {"config": config} if config is not None else {}
+    archive = configured_archive(
+        config,
+        archive_dataset,
+        run_id=run_id,
+        request_scope=f"snapshot:{trade_date.isoformat()}",
+    )
     with EastMoneyClient(**client_kwargs) as client:
         sort_end = ""
         seen_cursors: set[str] = set()
@@ -243,6 +317,20 @@ def fetch_news_headlines(trade_date: date, *, page_size: int = 200, config=None)
             else:
                 items = _object_rows(raw_data.get("fastNewsList"), source="news")
                 next_cursor = str(raw_data.get("sortEnd") or "").strip()
+
+            archive_response(
+                archive,
+                archive_dataset,
+                resp,
+                request_params={
+                    **params_dict,
+                    "page": _page + 1,
+                },
+                run_id=run_id,
+                url=f"{_NEWS_URL}?{params}",
+                observation_id=f"{run_id or 'anonymous'}:{archive_dataset}:{_page + 1}",
+                pagination={"page": _page + 1, "sort_end": next_cursor},
+            )
 
             page_dates: list[date] = []
             for item in items:

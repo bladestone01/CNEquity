@@ -8,6 +8,7 @@ checksummed copy of the bytes.
 from __future__ import annotations
 
 import json
+import tarfile
 from pathlib import Path
 
 import click
@@ -298,3 +299,250 @@ def snapshot_restore(name: str, target: Path, config_path: str, snapshot_root: P
 
     restored = SnapshotStore(_cfg(config_path), snapshot_root).restore(name, target)
     click.echo(str(restored))
+
+
+@snapshot_grp.command("export")
+@click.argument("name")
+@click.argument("destination", type=click.Path(path_type=Path), required=False)
+@click.option(
+    "--compression",
+    type=click.Choice(["auto", "zstd", "gzip", "none"]),
+    default="auto",
+    show_default=True,
+    help="Archive codec; auto prefers tar.zst and falls back to tar.gz.",
+)
+@config_option
+@click.option(
+    "--snapshot-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Where snapshots live; default is meta/snapshots under the data root.",
+)
+def snapshot_export(
+    name: str,
+    destination: Path | None,
+    compression: str,
+    config_path: str,
+    snapshot_root: Path | None,
+):
+    """Stream snapshot NAME to one portable tar archive."""
+    from cnequity.storage.snapshots import SnapshotStore
+
+    try:
+        archive = SnapshotStore(_cfg(config_path), snapshot_root).export_archive(
+            name,
+            destination,
+            compression=compression,
+        )
+    except (OSError, ValueError, RuntimeError, KeyError, tarfile.TarError) as exc:
+        # Snapshot validation failures are operator input/data errors.  Keep
+        # Click's normal one-line error surface; a Python traceback is not
+        # useful when an archive is missing, corrupt or fails verification.
+        raise click.ClickException(str(exc)) from exc
+    click.echo(str(archive))
+
+
+@snapshot_grp.command("import")
+@click.argument("archive", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--name", default=None, help="Imported snapshot name; defaults to the archive stem.")
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Replace an existing snapshot only after the archive passes verification.",
+)
+@config_option
+@click.option(
+    "--snapshot-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Where snapshots live; default is meta/snapshots under the data root.",
+)
+def snapshot_import(
+    archive: Path,
+    name: str | None,
+    overwrite: bool,
+    config_path: str,
+    snapshot_root: Path | None,
+):
+    """Verify ARCHIVE and atomically import it into the snapshot store."""
+    from cnequity.storage.snapshots import SnapshotStore
+
+    try:
+        restored = SnapshotStore(_cfg(config_path), snapshot_root).import_archive(
+            archive,
+            name=name,
+            overwrite=overwrite,
+        )
+    except (OSError, ValueError, RuntimeError, KeyError, tarfile.TarError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(str(restored))
+
+
+@snapshot_grp.group("delta")
+def snapshot_delta_grp():
+    """Create, verify and apply portable incremental lake packages."""
+
+
+def _snapshot_delta_create(
+    name: str,
+    baseline: Path | None,
+    target: Path | None,
+    from_revision: int | None,
+    datasets: tuple[str, ...],
+    config_path: str,
+    snapshot_root: Path | None,
+) -> None:
+    from cnequity.storage.snapshots import SnapshotStore
+
+    # ``--from 12`` was used by an early command draft before the explicit
+    # ``--from-revision`` spelling existed.  Accept it when it is not a real
+    # path, while preserving normal two-root paths named with digits.
+    if from_revision is None and baseline is not None and not baseline.exists():
+        raw = str(baseline)
+        if raw.isdigit():
+            from_revision = int(raw)
+            baseline = None
+    if from_revision is not None:
+        manifest = SnapshotStore(_cfg(config_path), snapshot_root).create_delta(
+            name,
+            datasets=list(datasets),
+            target=target,
+            from_revision=from_revision,
+        )
+    else:
+        if baseline is None:
+            raise click.UsageError("provide --from BASELINE or --from-revision REVISION")
+        manifest = SnapshotStore(_cfg(config_path), snapshot_root).create_delta(
+            name,
+            baseline=baseline,
+            target=target,
+            datasets=list(datasets) if datasets else None,
+        )
+    click.echo(str(manifest))
+
+
+@snapshot_delta_grp.command("create")
+@click.argument("name")
+@click.option(
+    "--from",
+    "baseline",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Baseline lake root. The target root is compared byte-for-byte against it.",
+)
+@click.option(
+    "--to",
+    "target",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Target lake root; defaults to the configured active root.",
+)
+@click.option(
+    "--from-revision",
+    type=int,
+    default=None,
+    help="Use committed revision(s) in the target as the baseline precondition.",
+)
+@click.option(
+    "--dataset",
+    "datasets",
+    multiple=True,
+    help="Dataset to include (repeatable). Omit to discover datasets in both roots.",
+)
+@config_option
+@click.option(
+    "--snapshot-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Where delta packages live; default is meta/snapshots under the data root.",
+)
+def snapshot_delta_create(
+    name: str,
+    baseline: Path | None,
+    target: Path | None,
+    from_revision: int | None,
+    datasets: tuple[str, ...],
+    config_path: str,
+    snapshot_root: Path | None,
+):
+    """Create NAME as an immutable add/replace/delete package."""
+
+    _snapshot_delta_create(
+        name, baseline, target, from_revision, datasets, config_path, snapshot_root
+    )
+
+
+@snapshot_delta_grp.command("verify")
+@click.argument("name")
+@config_option
+@click.option(
+    "--snapshot-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Where delta packages live; default is meta/snapshots under the data root.",
+)
+def snapshot_delta_verify(name: str, config_path: str, snapshot_root: Path | None):
+    """Verify all add/replace payload hashes and change semantics."""
+
+    from dataclasses import asdict
+
+    from cnequity.storage.snapshots import SnapshotStore
+
+    result = SnapshotStore(_cfg(config_path), snapshot_root).verify_delta(name)
+    click.echo(json.dumps(asdict(result), indent=2, ensure_ascii=False))
+    if not result.passed:
+        raise SystemExit(1)
+
+
+@snapshot_delta_grp.command("apply")
+@click.argument("name")
+@click.argument("target", type=click.Path(path_type=Path))
+@click.option("--dry-run", is_flag=True, help="Validate preconditions without changing TARGET.")
+@config_option
+@click.option(
+    "--snapshot-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Where delta packages live; default is meta/snapshots under the data root.",
+)
+def snapshot_delta_apply(
+    name: str,
+    target: Path,
+    dry_run: bool,
+    config_path: str,
+    snapshot_root: Path | None,
+):
+    """Safely apply NAME to the non-empty TARGET lake root."""
+
+    from cnequity.storage.snapshots import SnapshotStore
+
+    applied = SnapshotStore(_cfg(config_path), snapshot_root).apply_delta(
+        name, target, dry_run=dry_run
+    )
+    click.echo(str(applied))
+
+
+# Flat aliases keep scripts written against the initial command proposal
+# working while the nested ``snapshot delta ...`` form remains discoverable.
+@snapshot_grp.command("delta-create")
+@click.argument("name")
+@click.option("--from", "baseline", type=click.Path(path_type=Path), default=None)
+@click.option("--to", "target", type=click.Path(path_type=Path), default=None)
+@click.option("--from-revision", type=int, default=None)
+@click.option("--dataset", "datasets", multiple=True)
+@config_option
+@click.option("--snapshot-root", type=click.Path(path_type=Path), default=None)
+def snapshot_delta_create_alias(
+    name: str,
+    baseline: Path | None,
+    target: Path | None,
+    from_revision: int | None,
+    datasets: tuple[str, ...],
+    config_path: str,
+    snapshot_root: Path | None,
+):
+    """Compatibility alias for ``snapshot delta create``."""
+
+    _snapshot_delta_create(
+        name, baseline, target, from_revision, datasets, config_path, snapshot_root
+    )

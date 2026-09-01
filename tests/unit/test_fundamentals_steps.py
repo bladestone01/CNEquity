@@ -15,7 +15,9 @@ from cnequity.steps.common import load_bar_universe
 
 @pytest.fixture
 def cfg(tmp_path):
-    c = Config(data_root=tmp_path / "data")
+    # Wrapper tests use normalized fakes; opt out explicitly instead of
+    # weakening the production exact-wire archive boundary.
+    c = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
     c.staging_root.mkdir(parents=True)
     return c
 
@@ -30,7 +32,7 @@ def test_financial_statement_items_empty(cfg, monkeypatch):
     monkeypatch.setattr(
         fund,
         "fetch_financial_statement_items",
-        lambda trade_date, backfill=False, config=None: pl.DataFrame(),
+        lambda trade_date, backfill=False, config=None, run_id=None: pl.DataFrame(),
     )
     result = fund.step_financial_statement_items(cfg, date(2024, 6, 28), "run-1", {})
     assert result == {"rows_read": 0, "rows_written": 0}
@@ -54,7 +56,7 @@ def test_financial_statement_items_backfill_surfaces_missing_periods(cfg, monkey
 def test_financial_statement_items_writes_staging(cfg, monkeypatch):
     seen = {}
 
-    def fake_fetch(trade_date, backfill=False, config=None):
+    def fake_fetch(trade_date, backfill=False, config=None, run_id=None):
         seen["backfill"] = backfill
         return pl.DataFrame(
             {

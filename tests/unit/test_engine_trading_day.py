@@ -72,6 +72,9 @@ def test_run_job_backfill_does_not_skip_weekend(tmp_path, monkeypatch):
             }
         )
 
+    # About the trading-day walk, not the vendor: pin the source so this does
+    # not reach the exchanges (the default) for a 2024 session.
+    cfg.margin_trading_source = "eastmoney"
     monkeypatch.setattr(cap, "fetch_margin_trading", fake_fetch)
     engine = JobEngine(cfg)
     result = engine.run_job(

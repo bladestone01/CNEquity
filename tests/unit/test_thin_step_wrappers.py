@@ -16,7 +16,10 @@ from cnequity.storage.state import StateStore
 
 @pytest.fixture
 def cfg(tmp_path):
-    c = Config(data_root=tmp_path / "data")
+    # Thin wrapper tests intentionally return normalized frames.  Keep the
+    # archive policy explicit so they do not stand in for a production wire
+    # capture.
+    c = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
     c.staging_root.mkdir(parents=True)
     return c
 

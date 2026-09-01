@@ -12,9 +12,12 @@ import socket
 import threading
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import date
 
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import parse_symbol
+from cnequity.storage.raw_archive import RawArchiveError
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,20 @@ _DEFAULT_BATCH_REST = 120.0
 _PER_SYMBOL_DEADLINE_SECONDS = 45.0
 # Bound blocked reads (dropped conn can leave ESTABLISHED forever).
 _SOCKET_TIMEOUT_SECONDS = 30.0
+
+
+def _request_context(config, source: str = "baostock"):
+    """Use the shared request boundary for real Config instances.
+
+    A few downstream callers intentionally pass tiny config doubles exposing
+    only ``rate_limit``. The session driver's legacy per-symbol pacing already
+    covers those doubles; adding compatibility calls for login/logout/query
+    would change their observable call counts without providing a shared
+    ledger. Production ``Config`` always exposes ``source_request``.
+    """
+    if config is None or getattr(config, "source_request", None) is None:
+        return nullcontext()
+    return source_request(config, source)
 
 
 class _FetchDeadline(TimeoutError):
@@ -114,10 +131,11 @@ def import_baostock():
     return bs
 
 
-def _login(bs, *, sleep=time.sleep) -> None:
+def _login(bs, *, sleep=time.sleep, config=None) -> None:
     last_msg = "unknown"
     for attempt in range(_LOGIN_RETRIES):
-        login = bs.login()
+        with _request_context(config):
+            login = bs.login()
         if getattr(login, "error_code", "0") == "0":
             return
         last_msg = getattr(login, "error_msg", "unknown")
@@ -126,12 +144,13 @@ def _login(bs, *, sleep=time.sleep) -> None:
     raise RuntimeError(f"baostock login failed: {last_msg}")
 
 
-def _relogin(bs, *, sleep=time.sleep) -> None:
+def _relogin(bs, *, sleep=time.sleep, config=None) -> None:
     try:
-        bs.logout()
+        with _request_context(config):
+            bs.logout()
     except Exception:  # noqa: BLE001 - logout on a dead socket may raise; ignore
         pass
-    _login(bs, sleep=sleep)
+    _login(bs, sleep=sleep, config=config)
 
 
 def to_baostock_symbol(symbol: str) -> str:
@@ -184,6 +203,11 @@ def _force_close_baostock_socket() -> None:
 def _pace_before_symbol(config, *, sleep=time.sleep) -> None:
     """Cross-process min_interval when Config is set; else local default sleep."""
     if config is not None:
+        # ``source_request`` reserves both the QPS start and the in-flight
+        # lease at each actual query. Keep the legacy call for lightweight
+        # doubles, but do not reserve a second pacing slot for production.
+        if getattr(config, "source_request", None) is not None:
+            return
         config.rate_limit("baostock")
         return
     sleep(_DEFAULT_MIN_INTERVAL)
@@ -222,6 +246,7 @@ def fetch_per_symbol(
     on_deadline: Callable[[], None] = _force_close_baostock_socket,
     config=None,
     rest_after_batch: bool = False,
+    request_managed: bool = False,
 ) -> tuple[list[dict], list[str]]:
     """Drive ``fetch_one(bs, symbol, start, end)`` over ``symbols`` with retry/relogin.
 
@@ -234,13 +259,19 @@ def fetch_per_symbol(
     - ``config.rate_limit("baostock")`` before each symbol (cross-process), or
       ``_DEFAULT_MIN_INTERVAL`` when ``config`` is None;
     - batch rest every ``baostock_batch_size`` symbols.
+
+    ``request_managed`` is used by the built-in adapters whose callback wraps
+    each individual Baostock query itself. For an injected callback (the
+    default), the driver places a source lease inside the deadline worker so a
+    timed-out/orphaned query cannot release its slot before the vendor call
+    actually returns.
     """
     if bs is None:
         bs = import_baostock()
 
     prev_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(_SOCKET_TIMEOUT_SECONDS)
-    _login(bs, sleep=sleep)
+    _login(bs, sleep=sleep, config=config)
     _ensure_socket_timeout()
     rows: list[dict] = []
     failed: list[str] = []
@@ -251,7 +282,7 @@ def fetch_per_symbol(
             _pace_before_symbol(config, sleep=sleep)
             if i and _RELOGIN_EVERY and i % _RELOGIN_EVERY == 0:
                 try:
-                    _relogin(bs, sleep=sleep)
+                    _relogin(bs, sleep=sleep, config=config)
                     _ensure_socket_timeout()
                 except RuntimeError as exc:
                     # Keep rows already collected so the caller can checkpoint;
@@ -280,12 +311,25 @@ def fetch_per_symbol(
             abort_remaining = False
             for attempt in range(_MAX_RETRIES):
                 try:
+
+                    def invoke(symbol: str = symbol):
+                        if request_managed or config is None:
+                            return fetch_one(bs, symbol, start, end)
+                        with _request_context(config):
+                            return fetch_one(bs, symbol, start, end)
+
                     got = _fetch_with_deadline(
-                        lambda symbol=symbol: fetch_one(bs, symbol, start, end),
+                        invoke,
                         deadline,
                         on_deadline,
                     )
                 except Exception as exc:  # noqa: BLE001 — stalled socket / broken pipe
+                    if isinstance(exc, RawArchiveError):
+                        # A configured critical archive is a publish contract,
+                        # not a transient vendor query failure. Retrying and
+                        # converting it into a "failed symbol" would let a
+                        # captureless repair look like a legitimate empty.
+                        raise
                     # A socket timeout, dropped connection, or watchdog-closed
                     # socket raises here; treat it like a query error so the
                     # symbol is retried on a fresh login.
@@ -295,7 +339,7 @@ def fetch_per_symbol(
                     break
                 sleep(_BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)])
                 try:
-                    _relogin(bs, sleep=sleep)
+                    _relogin(bs, sleep=sleep, config=config)
                     _ensure_socket_timeout()
                 except RuntimeError as exc:
                     logger.error(
@@ -318,7 +362,8 @@ def fetch_per_symbol(
     finally:
         socket.setdefaulttimeout(prev_timeout)
         try:
-            bs.logout()
+            with _request_context(config):
+                bs.logout()
         except Exception:  # noqa: BLE001
             pass
 

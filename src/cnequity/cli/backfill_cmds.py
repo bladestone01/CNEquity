@@ -66,8 +66,8 @@ from cnequity.orchestrator.engine import JobEngine
     "--workers",
     default=1,
     show_default=True,
-    help="Concurrent fetch workers for date-walking backfills; each worker is "
-    "throttled to 1 req/s (aggregate up to N req/s, bypassing the source limiter).",
+    help="Concurrent date-walk workers for margin_trading only. Every request "
+    "still uses the configured shared source limiter; other datasets require 1.",
 )
 @click.option(
     "--baostock-repair",
@@ -112,6 +112,13 @@ def backfill(
             "Run daily ingestion on trading days instead."
         )
     cfg = _cfg(config_path)
+    if workers < 1:
+        raise click.ClickException("--workers must be at least 1")
+    if workers > 1 and dataset != "margin_trading":
+        raise click.ClickException(
+            "--workers > 1 is currently supported only for margin_trading; "
+            "other backfills use one date-walk lane"
+        )
     if baostock_repair and dataset != "corporate_actions":
         raise click.ClickException("--baostock-repair only applies to corporate_actions")
     if ths_repair and dataset != "corporate_actions":

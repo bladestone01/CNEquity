@@ -37,6 +37,7 @@ from cnequity.adapters.baostock._session import (
     fetch_per_symbol,
     to_baostock_symbol,
 )
+from cnequity.domain.rate_limit import source_request
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,9 @@ def _float_mv_from_turn(amount: float | None, turn: float | None) -> float | Non
     return amount / (turn / 100.0)
 
 
-def _year_end_total_shares(bs, symbol: str, start: date, end: date) -> list[tuple[date, float]]:
+def _year_end_total_shares(
+    bs, symbol: str, start: date, end: date, *, config=None
+) -> list[tuple[date, float]]:
     """``(stat_date, totalShare_股)`` from Q4 profit rows in ``[start.year, end.year]``."""
     code = to_baostock_symbol(symbol)
     out: list[tuple[date, float]] = []
@@ -89,7 +92,8 @@ def _year_end_total_shares(bs, symbol: str, start: date, end: date) -> list[tupl
         year_list = [year_list[0] - 1, *year_list] if year_list else year_list
     for year in year_list:
         try:
-            rs = bs.query_profit_data(code=code, year=year, quarter=4)
+            with source_request(config, "baostock"):
+                rs = bs.query_profit_data(code=code, year=year, quarter=4)
         except Exception as exc:  # noqa: BLE001 — treat like empty; k-data still usable
             logger.warning("baostock profit Q4 failed for %s %s: %s", symbol, year, exc)
             continue
@@ -146,7 +150,7 @@ def _year_windows(start: date, end: date) -> list[tuple[date, date]]:
     return out
 
 
-def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
+def _fetch_one(bs, symbol: str, start: date, end: date, *, config=None) -> list[dict] | None:
     """Rows for one symbol, or ``None`` if the k-data query errored (retryable).
 
     An ``error_code == '0'`` result with zero rows is a legitimate empty
@@ -159,14 +163,15 @@ def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
     code = to_baostock_symbol(symbol)
     raw_rows: list[list[str]] = []
     for w_start, w_end in _year_windows(start, end):
-        rs = bs.query_history_k_data_plus(
-            code,
-            _FIELDS,
-            start_date=w_start.isoformat(),
-            end_date=w_end.isoformat(),
-            frequency="d",
-            adjustflag="3",  # unadjusted; PE/PB/PS ratios are adjust-independent
-        )
+        with source_request(config, "baostock"):
+            rs = bs.query_history_k_data_plus(
+                code,
+                _FIELDS,
+                start_date=w_start.isoformat(),
+                end_date=w_end.isoformat(),
+                frequency="d",
+                adjustflag="3",  # unadjusted; PE/PB/PS ratios are adjust-independent
+            )
         if getattr(rs, "error_code", "0") != "0":
             return None
         # Materialize before the next baostock call — a second query can
@@ -174,7 +179,7 @@ def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
         while rs.next():
             raw_rows.append(list(rs.get_row_data()))
 
-    share_points = _year_end_total_shares(bs, symbol, start, end) if raw_rows else []
+    share_points = _year_end_total_shares(bs, symbol, start, end, config=config) if raw_rows else []
 
     out: list[dict] = []
     identity_mismatches = 0
@@ -251,11 +256,15 @@ def fetch_valuation_history(
     ``bs`` / ``sleep`` / ``config`` are injectable for offline tests. Pass
     ``config`` in production so ``[sources.baostock]`` pacing applies.
     """
+
+    def fetch_one(bs_session, symbol: str, window_start: date, window_end: date):
+        return _fetch_one(bs_session, symbol, window_start, window_end, config=config)
+
     rows, failed = fetch_per_symbol(
         symbols,
         start,
         end,
-        _fetch_one,
+        fetch_one,
         bs=bs,
         sleep=sleep,
         label="baostock valuation",
@@ -263,6 +272,7 @@ def fetch_valuation_history(
         # above the 30s socket timeout so a slow-but-alive fetch is not killed.
         deadline=300.0,
         config=config,
+        request_managed=True,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     if not df.is_empty():

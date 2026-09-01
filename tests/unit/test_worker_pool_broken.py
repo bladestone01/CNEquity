@@ -195,6 +195,9 @@ def test_broken_pool_skips_batches_already_success(worker_config, monkeypatch):
 
 
 def test_completed_future_does_not_receive_fake_stale_timeout(worker_config, monkeypatch):
+    # This regression targets the Linux ProcessPool path.  macOS intentionally
+    # resolves ``auto`` to the safe thread backend now.
+    monkeypatch.setattr("sys.platform", "linux")
     init_data_layout(worker_config)
     run_id = Manifest(worker_config.manifest_path).start_run("test")
     observed_timeouts: list[object] = []
@@ -237,3 +240,126 @@ def test_completed_future_does_not_receive_fake_stale_timeout(worker_config, mon
     assert observed_timeouts == [None, None]
     assert result["had_error"] is False
     assert result["rows_written"] == 2
+
+
+def test_process_pool_submits_only_pending_batches_and_sizes_pool_to_pending(
+    worker_config, monkeypatch
+):
+    """A committed success is neither submitted nor counted a second time."""
+    monkeypatch.setattr("sys.platform", "linux")
+    init_data_layout(worker_config)
+    manifest = Manifest(worker_config.manifest_path)
+    run_id = manifest.start_run("test")
+    tip = date(2024, 6, 27)
+    done_id = f"{tip.isoformat()}_{tip.isoformat()}-batch-0"
+    manifest.start_batch(
+        run_id,
+        done_id,
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=["600519.SH"],
+        window_start=tip.isoformat(),
+        window_end=tip.isoformat(),
+    )
+    manifest.finish_batch(run_id, done_id, "success", rows_read=7, rows_written=7)
+
+    submitted: list[str] = []
+    widths: list[int] = []
+
+    class _Pool:
+        def __init__(self, *args, **kwargs):
+            widths.append(kwargs["max_workers"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, fn, task):
+            submitted.append(task[6])
+
+            class _Future:
+                def result(self, timeout=None):
+                    return {"rows_read": 1, "rows_written": 1, "batch_id": task[6]}
+
+            return _Future()
+
+    monkeypatch.setattr(
+        "cnequity.orchestrator.worker_pool.ProcessPoolExecutor",
+        lambda *args, **kwargs: _Pool(*args, **kwargs),
+    )
+    monkeypatch.setattr(
+        "cnequity.orchestrator.worker_pool.as_completed", lambda futures: list(futures)
+    )
+
+    result = fetch_daily_bars_parallel(
+        worker_config,
+        ["600519.SH", "000001.SZ", "600000.SH"],
+        tip,
+        tip,
+        run_id,
+        "daily_bars",
+    )
+
+    assert submitted == [
+        f"{tip.isoformat()}_{tip.isoformat()}-batch-1",
+        f"{tip.isoformat()}_{tip.isoformat()}-batch-2",
+    ]
+    assert widths == [2]
+    assert result["rows_written"] == 9
+    assert manifest.get_batch(run_id, done_id)["status"] == "success"
+
+
+def test_macos_uses_independent_tdx_thread_budget(tmp_path, monkeypatch):
+    """A one-process macOS config can still fan out safe TDX batch threads."""
+    import polars as pl
+
+    # Constructing Config directly keeps this test independent of the example
+    # template and makes the legacy/global-vs-specialized split explicit.
+    from cnequity.config import Config
+
+    cfg = Config(
+        data_root=tmp_path / "data",
+        workers=1,
+        tdx_daily_workers=2,
+        tdx_daily_backend="auto",
+        batch_size=1,
+    )
+    init_data_layout(cfg)
+    run_id = Manifest(cfg.manifest_path).start_run("test")
+    calls: list[list[str]] = []
+
+    def _fetch(symbols, start, end, **kwargs):
+        calls.append(list(symbols))
+        return pl.DataFrame(
+            {
+                "symbol": symbols,
+                "trade_date": [start] * len(symbols),
+                "open": [1.0] * len(symbols),
+                "high": [1.0] * len(symbols),
+                "low": [1.0] * len(symbols),
+                "close": [1.0] * len(symbols),
+                "volume": [100] * len(symbols),
+                "amount": [100.0] * len(symbols),
+            }
+        )
+
+    monkeypatch.setattr("cnequity.orchestrator.worker_pool.fetch_daily_bars", _fetch)
+    monkeypatch.setattr(
+        "cnequity.orchestrator.worker_pool.ProcessPoolExecutor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("process pool used on macOS")),
+    )
+
+    result = fetch_daily_bars_parallel(
+        cfg,
+        ["600519.SH", "000001.SZ"],
+        date(2024, 6, 27),
+        date(2024, 6, 27),
+        run_id,
+        "daily_bars",
+    )
+
+    assert result["had_error"] is False
+    assert result["rows_written"] == 2
+    assert {symbol for batch in calls for symbol in batch} == {"600519.SH", "000001.SZ"}

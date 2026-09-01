@@ -22,6 +22,7 @@ from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 from cnequity.adapters.exchange.st_lists import is_st_name
 from cnequity.config import Config
 from cnequity.domain.symbols import parse_symbol
+from cnequity.domain.trading_status import risk_warning_expr
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
@@ -1333,7 +1334,7 @@ def _curated_closes(config: Config, trade_date: date, symbols: list[str]) -> dic
     return {r["symbol"]: float(r["close"]) for r in df.iter_rows(named=True)}
 
 
-def _sina_closes(symbols: list[str], trade_date: date) -> dict[str, float]:
+def _sina_closes(symbols: list[str], trade_date: date, *, config=None) -> dict[str, float]:
     import httpx
 
     from cnequity.adapters.sina.bars import fetch_daily_bars_sina
@@ -1342,7 +1343,12 @@ def _sina_closes(symbols: list[str], trade_date: date) -> dict[str, float]:
     with httpx.Client(timeout=20.0) as client:
         for sym in symbols:
             df = fetch_daily_bars_sina(
-                sym, start=trade_date, end=trade_date, datalen=30, client=client
+                sym,
+                start=trade_date,
+                end=trade_date,
+                datalen=30,
+                client=client,
+                config=config,
             )
             if not df.is_empty():
                 out[sym] = float(df["close"][0])
@@ -1376,7 +1382,10 @@ def daily_bars_close_crosscheck_findings(
 
     fetch = reference_closes or _sina_closes
     try:
-        theirs = fetch(symbols, trade_date)
+        if reference_closes is None:
+            theirs = fetch(symbols, trade_date, config=config)
+        else:
+            theirs = fetch(symbols, trade_date)
     except Exception as exc:  # noqa: BLE001 — a dead vendor must not fail the audit
         return [
             {
@@ -1502,18 +1511,18 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
     if by_name is None:
         return []
 
+    status = dedupe_lazy_by_primary_key(
+        scan_parquet_root(
+            status_root,
+            partition_col="trade_date",
+            start=trade_date,
+            end=trade_date,
+        ),
+        "trading_status",
+    )
     labeled = (
-        dedupe_lazy_by_primary_key(
-            scan_parquet_root(
-                status_root,
-                partition_col="trade_date",
-                start=trade_date,
-                end=trade_date,
-            ),
-            "trading_status",
-        )
-        .filter(pl.col("trade_date") == pl.lit(trade_date))
-        .filter(pl.col("status").is_in(["st", "*st"]))
+        status.filter(pl.col("trade_date") == pl.lit(trade_date))
+        .filter(risk_warning_expr(status.collect_schema().names()))
         .select("symbol")
         .unique()
         .collect(engine="streaming")

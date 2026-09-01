@@ -15,6 +15,7 @@ import httpx
 import polars as pl
 
 from cnequity.adapters.sw.industry_history import exchange_from_code
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import format_symbol, is_all_a_symbol
 
 __all__ = [
@@ -65,6 +66,7 @@ def fetch_cni_index_adjustments(
     index_symbol: str,
     *,
     client: httpx.Client | None = None,
+    config=None,
 ) -> pl.DataFrame:
     """Download CNI adjustment history for one index.
 
@@ -90,11 +92,12 @@ def fetch_cni_index_adjustments(
     if client is None:
         client = httpx.Client(timeout=120.0, follow_redirects=True)
     try:
-        resp = client.get(
-            CNI_ADJUST_URL,
-            params={"indexcode": _index_code(index_symbol)},
-            headers=_HEADERS,
-        )
+        with source_request(config, "cni"):
+            resp = client.get(
+                CNI_ADJUST_URL,
+                params={"indexcode": _index_code(index_symbol)},
+                headers=_HEADERS,
+            )
         resp.raise_for_status()
         if not resp.content:
             raise CniAdjustmentPayloadError(f"CNI adjustment response for {index_symbol} is empty")

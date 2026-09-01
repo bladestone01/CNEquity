@@ -159,6 +159,10 @@ def _metadata(spec: DatasetSpec) -> dict[str, Any]:
         "contract_level": spec.contract_level,
         "compatibility": spec.compatibility,
         "unit_contract": spec.unit_contract,
+        "reconciliation_lookback_days": spec.reconciliation_lookback_days,
+        "reconciliation_lookback_mode": spec.reconciliation_lookback_mode,
+        "append_only": spec.append_only,
+        "negative_evidence_ttl_days": spec.negative_evidence_ttl_days,
     }
 
 
@@ -539,6 +543,27 @@ def _validate_record(name: str, record: Any) -> list[str]:
     if fetch is not None and fetch not in {"by_date", "snapshot"}:
         errors.append(f"datasets.{name}.fetch_semantics: unsupported value {fetch!r}")
 
+    lookback = _field(record, "reconciliation_lookback_days")
+    if lookback is not None and (
+        isinstance(lookback, bool) or not isinstance(lookback, int) or lookback < 0
+    ):
+        errors.append(
+            f"datasets.{name}.reconciliation_lookback_days: must be a non-negative integer"
+        )
+    lookback_mode = _field(record, "reconciliation_lookback_mode")
+    if lookback_mode is not None and lookback_mode not in {"calendar", "trading_day"}:
+        errors.append(
+            f"datasets.{name}.reconciliation_lookback_mode: unsupported value {lookback_mode!r}"
+        )
+    append_only = _field(record, "append_only")
+    if append_only is not None and not isinstance(append_only, bool):
+        errors.append(f"datasets.{name}.append_only: must be a boolean")
+    negative_ttl = _field(record, "negative_evidence_ttl_days")
+    if negative_ttl is not None and (
+        isinstance(negative_ttl, bool) or not isinstance(negative_ttl, int) or negative_ttl < 0
+    ):
+        errors.append(f"datasets.{name}.negative_evidence_ttl_days: must be a non-negative integer")
+
     return errors
 
 
@@ -627,6 +652,10 @@ def validate_contract(
                 "availability_col",
                 "compatibility",
                 "unit_contract",
+                "reconciliation_lookback_days",
+                "reconciliation_lookback_mode",
+                "append_only",
+                "negative_evidence_ttl_days",
             ):
                 actual_value = _field(actual, field)
                 if actual_value is not None and actual_value != expected[field]:

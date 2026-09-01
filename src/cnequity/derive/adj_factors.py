@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -14,7 +14,7 @@ from cnequity.adapters.sina.adj_factors import (
 )
 from cnequity.config import Config
 from cnequity.domain.canonical import dedupe_lazy_by_primary_key
-from cnequity.domain.rate_limit import wait_source
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.schemas import with_provenance
 from cnequity.domain.symbols import is_cdr_symbol, parse_symbol
 from cnequity.file_lock import lake_mutation_lock
@@ -38,6 +38,12 @@ FAIL_RATIO_THRESHOLD = 0.05
 # 10-for-10 bonus at the factor level alone and are guarded downstream via raw-vs-adjusted
 # return divergence.
 MAX_FACTOR_STEP_RATIO = 20.0
+
+# Calendar days of already written factor partitions the cross-check reads back
+# to give an append-only run a left edge for its first step. A month covers an
+# ordinary suspension; a longer gap simply leaves that symbol's first new day
+# unchecked until its next step.
+CROSSCHECK_PRIOR_LOOKBACK_DAYS = 35
 
 # Symbols whose missing history one incremental run will realign. A daily run
 # normally finds none; this bounds the first run after a deep `cne backfill
@@ -477,14 +483,16 @@ def _resolve_factors(
         return cached
 
     source = config.adj_factors_source
-    interval = config.source_intervals.get(source, 0.2)
-    rate_state_dir = config.meta_root / "rate_limits"
     try:
-        wait_source(rate_state_dir, source, interval)
         if source != "sina":
             logger.warning("Unknown adj_factors source %s; skipping %s", source, symbol)
             return cached
-        factors = fetch_adj_factor_series(symbol, adjust_type, client=client)
+        # Keep the source lease across the actual HTTP call.  The derive pool
+        # may run beside DAG waves and must share the same cap as every other
+        # Sina request; source_request also preserves the cross-process QPS
+        # reservation configured for this source.
+        with source_request(config, source):
+            factors = fetch_adj_factor_series(symbol, adjust_type, client=client)
         _save_cache(config, symbol, adjust_type, factors)
         return factors
     except SinaAdjFactorUnavailableError as exc:
@@ -557,6 +565,320 @@ def _factor_continuity_findings(out: pl.DataFrame) -> list[dict]:
             }
         )
     return findings
+
+
+# --- Recomputed-factor cross-check -----------------------------------------
+#
+# The stored series comes from one vendor. `corporate_actions` is a *second,
+# independent* derivation of the same quantity, from a different vendor
+# (EastMoney primary / TDX backup), so recomputing the factor step from it
+# turns a single-source table into a two-source one without adding a source.
+#
+# An hfq factor is a step function that moves only on ex-dates, and the size of
+# the step is fully determined by the action and the prior close:
+#
+#     ex-rights reference price
+#         P_ref = (P_prev - D + A*PA) / (1 + B + T + A)
+#     continuity of the adjusted series across the ex-date
+#         f_ex / f_prev = P_prev / P_ref
+#                       = (1 + B + T + A) * P_prev / (P_prev - D + A*PA)
+#
+# with D the pretax cash dividend per share, B the bonus (送股) ratio, T the
+# transfer (转股) ratio, A the allotment (配股) ratio and PA the allotment
+# price. On a day with no action every term vanishes and the expected ratio is
+# exactly 1.0 — which is what catches the opposite failure, a factor that steps
+# on a day the action table knows nothing about.
+#
+# The check runs for qfq as well as hfq: qfq is hfq divided by a per-symbol
+# constant, and a constant divisor leaves consecutive-day ratios unchanged.
+_ACTION_FIELDS = (
+    "cash_dividend",
+    "bonus_ratio",
+    "transfer_ratio",
+    "allotment_ratio",
+    "allotment_price",
+)
+_ACTION_TERMS = ("_dividend", "_bonus", "_transfer", "_allotment", "_allot_cash")
+_EMPTY_ACTION_TERMS = pl.DataFrame(
+    schema={
+        "symbol": pl.Utf8,
+        "ex_date": pl.Date,
+        **{term: pl.Float64 for term in _ACTION_TERMS},
+    }
+)
+
+
+def _prior_factor_rows(config: Config, symbols: list[str], before: date) -> pl.DataFrame:
+    """Last stored factor row per symbol strictly before ``before``.
+
+    An append-only derive produces one new date per symbol, which has no
+    predecessor inside its own output and therefore no measurable step — the
+    exact run on which a missed ex-date would show up. Reading the already
+    written partitions back supplies the missing left edge. Only a bounded
+    lookback is read: the previous *bar* date is one partition back for a
+    symbol that trades, and the window still covers a month of suspension
+    without scanning the whole history.
+    """
+    from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+
+    root = config.derived_root / "adj_factors"
+    if not dataset_has_parquet(root):
+        return pl.DataFrame()
+    lookback_start = before - timedelta(days=CROSSCHECK_PRIOR_LOOKBACK_DAYS)
+    prior = (
+        scan_parquet_root(
+            root,
+            partition_col="trade_date",
+            start=lookback_start,
+            symbols=symbols,
+        )
+        .filter(pl.col("trade_date") < before)
+        .select("symbol", "trade_date", "adjust_type", "factor")
+        .collect()
+    )
+    if prior.is_empty():
+        return prior
+    return prior.sort("trade_date").group_by(["symbol", "adjust_type"], maintain_order=True).last()
+
+
+def _closes_for(config: Config, symbols: list[str], start: date, end: date) -> pl.DataFrame:
+    """Raw (unadjusted) closes over the compared window."""
+    from cnequity.query.parquet_scan import collect_parquet_root
+
+    try:
+        bars = collect_parquet_root(
+            config.curated_root / "daily_bars",
+            partition_col="trade_date",
+            start=start,
+            end=end,
+            symbols=symbols,
+        )
+    except FileNotFoundError:
+        return pl.DataFrame()
+    if bars.is_empty() or not {"symbol", "trade_date", "close"}.issubset(bars.columns):
+        return pl.DataFrame()
+    return bars.select("symbol", "trade_date", "close").unique(
+        subset=["symbol", "trade_date"], keep="last"
+    )
+
+
+def _action_terms(config: Config, symbols: list[str], start: date, end: date) -> pl.DataFrame:
+    """Per (symbol, ex_date) corporate-action terms over the compared window.
+
+    ``action_type`` is part of the primary key, so one ex-date can carry a
+    dividend row and an allotment row. The ratios add; the allotment *price* is
+    not additive, so the cash each row returns to the holder is formed as
+    ``ratio * price`` before aggregation.
+    """
+    from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+
+    root = config.curated_root / "corporate_actions"
+    if not dataset_has_parquet(root):
+        return _EMPTY_ACTION_TERMS.clone()
+    actions = dedupe_lazy_by_primary_key(
+        scan_parquet_root(root, partition_col="ex_date", start=start, end=end, symbols=symbols),
+        "corporate_actions",
+    ).collect()
+    if actions.is_empty() or not {"symbol", "ex_date"}.issubset(actions.columns):
+        return _EMPTY_ACTION_TERMS.clone()
+    for column in _ACTION_FIELDS:
+        if column not in actions.columns:
+            actions = actions.with_columns(pl.lit(None, dtype=pl.Float64).alias(column))
+    terms = actions.select(
+        "symbol",
+        "ex_date",
+        *[pl.col(c).cast(pl.Float64).fill_null(0.0).alias(c) for c in _ACTION_FIELDS],
+    ).with_columns((pl.col("allotment_ratio") * pl.col("allotment_price")).alias("_allot_cash"))
+    return terms.group_by(["symbol", "ex_date"]).agg(
+        pl.col("cash_dividend").sum().alias("_dividend"),
+        pl.col("bonus_ratio").sum().alias("_bonus"),
+        pl.col("transfer_ratio").sum().alias("_transfer"),
+        pl.col("allotment_ratio").sum().alias("_allotment"),
+        pl.col("_allot_cash").sum().alias("_allot_cash"),
+    )
+
+
+def _corporate_action_crosscheck_findings(config: Config, out: pl.DataFrame) -> list[dict]:
+    """Compare every stored factor step against the step the actions imply.
+
+    Advisory by construction: it never fails the derive. The two vendors round
+    differently and disagree on the odd definitional edge (a dividend paid in a
+    second currency, a restated ratio), so the tolerance is a materiality
+    threshold rather than an equality test. What it does catch is the class of
+    break the continuity tripwire is blind to — a step of the wrong *size*, or
+    a step on the wrong *day* — both of which sit far below 20x.
+    """
+    if out.is_empty() or not config.adj_factors_crosscheck_enabled:
+        return []
+    if not {"symbol", "trade_date", "adjust_type", "factor"}.issubset(out.columns):
+        return []
+
+    symbols = sorted(set(out.get_column("symbol").unique().to_list()))
+    start = out.get_column("trade_date").min()
+    end = out.get_column("trade_date").max()
+    if not symbols or start is None or end is None:
+        return []
+
+    series = out.select("symbol", "trade_date", "adjust_type", "factor")
+    prior = _prior_factor_rows(config, symbols, start)
+    if not prior.is_empty():
+        series = pl.concat([prior.select(series.columns), series], how="vertical_relaxed")
+        start = min(start, prior.get_column("trade_date").min())
+
+    closes = _closes_for(config, symbols, start, end)
+    if closes.is_empty():
+        return []
+
+    steps = (
+        series.unique(subset=["symbol", "trade_date", "adjust_type"], keep="last")
+        .join(closes, on=["symbol", "trade_date"], how="left")
+        .sort(["symbol", "adjust_type", "trade_date"])
+        .with_columns(
+            pl.col("factor").shift(1).over(["symbol", "adjust_type"]).alias("_prev_factor"),
+            pl.col("close").shift(1).over(["symbol", "adjust_type"]).alias("_prev_close"),
+        )
+        .filter(
+            pl.col("_prev_factor").is_not_null()
+            & (pl.col("_prev_factor") > 0)
+            & pl.col("factor").is_not_null()
+            & (pl.col("factor") > 0)
+            & pl.col("_prev_close").is_not_null()
+            & (pl.col("_prev_close") > 0)
+        )
+    )
+    if steps.is_empty():
+        return []
+
+    steps = (
+        steps.join(
+            _action_terms(config, symbols, start, end),
+            left_on=["symbol", "trade_date"],
+            right_on=["symbol", "ex_date"],
+            how="left",
+        )
+        .with_columns([pl.col(term).fill_null(0.0) for term in _ACTION_TERMS])
+        .with_columns(
+            (pl.col("_prev_close") - pl.col("_dividend") + pl.col("_allot_cash")).alias(
+                "_ref_price"
+            ),
+            (1.0 + pl.col("_bonus") + pl.col("_transfer") + pl.col("_allotment")).alias(
+                "_share_mult"
+            ),
+            (pl.col("factor") / pl.col("_prev_factor")).alias("_actual"),
+        )
+    )
+
+    findings = _degenerate_action_findings(steps.filter(pl.col("_ref_price") <= 0))
+
+    diverged = (
+        steps.filter(pl.col("_ref_price") > 0)
+        .with_columns(
+            (pl.col("_share_mult") * pl.col("_prev_close") / pl.col("_ref_price")).alias(
+                "_expected"
+            )
+        )
+        .filter(pl.col("_expected").is_finite() & (pl.col("_expected") > 0))
+        .with_columns(
+            (
+                (pl.col("_actual") - pl.col("_expected")).abs() / pl.col("_expected") * 10_000.0
+            ).alias("_bps")
+        )
+        .filter(pl.col("_bps") > config.adj_factors_crosscheck_tolerance_bps)
+    )
+    if diverged.is_empty():
+        return findings
+
+    # One finding per symbol at its worst day, matching the continuity check: a
+    # full re-derive over twenty years would otherwise bury the audit. The day
+    # count rides along so a single bad ex-date reads differently from a series
+    # that has been wrong ever since.
+    counts = diverged.group_by(["symbol", "adjust_type"]).agg(pl.len().alias("_divergent_days"))
+    worst = (
+        diverged.sort("_bps", descending=True)
+        .group_by(["symbol", "adjust_type"], maintain_order=True)
+        .first()
+        .join(counts, on=["symbol", "adjust_type"], how="left")
+        .sort("_bps", descending=True)
+    )
+    findings.extend(_crosscheck_finding(config, row) for row in worst.iter_rows(named=True))
+    return findings
+
+
+def _degenerate_action_findings(degenerate: pl.DataFrame) -> list[dict]:
+    """Action rows whose terms imply a non-positive ex-rights reference price.
+
+    Not a factor problem: a dividend larger than the entire prior close (or a
+    negative allotment price) can only be a corrupt action row, and it would
+    otherwise drop out of the comparison without a trace.
+    """
+    if degenerate.is_empty():
+        return []
+    worst = (
+        degenerate.sort("_ref_price")
+        .group_by(["symbol", "adjust_type"], maintain_order=True)
+        .first()
+    )
+    findings: list[dict] = []
+    for row in worst.iter_rows(named=True):
+        td = row["trade_date"]
+        td_str = td.isoformat() if isinstance(td, date) else str(td)
+        findings.append(
+            {
+                "dataset": "adj_factors",
+                "severity": "error",
+                "check": "adj_factor_action_implies_nonpositive_price",
+                "message": (
+                    f"{row['symbol']} corporate action on {td_str} implies an ex-rights "
+                    f"reference price of {row['_ref_price']:.4g} from a prior close of "
+                    f"{row['_prev_close']:.4g} (dividend {row['_dividend']:.4g}, allotment "
+                    f"cash {row['_allot_cash']:.4g}); the action row cannot be right and the "
+                    "factor step cannot be checked against it"
+                ),
+                "symbol": row["symbol"],
+                "adjust_type": row["adjust_type"],
+                "trade_date": td_str,
+                "backup_source": "corporate_actions",
+            }
+        )
+    return findings
+
+
+def _crosscheck_finding(config: Config, row: dict) -> dict:
+    td = row["trade_date"]
+    td_str = td.isoformat() if isinstance(td, date) else str(td)
+    has_action = any(
+        abs(row[term]) > 0 for term in ("_dividend", "_bonus", "_transfer", "_allotment")
+    )
+    if has_action:
+        cause = (
+            f"corporate_actions has dividend={row['_dividend']:.4g} "
+            f"bonus={row['_bonus']:.4g} transfer={row['_transfer']:.4g} "
+            f"allotment={row['_allotment']:.4g} on a prior close of {row['_prev_close']:.4g}"
+        )
+    else:
+        cause = "corporate_actions has no ex-date that day, so the factor should not have moved"
+    return {
+        "dataset": "adj_factors",
+        "severity": (
+            "error" if row["_bps"] >= config.adj_factors_crosscheck_error_bps else "warning"
+        ),
+        "check": "adj_factor_corporate_action_divergence",
+        "message": (
+            f"{row['symbol']} ({row['adjust_type']}) factor steps {row['_actual']:.6g}x on "
+            f"{td_str} but corporate_actions implies {row['_expected']:.6g}x "
+            f"({row['_bps']:.0f} bps apart, {row['_divergent_days']} divergent day(s) this "
+            f"run); {cause}"
+        ),
+        "symbol": row["symbol"],
+        "adjust_type": row["adjust_type"],
+        "trade_date": td_str,
+        "primary_source": config.adj_factors_source,
+        "backup_source": "corporate_actions",
+        "actual_ratio": float(row["_actual"]),
+        "expected_ratio": float(row["_expected"]),
+        "divergence_bps": float(row["_bps"]),
+        "divergent_days": int(row["_divergent_days"]),
+    }
 
 
 def _fetch_failure_finding(symbol: str, adjust_type: str, exc: Exception) -> dict:
@@ -766,7 +1088,18 @@ def _compute_adj_factors_locked(
         len(refresh_set),
     )
 
-    workers = max(1, min(config.workers, 16))
+    # Adjustment factors are HTTP-bound and use one client per task.  They
+    # must not inherit the TDX/process-pool budget: on macOS the latter is
+    # intentionally one process, while Sina can safely serve several paced
+    # HTTP requests.  The source cap is a second guard for a parallel DAG or
+    # a deliberately large derive pool; the cross-process rate limiter still
+    # owns the QPS contract.
+    configured_workers = config.adj_factor_worker_count()
+    source_workers = config.source_concurrency_for(
+        config.adj_factors_source,
+        configured_workers,
+    )
+    workers = max(1, min(configured_workers, source_workers, 16))
 
     tasks: list[tuple[str, str, pl.DataFrame, bool]] = []
     skipped_cdr: list[str] = []
@@ -797,30 +1130,43 @@ def _compute_adj_factors_locked(
         source_unavailable_symbols - explicit_refresh if not full else set()
     )
 
+    def _consume(
+        sym: str,
+        aligned: pl.DataFrame | None,
+        fail_key: str | None,
+        finding: dict | None,
+    ) -> None:
+        """Merge one symbol result into the derive outcome state."""
+        if fail_key:
+            failed.append(fail_key)
+        if finding:
+            findings.append(finding)
+            if finding.get("permanent"):
+                newly_unavailable.add(sym)
+                succeeded.add(sym)
+        if aligned is not None:
+            frames.append(aligned)
+            succeeded.add(sym)
+
     if workers <= 1 or len(tasks) == 1:
         with httpx.Client(timeout=20.0) as client:
             for sym, adj, sym_bars, force in tasks:
                 if sym in skipped_source_unavailable:
                     continue
-                aligned, fail_key, finding = _process_symbol_adj(
-                    config,
-                    sym,
-                    adj,
-                    sym_bars,
-                    force=force,
-                    formally_delisted=sym in formally_delisted,
-                    client=client,
-                )
-                if fail_key:
-                    failed.append(fail_key)
-                if finding:
-                    findings.append(finding)
-                    if finding.get("permanent"):
-                        newly_unavailable.add(sym)
-                        succeeded.add(sym)
-                if aligned is not None:
-                    frames.append(aligned)
-                    succeeded.add(sym)
+                try:
+                    aligned, fail_key, finding = _process_symbol_adj(
+                        config,
+                        sym,
+                        adj,
+                        sym_bars,
+                        force=force,
+                        formally_delisted=sym in formally_delisted,
+                        client=client,
+                    )
+                    _consume(sym, aligned, fail_key, finding)
+                except Exception as exc:  # noqa: BLE001 — keep symbol retryable
+                    logger.warning("adj_factors failed for %s (%s): %s", sym, adj, exc)
+                    _consume(sym, None, f"{sym}:{adj}", _fetch_failure_finding(sym, adj, exc))
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
@@ -838,17 +1184,13 @@ def _compute_adj_factors_locked(
             }
             for fut in as_completed(futures):
                 sym = futures[fut]
-                aligned, fail_key, finding = fut.result()
-                if fail_key:
-                    failed.append(fail_key)
-                if finding:
-                    findings.append(finding)
-                    if finding.get("permanent"):
-                        newly_unavailable.add(sym)
-                        succeeded.add(sym)
-                if aligned is not None:
-                    frames.append(aligned)
-                    succeeded.add(sym)
+                adj = STORED_ADJUST_TYPE
+                try:
+                    aligned, fail_key, finding = fut.result()
+                    _consume(sym, aligned, fail_key, finding)
+                except Exception as exc:  # noqa: BLE001 — keep symbol retryable
+                    logger.warning("adj_factors failed for %s (%s): %s", sym, adj, exc)
+                    _consume(sym, None, f"{sym}:{adj}", _fetch_failure_finding(sym, adj, exc))
 
     if not frames:
         _update_retry_symbols(
@@ -867,6 +1209,7 @@ def _compute_adj_factors_locked(
 
     out = pl.concat(frames, how="diagonal_relaxed").unique(subset=_ADJ_PK, keep="last")
     findings.extend(_factor_continuity_findings(out))
+    findings.extend(_corporate_action_crosscheck_findings(config, out))
     out = with_provenance(out, source=config.adj_factors_source, data_version="v1")
 
     total = _write_adj_partitions(config, out, replace=replace)

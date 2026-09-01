@@ -12,3 +12,5 @@ Copy [0000-template.md](0000-template.md) for a new record. Number sequentially.
 | [0003](0003-canonical-curated-with-source-snapshots.md) | Canonical curated + source snapshots |
 | [0004](0004-store-hfq-derive-qfq-at-query.md) | Store hfq, derive qfq at query |
 | [0005](0005-source-routing-vs-switching.md) | Source routing vs switching |
+| [0006](0006-publishers-over-vendors.md) | Publishers over vendors, where a publisher exists |
+| [0007](0007-two-facts-two-columns-in-trading-status.md) | Two facts, two columns, in trading_status |

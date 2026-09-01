@@ -11,7 +11,13 @@ from cnequity.adapters.eastmoney.institutional import fetch_institutional_holdin
 from cnequity.config import Config
 from cnequity.derive.sentiment_scores import compute_sentiment_scores
 from cnequity.orchestrator.registry import register_step
-from cnequity.steps.http_common import empty_ok, run_incremental_fetched, write_fetched
+from cnequity.steps.http_common import (
+    call_with_run_id,
+    empty_ok,
+    run_incremental_fetched,
+    verify_raw_archive,
+    write_fetched,
+)
 
 _MIN_INSTITUTIONAL_HOLDING_ROWS_PER_PERIOD = 100
 
@@ -117,9 +123,23 @@ def step_analyst_consensus(config: Config, trade_date: date, run_id: str, contex
         trade_date,
         run_id,
         "analyst_consensus",
-        lambda d: fetch_analyst_consensus(d, config=config),
+        lambda d: call_with_run_id(
+            fetch_analyst_consensus,
+            d,
+            pipeline_config=config,
+            dataset="analyst_consensus",
+            run_id=run_id,
+            config=config,
+        ),
         source="eastmoney",
         date_col="forecast_date",
+        raw_archive_evidence_factory=lambda: verify_raw_archive(
+            config,
+            "analyst_consensus",
+            run_id,
+            source="eastmoney",
+            request_scope=f"snapshot:{trade_date.isoformat()}",
+        ),
     )
 
 

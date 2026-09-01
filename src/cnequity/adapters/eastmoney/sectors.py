@@ -9,6 +9,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.common import exchange_from_datacenter, symbol_from_em
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.raw import configured_archive
 
 _BOARD_REPORT = "RPT_BOARD_CONSTITUENT"
 _BOARD_COLUMNS = "SECURITY_CODE,BOARD_CODE,BOARD_NAME,BOARD_TYPE_NEW"
@@ -20,12 +21,22 @@ _CONCEPT_BOARD_TYPES = {"2", "3", "4"}
 
 
 def fetch_sector_members(
-    as_of_date: date, *, client: EastMoneyClient | None = None, config=None
+    as_of_date: date,
+    *,
+    client: EastMoneyClient | None = None,
+    config=None,
+    run_id: str | None = None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
     try:
+        archive = configured_archive(
+            config,
+            "sector_members",
+            run_id=run_id,
+            request_scope=f"snapshot:{as_of_date.isoformat()}",
+        )
         raw = fetch_datacenter(
             client,
             _BOARD_REPORT,
@@ -36,6 +47,9 @@ def fetch_sector_members(
             # room for the board list to keep growing.
             page_size=5000,
             trust_page_size=True,
+            archive=archive,
+            archive_dataset="sector_members",
+            archive_run_id=run_id,
         )
         rows = []
         for item in raw:

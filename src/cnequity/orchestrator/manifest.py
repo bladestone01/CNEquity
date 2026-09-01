@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -303,6 +304,7 @@ class Manifest:
                     error_message = NULL,
                     heartbeat_at = excluded.heartbeat_at,
                     blocks_compaction = excluded.blocks_compaction
+                WHERE ingestion_batches.status <> 'success'
                 """,
                 (
                     run_id,
@@ -1045,6 +1047,84 @@ class Manifest:
                 (json.dumps(metadata), run_id),
             )
 
+    def _mutate_run_metadata(
+        self,
+        run_id: str,
+        mutation: Callable[[sqlite3.Connection, dict[str, Any]], dict[str, Any] | None],
+    ) -> dict[str, Any]:
+        """Atomically read, mutate, and write one run's metadata document.
+
+        ``metadata_json`` is one JSON document, so every read/modify/write
+        must happen while the same SQLite connection owns an ``IMMEDIATE``
+        transaction.  This serializes mutations across Manifest instances and
+        worker processes, while giving the callback the latest document so it
+        cannot overwrite keys added by a concurrent writer.
+
+        The callback must only perform the short in-transaction mutation.  In
+        particular, it must not call another Manifest method that opens a
+        second connection for the same database, or it could wait on this
+        transaction's write lock.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT metadata_json FROM ingestion_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            raw = json.loads(row["metadata_json"] or "{}") if row else {}
+            metadata = raw if isinstance(raw, dict) else {}
+            mutated = mutation(conn, metadata)
+            if mutated is not None:
+                if not isinstance(mutated, dict):
+                    raise TypeError("run metadata mutation must return a dict or None")
+                metadata = mutated
+            if row:
+                conn.execute(
+                    "UPDATE ingestion_runs SET metadata_json = ? WHERE run_id = ?",
+                    (json.dumps(metadata), run_id),
+                )
+            return metadata
+
+    def mutate_run_metadata(
+        self,
+        run_id: str,
+        mutation: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> dict[str, Any]:
+        """Apply a metadata-only mutation under the manifest write lock.
+
+        The callback receives the latest metadata mapping and may mutate it in
+        place or return a replacement mapping.  Use this for callers that
+        would otherwise call ``get_run_metadata`` followed by
+        ``update_run_metadata``.
+        """
+        return self._mutate_run_metadata(
+            run_id,
+            lambda _conn, metadata: mutation(metadata),
+        )
+
+    def record_performance_metrics(
+        self,
+        run_id: str,
+        dataset: str,
+        metrics: dict[str, Any],
+    ) -> None:
+        """Persist source/request performance metrics under run metadata.
+
+        Metrics are deliberately metadata rather than a gate or a second
+        mutable table: old manifests remain readable, and benchmark output is
+        carried with the same immutable run identity as rows/read receipts.
+        The update is best-effort at call sites because losing telemetry must
+        never discard a successfully fetched partition.
+        """
+
+        def _record(_conn: sqlite3.Connection, metadata: dict[str, Any]) -> None:
+            performance = metadata.get("performance")
+            if not isinstance(performance, dict):
+                performance = {}
+                metadata["performance"] = performance
+            performance[dataset] = dict(metrics)
+
+        self._mutate_run_metadata(run_id, _record)
+
     def get_run_metadata(self, run_id: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
@@ -1053,3 +1133,109 @@ class Manifest:
         if not row:
             return {}
         return json.loads(row["metadata_json"] or "{}")
+
+    def record_stage_metrics(
+        self,
+        run_id: str,
+        stage: str,
+        elapsed_seconds: float,
+        metrics: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist descriptive stage metrics in the run metadata.
+
+        This is intentionally additive and lives in ``metadata_json`` so old
+        manifests remain readable without a schema migration.  It is called
+        after each completed step; a process interrupted later therefore
+        still leaves the metrics for the work that was actually observed.
+        """
+        from cnequity.diagnostics.metrics import (
+            _rss_bytes,
+            add_metrics,
+            new_metrics,
+            stage_metrics,
+        )
+
+        stage_payload = stage_metrics(stage, elapsed_seconds=elapsed_seconds, metrics=metrics)
+        stage_record = stage_payload["stages"][stage]
+        stage_record["peak_memory_bytes"] = max(
+            int((metrics or {}).get("peak_memory_bytes", 0) or 0), _rss_bytes()
+        )
+
+        def _record(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+            aggregate = payload.get("metrics")
+            if not isinstance(aggregate, dict):
+                aggregate = new_metrics()
+            # Keep one deterministic latest stage record while accumulating the
+            # run-level counters.  Re-recording a stage after retry replaces its
+            # stage row; retry counts are read from the batch ledger below.
+            stages = aggregate.setdefault("stages", {})
+            if not isinstance(stages, dict):
+                stages = {}
+                aggregate["stages"] = stages
+            stages[stage] = stage_record
+            # Totals are recalculated from the latest stage records rather than
+            # incremented on retries, so a repeated retry cannot double-count a
+            # successful stage.
+            totals = new_metrics()
+            totals["stages"] = {}
+            for item in stages.values():
+                if isinstance(item, dict):
+                    add_metrics(totals, {**item, "stages": {}})
+            aggregate.update(
+                {
+                    key: totals.get(key, 0)
+                    for key in totals
+                    if key
+                    in {
+                        "requests",
+                        "pages",
+                        "cache_hits",
+                        "fallback_requests",
+                        "retries",
+                        "failed_requests",
+                        "rows_read",
+                        "rows_written",
+                        "bytes_read",
+                        "bytes_written",
+                        "changed_partitions",
+                    }
+                }
+            )
+            # Batch retries are tracked independently from stage payloads.  This
+            # keeps retry telemetry available even when a non-worker step fails
+            # before it can return its own metrics object.
+            retry_row = conn.execute(
+                "SELECT COALESCE(SUM(retry_count), 0) AS retries "
+                "FROM ingestion_batches WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            aggregate["retries"] = max(
+                int(totals.get("retries", 0) or 0),
+                int(retry_row["retries"] if retry_row is not None else 0),
+            )
+            aggregate["failed_requests"] = int(totals.get("failed_requests", 0) or 0)
+            aggregate["request_seconds"] = float(totals.get("request_seconds", 0.0) or 0.0)
+            aggregate["concurrency_wait_seconds"] = float(
+                totals.get("concurrency_wait_seconds", 0.0) or 0.0
+            )
+            aggregate["concurrency_peak"] = int(totals.get("concurrency_peak", 0) or 0)
+            aggregate["source_metrics"] = totals.get("source_metrics", {})
+            aggregate["peak_memory_bytes"] = max(
+                int(aggregate.get("peak_memory_bytes", 0) or 0),
+                int(totals.get("peak_memory_bytes", 0) or 0),
+                int((metrics or {}).get("peak_memory_bytes", 0) or 0),
+                _rss_bytes(),
+            )
+            aggregate["elapsed_seconds"] = round(
+                sum(float(item.get("elapsed_seconds", 0.0) or 0.0) for item in stages.values()),
+                6,
+            )
+            aggregate["throughput_requests_per_second"] = round(
+                int(aggregate.get("requests", 0) or 0)
+                / max(float(aggregate["elapsed_seconds"] or 0.0), 1e-9),
+                3,
+            )
+            aggregate["updated_at"] = _utcnow()
+            payload["metrics"] = aggregate
+
+        self._mutate_run_metadata(run_id, _record)

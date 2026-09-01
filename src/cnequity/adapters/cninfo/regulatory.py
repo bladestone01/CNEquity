@@ -4,22 +4,22 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable, Mapping
 from datetime import date
+from pathlib import Path
+from typing import Any
 
 import httpx
 import polars as pl
 
 from cnequity.adapters.cninfo.announcements import (
-    _PAGE_SIZE,
-    _announcement_batch,
     _announcement_id,
-    _pagination_has_more,
-    _pagination_page_signature,
-    _pagination_total_pages,
+    _source_date,
     _symbol_from_cninfo,
-    _validate_source_date,
-    post_with_retry,
+    fetch_cninfo_rows,
+    replay_cninfo_rows,
 )
+from cnequity.storage.raw_archive import RawPayloadArchive, RawPayloadRecord
 
 logger = logging.getLogger(__name__)
 
@@ -48,111 +48,168 @@ def fetch_regulatory_events(
     *,
     client: httpx.Client | None = None,
     config=None,
+    metrics: dict[str, Any] | None = None,
+    checkpoint_path: str | Path | None = None,
+    max_pages_per_slice: int = 100,
+    refresh: bool = True,
+    checkpoint_ttl_days: int | None = None,
+    source_revision: str | None = None,
+    raw_archive: RawPayloadArchive | None = None,
+    run_id: str | None = None,
+    request_scope: str | None = None,
 ) -> pl.DataFrame:
-    owns = client is None
-    if client is None:
-        client = httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"})
+    return fetch_regulatory_events_range(
+        trade_date,
+        trade_date,
+        client=client,
+        config=config,
+        metrics=metrics,
+        checkpoint_path=checkpoint_path,
+        max_pages_per_slice=max_pages_per_slice,
+        refresh=refresh,
+        checkpoint_ttl_days=checkpoint_ttl_days,
+        source_revision=source_revision,
+        raw_archive=raw_archive,
+        run_id=run_id,
+        request_scope=request_scope,
+    )
 
-    ds = trade_date.strftime("%Y-%m-%d")
+
+def fetch_regulatory_events_range(
+    start: date,
+    end: date | None = None,
+    *,
+    client: httpx.Client | None = None,
+    config=None,
+    metrics: dict[str, Any] | None = None,
+    checkpoint_path: str | Path | None = None,
+    max_pages_per_slice: int = 100,
+    refresh: bool = True,
+    checkpoint_ttl_days: int | None = None,
+    source_revision: str | None = None,
+    raw_archive: RawPayloadArchive | None = None,
+    run_id: str | None = None,
+    request_scope: str | None = None,
+) -> pl.DataFrame:
+    """Fetch regulatory events over a date interval with resumable slicing."""
+    if end is None:
+        end = start
     pattern = re.compile("|".join(re.escape(k) for k, _ in _KEYWORD_TYPES))
+    raw_rows = fetch_cninfo_rows(
+        start,
+        end,
+        client=client,
+        config=config,
+        label="regulatory",
+        metrics=metrics,
+        checkpoint_path=checkpoint_path,
+        max_pages_per_slice=max_pages_per_slice,
+        refresh=refresh,
+        checkpoint_ttl_days=checkpoint_ttl_days,
+        source_revision=source_revision,
+        raw_archive=raw_archive,
+        run_id=run_id,
+        request_scope=request_scope,
+    )
     rows: list[dict] = []
-
-    for column in ("szse", "sse"):
-        page = 1
-        seen_page_signatures: set[str] = set()
-        while True:
-            if config is not None:
-                config.rate_limit("cninfo")
-            payload = {
-                "pageNum": page,
-                "pageSize": 30,
-                "column": column,
-                "tabName": "fulltext",
-                "plate": "",
-                "stock": "",
-                "searchkey": "",
-                "secid": "",
-                "category": "",
-                "trade": "",
-                "seDate": f"{ds}~{ds}",
-            }
-            try:
-                data = post_with_retry(client, _CNINFO_URL, data=payload)
-                batch = _announcement_batch(data, column=column, page=page)
-                total_pages = _pagination_total_pages(data, column=column, page=page)
-                has_more = _pagination_has_more(data, column=column, page=page)
-                has_more_present = data.get("hasMore") is not None
-                if batch and total_pages == 0:
-                    raise RuntimeError(
-                        f"CNINFO regulatory for {column} page {page} declared "
-                        "totalpages=0 but returned rows"
-                    )
-                if batch:
-                    page_signature = _pagination_page_signature(batch)
-                    if page_signature in seen_page_signatures:
-                        raise RuntimeError(
-                            f"CNINFO regulatory pagination repeated page for {column} page {page}"
-                        )
-                    seen_page_signatures.add(page_signature)
-            except Exception as exc:
-                # Don't truncate: short pages drop blacklist rows. Fail loud
-                # once retries (post_with_retry) are exhausted.
-                logger.warning("CNINFO regulatory page failed (%s p%s): %s", column, page, exc)
-                if owns:
-                    client.close()
-                raise RuntimeError(
-                    f"CNINFO regulatory pagination failed for {column} page {page}: {exc}"
-                ) from exc
-
-            if not batch:
-                if (isinstance(total_pages, int) and total_pages > 0 and page <= total_pages) or (
-                    total_pages is None and has_more
-                ):
-                    raise RuntimeError(
-                        f"CNINFO regulatory returned an empty page before the "
-                        f"reported end for {column} page {page}"
-                    )
-                break
-            for item in batch:
-                _validate_source_date(item, trade_date, column=column)
-                title = str(item.get("announcementTitle") or "")
-                if not pattern.search(title):
-                    continue
-                sym = _symbol_from_cninfo(str(item.get("secCode", "")))
-                if not sym:
-                    continue
-                ann_id = _announcement_id(item)
-                if ann_id is None:
-                    logger.warning("CNINFO regulatory announcement missing identity; skipping")
-                    continue
-                rows.append(
-                    {
-                        "event_id": f"reg-{ann_id}",
-                        "symbol": sym,
-                        "event_date": trade_date,
-                        "event_type": _classify_event(title),
-                        "title": title,
-                    }
-                )
-            if isinstance(total_pages, int) and page >= total_pages:
-                # See announcements.fetch_announcement_index: hasMore cannot
-                # be trusted past the server's own reported total — measured
-                # live, it stays true forever while replaying page 1's rows.
-                break
-            if isinstance(total_pages, int):
-                # A stale false `hasMore` must not truncate the blacklist when
-                # the server still reports additional pages.
-                page += 1
+    for item in raw_rows:
+        source_date = _source_date(item)
+        if source_date is None:
+            if start != end:
                 continue
-            if not has_more:
-                if total_pages is None and not has_more_present and len(batch) >= _PAGE_SIZE:
-                    page += 1
-                    continue
-                break
-            page += 1
-
-    if owns:
-        client.close()
+            source_date = start
+        title = str(item.get("announcementTitle") or "")
+        if not pattern.search(title):
+            continue
+        sym = _symbol_from_cninfo(str(item.get("secCode", "")))
+        if not sym:
+            continue
+        ann_id = _announcement_id(item)
+        if ann_id is None:
+            logger.warning("CNINFO regulatory announcement missing identity; skipping")
+            continue
+        rows.append(
+            {
+                "event_id": f"reg-{ann_id}",
+                "symbol": sym,
+                "event_date": source_date,
+                "event_type": _classify_event(title),
+                "title": title,
+            }
+        )
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).unique(subset=["event_id"], keep="last")
+
+
+def replay_regulatory_events_range(
+    archive: RawPayloadArchive | str | Path,
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    records: Iterable[RawPayloadRecord | Mapping[str, Any]] | None = None,
+    max_pages_per_slice: int = 100,
+) -> pl.DataFrame:
+    """Rebuild regulatory events offline from verified archived CNINFO pages."""
+    if start is None and end is not None:
+        start = end
+    elif start is not None and end is None:
+        end = start
+    raw_rows = replay_cninfo_rows(
+        archive,
+        "regulatory_events",
+        start=start,
+        end=end,
+        records=records,
+        max_pages_per_slice=max_pages_per_slice,
+    )
+    pattern = re.compile("|".join(re.escape(k) for k, _ in _KEYWORD_TYPES))
+    rows: list[dict] = []
+    for item in raw_rows:
+        source_date = _source_date(item)
+        if source_date is None:
+            if start is None or end is None or start != end:
+                continue
+            source_date = start
+        if start is not None and source_date < start:
+            continue
+        if end is not None and source_date > end:
+            continue
+        title = str(item.get("announcementTitle") or "")
+        if not pattern.search(title):
+            continue
+        sym = _symbol_from_cninfo(str(item.get("secCode", "")))
+        if not sym:
+            continue
+        ann_id = _announcement_id(item)
+        if ann_id is None:
+            continue
+        rows.append(
+            {
+                "event_id": f"reg-{ann_id}",
+                "symbol": sym,
+                "event_date": source_date,
+                "event_type": _classify_event(title),
+                "title": title,
+            }
+        )
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(subset=["event_id"], keep="last")
+
+
+def replay_regulatory_events(
+    archive: RawPayloadArchive | str | Path,
+    trade_date: date,
+    *,
+    records: Iterable[RawPayloadRecord | Mapping[str, Any]] | None = None,
+    max_pages_per_slice: int = 100,
+) -> pl.DataFrame:
+    """Single-day convenience wrapper for archived regulatory responses."""
+    return replay_regulatory_events_range(
+        archive,
+        trade_date,
+        trade_date,
+        records=records,
+        max_pages_per_slice=max_pages_per_slice,
+    )

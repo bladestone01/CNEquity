@@ -18,11 +18,56 @@ from datetime import date
 import polars as pl
 
 from cnequity.adapters.baostock._session import fetch_per_symbol, to_baostock_symbol
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import parse_symbol
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive, begin_capture
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["fetch_corporate_actions_baostock"]
+
+
+def _configured_archive(
+    config,
+    dataset: str,
+    *,
+    run_id: str | None = None,
+    request_scope: str | None = None,
+) -> RawPayloadArchive | None:
+    if config is None or not hasattr(config, "meta_root"):
+        return None
+    should_archive = getattr(config, "should_archive_raw", None)
+    if callable(should_archive) and not should_archive(dataset):
+        return None
+    if not bool(getattr(config, "raw_archive_enabled", True)):
+        return None
+    scope = str(request_scope or f"dataset:{dataset}")
+    nonce = begin_capture(config, dataset, run_id, source="baostock", request_scope=scope)
+    return RawPayloadArchive(
+        config.meta_root,
+        enabled=True,
+        datasets=[dataset],
+        compression=getattr(config, "raw_archive_compression", "gzip"),
+        max_payload_bytes=getattr(config, "raw_archive_max_payload_bytes", None),
+        capture_owner=config,
+        capture_run_id=run_id,
+        capture_source="baostock",
+        capture_scope=scope,
+        capture_nonce=nonce,
+    )
+
+
+def _result_wire(result) -> bytes | None:
+    """Read an adapter-provided protocol capture without manufacturing bytes."""
+    for name in ("raw_bytes", "wire_bytes", "response_bytes", "raw_response"):
+        value = getattr(result, name, None)
+        if isinstance(value, bytearray):
+            return bytes(value)
+        if isinstance(value, memoryview):
+            return value.tobytes()
+        if isinstance(value, bytes):
+            return value
+    return None
 
 
 _OUTPUT_SCHEMA = {
@@ -174,6 +219,10 @@ def _fetch_one_corporate_actions(
     end: date,
     *,
     pace: Callable[[], None] | None = None,
+    config=None,
+    archive: RawPayloadArchive | None = None,
+    run_id: str | None = None,
+    request_scope: str | None = None,
 ) -> list[dict] | None:
     """Fetch one symbol's dividend plans over the inclusive year window."""
     # Baostock's dividend endpoint currently rejects BJ codes.  Returning a
@@ -190,16 +239,41 @@ def _fetch_one_corporate_actions(
         if pace is not None:
             pace()
         try:
-            result = bs.query_dividend_data(
-                to_baostock_symbol(symbol),
-                year,
-                yearType="operate",
-            )
+            with source_request(config, "baostock"):
+                result = bs.query_dividend_data(
+                    to_baostock_symbol(symbol),
+                    year,
+                    yearType="operate",
+                )
         except Exception as exc:  # noqa: BLE001 - session helper retries it
             logger.warning(
                 "baostock corporate_actions query failed for %s/%s: %s", symbol, year, exc
             )
             return None
+        if archive is not None and archive.enabled:
+            wire = _result_wire(result)
+            if not isinstance(wire, bytes):
+                raise RawArchiveError(
+                    f"Baostock corporate_actions {symbol}/{year}: response has no exact wire bytes"
+                )
+            archive.archive(
+                "corporate_actions",
+                wire,
+                source="baostock",
+                request_params={
+                    "symbol": to_baostock_symbol(symbol),
+                    "year": year,
+                    "year_type": "operate",
+                },
+                run_id=run_id,
+                payload_format="bytes",
+                http_metadata={"wire_exact": True, "protocol": "baostock"},
+                observation_id=(
+                    f"{run_id or 'anonymous'}:dividend:{symbol}:{year}:"
+                    f"scope={request_scope or 'scope-unknown'}"
+                ),
+                request_scope=request_scope,
+            )
         if getattr(result, "error_code", "0") != "0":
             return None
         positions = _field_positions(result)
@@ -220,6 +294,9 @@ def fetch_corporate_actions_baostock(
     sleep=time.sleep,
     config=None,
     symbol_windows: Mapping[str, tuple[date, date]] | None = None,
+    run_id: str | None = None,
+    archive: RawPayloadArchive | None = None,
+    request_scope: str | None = None,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Return SH/SZ dividend events and failed symbols over ``[start, end]``.
 
@@ -227,6 +304,17 @@ def fetch_corporate_actions_baostock(
     dividend endpoint has no reliable allotment ratio/price fields.  Callers
     should preserve TDX/EastMoney rows for that event type.
     """
+
+    if archive is None:
+        scope = request_scope or f"repair:baostock:{start.isoformat()}:{end.isoformat()}"
+        archive = _configured_archive(
+            config,
+            "corporate_actions",
+            run_id=run_id,
+            request_scope=scope,
+        )
+    if archive is not None and archive.enabled and not run_id:
+        raise RawArchiveError("Baostock corporate_actions archive requires a non-empty run_id")
 
     def fetch_one(bs_session, symbol: str, window_start: date, window_end: date):
         if symbol_windows is not None:
@@ -236,6 +324,8 @@ def fetch_corporate_actions_baostock(
 
         def pace() -> None:
             if config is not None:
+                if getattr(config, "source_request", None) is not None:
+                    return
                 config.rate_limit("baostock")
             else:
                 sleep(1.0)
@@ -246,6 +336,10 @@ def fetch_corporate_actions_baostock(
             window_start,
             window_end,
             pace=pace,
+            config=config,
+            archive=archive,
+            run_id=run_id,
+            request_scope=request_scope,
         )
 
     rows, failed = fetch_per_symbol(
@@ -257,6 +351,7 @@ def fetch_corporate_actions_baostock(
         sleep=sleep,
         label="baostock corporate_actions",
         config=config,
+        request_managed=True,
     )
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     if not df.is_empty():

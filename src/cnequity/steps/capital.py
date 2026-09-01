@@ -1,4 +1,9 @@
-"""L4 capital steps: fund flow, northbound, margin, dragon tiger, block trades."""
+"""L4 capital steps: fund flow, northbound, margin, dragon tiger, block trades.
+
+``margin_trading`` reads from the exchanges themselves by default; the rest
+still come from EastMoney. See ``_margin_source`` for why that one moved and
+what it costs.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +27,12 @@ from cnequity.config import Config
 from cnequity.domain.market_time import shanghai_now
 from cnequity.orchestrator.registry import register_step
 from cnequity.steps.common import BACKFILL_START, incremental_trade_dates, list_trading_dates
-from cnequity.steps.http_common import run_incremental_fetched, write_fetched
+from cnequity.steps.http_common import (
+    call_with_run_id,
+    run_incremental_fetched,
+    verify_raw_archive,
+    write_fetched,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +65,14 @@ def _run_capital_step(
     # proxy / timeout — bare clients only throttle at 1s in-process and trip EM
     # WAF on first-run multi-page clist/datacenter sweeps (fund_flow, margin).
     def _bound(d: date) -> pl.DataFrame:
-        return fetch_fn(d, config=config)
+        return call_with_run_id(
+            fetch_fn,
+            d,
+            pipeline_config=config,
+            dataset=dataset,
+            run_id=run_id,
+            config=config,
+        )
 
     return run_incremental_fetched(
         config,
@@ -65,6 +82,13 @@ def _run_capital_step(
         _bound,
         source="eastmoney",
         allow_empty=allow_empty,
+        raw_archive_evidence_factory=lambda: verify_raw_archive(
+            config,
+            dataset,
+            run_id,
+            source="eastmoney",
+            request_scope=f"daily:{trade_date.isoformat()}",
+        ),
     )
 
 
@@ -230,6 +254,82 @@ def step_northbound_flows(config: Config, trade_date: date, run_id: str, context
     return write_fetched(config, run_id, "northbound_flows", df, source="eastmoney")
 
 
+# --- margin_trading source selection -----------------------------------------
+#
+# `margin_trading` is not a vendor measurement: the exchanges aggregate what
+# member firms report and publish the per-security detail themselves. Reading
+# it from them removes a redistribution hop, and measured against curated
+# EastMoney for 2026-08-26 it loses nothing — every one of margin_balance,
+# margin_buy, short_balance and short_sell_volume matched exactly (0 bps) over
+# the 3,522 shared symbols, while the exchanges carried 4,100 securities to
+# EastMoney's 3,857.
+#
+# Two properties of the publishers shape the wiring:
+#
+# * **SSE does not publish 融券余额.** `short_balance` is therefore null on SH
+#   rows (see the adapter). It is the one field EastMoney has and the exchange
+#   does not, which is why `[margin_trading] source` can still select the
+#   vendor path rather than this being a one-way replacement.
+# * **The two publish on different lags.** Measured 2026-08-30, SSE had already
+#   served 2026-08-28 while SZSE's export for that session was still
+#   header-only; SZSE lands on the next business day. A day is therefore
+#   written only when *both* exchanges have published it — a half-market day
+#   would advance the watermark and strand the other half — so the dataset
+#   trails the vendor path by about one session in exchange for authority.
+_MARGIN_SOURCES = ("exchange", "eastmoney")
+# Calendar days an unpublished day is tolerated before it becomes an error.
+# The vendor path answers same-day, so 2 is right there; the exchanges add a
+# business day, which a weekend stretches to three.
+_MARGIN_EMPTY_GRACE_DAYS = {"eastmoney": 2, "exchange": 5}
+
+
+def _margin_source(config: Config) -> str:
+    """The configured `margin_trading` vendor, refusing a disabled one.
+
+    Falling back on its own would be exactly the automatic source switching
+    ADR-0003 rules out: the choice of who owns these rows is an operator's, and
+    a silent switch would change what `source` means without anyone deciding it.
+    """
+    source = getattr(config, "margin_trading_source", "exchange")
+    if source not in _MARGIN_SOURCES:
+        raise RuntimeError(
+            f"margin_trading: unknown source {source!r}; expected one of {_MARGIN_SOURCES}"
+        )
+    # Absent means enabled, as it does for every other ingest source. The
+    # fail-closed default belongs to the optional publisher *checks* in
+    # `quality/authority_checks.py`, which add network calls an operator opts
+    # into; this one is a dataset's primary feed and cannot default to off.
+    if not config.sources.get(source, True):
+        raise RuntimeError(f"margin_trading: {source} source disabled in config")
+    return source
+
+
+def _fetch_margin_via_exchange(day: date, *, config: Config) -> pl.DataFrame:
+    """Official SSE + SZSE margin detail, or empty until both have published."""
+    from cnequity.adapters.exchange.margin_trading import fetch_exchange_margin_trading
+
+    result = fetch_exchange_margin_trading(day, config=config)
+    if result.covered != frozenset({"sse", "szse"}):
+        # Not an error: SZSE lands a business day behind SSE. Returning empty
+        # leaves the day unwritten, the watermark where it was, and the next
+        # run picks it up complete.
+        logger.info(
+            "margin_trading: %s published by %s only; leaving the day for a later run (%s)",
+            day.isoformat(),
+            ",".join(sorted(result.covered)) or "neither exchange",
+            result.failures,
+        )
+        return pl.DataFrame()
+    return result.rows
+
+
+def _margin_fetcher(source: str):
+    """``(day, *, config) -> frame`` for the selected publisher."""
+    if source == "exchange":
+        return _fetch_margin_via_exchange
+    return lambda day, *, config: fetch_margin_trading(day, config=config)
+
+
 def _existing_margin_dates(
     config: Config,
     *,
@@ -332,14 +432,18 @@ def _validate_margin_snapshot(df: pl.DataFrame, trade_date: date) -> pl.DataFram
 
 
 def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> dict:
-    """Walk trading days fetching the EM margin report (history is served).
+    """Walk trading days fetching the configured margin report (history is served).
+
+    Both publishers serve history: SSE takes ``detailsDate`` and SZSE takes
+    ``txtDate``, so the exchange path backfills the same way the vendor one does.
 
     Resumable: days already in curated are skipped, so a killed sweep can be
     rerun. ``--start/--end`` on ``cne backfill`` bound the walk; parts are
     staged in chunks so progress survives mid-run failures via compact.
-    ``--workers N`` fetches days concurrently — each worker holds its own
-    client throttled to 1 req/s (bypasses the shared source limiter, so the
-    aggregate rate is up to N req/s; an explicit operator choice for sweeps).
+    ``--workers N`` fetches days concurrently.  Each worker owns its client,
+    while every underlying EastMoney request still goes through the shared
+    cross-process QPS and in-flight source limiter, so increasing this value
+    cannot bypass the configured upstream budget.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -348,6 +452,8 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
     from cnequity.steps.common import _backfill_empty_day_finding
     from cnequity.storage import StagingWriter
 
+    source = _margin_source(config)
+    fetch_day = _margin_fetcher(source)
     start = getattr(config, "_backfill_start", None) or BACKFILL_START
     end = getattr(config, "_backfill_end", None) or trade_date
     workers = max(1, int(getattr(config, "_backfill_workers", 1)))
@@ -369,7 +475,7 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
         if not frames:
             return
         part = with_provenance(
-            pl.concat(frames, how="diagonal_relaxed"), source="eastmoney", data_version="v1"
+            pl.concat(frames, how="diagonal_relaxed"), source=source, data_version="v1"
         )
         writer.write_batch("margin_trading", run_id, f"bf-{n_parts:04d}", part)
         n_parts += 1
@@ -383,6 +489,10 @@ def _backfill_margin_trading(config: Config, trade_date: date, run_id: str) -> d
     clients_lock = threading.Lock()
 
     def fetch_one(d: date) -> pl.DataFrame:
+        if source != "eastmoney":
+            # The exchange adapters are stateless; only the EM path needs a
+            # per-thread client to reuse its authenticated session.
+            return fetch_day(d, config=config)
         client = getattr(local, "client", None)
         if client is None:
             # Prefer config so cross-process [sources.eastmoney] pacing applies
@@ -488,13 +598,25 @@ def step_margin_trading(config: Config, trade_date: date, run_id: str, context: 
     if getattr(config, "_backfill", False):
         return _backfill_margin_trading(config, trade_date, run_id)
 
+    source = _margin_source(config)
+    fetch = _margin_fetcher(source)
+    grace = _MARGIN_EMPTY_GRACE_DAYS[source]
+
     def _fetch(day: date, *, config: Config) -> pl.DataFrame:
-        frame = fetch_margin_trading(day, config=config)
-        if frame.is_empty() and day < shanghai_now().date() - timedelta(days=2):
+        frame = fetch(day, config=config)
+        if frame.is_empty() and day < shanghai_now().date() - timedelta(days=grace):
             raise RuntimeError(f"margin_trading: no rows returned for {day.isoformat()}")
         return _validate_margin_snapshot(frame, day)
 
-    return _run_capital_step(config, trade_date, run_id, "margin_trading", _fetch, allow_empty=True)
+    return run_incremental_fetched(
+        config,
+        trade_date,
+        run_id,
+        "margin_trading",
+        lambda d: _fetch(d, config=config),
+        source=source,
+        allow_empty=True,
+    )
 
 
 def _backfill_daily_report(

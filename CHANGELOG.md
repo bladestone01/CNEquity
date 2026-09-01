@@ -8,6 +8,34 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Checks against the bodies that publish the numbers, not a second vendor.**
+  Every price arbiter in the lake compared one redistributor against another,
+  which can show that two feeds do not differ but never that either is right.
+  Three checks now reach past them (ADR-0006):
+  - `daily_bars_vs_exchange` compares curated OHLC and turnover against the
+    closes the SSE and SZSE publish themselves. Measured 2026-08-28: OHLC
+    matched **exactly** on all 5,212 shared symbols, so the price tolerance is
+    tight (10 bps) and a breach is an error. Turnover carries a one-directional
+    definitional gap — the exchange daily total folds in trading a
+    continuous-auction bar excludes — so it is judged on the share of the
+    universe that diverges rather than per symbol. Suspension placeholders,
+    which SZSE publishes at zero volume and a quote feed omits, are excluded
+    from the missing-bar check.
+  - `adj_factor_corporate_action_divergence` recomputes every hfq factor step
+    from curated `corporate_actions` (a different vendor) using the ex-rights
+    continuity identity, and reports where the stored series disagrees. This
+    catches a step of the wrong size or on the wrong day; the existing
+    continuity tripwire only saw breaks above 20x. Configured under
+    `[adj_factors] crosscheck_*`.
+  - `adj_factor_action_implies_nonpositive_price` flags action rows whose own
+    terms cannot be right (a dividend exceeding the entire prior close).
+- **`margin_trading` now reads from the exchanges that compile it.** The SSE
+  and SZSE aggregate 融资融券 from member-firm reports and publish the
+  per-security detail; EastMoney could only copy that file. Verified against
+  the curated EastMoney day for 2026-08-26: all four fields matched exactly
+  over 3,522 shared symbols, with 4,100 securities against EastMoney's 3,857.
+  `[margin_trading] source` selects the owner and still accepts `"eastmoney"`;
+  the switch is an operator's, never automatic.
 - **Machine-readable dataset contracts.** `DatasetSpec` now carries
   `schema_version`, `contract_level`, `pit_quality`, `availability_col`,
   `unit_contract` and a compatibility policy, inferred so existing positional
@@ -36,6 +64,19 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   moves the watermark. `cne snapshot create/verify/restore` produces
   checksummed, immutable lake snapshots that also carry the contract
   fingerprint and run lineage.
+- **Portable snapshot archives and incremental lake packages.** `cne snapshot
+  export/import` streams a snapshot to one `tar.zst` (gzip fallback) and back,
+  verifying the manifest before an atomic publish; every tar member is checked
+  first, so absolute paths, `..`, duplicates, links and device nodes are
+  rejected rather than extracted. `cne snapshot delta create/verify/apply`
+  moves only what changed between two lake roots — a whole-lake snapshot is the
+  wrong tool for a daily sync. A delta carries add/replace/delete preconditions
+  (byte hashes for a two-root delta, the committed revision number for
+  `--from-revision`), so applying one to the wrong baseline fails instead of
+  silently corrupting the target. `apply` backs up every overwritten file until
+  the full change set and the post-apply fingerprint both pass and rolls back on
+  any error, and delta paths are confined to `curated/`, `derived/` and an
+  allow-list under `meta/`.
 - **Run-level dataset receipts.** A `dataset_results` table records one row
   per logical dataset and stage (fetch/stage/compact/derive/audit/
   publish_revision) with core/research/advisory criticality, with an additive
@@ -61,6 +102,27 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`trading_status` splits `status` from a new `risk_warning` column
+  (ADR-0007).** `status` used to carry both the trading state and the ST / *ST
+  designation, resolved by an `if/elif` in which halting won — so a halted ST
+  name lost its designation in stored history. Seen live: 000711.SZ was `st` on
+  2026-08-27 and `suspended` on 2026-08-28 without leaving risk warning, and
+  `market_breadth` consequently priced that session against the ±10% band
+  instead of ±5%. `status` is now the trading state alone
+  (`normal`/`suspended`/`delisted`) and `risk_warning` is its own nullable
+  boolean. Reads accept both encodings, so an existing lake stays correct;
+  `scripts/migrate_trading_status_risk_warning.py` makes the physical schema
+  uniform (dry-run by default).
+  ST and *ST are still not distinguished — no source feeding this dataset ever
+  did — and the finer designation remains in the exchange 简称.
+- **`margin_trading` trails by about one session under the new default.** SZSE
+  publishes a business day after SSE, and a day is written only once both have
+  — a half-market day would advance the watermark and strand the other half.
+- **`short_balance` is null on SH rows under the exchange source.** The SSE
+  does not publish 融券余额 (its `rqylje` field is null for every row). It is
+  reconstructible as 融券余量 × close, but stamping local arithmetic with
+  `source="exchange"` would attribute it to the exchange. Select
+  `[margin_trading] source = "eastmoney"` if the field is required.
 - **Run status contract.** A step-level `warning` is now reported as
   `degraded` at run level. `cne status` and the run commands
   (`run daily`, `run --stale-only`, `init`, `retry`) exit `2` for a degraded
@@ -135,6 +197,48 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Python 3.10 could not import the CNINFO adapter.** `datetime.UTC` is 3.11+;
+  announcements and its tests now use `timezone.utc`, as the rest of the tree
+  already does. That import is on the package path, so 3.10 CI never reached
+  collection.
+- **Windows refused the raw-archive symlink-boundary fixture.** POSIX
+  `rename()` replaces an empty destination directory; Windows raises
+  `FileExistsError`. The test now moves the dataset directory onto a path that
+  does not already exist.
+- **Windows CI flaked the cross-process rate-limiter assertion.** `time.sleep`
+  returned at 48% of a 50ms interval; the floor is now 30% of 100ms — still
+  several times a no-op wait.
+- **Windows CI aborted the unit suite with `KeyboardInterrupt` after the
+  process-pool rate-limiter tests.** A worker exiting on Windows can inject
+  `CTRL_C_EVENT` into the parent's console group (CPython 33725); the session
+  now ignores that signal. A leftover worker atexit can still flip a fully
+  green run to exit code 1 — CI now reaps those processes and keeps pytest's
+  status.
+
+- **A frame with no columns gained a row when it was stamped.** `pl.DataFrame()`
+  is the codebase's "nothing to report" value, and polars broadcasts a literal
+  against a zero-*column* frame to length one — so stamping provenance onto it
+  fabricated a row carrying only the literals. That row has no primary key, so
+  a strict validate rejects it, but a `pl.concat(..., how="diagonal_*")` with a
+  real day's rows runs first in several paths, fills its keys with nulls, and
+  launders it into the lake. Hit live in `step_trading_status`, where a session
+  with an empty vendor universe produced a row with no symbol and no
+  `trade_date` that then failed the *next* session's date check and blamed the
+  wrong day. `with_provenance` (28 call sites) and `normalize_pit_storage_columns`
+  now no-op on such a frame, `cnequity.domain.frames.with_columns_unless_blank`
+  covers the remaining literal stamps, and
+  `scripts/probe_blank_frame_broadcast.py` is a pytest plugin that sweeps the
+  suite for new occurrences — currently zero outside polars itself.
+- **Delisted securities were published as normally trading, every session.**
+  The daily writer classified anything neither halted nor on the risk board as
+  `normal` with `is_trading=True`, and had no notion of delisting. Measured on
+  a full lake for 2026-08-28, that was **611 symbols carrying a `delist_date`**
+  — the oldest delisted 1999-07-12 — none of which had a bar that day. A vendor
+  board cannot report on a security that has left the market, so these rows now
+  come from `instruments` as `status=delisted`, `is_trading=False`,
+  `source=derived_delisted`, with `risk_warning` read from the final 简称; the
+  symbols are dropped from the board request entirely. The migration does not
+  back-fill history — re-run the daily step over a window to correct it.
 - **`cne snapshot`'s three subcommands had no help text at all.** `create`,
   `verify` and `restore` listed as bare names with no description and no option
   help — the only commands in the CLI with none.

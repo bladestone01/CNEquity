@@ -6,7 +6,10 @@ from datetime import date
 
 import polars as pl
 
-from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
+from cnequity.adapters.cninfo.regulatory import (
+    fetch_regulatory_events,
+    fetch_regulatory_events_range,
+)
 from cnequity.adapters.eastmoney.share_unlock import fetch_share_unlock_schedule
 from cnequity.adapters.macro.indicators import fetch_macro_indicators
 from cnequity.config import Config
@@ -14,7 +17,7 @@ from cnequity.derive.market_breadth import MARKET_BREADTH_METRICS, compute_marke
 from cnequity.orchestrator.registry import register_step
 from cnequity.quality.macro_checks import macro_revision_findings
 from cnequity.steps.common import BACKFILL_START
-from cnequity.steps.http_common import run_incremental_fetched
+from cnequity.steps.http_common import run_incremental_fetched, verify_raw_archive
 
 _REQUIRED_DAILY_MACRO_INDICATORS = frozenset({"cnbond_yield_10y", "shibor_3m"})
 _MARKET_BREADTH_METRICS = frozenset(MARKET_BREADTH_METRICS)
@@ -359,25 +362,44 @@ def step_regulatory_events(config: Config, trade_date: date, run_id: str, contex
     if not config.sources.get("cninfo", True):
         raise RuntimeError("regulatory_events: cninfo source disabled in config")
     if getattr(config, "_backfill", False):
-        from cnequity.steps.common import walk_day_backfill
+        from cnequity.steps.events import _cninfo_range_backfill
 
-        return walk_day_backfill(
+        return _cninfo_range_backfill(
             config,
             trade_date,
             run_id,
             "regulatory_events",
-            lambda d: fetch_regulatory_events(d, config=config),
-            source="cninfo",
+            fetch_regulatory_events_range,
             date_col="event_date",
             floor=date(2010, 1, 1),
         )
-    return run_incremental_fetched(
+    from cnequity.steps.events import _fetch_cninfo_single, _record_cninfo_metrics
+
+    metrics: dict = {"run_id": run_id}
+    result = run_incremental_fetched(
         config,
         trade_date,
         run_id,
         "regulatory_events",
-        lambda d: fetch_regulatory_events(d, config=config),
+        lambda d: _fetch_cninfo_single(
+            fetch_regulatory_events,
+            d,
+            config,
+            metrics,
+            dataset="regulatory_events",
+        ),
         source="cninfo",
         allow_empty=True,
         date_col="event_date",
+        raw_archive_evidence_factory=lambda: verify_raw_archive(
+            config,
+            "regulatory_events",
+            run_id,
+            source="cninfo",
+            request_scope=(f"range:regulatory:{trade_date.isoformat()}:{trade_date.isoformat()}"),
+        ),
     )
+    if len(metrics) > 1:
+        _record_cninfo_metrics(config, run_id, "regulatory_events", metrics)
+    result["metrics"] = metrics
+    return result

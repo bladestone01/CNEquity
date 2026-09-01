@@ -22,6 +22,7 @@ from cnequity.domain.partitions import (
     Partition,
     parse_partition,
 )
+from cnequity.storage.revisions import resolve_committed_root
 
 # Re-exported for callers that reach for it here; it is dataset registry
 # metadata and lives in the domain layer so `storage` can read it without
@@ -29,8 +30,36 @@ from cnequity.domain.partitions import (
 __all__ = ["granularity_for_dataset"]
 
 
-def dataset_has_parquet(root: Path) -> bool:
-    return root.exists() and any(root.rglob("*.parquet"))
+def _resolved_root(
+    root: Path,
+    *,
+    dataset: str | None = None,
+    meta_root: Path | None = None,
+    revision: int | str | None = None,
+) -> Path:
+    """Return one committed generation, retaining legacy-layout fallback."""
+    return resolve_committed_root(
+        root,
+        dataset=dataset,
+        meta_root=meta_root,
+        revision=revision,
+    )
+
+
+def dataset_has_parquet(
+    root: Path,
+    *,
+    dataset: str | None = None,
+    meta_root: Path | None = None,
+    revision: int | str | None = None,
+    committed: bool = True,
+) -> bool:
+    resolved = (
+        _resolved_root(root, dataset=dataset, meta_root=meta_root, revision=revision)
+        if committed
+        else Path(root)
+    )
+    return resolved.exists() and any(resolved.rglob("*.parquet"))
 
 
 def parquet_glob(root: Path) -> str:
@@ -42,7 +71,12 @@ def parquet_glob(root: Path) -> str:
     return f"{Path(root).resolve().as_posix()}/**/*.parquet"
 
 
-def _all_day_partitions(root: Path, partition_col: str | None) -> bool:
+def _all_day_partitions(
+    root: Path,
+    partition_col: str | None,
+    *,
+    resolve: bool = True,
+) -> bool:
     """Whether every partition on disk is a single day.
 
     Decides hive parsing from the actual layout rather than from the registry:
@@ -52,11 +86,16 @@ def _all_day_partitions(root: Path, partition_col: str | None) -> bool:
     """
     if partition_col is None:
         return False
-    parts = list_partitions(root, partition_col)
+    parts = list_partitions(root, partition_col, resolve=resolve)
     return bool(parts) and all(p.start == p.end for p in parts)
 
 
-def list_partitions(root: Path, partition_col: str) -> list[Partition]:
+def list_partitions(
+    root: Path,
+    partition_col: str,
+    *,
+    resolve: bool = True,
+) -> list[Partition]:
     """Partition directories under *root*, sorted by period start.
 
     The period comes from each directory's own value, not from the dataset's
@@ -64,6 +103,8 @@ def list_partitions(root: Path, partition_col: str) -> list[Partition]:
     correctly throughout. Directories that do not parse as a period are skipped:
     they are stray artefacts, not data this dataset owns.
     """
+    if resolve:
+        root = _resolved_root(root)
     if not root.exists():
         return []
     prefix = f"{partition_col}="
@@ -101,12 +142,17 @@ def coverage_start_from_partitions(root: Path, partition_col: str) -> date | Non
     return parts[0].start if parts else None
 
 
-def uses_hive_partitions(root: Path, partition_col: str | None) -> bool:
+def uses_hive_partitions(
+    root: Path,
+    partition_col: str | None,
+    *,
+    resolve: bool = True,
+) -> bool:
     if partition_col is None:
         return False
     if not root.exists():
         return False
-    return bool(list_partitions(root, partition_col))
+    return bool(list_partitions(root, partition_col, resolve=resolve))
 
 
 def partition_files_in_range(
@@ -115,6 +161,7 @@ def partition_files_in_range(
     *,
     start: date | None = None,
     end: date | None = None,
+    resolve: bool = True,
 ) -> list[Path]:
     """Parquet files relevant to ``[start, end]`` in mixed layouts.
 
@@ -125,8 +172,10 @@ def partition_files_in_range(
     history only for ranged queries, while an unbounded query still appeared
     correct.
     """
+    if resolve:
+        root = _resolved_root(root)
     files = sorted(root.glob("*.parquet"))
-    for part in list_partitions(root, partition_col):
+    for part in list_partitions(root, partition_col, resolve=False):
         if not part.overlaps(start, end):
             continue
         files.extend(sorted(partition_dir(root, partition_col, part.value).glob("**/*.parquet")))
@@ -181,22 +230,54 @@ def scan_parquet_root(
     symbols: list[str] | None = None,
     hive: bool | None = None,
     traded_only: bool = False,
+    dataset: str | None = None,
+    meta_root: Path | None = None,
+    revision: int | str | None = None,
+    committed: bool = True,
 ) -> pl.LazyFrame:
-    if not dataset_has_parquet(root):
+    # Resolve once at scan construction.  A LazyFrame may be collected after a
+    # concurrent compact publishes another revision; retaining this concrete
+    # generation path makes the whole query internally consistent.
+    logical_dataset = dataset or root.name
+    if committed:
+        root = _resolved_root(
+            root,
+            dataset=dataset,
+            meta_root=meta_root,
+            revision=revision,
+        )
+    if not dataset_has_parquet(
+        root,
+        # ``root`` has already been resolved above.  Resolving the concrete
+        # generation a second time loses the inferred meta root (its parent is
+        # ``meta/revisions/data/<dataset>``) and can incorrectly fall back to
+        # the deleted mutable path in direct scanner callers.
+        committed=False,
+    ):
         msg = f"no parquet data under {root}"
         raise FileNotFoundError(msg)
 
-    partitioned = uses_hive_partitions(root, partition_col)
-    use_hive = (partitioned and _all_day_partitions(root, partition_col)) if hive is None else hive
+    partitioned = uses_hive_partitions(root, partition_col, resolve=False)
+    use_hive = (
+        (partitioned and _all_day_partitions(root, partition_col, resolve=False))
+        if hive is None
+        else hive
+    )
 
     lf: pl.LazyFrame | None = None
     if partitioned and partition_col and (start is not None or end is not None):
         # Directory-level pruning: skip whole periods before touching a footer.
-        files = partition_files_in_range(root, partition_col, start=start, end=end)
+        files = partition_files_in_range(
+            root,
+            partition_col,
+            start=start,
+            end=end,
+            resolve=False,
+        )
         if not files:
             # Window is outside the lake's coverage — return an empty frame with
             # the real schema rather than raising, so callers can filter freely.
-            all_files = partition_files_in_range(root, partition_col)
+            all_files = partition_files_in_range(root, partition_col, resolve=False)
             if all_files:
                 return _scan_parquet_paths(
                     all_files, hive=use_hive, traded_only=traded_only
@@ -207,7 +288,7 @@ def scan_parquet_root(
         lf = _scan_parquet_paths(files, hive=use_hive, traded_only=traded_only)
     if lf is None:
         if partitioned and partition_col:
-            files = partition_files_in_range(root, partition_col)
+            files = partition_files_in_range(root, partition_col, resolve=False)
             if files:
                 lf = _scan_parquet_paths(files, hive=use_hive, traded_only=traded_only)
             else:
@@ -236,7 +317,7 @@ def scan_parquet_root(
         # a real print. Legacy files without ``volume`` retain row semantics;
         # their diagonal null volume is handled as a traded row below.
         columns = set(lf.collect_schema().names())
-        if root.name == "daily_bars" and {"symbol", "trade_date"}.issubset(columns):
+        if logical_dataset == "daily_bars" and {"symbol", "trade_date"}.issubset(columns):
             lf = dedupe_lazy_by_primary_key(lf, "daily_bars")
         if "volume" in columns:
             lf = lf.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
@@ -282,6 +363,10 @@ def collect_parquet_root(
     symbols: list[str] | None = None,
     hive: bool | None = None,
     traded_only: bool = False,
+    dataset: str | None = None,
+    meta_root: Path | None = None,
+    revision: int | str | None = None,
+    committed: bool = True,
 ) -> pl.DataFrame:
     return scan_parquet_root(
         root,
@@ -291,6 +376,10 @@ def collect_parquet_root(
         symbols=symbols,
         hive=hive,
         traded_only=traded_only,
+        dataset=dataset,
+        meta_root=meta_root,
+        revision=revision,
+        committed=committed,
     ).collect()
 
 

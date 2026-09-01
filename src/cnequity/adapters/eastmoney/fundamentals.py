@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 
@@ -46,6 +46,7 @@ from cnequity.adapters.eastmoney.common import (
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
+from cnequity.storage.raw_archive import RawPayloadArchive, begin_capture
 
 logger = logging.getLogger(__name__)
 
@@ -241,8 +242,29 @@ def _fetch_report(
     filter_expr: str,
     *,
     config: Config | None,
+    run_id: str | None = None,
+    request_scope: str | None = None,
+    archive_source: str = "eastmoney",
+    capture_nonce: str | None = None,
 ) -> list[dict]:
     rate_limit_if_unconfigured(client, config)
+    archive = None
+    if config is not None and hasattr(config, "meta_root"):
+        archive_dataset = "financial_statement_items"
+        should_archive = getattr(config, "should_archive_raw", None)
+        if should_archive is None or should_archive(archive_dataset):
+            archive = RawPayloadArchive(
+                config.meta_root,
+                enabled=getattr(config, "raw_archive_enabled", False),
+                datasets=[archive_dataset],
+                compression=getattr(config, "raw_archive_compression", "gzip"),
+                max_payload_bytes=getattr(config, "raw_archive_max_payload_bytes", None),
+                capture_owner=config,
+                capture_run_id=run_id,
+                capture_source=archive_source,
+                capture_scope=request_scope,
+                capture_nonce=capture_nonce,
+            )
     return fetch_datacenter(
         client,
         report.name,
@@ -253,6 +275,11 @@ def _fetch_report(
         # is being read. Keep the truncation/short-page guards, but accept a
         # small upward count drift once all declared pages are read.
         allow_count_overrun=True,
+        archive=archive,
+        archive_dataset="financial_statement_items",
+        archive_run_id=run_id,
+        archive_source=archive_source,
+        archive_request_scope=request_scope,
     )
 
 
@@ -280,6 +307,29 @@ def _rows_for_notice_date(raw: list[dict], expected: date) -> list[dict]:
         raise RuntimeError(
             "EastMoney financial statement response contains no NOTICE_DATE row "
             f"for {expected.isoformat()}"
+        )
+    return rows
+
+
+def _rows_for_notice_window(raw: list[dict], start: date, end: date) -> list[dict]:
+    """Keep only rows disclosed in the requested rolling reconciliation window."""
+    rows = [
+        item
+        for item in raw
+        if (notice := _source_date(item.get("NOTICE_DATE"))) is not None and start <= notice <= end
+    ]
+    if raw and not rows:
+        raise RuntimeError(
+            "EastMoney financial statement response contains no NOTICE_DATE row for "
+            f"{end.isoformat()} within {start.isoformat()}..{end.isoformat()}"
+        )
+    dropped = len(raw) - len(rows)
+    if dropped:
+        logger.warning(
+            "EastMoney financial statements dropped %d row(s) outside NOTICE_DATE window %s..%s",
+            dropped,
+            start.isoformat(),
+            end.isoformat(),
         )
     return rows
 
@@ -335,6 +385,7 @@ def fetch_financial_statement_items(
     backfill: bool = False,
     client: EastMoneyClient | None = None,
     config: Config | None = None,
+    run_id: str | None = None,
 ) -> pl.DataFrame:
     """Fetch financial statement items with PIT ``announce_date``.
 
@@ -353,12 +404,54 @@ def fetch_financial_statement_items(
         client = EastMoneyClient(config=config)
 
     ds = trade_date.isoformat()
+    request_scope = f"{'backfill' if backfill else 'daily'}:{trade_date.isoformat()}"
+    archive_source = "eastmoney_backfill" if backfill else "eastmoney"
+    capture_nonce: str | None = None
+    if config is not None and hasattr(config, "meta_root"):
+        should_archive = getattr(config, "should_archive_raw", None)
+        if should_archive is None or should_archive("financial_statement_items"):
+            if bool(getattr(config, "raw_archive_enabled", False)):
+                capture_nonce = begin_capture(
+                    config,
+                    "financial_statement_items",
+                    run_id,
+                    source=archive_source,
+                    request_scope=request_scope,
+                )
     rows: list[dict] = []
     try:
         if not backfill:
+            from cnequity.domain.datasets import DATASETS
+
+            # A configured pipeline run opts into the registry's rolling
+            # reconciliation window.  Keep the lightweight adapter API's
+            # historical exact-date behaviour when callers omit ``config``;
+            # this is useful for one-off probes and preserves its fail-loud
+            # date validation contract.
+            lookback = (
+                int(
+                    getattr(
+                        DATASETS.get("financial_statement_items"), "reconciliation_lookback_days", 0
+                    )
+                    or 0
+                )
+                if config is not None
+                else 0
+            )
+            notice_start = trade_date - timedelta(days=max(lookback - 1, 0))
             for report in _REPORTS:
-                raw = _rows_for_notice_date(
-                    _fetch_report(client, report, f"(NOTICE_DATE='{ds}')", config=config),
+                raw = _rows_for_notice_window(
+                    _fetch_report(
+                        client,
+                        report,
+                        f"(NOTICE_DATE>='{notice_start.isoformat()}') AND (NOTICE_DATE<='{ds}')",
+                        config=config,
+                        run_id=run_id,
+                        request_scope=request_scope,
+                        archive_source=archive_source,
+                        capture_nonce=capture_nonce,
+                    ),
+                    notice_start,
                     trade_date,
                 )
                 parsed, _ = _parse_rows(raw, report, default_notice=ds)
@@ -372,6 +465,10 @@ def fetch_financial_statement_items(
                     _ANNOUNCE_SOURCE,
                     f"({_ANNOUNCE_SOURCE.report_date_field}='{period}')",
                     config=config,
+                    run_id=run_id,
+                    request_scope=request_scope,
+                    archive_source=archive_source,
+                    capture_nonce=capture_nonce,
                 )
                 announce_raw = _rows_for_report_period(announce_raw, _ANNOUNCE_SOURCE, period)
                 announce_dates = _announce_date_map(announce_raw)
@@ -386,6 +483,10 @@ def fetch_financial_statement_items(
                         report,
                         f"({report.report_date_field}='{period}')",
                         config=config,
+                        run_id=run_id,
+                        request_scope=request_scope,
+                        archive_source=archive_source,
+                        capture_nonce=capture_nonce,
                     )
                     raw = _rows_for_report_period(raw, report, period)
                     parsed, fallbacks = _parse_rows(

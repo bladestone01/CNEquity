@@ -77,7 +77,11 @@ def test_fetch_corporate_actions_only_queries_bj_and_reports_page_failures():
 
 
 def test_step_ths_repair_is_scoped_to_delisted_bj_and_keeps_provenance(tmp_path, monkeypatch):
-    cfg = Config(data_root=tmp_path / "lake", sources={"ths_bonus": True})
+    cfg = Config(
+        data_root=tmp_path / "lake",
+        sources={"ths_bonus": True},
+        raw_archive_enabled=False,
+    )
     cfg._backfill = True
     cfg._backfill_start = date(2020, 1, 1)
     cfg._backfill_end = date(2020, 12, 31)

@@ -37,11 +37,16 @@ The boundary is deliberate: adapters fetch, the orchestrator schedules and retri
 ```bash
 pip install cnequity    # no token, credit, or signup
 cne demo                   # real data: 5 names × 30 sessions
+cne demo --sample            # deterministic synthetic lake; no network
 ```
 
 Measured at about 25 seconds. Needs **TDX quote hosts** reachable (mainland access is more reliable);
 if it fails, try `cne sources probe --only tdx_protocol`. The demo writes to its own
 `data/cnequity-demo/` directory and never touches a full lake.
+
+If TDX is unreachable, `cne demo --sample` still verifies installation, Parquet writes,
+DuckDB views, and the public query path. Every generated row is visibly marked
+`source=mock`; it is for onboarding only, never research.
 
 <p align="center">
   <img src="docs/assets/cne-demo.png" alt="cne demo: phased fetch with sample daily bars" width="820" />

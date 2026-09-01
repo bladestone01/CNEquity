@@ -22,6 +22,12 @@ class DatasetState:
     content_digest: str | None
     revision_receipt: str | None
     changed_partitions: tuple[str, ...]
+    # When the writer last touched this dataset. Present in every state payload
+    # this lake has ever written, unlike the revision fields, and it moves on a
+    # repair of an old partition — which a max-covered-date watermark cannot
+    # see. Consumers that need a cache identity before revisions are committed
+    # can key on this.
+    updated_at: str | None = None
 
 
 def dataset_state(
@@ -57,4 +63,5 @@ def dataset_state(
         content_digest=payload.get("content_digest"),
         revision_receipt=payload.get("revision_receipt"),
         changed_partitions=tuple(partitions),
+        updated_at=payload.get("updated_at"),
     )

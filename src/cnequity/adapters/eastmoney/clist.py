@@ -14,6 +14,8 @@ from cnequity.adapters.eastmoney.common import (
     symbol_from_clist,
 )
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.raw import archive_response
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,9 @@ def _fetch_clist_page(
     page_size: int,
     max_retries: int = 3,
     retry_backoff_seconds: float = 1.0,
+    archive: RawPayloadArchive | None = None,
+    archive_dataset: str | None = None,
+    archive_run_id: str | None = None,
 ) -> tuple[list[dict], int | None]:
     params = urlencode(
         {
@@ -81,11 +86,32 @@ def _fetch_clist_page(
                     raise RuntimeError(
                         "EastMoney clist response data.total is not a non-negative integer"
                     )
+            if archive is not None and archive_dataset:
+                archive_response(
+                    archive,
+                    archive_dataset,
+                    resp,
+                    request_params={
+                        "host": host,
+                        "fields": fields,
+                        "fs": fs,
+                        "page": page,
+                        "page_size": page_size,
+                    },
+                    run_id=archive_run_id,
+                    url=url,
+                    observation_id=f"{archive_run_id or 'anonymous'}:{host}:{fs}:{page}",
+                    pagination={"page": page, "page_size": page_size, "reported_total": total},
+                )
             if total is None and diff:
                 raise RuntimeError(
                     "EastMoney clist response data.diff contains rows without a reported total"
                 )
             return diff, total
+        except RawArchiveError:
+            # Missing exact bytes are an archive integrity failure, not a
+            # transient source failure that can be hidden by a retry.
+            raise
         except Exception as exc:
             last_exc = exc
             from cnequity.adapters.eastmoney.em_auth import is_transport_fail_fast
@@ -105,6 +131,9 @@ def fetch_clist_pages(
     # pz=5000 often trips push2 502 mid-universe (esp. overseas); 100 matches
     # rotation boards. Callers that need fewer round-trips may pass a larger pz.
     page_size: int = 100,
+    archive: RawPayloadArchive | None = None,
+    archive_dataset: str | None = None,
+    archive_run_id: str | None = None,
 ) -> list[dict]:
     rows_by_key: dict[tuple[str, str], dict] = {}
     active_host: str | None = None
@@ -123,7 +152,12 @@ def fetch_clist_pages(
                         fs=fs,
                         page=page,
                         page_size=page_size,
+                        archive=archive,
+                        archive_dataset=archive_dataset,
+                        archive_run_id=archive_run_id,
                     )
+                except RawArchiveError:
+                    raise
                 except Exception as exc:
                     logger.warning("EastMoney clist page %s failed on %s: %s", page, host, exc)
                     continue
@@ -144,7 +178,12 @@ def fetch_clist_pages(
                     fs=fs,
                     page=page,
                     page_size=page_size,
+                    archive=archive,
+                    archive_dataset=archive_dataset,
+                    archive_run_id=archive_run_id,
                 )
+            except RawArchiveError:
+                raise
             except Exception as exc:
                 # Mid-pagination: try remaining hosts before fail-loud (push2
                 # often 502s while push2delay still serves the same page).
@@ -167,10 +206,15 @@ def fetch_clist_pages(
                             fs=fs,
                             page=page,
                             page_size=page_size,
+                            archive=archive,
+                            archive_dataset=archive_dataset,
+                            archive_run_id=archive_run_id,
                         )
                         active_host = host
                         recovered = True
                         break
+                    except RawArchiveError:
+                        raise
                     except Exception as host_exc:
                         logger.warning(
                             "EastMoney clist page %s failed on %s: %s",
