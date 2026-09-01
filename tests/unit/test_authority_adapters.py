@@ -129,3 +129,161 @@ def test_status_fetch_reports_a_partial_exchange_snapshot(monkeypatch):
     result = st_lists.fetch_exchange_names_with_status()
     assert result.names == {"600053.SH": "*ST九鼎"}
     assert result.failures == {"szse": "no usable rows"}
+
+
+# --- Exchange daily quotes ---------------------------------------------------
+
+from cnequity.adapters.exchange import daily_quotes  # noqa: E402
+
+TRADE_DATE = date(2026, 8, 28)
+
+
+class _Resp:
+    def __init__(self, payload=None, content=b""):
+        self._payload = payload
+        self.content = content
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _sse(monkeypatch, payload):
+    monkeypatch.setattr(
+        daily_quotes,
+        "_client",
+        lambda: type("C", (), {"get": staticmethod(lambda *a, **k: _Resp(payload))}),
+    )
+
+
+def _sse_payload(rows, *, day=20260828, time=162906):
+    return {"date": day, "time": time, "list": rows}
+
+
+# code, open, high, low, last, volume, amount — the order `SSE_SELECT` asks for.
+_SSE_ROWS = [
+    ["600000", 9.01, 9.04, 8.95, 9.00, 58786810, 528817735],
+    ["688267", 18.23, 19.56, 18.23, 19.26, 2852200, 54524888],
+    ["900902", 0.5, 0.5, 0.5, 0.5, 1000, 500],
+]
+
+
+def test_sse_quotes_parse_and_drop_b_shares(monkeypatch):
+    _sse(monkeypatch, _sse_payload(_SSE_ROWS))
+    out = daily_quotes.fetch_sse_daily_quotes(TRADE_DATE)
+    assert out.get_column("symbol").to_list() == ["600000.SH", "688267.SH"]
+    row = out.filter(out["symbol"] == "600000.SH").to_dicts()[0]
+    assert (row["open"], row["high"], row["low"], row["close"]) == (9.01, 9.04, 8.95, 9.00)
+    # The endpoint already states shares and yuan; nothing is rescaled.
+    assert row["volume"] == 58786810
+    assert row["amount"] == 528817735
+
+
+def test_sse_snapshot_for_another_session_is_not_relabelled(monkeypatch):
+    """The endpoint serves one session. Asking for another must yield nothing."""
+    _sse(monkeypatch, _sse_payload(_SSE_ROWS))
+    assert daily_quotes.fetch_sse_daily_quotes(date(2026, 8, 27)).is_empty()
+
+
+def test_sse_mid_session_snapshot_is_not_a_close(monkeypatch):
+    """`last` is the running price before 15:00 and would fake drift every run."""
+    _sse(monkeypatch, _sse_payload(_SSE_ROWS, time=133000))
+    assert daily_quotes.fetch_sse_daily_quotes(TRADE_DATE).is_empty()
+
+
+def test_sse_unreadable_date_is_silent(monkeypatch):
+    _sse(monkeypatch, _sse_payload(_SSE_ROWS, day="not-a-date"))
+    assert daily_quotes.fetch_sse_daily_quotes(TRADE_DATE).is_empty()
+
+
+def _szse_workbook(rows):
+    import io
+
+    import pandas as pd
+
+    buf = io.BytesIO()
+    pd.DataFrame(rows).to_excel(buf, index=False)
+    return buf.getvalue()
+
+
+_SZSE_ROWS = [
+    {
+        "交易日期": "2026-08-28",
+        "证券代码": "000001",
+        "证券简称": "平安银行",
+        "开盘": "11.54",
+        "最高": "11.68",
+        "最低": "11.48",
+        "今收": "11.65",
+        "成交量(万股)": "8,385.19",
+        "成交金额(万元)": "97,367.83",
+    },
+    {
+        "交易日期": "2026-08-28",
+        "证券代码": "200011",
+        "证券简称": "深物业B",
+        "开盘": "5.0",
+        "最高": "5.0",
+        "最低": "5.0",
+        "今收": "5.0",
+        "成交量(万股)": "1.00",
+        "成交金额(万元)": "5.00",
+    },
+]
+
+
+def test_szse_quotes_are_rescaled_from_wan_units(monkeypatch):
+    content = _szse_workbook(_SZSE_ROWS)
+    monkeypatch.setattr(
+        daily_quotes,
+        "_client",
+        lambda: type("C", (), {"get": staticmethod(lambda *a, **k: _Resp(content=content))}),
+    )
+    out = daily_quotes.fetch_szse_daily_quotes(TRADE_DATE)
+    # 200xxx is a B share and is not part of all-A.
+    assert out.get_column("symbol").to_list() == ["000001.SZ"]
+    row = out.to_dicts()[0]
+    # 8,385.19 万股 -> shares; 97,367.83 万元 -> yuan. Separators and all.
+    assert row["volume"] == pytest.approx(83_851_900.0)
+    assert row["amount"] == pytest.approx(973_678_300.0)
+
+
+def test_szse_missing_columns_are_reported_not_guessed(monkeypatch):
+    content = _szse_workbook([{"交易日期": "2026-08-28", "证券代码": "000001"}])
+    monkeypatch.setattr(
+        daily_quotes,
+        "_client",
+        lambda: type("C", (), {"get": staticmethod(lambda *a, **k: _Resp(content=content))}),
+    )
+    assert daily_quotes.fetch_szse_daily_quotes(TRADE_DATE).is_empty()
+
+
+def test_combined_result_names_the_exchange_that_answered(monkeypatch):
+    monkeypatch.setattr(
+        daily_quotes, "fetch_sse_daily_quotes", lambda *a, **k: daily_quotes._EMPTY_QUOTES.clone()
+    )
+    monkeypatch.setattr(
+        daily_quotes,
+        "fetch_szse_daily_quotes",
+        lambda *a, **k: daily_quotes._finish(
+            [
+                {
+                    "symbol": "000001.SZ",
+                    "trade_date": TRADE_DATE,
+                    "open": 1.0,
+                    "high": 1.0,
+                    "low": 1.0,
+                    "close": 1.0,
+                    "volume": 1.0,
+                    "amount": 1.0,
+                }
+            ]
+        ),
+    )
+    result = daily_quotes.fetch_exchange_daily_quotes(TRADE_DATE)
+    # A SZSE-only comparison must never be readable as covering the market.
+    assert result.covered == frozenset({"szse"})
+    assert "sse" in result.failures
+    assert result.quotes.height == 1

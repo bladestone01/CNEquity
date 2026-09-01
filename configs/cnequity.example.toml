@@ -7,14 +7,28 @@
 root = "./data/cnequity"
 
 [orchestrator]
-# macOS must use workers = 1 (the TDX client is not fork-safe; ProcessPool → BrokenProcessPool).
-# Windows defaults to 1 via `cne config init` (spawn is fine; raise after a clean doctor).
-# Linux may use >1; keep batch_size modest under memory pressure.
+# `workers` remains the legacy/global process budget.  The TDX and HTTP pools
+# below are independent: `cne config init` reduces this value to 1 on macOS,
+# while the macOS-safe TDX thread pool still uses `tdx_daily_workers`.
+# Windows defaults to 1 via `cne config init`; Linux may use >1.
 workers = 8
+tdx_daily_workers = 4
+tdx_daily_backend = "auto"  # macOS: thread; Linux: process; override if needed
+adj_factor_workers = 4       # Sina HTTP fan-out; independent of TDX workers
+derive_workers = 4
+# Maximum in-flight requests per source.  Pacing (`min_interval_seconds`) is
+# still the QPS guard; these caps protect upstream connection capacity when
+# independent DAG steps or derives overlap.
+source_concurrency = { eastmoney = 4, ths = 2, ths_pages = 1, ths_bonus = 1, cninfo = 2, pboc = 2, nbs = 2, exchange = 2, sina = 4, sina_bars = 2, bse = 2, baostock = 1, tushare = 2 }
 batch_size = 100
 max_retries = 3
 retry_backoff_seconds = 5
 batch_stale_seconds = 3600  # running batches without heartbeat for this long → stale (compact gate) / failed (retry)
+
+[incremental]
+# TTL for symbol/window-level source-empty evidence.  Set to 0 to retry every
+# missing key; instrument catalog revisions still invalidate live evidence.
+negative_evidence_ttl_days = 7
 
 [tdx_protocol]
 enabled = true
@@ -133,8 +147,8 @@ min_interval_seconds = 0.3
 enabled = true
 min_interval_seconds = 1.0
 
-# BSE official current quote snapshot; supplements BJ tip amount only after
-# exact OHLCV matching against the Sina fallback. It is not a history source.
+# BSE official current quote snapshot; primary source for current BJ tip bars
+# and turnover. It is not a history source; historical BJ windows still use Sina.
 [sources.bse]
 enabled = true
 min_interval_seconds = 1.0
@@ -158,9 +172,29 @@ enabled = false
 min_interval_seconds = 1.0
 # token = "..."
 
+[margin_trading]
+# "exchange" reads 融资融券 detail from the SSE and SZSE, which compile it from
+# member-firm reports — no redistributor in between. Verified against the
+# EastMoney path for 2026-08-26: every compared field matched exactly, with
+# 4,100 securities against EastMoney's 3,857.
+#
+# Two consequences to accept before switching, or set "eastmoney" instead:
+#   * SSE does not publish 融券余额, so `short_balance` is null on SH rows.
+#   * SZSE lands a business day after SSE, and a day is only written once both
+#     have published, so the dataset trails the vendor path by ~one session.
+source = "exchange"
+
 [adj_factors]
 source = "sina"
 adjust_types = ["hfq"]
+# The factor series has one vendor, so each step is re-derived from curated
+# `corporate_actions` (a different vendor) and the disagreement is reported.
+# Findings are advisory — they mark the run degraded, they never fail it.
+# Tolerance is materiality, not equality: the two sides round differently.
+crosscheck_enabled = true
+crosscheck_tolerance_bps = 50
+# At or above this gap the finding is raised from warning to error.
+crosscheck_error_bps = 200
 
 [sentiment]
 # Batch path uses keyword lexicon only; SnowNLP is for on-demand stock_news.
@@ -244,7 +278,14 @@ primary = "tdx_protocol"
 backup = "eastmoney"
 compare_fields = ["close", "volume"]
 price_tolerance_bps = 10
-snapshot_cadence = "on_demand"
+# Capture the independent peer every clean primary day so the revision gate
+# has same-day evidence, including days with zero corporate actions/bars gaps.
+snapshot_cadence = "daily"
+revision_gate = true
+# 0 compares the complete same-day universe; use a positive value for a
+# deterministic exchange-stratified sample when the backup is expensive.
+sample_limit = 500
+max_drift_fraction = 0.0
 
 [[failover.datasets]]
 name = "corporate_actions"
@@ -252,7 +293,32 @@ primary = "eastmoney"
 backup = "tdx_protocol"
 compare_fields = ["cash_dividend", "bonus_ratio", "transfer_ratio"]
 price_tolerance_bps = 10
-snapshot_cadence = "on_demand"
+snapshot_cadence = "daily"
+revision_gate = true
+
+[exchange_audit]
+# `daily_bars` against the closes the SSE and SZSE publish themselves — the one
+# price check in the lake that reaches the publisher rather than a second
+# vendor. Gated on `[sources.exchange]`; findings are advisory and never fail
+# a run. SSE serves only the session it is currently publishing, so SH is
+# arbitrated same-day; SZSE serves any past date.
+price_tolerance_bps = 10
+# Turnover is looser on purpose: the exchange daily total folds in trading a
+# continuous-auction bar excludes, so curated is legitimately a little lower.
+# Measured 2026-08-28, 305 of 5,212 shared symbols (5.9%) diverged, all SZ,
+# all in the same direction. The finding fires on the *share* of the universe,
+# so a widening gap is caught while the standing definitional one stays quiet.
+turnover_tolerance_bps = 100
+turnover_max_fraction = 0.15
+
+[raw_archive]
+# Exact source payloads are compressed under meta/raw. Request credentials,
+# proxy settings, cookies, and authorization headers are never archived.
+enabled = true
+compression = "gzip"
+max_payload_bytes = 33554432
+# Omit datasets to use the built-in critical/snapshot-only set.
+# datasets = ["announcement_index", "regulatory_events", "financial_statement_items", "corporate_actions"]
 
 [universe]
 default = "all_a"
@@ -295,6 +361,7 @@ steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
 # starting late costs nothing, being skipped costs a day of data.
 [job.daily.groups.core]
 at = "16:00"
+parallel = true
 steps = [
   "instruments", "trading_calendar", "trading_status",
   "corporate_actions", "daily_bars", "index_bars",
@@ -303,6 +370,7 @@ steps = [
 
 [job.daily.groups.capital]
 at = "17:00"
+parallel = true
 steps = [
   "fund_flow", "northbound_holdings", "northbound_flows", "margin_trading",
   "valuation_metrics", "sector_members", "announcement_index",
@@ -311,10 +379,12 @@ steps = [
 
 [job.daily.groups.signals]
 at = "17:20"
+parallel = true
 steps = ["dragon_tiger", "block_trades", "compact"]
 
 [job.daily.groups.fundamentals]
 at = "17:35"
+parallel = true
 # share_structure / shareholder_counts are quarterly data, but filings trickle in
 # over the weeks after each period end, so a daily re-sweep of the two most
 # recent periods is how newly-disclosed ones get picked up. Each is ~11 pages.
@@ -331,10 +401,12 @@ steps = [
 
 [job.daily.groups.macro_risk]
 at = "17:55"
+parallel = true
 steps = ["macro_indicators", "market_breadth", "share_unlock_schedule", "regulatory_events", "commodity_bars", "compact"]
 
 [job.daily.groups.research]
 at = "18:15"
+parallel = true
 # Rotation / headlines before sentiment so batch can score lake news without HTTP.
 steps = ["institutional_holdings", "analyst_consensus",
   "hot_rank", "sector_bars", "sector_fund_flow", "news_headlines", "flash_news_wire",
@@ -344,6 +416,7 @@ steps = ["institutional_holdings", "analyst_consensus",
 # [minute_bars] first, and read the horizon note there before expecting history.
 [job.daily.groups.intraday]
 at = "18:45"
+parallel = true
 steps = ["minute_bars", "minute_bars_5m", "compact"]
 
 # Also unscheduled: `cne run daily --group ticks`. Its own group rather than a
@@ -351,6 +424,7 @@ steps = ["minute_bars", "minute_bars_5m", "compact"]
 # transaction records along with it. Enable [trade_ticks] first.
 [job.daily.groups.ticks]
 at = "19:00"
+parallel = true
 steps = ["trade_ticks", "compact"]
 
 [job.init.phases]

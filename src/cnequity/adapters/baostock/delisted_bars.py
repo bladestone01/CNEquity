@@ -30,6 +30,7 @@ from datetime import date
 
 from cnequity.adapters.baostock._session import fetch_per_symbol, import_baostock
 from cnequity.adapters.numeric import finite_int64
+from cnequity.domain.rate_limit import source_request
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ def to_lake_symbol(bs_code: str) -> str:
     return f"{code}.{'SH' if ex == 'sh' else 'SZ'}"
 
 
-def roster_on(day: date, *, bs=None, login: bool = True) -> set[str]:
+def roster_on(day: date, *, bs=None, login: bool = True, config=None) -> set[str]:
     """Stock codes that actually traded on *day*, in lake symbol form.
 
     This is the ground truth the current roster cannot provide: it includes
@@ -77,9 +78,10 @@ def roster_on(day: date, *, bs=None, login: bool = True) -> set[str]:
 
     bs = bs or import_baostock()
     if login:
-        _login(bs)
+        _login(bs, config=config)
     try:
-        rs = bs.query_all_stock(day=day.isoformat())
+        with source_request(config, "baostock"):
+            rs = bs.query_all_stock(day=day.isoformat())
         if getattr(rs, "error_code", "0") != "0":
             message = getattr(rs, "error_msg", "") or "unknown error"
             raise RuntimeError(
@@ -98,20 +100,22 @@ def roster_on(day: date, *, bs=None, login: bool = True) -> set[str]:
         return out
     finally:
         if login:
-            bs.logout()
+            with source_request(config, "baostock"):
+                bs.logout()
 
 
-def _fetch_one(bs, symbol: str, start: date, end: date) -> list[dict] | None:
+def _fetch_one(bs, symbol: str, start: date, end: date, *, config=None) -> list[dict] | None:
     from cnequity.adapters.baostock._session import to_baostock_symbol
 
-    rs = bs.query_history_k_data_plus(
-        to_baostock_symbol(symbol),
-        _FIELDS,
-        start_date=start.isoformat(),
-        end_date=end.isoformat(),
-        frequency="d",
-        adjustflag="3",  # unadjusted; hfq is derived from Sina factors
-    )
+    with source_request(config, "baostock"):
+        rs = bs.query_history_k_data_plus(
+            to_baostock_symbol(symbol),
+            _FIELDS,
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            frequency="d",
+            adjustflag="3",  # unadjusted; hfq is derived from Sina factors
+        )
     if rs.error_code != "0":
         return None  # retryable — the session driver relogins and retries
     rows: list[dict] = []
@@ -217,12 +221,17 @@ def fetch_delisted_bars(
     bs=None,
 ) -> tuple[list[dict], list[str]]:
     """Bars for recovered symbols. Returns ``(rows, failed_symbols)``."""
+
+    def fetch_one(bs_session, symbol: str, window_start: date, window_end: date):
+        return _fetch_one(bs_session, symbol, window_start, window_end, config=config)
+
     return fetch_per_symbol(
         symbols,
         start,
         end,
-        _fetch_one,
+        fetch_one,
         bs=bs,
         label="baostock delisted bars",
         config=config,
+        request_managed=True,
     )

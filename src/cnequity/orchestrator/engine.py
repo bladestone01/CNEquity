@@ -33,6 +33,22 @@ from cnequity.steps.common import is_trading_day
 
 logger = logging.getLogger(__name__)
 
+_TRANSIENT_RETRY_MARKERS = (
+    "connection",
+    "network",
+    "server",
+    "socket",
+    "temporarily unavailable",
+    "tdx fetch failed",
+    "timed out",
+    "timeout",
+)
+
+
+def _is_transient_retry_error(error_message: str | None) -> bool:
+    message = (error_message or "").lower()
+    return any(marker in message for marker in _TRANSIENT_RETRY_MARKERS)
+
 
 def _has_partial_failures(result: dict[str, Any]) -> bool:
     """Return whether a step reported an incomplete or failed scope.
@@ -59,6 +75,15 @@ def _has_partial_failures(result: dict[str, Any]) -> bool:
         elif value:
             return True
     return False
+
+
+def _criticality_for_group(group: str) -> str:
+    """Map scheduler groups to the run-level criticality contract."""
+    if group in {"core", "finalize"}:
+        return "core"
+    if group == "research":
+        return "research"
+    return "advisory"
 
 
 class JobEngine:
@@ -135,9 +160,10 @@ class JobEngine:
             if not run_id:
                 run_id = self.manifest.start_run(job_name, metadata)
             else:
-                merged = self.manifest.get_run_metadata(run_id)
-                merged.update(metadata)
-                self.manifest.update_run_metadata(run_id, merged)
+                self.manifest.mutate_run_metadata(
+                    run_id,
+                    lambda merged: merged.update(metadata),
+                )
 
             wave_list = waves or self.config.daily_waves
             if steps and waves is None:
@@ -178,18 +204,23 @@ class JobEngine:
                             )
 
                 if had_error:
-                    status = "failed"
+                    fallback_status = "failed"
                 elif had_warning:
-                    status = "warning"
+                    # Step-level ``warning`` remains the retry/batch spelling;
+                    # the public run contract calls this usable-but-degraded.
+                    fallback_status = "warning"
                 else:
-                    status = "success"
+                    fallback_status = "success"
+                status = self._overall_status(run_id, fallback_status)
                 if finalize_run:
                     self.manifest.finish_run(
                         run_id,
                         status,
                         rows_read=total_read,
                         rows_written=total_written,
-                        error_message="one or more steps failed" if had_error else None,
+                        error_message=(
+                            "one or more core steps failed" if status == "failed" else None
+                        ),
                     )
                     finalized = True
                 return {
@@ -240,6 +271,147 @@ class JobEngine:
         run = self.manifest.get_run(run_id)
         if run is not None and run["status"] == "running":
             self.manifest.finish_run(run_id, "failed", error_message=error_message)
+
+    def _step_criticality(self, name: str, entry: Any, run_id: str) -> str:
+        """Return the durable criticality for a step's dataset receipts.
+
+        Init is a core bootstrap contract even when a test or a legacy config
+        supplied a custom scheduler group.  Compact and audit are core
+        infrastructure; adjustment and industry derives are research outputs,
+        so their source failures degrade a run without invalidating raw core
+        data.
+        """
+        try:
+            run = self.manifest.get_run(run_id)
+        except Exception:  # pragma: no cover - defensive for custom manifests
+            run = None
+        if name in {"derive_adj_factors", "derive_industry_index"}:
+            # The raw core spine (notably daily_bars) remains usable when an
+            # external adjustment/industry source is unavailable.  These
+            # receipts therefore degrade a run rather than invalidate the
+            # committed raw revision.
+            return "research"
+        if run is not None and run["job_name"] == "init":
+            return "core"
+        if name in {"compact", "audit"}:
+            return "core"
+        return _criticality_for_group(getattr(entry, "group", "advisory"))
+
+    @staticmethod
+    def _step_dataset(name: str, out: dict[str, Any]) -> str:
+        """Resolve a step's logical output dataset from its result or name."""
+        explicit = out.get("dataset")
+        if isinstance(explicit, str) and explicit:
+            return explicit
+        return {
+            "derive_adj_factors": "adj_factors",
+            "derive_industry_index": "industry_index",
+        }.get(name, name)
+
+    # These steps write their own dataset receipt (in ``steps/finalize.py``)
+    # with finer detail than the engine has here — partial-fetch ratios and
+    # audit finding counts. The engine only backfills a receipt they could not
+    # write themselves. ``compact`` is not in this set: its engine marker uses
+    # the ``("compact", "compact")`` key, which ``_compact_locked`` never
+    # writes, so there is no double write to suppress.
+    _SELF_RECORDING_STEPS = frozenset({"audit", "derive_adj_factors", "derive_industry_index"})
+
+    def _record_step_result(
+        self,
+        *,
+        name: str,
+        entry: Any,
+        run_id: str,
+        status: str,
+        out: dict[str, Any] | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        """Write fetch/stage or derive/audit receipts for one step attempt."""
+        out = out or {}
+        dataset = self._step_dataset(name, out)
+        criticality = self._step_criticality(name, entry, run_id)
+        if name == "audit":
+            stages = ("audit",)
+        elif name == "compact":
+            # ``step_compact`` records physical dataset receipts itself. Keep
+            # this marker for an empty compact and for an exception before the
+            # per-dataset loop starts.
+            stages = ("compact",)
+            dataset = "compact"
+        elif name in {"derive_adj_factors", "derive_industry_index"}:
+            stages = ("derive",)
+        else:
+            # A step result is the final outcome of both source fetch and
+            # writing its staging fragment. Recording both makes status useful
+            # even when a worker process is not available to expose a batch.
+            stages = ("fetch", "stage")
+
+        if name in self._SELF_RECORDING_STEPS and (
+            error is None
+            or all(
+                self.manifest.get_dataset_result(run_id, dataset, stage) is not None
+                for stage in stages
+            )
+        ):
+            # The step already recorded this outcome (success path, or a
+            # failure it caught and recorded before re-raising). Do not
+            # overwrite it with the engine's coarser message.
+            return
+
+        error_code = type(error).__name__ if error is not None else None
+        error_message = str(error) if error is not None else None
+        raw_status = status
+        if status not in {"success", "warning", "failed", "skipped", "blocked", "degraded"}:
+            status = "failed"
+            error_code = error_code or "InvalidStepStatus"
+            error_message = error_message or f"invalid step status {raw_status!r}"
+        for stage in stages:
+            self.manifest.record_dataset_result(
+                run_id,
+                dataset,
+                stage,
+                status,
+                criticality=criticality,
+                rows_written=int(out.get("rows_written", 0) or 0),
+                error_code=error_code,
+                error_message=(
+                    error_message
+                    or (None if status == "success" else f"step completed with status={status}")
+                ),
+            )
+
+    def _overall_status(self, run_id: str, fallback: str) -> str:
+        """Resolve legacy batch status plus dataset receipts to public status."""
+        aggregate = self.manifest.aggregate_run_status(run_id)
+        if aggregate["results"]:
+            return aggregate["status"]
+        # Runs created before ``dataset_results`` was introduced have no
+        # logical receipts. Preserve their outcome while translating the old
+        # warning spelling to the public degraded spelling.
+        if fallback == "warning":
+            return "degraded"
+        if fallback in {"success", "failed", "degraded"}:
+            return fallback
+        return fallback
+
+    def _finish_run_overall(
+        self,
+        run_id: str,
+        fallback: str,
+        *,
+        rows_read: int = 0,
+        rows_written: int = 0,
+        error_message: str | None = None,
+    ) -> str:
+        status = self._overall_status(run_id, fallback)
+        self.manifest.finish_run(
+            run_id,
+            status,
+            rows_read=rows_read,
+            rows_written=rows_written,
+            error_message=error_message if status == "failed" else None,
+        )
+        return status
 
     @contextlib.contextmanager
     def _optional_job_lock(self, lock_name: str | None):
@@ -338,7 +510,14 @@ class JobEngine:
             step_status = out.pop("status", "success")
             if step_status == "success" and _has_partial_failures(out):
                 step_status = "warning"
-            if step_status not in ("success", "warning", "failed"):
+            if step_status not in {
+                "success",
+                "warning",
+                "failed",
+                "skipped",
+                "blocked",
+                "degraded",
+            }:
                 raise ValueError(f"step {name} returned invalid status {step_status!r}")
             if not uses_worker_batches:
                 physical_dataset = out.get("dataset")
@@ -362,6 +541,19 @@ class JobEngine:
                         retry_of,
                         superseded_by=batch_id,
                     )
+            self._record_step_result(
+                name=name,
+                entry=entry,
+                run_id=run_id,
+                status=step_status,
+                out=out,
+            )
+            self.manifest.record_stage_metrics(
+                run_id,
+                name,
+                elapsed,
+                self._step_metrics(out),
+            )
             logger.info(
                 "Step %s %s in %.1fs (%s rows)",
                 name,
@@ -384,8 +576,53 @@ class JobEngine:
                     "failed",
                     error_message=str(exc),
                 )
+            self._record_step_result(
+                name=name,
+                entry=entry,
+                run_id=run_id,
+                status="failed",
+                error=exc,
+            )
+            self.manifest.record_stage_metrics(run_id, name, elapsed)
             logger.exception("Step %s failed after %.1fs", name, elapsed)
             return {"step": name, "status": "failed", "error": str(exc), "elapsed": elapsed}
+
+    @staticmethod
+    def _step_metrics(out: dict[str, Any]) -> dict[str, Any]:
+        """Normalize optional step metrics plus common result counters."""
+        metrics = dict(out.get("metrics") or {})
+        for key in (
+            "requests",
+            "pages",
+            "cache_hits",
+            "fallback_requests",
+            "retries",
+            "failed_requests",
+            "rows_read",
+            "rows_written",
+            "bytes_read",
+            "bytes_written",
+            "changed_partitions",
+            "request_seconds",
+            "concurrency_wait_seconds",
+            "concurrency_peak",
+            "throughput_requests_per_second",
+            "source_metrics",
+            "peak_memory_bytes",
+        ):
+            if key in metrics:
+                continue
+            value = out.get(key)
+            if value is not None:
+                metrics[key] = value
+        # Result payloads often expose fallback work as a symbol list rather
+        # than a numeric counter.  Count the request scope without guessing a
+        # speedup or an upstream response size.
+        if "fallback_requests" not in metrics:
+            fallback = out.get("fallback_symbols") or out.get("fallback_symbol_names")
+            if isinstance(fallback, (list, tuple, set)):
+                metrics["fallback_requests"] = len(fallback)
+        return metrics
 
     def _is_init_run(self, run_id: str) -> bool:
         run = self.manifest.get_run(run_id)
@@ -488,6 +725,58 @@ class JobEngine:
             )
         return specs
 
+    @staticmethod
+    def _resolve_batch_step(batch: Any) -> tuple[str, Any]:
+        """Resolve a manifest batch by logical task, with a legacy fallback.
+
+        ``dataset`` is the physical storage target and may intentionally differ
+        from the step that produced it (for example, ``daily_bars_history``
+        writes into ``daily_bars``). A few old auxiliary receipts also carry an
+        unregistered task id; keep those retryable through their physical step
+        instead of making an existing run impossible to resume.
+        """
+        task_id = batch["task_id"]
+        try:
+            return task_id, get_step(task_id)
+        except KeyError as task_error:
+            dataset = batch["dataset"]
+            if dataset == task_id:
+                raise
+            try:
+                step = get_step(dataset)
+            except KeyError:
+                raise task_error from None
+            logger.debug(
+                "retry batch %s uses unregistered task %s; falling back to dataset step %s",
+                batch["batch_id"],
+                task_id,
+                dataset,
+            )
+            return dataset, step
+
+    def _retryable_batches_with_worker_budget(self, run_id: str) -> list:
+        """Apply the durable cap only where retries reuse one batch identity.
+
+        Worker retries restart the same batch id, so ``retry_count`` is a
+        stable logical-attempt budget. Non-worker steps create a new UUID and
+        rely on retry lineage to supersede every predecessor after success;
+        filtering those predecessors by a per-row count could strand one.
+        """
+        retryable = []
+        for batch in self.manifest.get_retryable_batches(run_id):
+            _, step = self._resolve_batch_step(batch)
+            if not step.requires_workers or batch["retry_count"] < self.config.max_retries:
+                retryable.append(batch)
+        return retryable
+
+    def _exhausted_worker_retry_count(self, run_id: str) -> int:
+        exhausted = 0
+        for batch in self.manifest.get_retryable_batches(run_id):
+            _, step = self._resolve_batch_step(batch)
+            if step.requires_workers and batch["retry_count"] >= self.config.max_retries:
+                exhausted += 1
+        return exhausted
+
     def _retry_run(
         self, run_id: str, trade_date: date, *, auto_finalize: bool = True
     ) -> dict[str, Any]:
@@ -496,10 +785,66 @@ class JobEngine:
         # crashed valuation/backfill runs sat until the next daily job.
         self._reconcile_orphans()
         with run_lock(self.config.meta_root, run_id):
-            return self._retry_run_locked(run_id, trade_date, auto_finalize=auto_finalize)
+            retry_passes = 0
+            total_retried = 0
+            all_results: list[dict[str, Any]] = []
+            all_missing_steps: list[str] = []
+            total_stale_marked = 0
+            total_timeout = {"running_to_stale": 0, "stale_to_failed": 0}
+            automatic_batch_ids: set[str] | None = None
+            while True:
+                result = self._retry_run_locked(
+                    run_id,
+                    trade_date,
+                    auto_finalize=auto_finalize,
+                    retry_batch_ids=automatic_batch_ids,
+                )
+                total_retried += int(result.get("retried", 0))
+                all_results.extend(result.get("results", []))
+                all_missing_steps.extend(result.get("missing_steps", []))
+                total_stale_marked += int(result.get("stale_marked_failed", 0))
+                for key in total_timeout:
+                    total_timeout[key] += int(result.get("batch_timeout", {}).get(key, 0))
+                if result.get("retried", 0):
+                    retry_passes += 1
+                if result["status"] not in {"failed", "warning"}:
+                    break
+
+                remaining = self._retryable_batches_with_worker_budget(run_id)
+                automatic_batch_ids = {
+                    batch["batch_id"]
+                    for batch in remaining
+                    if self._resolve_batch_step(batch)[1].requires_workers
+                    and _is_transient_retry_error(batch["error_message"])
+                }
+                if not automatic_batch_ids:
+                    break
+                time.sleep(self.config.retry_backoff_seconds)
+
+            result["retried"] = total_retried
+            result["retry_passes"] = retry_passes
+            result["results"] = all_results
+            result["missing_steps"] = list(dict.fromkeys(all_missing_steps))
+            result["stale_marked_failed"] = total_stale_marked
+            result["batch_timeout"] = total_timeout
+            result["retry_exhausted"] = self._exhausted_worker_retry_count(run_id)
+            if result.get("status") != "pending":
+                public_status = self._overall_status(run_id, str(result.get("status")))
+                # `_retry_run_locked` historically closes a terminal run with
+                # batch status ``warning``. Reconcile that legacy spelling
+                # after all retry/finalize receipts have been written.
+                if public_status != result.get("status"):
+                    self.manifest.finish_run(run_id, public_status)
+                result["status"] = public_status
+            return result
 
     def _retry_run_locked(
-        self, run_id: str, trade_date: date, *, auto_finalize: bool = True
+        self,
+        run_id: str,
+        trade_date: date,
+        *,
+        auto_finalize: bool = True,
+        retry_batch_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         run_meta = self.manifest.get_run_metadata(run_id)
         # The caller (cne retry) has no session date of its own — it passes
@@ -532,15 +877,47 @@ class JobEngine:
             stale_after_seconds=self.config.batch_stale_seconds,
         )
         stale_marked = timeout["running_to_stale"] + timeout["stale_to_failed"]
-        failed = self.manifest.get_retryable_batches(run_id)
-        missing_init = self._missing_init_steps(run_id) if self._is_init_run(run_id) else []
+        failed = self._retryable_batches_with_worker_budget(run_id)
+        if retry_batch_ids is not None:
+            failed = [batch for batch in failed if batch["batch_id"] in retry_batch_ids]
+        missing_init = (
+            self._missing_init_steps(run_id)
+            if retry_batch_ids is None and self._is_init_run(run_id)
+            else []
+        )
 
         if not failed and not missing_init:
             incomplete = self.manifest.incomplete_batch_count(run_id)
             if incomplete > 0:
-                return self._pending_retry_payload(
+                exhausted = self._exhausted_worker_retry_count(run_id)
+                status = self._retry_batch_status(run_id)
+                if exhausted and status in {"failed", "warning"}:
+                    if auto_finalize:
+                        self.manifest.finish_run(run_id, status)
+                    return {
+                        "run_id": run_id,
+                        "status": status,
+                        "retried": 0,
+                        "retry_exhausted": exhausted,
+                        "incomplete_batches": incomplete,
+                        "incomplete_by_status": (
+                            self.manifest.incomplete_batch_counts_by_status(run_id)
+                        ),
+                        "stale_marked_failed": stale_marked,
+                        "batch_timeout": timeout,
+                        "results": [],
+                    }
+                pending = self._pending_retry_payload(
                     run_id, stale_marked=stale_marked, timeout=timeout
                 )
+                # An automatic pass may intentionally select only transient
+                # worker failures while a non-transient failure remains in the
+                # run. Preserve that overall failure instead of relabeling it
+                # as pending merely because this pass had nothing to retry.
+                if retry_batch_ids is not None and status in {"failed", "warning"}:
+                    pending["status"] = status
+                    pending["retry_exhausted"] = exhausted
+                return pending
 
             batches = self.manifest.get_batches_for_run(run_id)
             phases = self._init_phases_list(run_id)
@@ -572,35 +949,44 @@ class JobEngine:
 
         context = self._merge_retry_context(run_id, trade_date)
 
-        worker_batches_by_dataset: dict[str, list] = defaultdict(list)
-        step_batches_by_dataset: dict[str, list] = defaultdict(list)
+        self.manifest.increment_batch_retry_counts(
+            run_id,
+            [
+                batch["batch_id"]
+                for batch in failed
+                if self._resolve_batch_step(batch)[1].requires_workers
+            ],
+        )
+
+        worker_batches_by_step: dict[str, list] = defaultdict(list)
+        step_batches_by_step: dict[str, list] = defaultdict(list)
         for batch in failed:
-            dataset = batch["dataset"]
-            if get_step(dataset).requires_workers:
-                worker_batches_by_dataset[dataset].append(batch)
+            step_name, step = self._resolve_batch_step(batch)
+            if step.requires_workers:
+                worker_batches_by_step[step_name].append(batch)
             else:
-                step_batches_by_dataset[dataset].append(batch)
+                step_batches_by_step[step_name].append(batch)
 
         results: list[dict[str, Any]] = []
         retried = len(failed)
         init_phases = self._init_phases_list(run_id) if self._is_init_run(run_id) else []
 
-        for dataset, worker_batches in worker_batches_by_dataset.items():
+        for step_name, worker_batches in worker_batches_by_step.items():
             context["_retry_batch_specs"] = self._worker_batch_specs(worker_batches, trade_date)
             previous_backfill = self.config._backfill
             if init_phases:
-                self.config._backfill = step_backfill(dataset, init_phases)
+                self.config._backfill = step_backfill(step_name, init_phases)
             try:
-                results.append(self._run_step(dataset, trade_date, run_id, context))
+                results.append(self._run_step(step_name, trade_date, run_id, context))
             finally:
                 self.config._backfill = previous_backfill
                 context.pop("_retry_batch_specs", None)
 
-        for dataset, batches in step_batches_by_dataset.items():
+        for step_name, batches in step_batches_by_step.items():
             previous_backfill = self.config._backfill
             if init_phases:
-                self.config._backfill = step_backfill(dataset, init_phases)
-            if dataset == "corporate_actions":
+                self.config._backfill = step_backfill(step_name, init_phases)
+            if step_name == "corporate_actions":
                 retry_symbols: list[str] = []
                 for batch in batches:
                     retry_symbols.extend(json.loads(batch["symbols_json"] or "[]"))
@@ -609,7 +995,7 @@ class JobEngine:
             try:
                 results.append(
                     self._run_step(
-                        dataset,
+                        step_name,
                         trade_date,
                         run_id,
                         context,
@@ -668,8 +1054,11 @@ class JobEngine:
         current = current_phase_statuses(phases, batches)
         complete = init_run_complete(phases, batches)
         incomplete = self.manifest.incomplete_batch_count(run_id) > 0
-        status = "success" if complete and not incomplete else "failed"
-        error_message = None if status == "success" else "one or more init steps are incomplete"
+        if complete and not incomplete:
+            status = self._overall_status(run_id, "success")
+        else:
+            status = "failed"
+        error_message = "one or more init steps are incomplete" if status == "failed" else None
         self.manifest.finish_run(
             run_id,
             status,
@@ -677,10 +1066,12 @@ class JobEngine:
             rows_written=rows_written,
             error_message=error_message,
         )
-        meta = self.manifest.get_run_metadata(run_id)
-        meta["phase_results"] = phase_results
-        meta["current_phase_status"] = current
-        self.manifest.update_run_metadata(run_id, meta)
+        self.manifest.mutate_run_metadata(
+            run_id,
+            lambda meta: meta.update(
+                {"phase_results": phase_results, "current_phase_status": current}
+            ),
+        )
         return status
 
     def _execute_init_phases(
@@ -754,8 +1145,10 @@ class JobEngine:
         recorded = meta.get("history_start")
         if recorded and not getattr(self.config, "_backfill_start", None):
             self.config._backfill_start = date.fromisoformat(str(recorded))
-        meta["resumed_at"] = shanghai_today().isoformat()
-        self.manifest.update_run_metadata(run_id, meta)
+        meta = self.manifest.mutate_run_metadata(
+            run_id,
+            lambda current: current.update({"resumed_at": shanghai_today().isoformat()}),
+        )
 
         logger.info("Resuming init run %s", run_id)
         retry_result = self._retry_run(run_id, trade_date, auto_finalize=False)

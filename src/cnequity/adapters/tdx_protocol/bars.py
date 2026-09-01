@@ -26,7 +26,7 @@ import polars as pl
 
 from cnequity.adapters.numeric import finite_int64
 from cnequity.adapters.tdx_protocol._decode import decoded_quantity_or_none
-from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
+from cnequity.domain.rate_limit import RateLimitSpec, source_request_slot_spec, wait_spec
 from cnequity.domain.units import lots_to_shares
 
 logger = logging.getLogger(__name__)
@@ -134,6 +134,7 @@ def fetch_bars_paginated(
     backfill: bool = False,
     on_page: Callable[[], None] | None = None,
     is_index: bool = False,
+    metrics: dict[str, int] | None = None,
 ) -> list[dict]:
     """Fetch daily bars for *sym* in [start, end], paging through TDX history.
 
@@ -157,22 +158,30 @@ def fetch_bars_paginated(
                 f"TDX bars pagination exceeded {_MAX_PAGES} pages for {sym}"
             )
         wait_spec(rate_limit)
+        if metrics is not None:
+            metrics["requests"] = int(metrics.get("requests", 0)) + 1
+            metrics["pages"] = int(metrics.get("pages", 0)) + 1
         try:
-            if is_index:
-                raw = client.index(
-                    symbol=code,
-                    frequency=9,
-                    start=offset_pos,
-                    offset=_PAGE_SIZE,
-                )
-            else:
-                raw = client.bars(
-                    symbol=code,
-                    frequency=9,
-                    market=market,
-                    start=offset_pos,
-                    offset=_PAGE_SIZE,
-                )
+            # The QPS reservation happens before the slot so waiting for an
+            # already-running request does not itself consume in-flight
+            # capacity.  The slot is held only across the wire call and is
+            # released even when the native client raises.
+            with source_request_slot_spec(rate_limit, metrics=metrics):
+                if is_index:
+                    raw = client.index(
+                        symbol=code,
+                        frequency=9,
+                        start=offset_pos,
+                        offset=_PAGE_SIZE,
+                    )
+                else:
+                    raw = client.bars(
+                        symbol=code,
+                        frequency=9,
+                        market=market,
+                        start=offset_pos,
+                        offset=_PAGE_SIZE,
+                    )
         except Exception as exc:
             # A page is part of the requested symbol/window contract. Returning
             # earlier pages as a successful incremental fetch silently advances
@@ -217,4 +226,7 @@ def fetch_bars_paginated(
         return []
 
     df = pl.DataFrame(all_rows).unique(subset=["symbol", "trade_date"], keep="last")
+    if metrics is not None:
+        metrics["rows_read"] = int(metrics.get("rows_read", 0)) + df.height
+        metrics["bytes_read"] = int(metrics.get("bytes_read", 0)) + df.estimated_size()
     return df.sort("trade_date").to_dicts()

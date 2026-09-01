@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,20 @@ from typing import Any
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ``ingestion_batches`` is the retry ledger.  ``dataset_results`` is the
+# smaller, user-facing receipt ledger: one row per logical dataset and stage.
+# Keep these values here (rather than sprinkling string literals through the
+# engine) so an older manifest can be migrated and callers can validate input
+# consistently.
+DATASET_RESULT_STAGES = frozenset(
+    {"fetch", "stage", "compact", "derive", "audit", "publish_revision"}
+)
+DATASET_RESULT_STATUSES = frozenset(
+    {"success", "warning", "failed", "skipped", "blocked", "degraded"}
+)
+DATASET_RESULT_CRITICALITIES = frozenset({"core", "research", "advisory"})
 
 
 @dataclass
@@ -43,6 +58,27 @@ class BatchRecord:
     finished_at: str | None = None
     error_message: str | None = None
     blocks_compaction: bool = True
+
+
+@dataclass
+class DatasetResult:
+    """One logical dataset/stage receipt in the run manifest.
+
+    This intentionally mirrors the public ``dataset_results`` table rather
+    than the more detailed batch ledger.  A row is upserted by
+    ``(run_id, dataset, stage)`` as a stage moves from an attempt to its final
+    outcome, which keeps status queries deterministic after retries.
+    """
+
+    run_id: str
+    dataset: str
+    stage: str
+    status: str
+    criticality: str = "core"
+    revision_id: str | None = None
+    rows_written: int = 0
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -115,6 +151,18 @@ class Manifest:
                     ON ingestion_batches(run_id, status);
                 CREATE INDEX IF NOT EXISTS idx_batches_dataset
                     ON ingestion_batches(dataset, status);
+                CREATE TABLE IF NOT EXISTS dataset_results (
+                    run_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    criticality TEXT NOT NULL DEFAULT 'core',
+                    revision_id TEXT,
+                    rows_written INTEGER DEFAULT 0,
+                    error_code TEXT,
+                    error_message TEXT,
+                    PRIMARY KEY (run_id, dataset, stage)
+                );
                 """
             )
             cols = {row[1] for row in conn.execute("PRAGMA table_info(ingestion_batches)")}
@@ -124,6 +172,51 @@ class Manifest:
                 conn.execute(
                     "ALTER TABLE ingestion_batches ADD COLUMN blocks_compaction INTEGER DEFAULT 1"
                 )
+
+            # ``dataset_results`` was added after the original two-table
+            # manifest.  Keep the migration deliberately additive: operators
+            # may have copied a manifest between releases, and SQLite does
+            # not support ``ADD COLUMN IF NOT EXISTS`` on all versions we
+            # support.  The defaults make old rows readable without inventing
+            # a result for a stage that never ran.
+            result_cols = {row[1] for row in conn.execute("PRAGMA table_info(dataset_results)")}
+            for name, definition in (
+                ("run_id", "TEXT"),
+                ("dataset", "TEXT"),
+                ("stage", "TEXT"),
+                ("status", "TEXT"),
+                ("criticality", "TEXT NOT NULL DEFAULT 'core'"),
+                ("revision_id", "TEXT"),
+                ("rows_written", "INTEGER DEFAULT 0"),
+                ("error_code", "TEXT"),
+                ("error_message", "TEXT"),
+            ):
+                if name not in result_cols:
+                    conn.execute(f"ALTER TABLE dataset_results ADD COLUMN {name} {definition}")
+
+            # A hand-created pre-release table may not have carried the
+            # composite primary key.  The write path below remains safe for
+            # that shape, while this index gives normal manifests the same
+            # uniqueness guarantee as the declared primary key.
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_dataset_results_key "
+                    "ON dataset_results(run_id, dataset, stage)"
+                )
+            except sqlite3.IntegrityError:
+                # A hand-created pre-release table may contain duplicate
+                # receipts.  Do not make opening an otherwise readable old
+                # manifest fail; the UPDATE-first write path remains
+                # idempotent and future writes converge all duplicates.
+                pass
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dataset_results_run "
+                "ON dataset_results(run_id, status, criticality)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dataset_results_dataset "
+                "ON dataset_results(dataset, stage, status)"
+            )
 
     @staticmethod
     def _batch_activity_at(row: sqlite3.Row) -> datetime | None:
@@ -153,6 +246,20 @@ class Manifest:
         rows_written: int = 0,
         error_message: str | None = None,
     ) -> None:
+        # A caller may still pass the legacy ``warning`` spelling or may
+        # finalize a run without first asking for its aggregate.  Once logical
+        # receipts exist, make the persisted run status obey the same
+        # core/research policy as ``aggregate_run_status``.  Runs from before
+        # this table was introduced retain their original status.
+        if status in {"success", "warning", "degraded", "failed"}:
+            aggregate = self.aggregate_run_status(run_id)
+            if aggregate["results"]:
+                if aggregate["status"] == "failed" or status == "failed":
+                    status = "failed"
+                elif aggregate["status"] == "degraded" or status in {"warning", "degraded"}:
+                    status = "degraded"
+                else:
+                    status = "success"
         with self._connect() as conn:
             conn.execute(
                 """
@@ -178,11 +285,26 @@ class Manifest:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO ingestion_batches (
+                INSERT INTO ingestion_batches (
                     run_id, batch_id, task_id, dataset, status, symbols_json,
                     window_start, window_end, started_at, heartbeat_at, retry_count,
                     blocks_compaction
                 ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, 0, ?)
+                ON CONFLICT(run_id, batch_id) DO UPDATE SET
+                    task_id = excluded.task_id,
+                    dataset = excluded.dataset,
+                    status = 'running',
+                    symbols_json = excluded.symbols_json,
+                    window_start = excluded.window_start,
+                    window_end = excluded.window_end,
+                    rows_read = 0,
+                    rows_written = 0,
+                    started_at = excluded.started_at,
+                    finished_at = NULL,
+                    error_message = NULL,
+                    heartbeat_at = excluded.heartbeat_at,
+                    blocks_compaction = excluded.blocks_compaction
+                WHERE ingestion_batches.status <> 'success'
                 """,
                 (
                     run_id,
@@ -242,14 +364,14 @@ class Manifest:
         rows_read: int = 0,
         rows_written: int = 0,
         error_message: str | None = None,
-        retry_count: int = 0,
+        retry_count: int | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE ingestion_batches
                 SET status = ?, finished_at = ?, rows_read = ?, rows_written = ?,
-                    error_message = ?, retry_count = ?,
+                    error_message = ?, retry_count = COALESCE(?, retry_count),
                     blocks_compaction = CASE
                         WHEN ? IN ('warning', 'failed', 'stale') THEN 1
                         ELSE blocks_compaction
@@ -324,17 +446,54 @@ class Manifest:
             )
             return cur.rowcount
 
-    def get_retryable_batches(self, run_id: str) -> list[sqlite3.Row]:
+    def increment_batch_retry_counts(self, run_id: str, batch_ids: list[str]) -> int:
+        """Persist one orchestrator retry attempt for each selected batch."""
+        ids = sorted(set(batch_ids))
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"""
+                UPDATE ingestion_batches
+                SET retry_count = retry_count + 1
+                WHERE run_id = ? AND batch_id IN ({placeholders})
+                  AND status IN ('failed', 'warning')
+                """,
+                (run_id, *ids),
+            )
+            return cur.rowcount
+
+    def get_retryable_batches(
+        self, run_id: str, *, max_retries: int | None = None
+    ) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            retry_clause = "" if max_retries is None else " AND retry_count < ?"
+            params: tuple[object, ...] = (run_id,)
+            if max_retries is not None:
+                params += (max_retries,)
+            cur = conn.execute(
+                f"""
+                SELECT * FROM ingestion_batches
+                WHERE run_id = ? AND status IN ('failed', 'warning')
+                {retry_clause}
+                ORDER BY started_at, batch_id
+                """,
+                params,
+            )
+            return cur.fetchall()
+
+    def exhausted_retry_count(self, run_id: str, *, max_retries: int) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                SELECT * FROM ingestion_batches
+                SELECT COUNT(*) AS cnt FROM ingestion_batches
                 WHERE run_id = ? AND status IN ('failed', 'warning')
-                ORDER BY started_at, batch_id
+                  AND retry_count >= ?
                 """,
-                (run_id,),
+                (run_id, max_retries),
             )
-            return cur.fetchall()
+            return int(cur.fetchone()["cnt"])
 
     def get_failed_batches(self, run_id: str) -> list[sqlite3.Row]:
         """Backward-compatible alias for every immediately retryable batch."""
@@ -633,6 +792,179 @@ class Manifest:
                 (run_id, batch_id),
             ).fetchone()
 
+    def record_dataset_result(
+        self,
+        run_id: str,
+        dataset: str,
+        stage: str,
+        status: str,
+        *,
+        criticality: str = "core",
+        revision_id: str | None = None,
+        rows_written: int = 0,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Upsert the public result for one dataset/stage.
+
+        ``dataset_results`` is intentionally independent of batch retries.
+        A retry updates the same logical receipt, while the detailed failed
+        attempt remains in ``ingestion_batches``.  Updating then inserting
+        (instead of relying only on ``ON CONFLICT``) also works with manifests
+        created by an early migration that had no primary key declaration.
+        """
+        if stage not in DATASET_RESULT_STAGES:
+            raise ValueError(f"invalid dataset result stage: {stage!r}")
+        if status not in DATASET_RESULT_STATUSES:
+            raise ValueError(f"invalid dataset result status: {status!r}")
+        if criticality not in DATASET_RESULT_CRITICALITIES:
+            raise ValueError(f"invalid dataset result criticality: {criticality!r}")
+        try:
+            rows = int(rows_written)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("rows_written must be an integer") from exc
+        if rows < 0:
+            raise ValueError("rows_written must be non-negative")
+
+        values = (
+            status,
+            criticality,
+            revision_id,
+            rows,
+            error_code,
+            error_message,
+            run_id,
+            dataset,
+            stage,
+        )
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE dataset_results
+                SET status = ?, criticality = ?, revision_id = ?, rows_written = ?,
+                    error_code = ?, error_message = ?
+                WHERE run_id = ? AND dataset = ? AND stage = ?
+                """,
+                values,
+            )
+            if cur.rowcount:
+                return
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO dataset_results (
+                        run_id, dataset, stage, status, criticality, revision_id,
+                        rows_written, error_code, error_message
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        dataset,
+                        stage,
+                        status,
+                        criticality,
+                        revision_id,
+                        rows,
+                        error_code,
+                        error_message,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                # Another worker may have inserted the same logical receipt
+                # between UPDATE and INSERT.  Finish with a deterministic
+                # update rather than leaking a transient UNIQUE failure.
+                conn.execute(
+                    """
+                    UPDATE dataset_results
+                    SET status = ?, criticality = ?, revision_id = ?, rows_written = ?,
+                        error_code = ?, error_message = ?
+                    WHERE run_id = ? AND dataset = ? AND stage = ?
+                    """,
+                    values,
+                )
+
+    # Synonyms make the small API convenient for callers that describe this as
+    # a receipt or an upsert, and keep compatibility with early stage-4
+    # consumers that used those names while the schema was being finalized.
+    upsert_dataset_result = record_dataset_result
+    record_result = record_dataset_result
+
+    def get_dataset_results(
+        self,
+        run_id: str,
+        dataset: str | None = None,
+        stage: str | None = None,
+    ) -> list[sqlite3.Row]:
+        """Read dataset/stage receipts for *run_id* in stable order."""
+        clauses = ["run_id = ?"]
+        params: list[object] = [run_id]
+        if dataset is not None:
+            clauses.append("dataset = ?")
+            params.append(dataset)
+        if stage is not None:
+            clauses.append("stage = ?")
+            params.append(stage)
+        where = " AND ".join(clauses)
+        with self._connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT run_id, dataset, stage, status, criticality, revision_id,
+                       rows_written, error_code, error_message
+                FROM dataset_results
+                WHERE {where}
+                ORDER BY dataset, stage
+                """,
+                params,
+            ).fetchall()
+
+    list_dataset_results = get_dataset_results
+    dataset_results_for_run = get_dataset_results
+
+    def get_dataset_result(self, run_id: str, dataset: str, stage: str) -> sqlite3.Row | None:
+        rows = self.get_dataset_results(run_id, dataset=dataset, stage=stage)
+        return rows[0] if rows else None
+
+    def aggregate_run_status(self, run_id: str) -> dict[str, Any]:
+        """Aggregate logical dataset receipts into success/degraded/failed.
+
+        A core failure (including a blocked core gate) is a failed run.  A
+        research/advisory failure, or any warning/degraded result, leaves the
+        run usable but degraded.  Explicitly skipped optional stages do not
+        affect the aggregate.
+        """
+        rows = self.get_dataset_results(run_id)
+        core_failures: list[dict[str, Any]] = []
+        degraded_results: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+        for row in rows:
+            status = str(row["status"])
+            counts[status] = counts.get(status, 0) + 1
+            if status == "skipped":
+                continue
+            item = dict(row)
+            criticality = str(row["criticality"] or "core")
+            if criticality == "core" and status in {"failed", "blocked"}:
+                core_failures.append(item)
+            elif status in {"warning", "degraded", "failed", "blocked"}:
+                degraded_results.append(item)
+        if core_failures:
+            status = "failed"
+        elif degraded_results:
+            status = "degraded"
+        else:
+            status = "success"
+        return {
+            "status": status,
+            "counts": counts,
+            "core_failures": core_failures,
+            "degraded_results": degraded_results,
+            "results": [dict(row) for row in rows],
+        }
+
+    # ``dataset_status`` reads naturally at call sites that need only the
+    # aggregate and is kept as an alias for compatibility with status UIs.
+    dataset_status = aggregate_run_status
+
     def get_run(self, run_id: str) -> sqlite3.Row | None:
         with self._connect() as conn:
             return conn.execute(
@@ -690,9 +1022,22 @@ class Manifest:
                 "SELECT status, COUNT(*) as cnt FROM ingestion_batches WHERE run_id = ? GROUP BY status",
                 (run_id,),
             ).fetchall()
+        dataset_status = self.aggregate_run_status(run_id)
+        run_payload = dict(run) if run else None
+        public_dataset_status = (
+            dataset_status["status"]
+            if dataset_status["results"]
+            else (run_payload.get("status") if run_payload else None)
+        )
         return {
-            "run": dict(run) if run else None,
+            "run": run_payload,
+            "run_id": run_payload.get("run_id") if run_payload else run_id,
+            "job_name": run_payload.get("job_name") if run_payload else None,
+            "status": run_payload.get("status") if run_payload else None,
             "batch_counts": {row["status"]: row["cnt"] for row in batches},
+            "dataset_results": dataset_status["results"],
+            "dataset_status": public_dataset_status,
+            "dataset_result_counts": dataset_status["counts"],
         }
 
     def update_run_metadata(self, run_id: str, metadata: dict[str, Any]) -> None:
@@ -702,6 +1047,84 @@ class Manifest:
                 (json.dumps(metadata), run_id),
             )
 
+    def _mutate_run_metadata(
+        self,
+        run_id: str,
+        mutation: Callable[[sqlite3.Connection, dict[str, Any]], dict[str, Any] | None],
+    ) -> dict[str, Any]:
+        """Atomically read, mutate, and write one run's metadata document.
+
+        ``metadata_json`` is one JSON document, so every read/modify/write
+        must happen while the same SQLite connection owns an ``IMMEDIATE``
+        transaction.  This serializes mutations across Manifest instances and
+        worker processes, while giving the callback the latest document so it
+        cannot overwrite keys added by a concurrent writer.
+
+        The callback must only perform the short in-transaction mutation.  In
+        particular, it must not call another Manifest method that opens a
+        second connection for the same database, or it could wait on this
+        transaction's write lock.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT metadata_json FROM ingestion_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            raw = json.loads(row["metadata_json"] or "{}") if row else {}
+            metadata = raw if isinstance(raw, dict) else {}
+            mutated = mutation(conn, metadata)
+            if mutated is not None:
+                if not isinstance(mutated, dict):
+                    raise TypeError("run metadata mutation must return a dict or None")
+                metadata = mutated
+            if row:
+                conn.execute(
+                    "UPDATE ingestion_runs SET metadata_json = ? WHERE run_id = ?",
+                    (json.dumps(metadata), run_id),
+                )
+            return metadata
+
+    def mutate_run_metadata(
+        self,
+        run_id: str,
+        mutation: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> dict[str, Any]:
+        """Apply a metadata-only mutation under the manifest write lock.
+
+        The callback receives the latest metadata mapping and may mutate it in
+        place or return a replacement mapping.  Use this for callers that
+        would otherwise call ``get_run_metadata`` followed by
+        ``update_run_metadata``.
+        """
+        return self._mutate_run_metadata(
+            run_id,
+            lambda _conn, metadata: mutation(metadata),
+        )
+
+    def record_performance_metrics(
+        self,
+        run_id: str,
+        dataset: str,
+        metrics: dict[str, Any],
+    ) -> None:
+        """Persist source/request performance metrics under run metadata.
+
+        Metrics are deliberately metadata rather than a gate or a second
+        mutable table: old manifests remain readable, and benchmark output is
+        carried with the same immutable run identity as rows/read receipts.
+        The update is best-effort at call sites because losing telemetry must
+        never discard a successfully fetched partition.
+        """
+
+        def _record(_conn: sqlite3.Connection, metadata: dict[str, Any]) -> None:
+            performance = metadata.get("performance")
+            if not isinstance(performance, dict):
+                performance = {}
+                metadata["performance"] = performance
+            performance[dataset] = dict(metrics)
+
+        self._mutate_run_metadata(run_id, _record)
+
     def get_run_metadata(self, run_id: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
@@ -710,3 +1133,109 @@ class Manifest:
         if not row:
             return {}
         return json.loads(row["metadata_json"] or "{}")
+
+    def record_stage_metrics(
+        self,
+        run_id: str,
+        stage: str,
+        elapsed_seconds: float,
+        metrics: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist descriptive stage metrics in the run metadata.
+
+        This is intentionally additive and lives in ``metadata_json`` so old
+        manifests remain readable without a schema migration.  It is called
+        after each completed step; a process interrupted later therefore
+        still leaves the metrics for the work that was actually observed.
+        """
+        from cnequity.diagnostics.metrics import (
+            _rss_bytes,
+            add_metrics,
+            new_metrics,
+            stage_metrics,
+        )
+
+        stage_payload = stage_metrics(stage, elapsed_seconds=elapsed_seconds, metrics=metrics)
+        stage_record = stage_payload["stages"][stage]
+        stage_record["peak_memory_bytes"] = max(
+            int((metrics or {}).get("peak_memory_bytes", 0) or 0), _rss_bytes()
+        )
+
+        def _record(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+            aggregate = payload.get("metrics")
+            if not isinstance(aggregate, dict):
+                aggregate = new_metrics()
+            # Keep one deterministic latest stage record while accumulating the
+            # run-level counters.  Re-recording a stage after retry replaces its
+            # stage row; retry counts are read from the batch ledger below.
+            stages = aggregate.setdefault("stages", {})
+            if not isinstance(stages, dict):
+                stages = {}
+                aggregate["stages"] = stages
+            stages[stage] = stage_record
+            # Totals are recalculated from the latest stage records rather than
+            # incremented on retries, so a repeated retry cannot double-count a
+            # successful stage.
+            totals = new_metrics()
+            totals["stages"] = {}
+            for item in stages.values():
+                if isinstance(item, dict):
+                    add_metrics(totals, {**item, "stages": {}})
+            aggregate.update(
+                {
+                    key: totals.get(key, 0)
+                    for key in totals
+                    if key
+                    in {
+                        "requests",
+                        "pages",
+                        "cache_hits",
+                        "fallback_requests",
+                        "retries",
+                        "failed_requests",
+                        "rows_read",
+                        "rows_written",
+                        "bytes_read",
+                        "bytes_written",
+                        "changed_partitions",
+                    }
+                }
+            )
+            # Batch retries are tracked independently from stage payloads.  This
+            # keeps retry telemetry available even when a non-worker step fails
+            # before it can return its own metrics object.
+            retry_row = conn.execute(
+                "SELECT COALESCE(SUM(retry_count), 0) AS retries "
+                "FROM ingestion_batches WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            aggregate["retries"] = max(
+                int(totals.get("retries", 0) or 0),
+                int(retry_row["retries"] if retry_row is not None else 0),
+            )
+            aggregate["failed_requests"] = int(totals.get("failed_requests", 0) or 0)
+            aggregate["request_seconds"] = float(totals.get("request_seconds", 0.0) or 0.0)
+            aggregate["concurrency_wait_seconds"] = float(
+                totals.get("concurrency_wait_seconds", 0.0) or 0.0
+            )
+            aggregate["concurrency_peak"] = int(totals.get("concurrency_peak", 0) or 0)
+            aggregate["source_metrics"] = totals.get("source_metrics", {})
+            aggregate["peak_memory_bytes"] = max(
+                int(aggregate.get("peak_memory_bytes", 0) or 0),
+                int(totals.get("peak_memory_bytes", 0) or 0),
+                int((metrics or {}).get("peak_memory_bytes", 0) or 0),
+                _rss_bytes(),
+            )
+            aggregate["elapsed_seconds"] = round(
+                sum(float(item.get("elapsed_seconds", 0.0) or 0.0) for item in stages.values()),
+                6,
+            )
+            aggregate["throughput_requests_per_second"] = round(
+                int(aggregate.get("requests", 0) or 0)
+                / max(float(aggregate["elapsed_seconds"] or 0.0), 1e-9),
+                3,
+            )
+            aggregate["updated_at"] = _utcnow()
+            payload["metrics"] = aggregate
+
+        self._mutate_run_metadata(run_id, _record)

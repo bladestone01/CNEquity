@@ -15,7 +15,9 @@ from cnequity.steps.common import load_bar_universe
 
 @pytest.fixture
 def cfg(tmp_path):
-    c = Config(data_root=tmp_path / "data")
+    # Wrapper tests use normalized fakes; opt out explicitly instead of
+    # weakening the production exact-wire archive boundary.
+    c = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
     c.staging_root.mkdir(parents=True)
     return c
 
@@ -30,7 +32,7 @@ def test_financial_statement_items_empty(cfg, monkeypatch):
     monkeypatch.setattr(
         fund,
         "fetch_financial_statement_items",
-        lambda trade_date, backfill=False, config=None: pl.DataFrame(),
+        lambda trade_date, backfill=False, config=None, run_id=None: pl.DataFrame(),
     )
     result = fund.step_financial_statement_items(cfg, date(2024, 6, 28), "run-1", {})
     assert result == {"rows_read": 0, "rows_written": 0}
@@ -54,7 +56,7 @@ def test_financial_statement_items_backfill_surfaces_missing_periods(cfg, monkey
 def test_financial_statement_items_writes_staging(cfg, monkeypatch):
     seen = {}
 
-    def fake_fetch(trade_date, backfill=False, config=None):
+    def fake_fetch(trade_date, backfill=False, config=None, run_id=None):
         seen["backfill"] = backfill
         return pl.DataFrame(
             {
@@ -442,3 +444,25 @@ def test_shareholder_backfill_surfaces_empty_windows(cfg, monkeypatch):
     assert result["status"] == "warning"
     assert result["empty_windows"] == 1
     assert result["context_updates"]["audit_findings"][0]["check"] == ("backfill_empty_windows")
+
+
+def test_shareholder_backfill_rows_are_marked_reconstructed(cfg, monkeypatch):
+    cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 12, 31)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.shareholders.fetch_share_structure",
+        lambda *args, **kwargs: pl.DataFrame({"symbol": ["600519.SH"]}),
+    )
+    seen: list[str] = []
+
+    def fake_write(*args, source, **kwargs):
+        seen.append(source)
+        return {"rows_read": 1, "rows_written": 1}
+
+    monkeypatch.setattr(fund, "write_fetched", fake_write)
+
+    result = fund.step_share_structure(cfg, date(2026, 6, 30), "run-backfill", {})
+
+    assert result["rows_written"] == 1
+    assert seen == ["eastmoney_backfill"]

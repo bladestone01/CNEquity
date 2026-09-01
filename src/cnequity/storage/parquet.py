@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import polars as pl
@@ -9,6 +11,39 @@ from cnequity.domain.datasets import granularity_for_dataset
 from cnequity.domain.partitions import Granularity
 from cnequity.domain.schemas import PRIMARY_KEYS, sanitize_dataset_rows, validate_dataframe
 from cnequity.storage.atomic import write_parquet_atomic
+from cnequity.storage.revisions import sha256_file
+
+
+def _business_digest(frame: pl.DataFrame) -> str:
+    """Digest rows while ignoring fetch-time provenance churn.
+
+    Reconciliation deliberately re-fetches the tail of a dataset.  When the
+    source returns the same business row, the new ``fetched_at`` must not turn
+    a semantic no-op into a new curated file and revision.  Keep source and
+    data-version in the digest: switching source or changing the value
+    contract is evidence, even when the current row happens to compare equal.
+    """
+    columns = sorted(column for column in frame.columns if column != "fetched_at")
+    rows = [
+        json.dumps(
+            {column: row.get(column) for column in columns},
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        for row in frame.iter_rows(named=True)
+    ]
+    payload = json.dumps(
+        {
+            "columns": [(column, str(frame.schema[column])) for column in columns],
+            "rows": sorted(rows),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 class StagingWriter:
@@ -93,6 +128,8 @@ def compact_dataset(
     run_id: str,
     partition_col: str | None = "trade_date",
     granularity: Granularity | None = None,
+    changed_files: list[Path] | None = None,
+    base_root: Path | None = None,
 ) -> int:
     """Merge staging batches into curated partitions, dedupe by PK.
 
@@ -104,6 +141,11 @@ def compact_dataset(
         granularity = granularity_for_dataset(dataset)
     staging = StagingWriter(staging_root)
     curated = CuratedWriter(curated_root)
+    # ``base_root`` is the immutable committed generation selected before the
+    # write.  It is optional for backwards compatibility with direct callers;
+    # finalize passes it so a retry after a crash cannot merge from a half-
+    # rewritten mutable compatibility directory.
+    read_root = Path(base_root) if base_root is not None else curated_root / dataset
     files = staging.list_run_files(dataset, run_id)
     if not files:
         return 0
@@ -124,7 +166,11 @@ def compact_dataset(
     if partition_col not in combined.columns:
         out_dir = curated.curated_root / dataset
         out_path = out_dir / "part-merged.parquet"
-        existing_files = sorted(out_dir.rglob("*.parquet")) if out_dir.exists() else []
+        existing_dir = read_root
+        existing_files = sorted(existing_dir.rglob("*.parquet")) if existing_dir.exists() else []
+        before_digest = sha256_file(out_path) if out_path.is_file() else None
+        had_fragments = any(path != out_path for path in existing_files)
+        existing = pl.DataFrame(schema=combined.schema)
         if existing_files:
             existing = pl.concat(
                 [
@@ -139,10 +185,17 @@ def compact_dataset(
             if pk:
                 combined = dedupe_by_primary_key(combined, dataset)
         out_dir.mkdir(parents=True, exist_ok=True)
-        write_parquet_atomic(out_path, combined, compression="zstd")
-        for stale in out_dir.rglob("*.parquet"):
-            if stale != out_path:
-                stale.unlink()
+        business_changed = _business_digest(existing) != _business_digest(combined)
+        should_write = business_changed or had_fragments or not out_path.is_file()
+        if should_write:
+            write_parquet_atomic(out_path, combined, compression="zstd")
+            for stale in out_dir.rglob("*.parquet"):
+                if stale != out_path:
+                    stale.unlink()
+        if changed_files is not None and (
+            business_changed or had_fragments or before_digest is None
+        ):
+            changed_files.append(out_path)
         return combined.height
 
     _PART = "__partition__"
@@ -155,17 +208,45 @@ def compact_dataset(
         val_str = str(key[0] if isinstance(key, tuple) else key)
         group = group.drop(_PART)
         existing_dir = curated.partition_path(dataset, partition_col, val_str)
+        read_partition_dir = read_root / f"{partition_col}={val_str}"
+        out_path = existing_dir / "part-merged.parquet"
+        before_digest = sha256_file(out_path) if out_path.is_file() else None
+        had_fragments = False
         frames = [group]
-        if existing_dir.exists():
-            for existing in existing_dir.rglob("*.parquet"):
-                frames.append(
+        existing = pl.DataFrame(schema=group.schema)
+        if read_partition_dir.exists():
+            existing_files = []
+            for existing_path in read_partition_dir.rglob("*.parquet"):
+                # A committed generation has no output path in the mutable
+                # destination, so every source file is a legitimate fragment.
+                had_fragments = had_fragments or existing_path.name != "part-merged.parquet"
+                existing_files.append(
                     sanitize_dataset_rows(
-                        validate_dataframe(pl.read_parquet(existing), dataset), dataset
+                        validate_dataframe(pl.read_parquet(existing_path), dataset), dataset
                     )
                 )
+            if existing_files:
+                existing = pl.concat(existing_files, how="diagonal_relaxed")
+                if pk:
+                    existing = dedupe_by_primary_key(existing, dataset)
+                frames.append(existing)
         merged = pl.concat(frames, how="diagonal_relaxed")
         if pk:
             merged = dedupe_by_primary_key(merged, dataset)
-        curated.write_partition(dataset, partition_col, val_str, merged, "part-merged.parquet")
+        business_changed = _business_digest(existing) != _business_digest(merged)
+        should_write = business_changed or had_fragments or not out_path.is_file()
+        if should_write:
+            written = curated.write_partition(
+                dataset, partition_col, val_str, merged, "part-merged.parquet"
+            )
+        else:
+            # Keep the existing inode untouched when reconciliation changed
+            # only fetched_at; this is the physical no-op that prevents a
+            # spurious changed_files entry and revision.
+            written = out_path
+        if changed_files is not None and (
+            business_changed or had_fragments or before_digest is None
+        ):
+            changed_files.append(written)
         total += merged.height
     return total

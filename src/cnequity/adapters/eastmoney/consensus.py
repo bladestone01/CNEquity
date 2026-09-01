@@ -15,6 +15,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.common import _to_float, _to_int, symbol_from_secucode
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
+from cnequity.adapters.eastmoney.raw import configured_archive
 from cnequity.config import Config
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ def fetch_analyst_consensus(
     *,
     client: EastMoneyClient | None = None,
     config: Config | None = None,
+    run_id: str | None = None,
 ) -> pl.DataFrame:
     """Fetch the current analyst consensus snapshot, stamped with *trade_date*."""
     owns = client is None
@@ -65,7 +67,20 @@ def fetch_analyst_consensus(
 
     try:
         rate_limit_if_unconfigured(client, config)
-        raw = fetch_datacenter(client, _CONSENSUS_REPORT, _CONSENSUS_COLUMNS)
+        archive = configured_archive(
+            config,
+            "analyst_consensus",
+            run_id=run_id,
+            request_scope=f"snapshot:{trade_date.isoformat()}",
+        )
+        raw = fetch_datacenter(
+            client,
+            _CONSENSUS_REPORT,
+            _CONSENSUS_COLUMNS,
+            archive=archive,
+            archive_dataset="analyst_consensus",
+            archive_run_id=run_id,
+        )
     finally:
         if owns:
             client.close()

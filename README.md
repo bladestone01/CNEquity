@@ -10,19 +10,29 @@
   <a href="README.en.md"><img src="https://img.shields.io/badge/docs-English-lightgrey.svg" alt="English"></a>
 </p>
 
-CNEquity 从 A 股开始，解决的是一件很具体的事：把分散在不同来源、不同口径、不同更新节奏的数据，长期保存在自己的机器或服务器上，并且能说明每一行数据从哪里来、什么时候采到、截至哪一天可用。
 
-项目开源、免注册、自托管。数据以开放格式落盘，可以用 Python、DuckDB、Polars 或其它工具读取；采集和查询彼此分开，数据湖本身不依赖某个客户端或模型。
+<p align="center">
+  <b>42 个数据集 · 39 curated + 3 derived · Python / DuckDB / Polars / MCP</b>
+</p>
+
+<p align="center">
+  <a href="https://rootsunc.github.io/cnequity/getting-started/quickstart/">快速开始</a> ·
+  <a href="https://rootsunc.github.io/cnequity/datasets/catalog/">数据集目录</a> ·
+  <a href="https://rootsunc.github.io/cnequity/recipes/">研究 Recipes</a> ·
+  <a href="https://rootsunc.github.io/cnequity/reference/mcp/">接入 AI Agent</a>
+</p>
+
+CNEquity 开源、免注册、自托管。它不负责给出交易信号，而是把分散在不同来源、不同口径、不同更新节奏的数据，长期保存在自己的机器或服务器上，并且说明每一行从哪里来、何时采到、截至哪一天可用。
 
 ## 为什么要一个数据湖
 
-做 A 股历史研究时，发出一次请求通常不是最费事的部分。更难的是把下面几件事持续做好：
+发出一次 API 请求通常不是最费事的部分。真正困难的是长期保持研究口径一致：
 
-- 多个来源的字段和代码体系不一致，需要反复清洗、对齐和补缺；
-- 每次研究都重新拉取数据，结果难以复现，也容易被上游接口的变化影响；
-- 只用今天仍然上市的股票回看历史，会把退市股排除在样本之外；
-- 财报、公告和估值数据有各自的发布日期，不能只按报告期判断“当时是否已经知道”；
-- 复权、历史成分、交易状态等口径如果由每个研究脚本自己处理，很容易悄悄分叉。
+- **多源一致性**：字段、代码体系、更新节奏和可回补范围并不相同；
+- **历史可复现**：每次研究都现场拉取，结果会随上游变化而漂移；
+- **Universe 完整性**：用今天的股票名单回看过去，会自动删掉后来退市的股票；
+- **PIT 语义**：财报、公告和估值必须按当时实际可获得的日期查询；
+- **复权与交易状态**：如果每个研究脚本各自处理，口径很快就会分叉。
 
 幸存者偏差是一个直观例子。下面的实验使用同一个等权买入持有策略和同一段时间，唯一差别是历史股票池里是否保留后来退市的股票。只用今天仍在交易的股票时，2016–2021 年的收益从 **5.9%** 变成了 **12.0%**：
 
@@ -147,8 +157,10 @@ cne demo
 `cne demo` 默认拉取 5 只股票最近约 30 个交易日的真实数据，写入独立目录 `data/cnequity-demo/`，不会覆盖正式数据湖。需要能访问 TDX 行情主机；如果连接失败，可以先检查：
 
 ```bash
-cne sources --only tdx_protocol
+cne sources probe --only tdx_protocol
 ```
+
+完全无法连接 TDX 时，运行 `cne demo --sample`，可离线验证安装、Parquet 落盘和查询链路。合成行全部标记为 `source=mock`，不可用于研究。
 
 <p align="center">
   <img src="docs/assets/cne-demo.png" alt="cne demo 分阶段采集真实日线并打印结果" width="820" />
@@ -237,8 +249,9 @@ roe = load(
 cne run daily                 # 执行当天全部日更分组
 cne status                    # 查看 FRESH / STALE / EMPTY
 cne serve                     # 打开 http://127.0.0.1:8787
-cne sources                   # 检查上游数据源健康度
+cne sources probe                   # 检查上游数据源健康度
 cne retry --run-id <run_id>   # 只重试失败批次
+cne retry --failed-groups     # 重试各 daily 分组最新的失败 run
 ```
 
 单个 step 失败时，系统会记录 failed batch，其他步骤继续落盘；重试不会把整条任务重新跑一遍。浏览器控制台可以查看覆盖、新鲜度、容量、跑批和质量结果。
@@ -322,7 +335,7 @@ cne backfill daily_bars --start 2001-01-01
 <details>
 <summary><b>东财返回 403 或连接重置怎么办？</b></summary>
 
-先运行 `cne sources --only eastmoney_push2,eastmoney_push2his`。日更主路径行情走 TDX，不受东财行情接口风控影响。
+先运行 `cne sources probe --only eastmoney_push2,eastmoney_push2his`。日更主路径行情走 TDX，不受东财行情接口风控影响。
 
 </details>
 

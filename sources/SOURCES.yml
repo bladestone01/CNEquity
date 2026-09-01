@@ -1,0 +1,206 @@
+# Source-use policy registry for the labels in domain/datasets.py.
+#
+# This is a conservative operational register, not a licence grant.  The
+# upstream terms have not been legally reviewed in this repository, so every
+# permission and retention field is deliberately the literal `unknown`.
+# Replace an unknown only after recording the authoritative terms, URL and
+# review date in a reviewed change.  `derived: true` is required for the local
+# derivation label; derived output does not acquire upstream rights.
+version: 1
+generated_from: src/cnequity/domain/datasets.py
+last_reviewed_at: unknown
+sources:
+  tdx_protocol:
+    owner: 通达信（TongDaXin；协议来源归属待核实）
+    access_type: proprietary_protocol_endpoint
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 代码通过通达信协议服务器获取行情；服务端身份、条款、限速与原始载荷留存权限尚未核实。
+    derived: false
+
+  baostock:
+    owner: Baostock（项目/服务提供方）
+    access_type: public_api
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 用于证券列表、历史估值、ST 与退市行情等回填；访问频率和输出数据使用条件须向提供方确认。
+    derived: false
+
+  exchange:
+    owner: 上海证券交易所 / 深圳证券交易所 / 北京证券交易所（具体文件来源待核实）
+    access_type: official_public_file_and_http_endpoint
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 交易日历备源、ST 名称核对、daily_bars 权威比对（上交所 yunhq 收盘快照、深交所个股日行情报表）与
+      margin_trading 主源（上交所 queryMargin、深交所 1837_xxpl 融资融券交易明细）。这些是交易所自行编制并公开发布的
+      数据，权威性高于任何转发方；但具体发布页的版权声明、访问频率与再分发条件仍需逐接口确认，因此权限字段保持 unknown。
+      注意上交所不公布融券余额（rqylje 恒为空），SH 行的 short_balance 因此为 null，不做本地推算。
+    derived: false
+
+  eastmoney:
+    owner: 东方财富（East Money）
+    access_type: public_http_endpoint
+    tos_url: https://about.eastmoney.com/home/protocol
+    tos_reviewed_at: "2026-08-29"
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: written_permission_required
+    cache_allowed: unknown
+    redistribution: prohibited_without_written_permission
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: restricted
+    notes: 使用公开 HTTP 接口承载资金、估值、公告、板块和财务等数据。2025-07-18 生效的用户协议第六部分声明内容权利归东财或权利人，未经事先书面许可不得使用或创作衍生作品；行情数据未经交易所书面同意不得复制、向他人提供或用于开发衍生品。该协议没有明确授权未文档化接口的自动采集或本地长期缓存，因此这些项目继续保持 unknown。
+    derived: false
+
+  sina:
+    owner: 新浪财经（Sina Finance）
+    access_type: public_http_endpoint
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 用于行情备源与复权因子；具体接口服务条款、访问频率和数据再利用边界尚未核实。
+    derived: false
+
+  eastmoney_kline+sina_global:
+    owner: 东方财富 + 新浪财经（复合回填标签）
+    access_type: composite_public_http_endpoint
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 由东财国内主连与新浪全球期货接口组成的复合回填源；两个上游的条款与组合输出权限均须分别确认。
+    derived: false
+
+  cninfo:
+    owner: 巨潮资讯（CNINFO）
+    access_type: public_http_endpoint
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 用于公告索引和监管事件；索引与公告正文的使用、缓存及再分发条件尚未核实。
+    derived: false
+
+  cni:
+    owner: 中证指数有限公司（CNI；具体发布方待核实）
+    access_type: public_file
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 用于指数成分历史文件回填；文件许可、归属和历史文件保存权限尚未核实。
+    derived: false
+
+  sw:
+    owner: 申万宏源研究（Shenwan Hongyuan Research）
+    access_type: public_file
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 用于申万行业分类历史文件回填；公开文件的授权、缓存和商业使用边界尚未核实。
+    derived: false
+
+  pboc:
+    owner: 中国人民银行调查统计司（PBoC）
+    access_type: official_public_file
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: unknown
+    notes: 用于社会融资规模等官方统计附件；具体附件版权、数据库权利和再分发条件尚未核实。
+    derived: false
+
+  derived:
+    owner: CNEquity 派生管线（上游来源权利不随派生转移）
+    access_type: local_derivation
+    tos_url: unknown
+    tos_reviewed_at: unknown
+    authentication: not_applicable
+    personal_use: unknown
+    commercial_use: unknown
+    cache_allowed: unknown
+    redistribution: unknown
+    rate_limit: not_applicable
+    retained_payloads: unknown
+    legal_status: inherits_upstream_unknown
+    notes: market_breadth、sentiment_scores、industry_index、delisting_events 等由湖内或上游数据计算；使用权取决于所有输入来源，不能视为 CNEquity 授权。
+    derived: true
+
+  ths:
+    owner: 同花顺（THS / 10jqka）
+    access_type: public_http_endpoint
+    tos_url: https://news.10jqka.com.cn/clientinfo/protocol.html
+    tos_reviewed_at: "2026-08-29"
+    authentication: none_observed
+    personal_use: unknown
+    commercial_use: written_permission_required
+    cache_allowed: unknown
+    redistribution: prohibited_for_free_products
+    rate_limit: unknown
+    retained_payloads: unknown
+    legal_status: restricted
+    notes: 用于行业板块行情及历史回填。许可协议把明确标识的免费产品限定为自用、非商业使用且不得复制、分发；商业销售、复制或分发须书面授权。当前适配器访问公开页面，并非已登记 iFinD QuantAPI 客户端；官方 QuantAPI 免费额度不能自动授权当前适配器或数据再分发。
+    derived: false

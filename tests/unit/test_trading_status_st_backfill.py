@@ -302,7 +302,9 @@ def test_partial_st_rows_do_not_compact_or_publish_coverage(tmp_path, monkeypatc
         finalize_run=False,
     )
 
-    assert result["status"] == "warning"
+    # A step-level warning is a usable-but-degraded run in the public status
+    # contract; batch retry state still uses ``warning`` internally.
+    assert result["status"] == "degraded"
     assert engine.manifest.incomplete_batch_count(result["run_id"]) == 1
     assert engine.manifest.incomplete_batch_counts_by_dataset(result["run_id"]) == {
         "trading_status": 1

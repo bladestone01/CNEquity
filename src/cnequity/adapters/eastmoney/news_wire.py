@@ -18,12 +18,24 @@ def _item_hash(title: str, wire_source: str, published_at: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def fetch_flash_news_wire(trade_date: date, *, page_size: int = 200, config=None) -> pl.DataFrame:
+def fetch_flash_news_wire(
+    trade_date: date,
+    *,
+    page_size: int = 200,
+    config=None,
+    run_id: str | None = None,
+) -> pl.DataFrame:
     """EastMoney 7×24 fast news with wire_id / item_hash for cross-source dedupe."""
     if config is None:
         base = fetch_news_headlines(trade_date, page_size=page_size)
     else:
-        base = fetch_news_headlines(trade_date, page_size=page_size, config=config)
+        base = fetch_news_headlines(
+            trade_date,
+            page_size=page_size,
+            config=config,
+            run_id=run_id,
+            archive_dataset="flash_news_wire",
+        )
     if base.is_empty():
         return base
 

@@ -10,6 +10,8 @@ import polars as pl
 import pytest
 
 from cnequity.adapters.tdx_protocol import corporate_actions as ca
+from cnequity.config import Config
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive
 
 
 def test_rows_from_xdxr_cash_bonus_allotment_and_skips():
@@ -302,3 +304,76 @@ def test_fetch_corporate_actions_tdx_strict_rejects_symbol_fetch_error(monkeypat
             client_factory=Client,
             strict=True,
         )
+
+
+def test_fetch_corporate_actions_tdx_archives_exact_wire_per_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "close_quotes_client", lambda client: None)
+
+    row = {
+        "year": 2024,
+        "month": 6,
+        "day": 28,
+        "category": 1,
+        "fenhong": 10.0,
+        "songzhuangu": 0.0,
+        "peigu": 0.0,
+        "peigujia": 0.0,
+    }
+
+    class Client:
+        def __init__(self):
+            self.last_response_wire = None
+
+        def xdxr(self, symbol, market=None):
+            self.last_response_wire = f"wire-{symbol}".encode()
+            return pd.DataFrame([row])
+
+    config = Config(data_root=tmp_path / "lake", raw_archive_compression="none")
+    frame = ca.fetch_corporate_actions_tdx(
+        ["600519.SH"],
+        trade_date=date(2024, 6, 28),
+        client_factory=Client,
+        config=config,
+        run_id="run-wire",
+    )
+
+    assert frame.height == 1
+    records = RawPayloadArchive(config.meta_root).records("corporate_actions")
+    assert len(records) == 1
+    assert RawPayloadArchive(config.meta_root).read(records[0]) == b"wire-600519"
+    assert records[0].run_id == "run-wire"
+    assert records[0].http_metadata["wire_exact"] is True
+
+
+def test_fetch_corporate_actions_tdx_captureless_archive_fails_before_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(ca, "wait_spec", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "close_quotes_client", lambda client: None)
+
+    class Captureless:
+        def xdxr(self, symbol, market=None):
+            return pd.DataFrame(
+                [
+                    {
+                        "year": 2024,
+                        "month": 6,
+                        "day": 28,
+                        "category": 1,
+                        "fenhong": 10.0,
+                        "songzhuangu": 0.0,
+                        "peigu": 0.0,
+                        "peigujia": 0.0,
+                    }
+                ]
+            )
+
+    config = Config(data_root=tmp_path / "lake", raw_archive_compression="none")
+    with pytest.raises(RawArchiveError, match="no exact wire bytes"):
+        ca.fetch_corporate_actions_tdx(
+            ["600519.SH"],
+            trade_date=date(2024, 6, 28),
+            client_factory=Captureless,
+            config=config,
+            run_id="run-missing-wire",
+        )
+    assert not (config.meta_root / "raw").exists()

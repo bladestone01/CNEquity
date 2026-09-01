@@ -14,7 +14,7 @@ from cnequity.domain.symbols import is_all_a_symbol, parse_symbol
 from cnequity.orchestrator.registry import register_step
 from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.steps.common import instrument_metadata, load_bar_universe, load_symbols
-from cnequity.steps.http_common import run_incremental_fetched, write_fetched
+from cnequity.steps.http_common import run_incremental_fetched, verify_raw_archive, write_fetched
 
 # EastMoney's valuation clist is a live snapshot only; history comes from baostock.
 _VALUATION_BACKFILL_START = date(2016, 1, 1)
@@ -361,7 +361,14 @@ def step_financial_statement_items(
     # every report period from 2001 (CLI --start/--end clips the walk;
     # NOTICE_DATE incremental cannot reach history).
     backfill = getattr(config, "_backfill", False)
-    df = fetch_financial_statement_items(trade_date, backfill=backfill, config=config)
+    archive_source = "eastmoney_backfill" if backfill else "eastmoney"
+    archive_scope = f"{'backfill' if backfill else 'daily'}:{trade_date.isoformat()}"
+    df = fetch_financial_statement_items(
+        trade_date,
+        backfill=backfill,
+        config=config,
+        run_id=run_id,
+    )
     missing_periods: set[str] = set()
     missing_statement_types: dict[str, list[str]] = {}
     if backfill:
@@ -430,7 +437,18 @@ def step_financial_statement_items(
                 run_id,
                 "financial_statement_items",
                 df,
-                source="eastmoney_backfill",
+                source=archive_source,
+                raw_archive_evidence=(
+                    verify_raw_archive(
+                        config,
+                        "financial_statement_items",
+                        run_id,
+                        source=archive_source,
+                        request_scope=archive_scope,
+                    )
+                    if config.should_archive_raw("financial_statement_items")
+                    else None
+                ),
             )
         result["status"] = "warning"
         if missing_periods:
@@ -446,7 +464,18 @@ def step_financial_statement_items(
         run_id,
         "financial_statement_items",
         df,
-        source="eastmoney_backfill" if backfill else "eastmoney",
+        source=archive_source,
+        raw_archive_evidence=(
+            verify_raw_archive(
+                config,
+                "financial_statement_items",
+                run_id,
+                source=archive_source,
+                request_scope=archive_scope,
+            )
+            if config.should_archive_raw("financial_statement_items")
+            else None
+        ),
     )
 
 
@@ -532,7 +561,12 @@ def _run_shareholder_step(
             run_id,
             dataset,
             part,
-            source="eastmoney",
+            # Historical shareholder endpoints expose the source's current
+            # reconstructed snapshot for an old record/disclosure window.
+            # Preserve that fact at row level so strict PIT reads can reject
+            # it even after the data has been copied to another lake without
+            # the registry metadata beside it.
+            source=("eastmoney_backfill" if getattr(config, "_backfill", False) else "eastmoney"),
             batch_id=f"batch-{win_start.isoformat()}",
         )
         rows_read += int(chunk.get("rows_read", 0))

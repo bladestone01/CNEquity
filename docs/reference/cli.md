@@ -8,7 +8,7 @@
 
 ## cne demo
 
-一分钟真源小样（涨星 / 上手用）。拉少量流动性股票的近期日线，**不是**全市场 `cne init`。
+一分钟试玩，提供两条路径：默认拉少量流动性股票的真源近期日线；`--sample` 在完全离线时生成明确标记为 `source=mock` 的合成小湖。两者都**不是**全市场 `cne init`。
 
 | 选项 | 说明 |
 |------|------|
@@ -16,6 +16,7 @@
 | `--days` | 约多少个交易日的 `daily_bars`（默认 30） |
 | `--intraday` | 额外抓同一批标的的 1m 线（最多约 5 个交易日），打印一根完整会话 |
 | `--research` | 额外从 Sina 派生 hfq 因子，并打印 raw / hfq 收益对照；会把窗口扩展到约 3 年 |
+| `--sample` | 不访问网络，生成可用于验证安装、查询和 DuckDB 视图的合成样例；不可与 `--research` / `--intraday` 合用 |
 | `--data-root` | 独立湖根目录（默认 `data/cnequity-demo`） |
 | `--trade-date` | 截至日 YYYY-MM-DD（默认今天 / 最近交易日） |
 | `--config-out` | 写出供后续 `cne query` 使用的小配置（默认 `configs/cnequity.demo.toml`） |
@@ -29,6 +30,14 @@ cne demo --research --symbols 600519.SH
 ```
 
 `--research` 需要额外访问 Sina；网络受限时先运行不带该选项的基础 demo。
+
+完全无法访问 TDX 时，可先验证本地读写和查询链路：
+
+```bash
+cne demo --sample
+```
+
+合成行会醒目标记为 `source=mock`，质量审计不会把它们视为真实数据；请勿复用该 demo 的 `data_root` 做研究或生产。
 
 ---
 
@@ -85,6 +94,39 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 ## cne config validate
 
 校验 TOML 与 step 引用。有错退出 1。
+
+---
+
+## cne contract
+
+查看和维护 42 个注册数据集的机器可读 JSON 契约。
+
+| 子命令 | 说明 |
+|--------|------|
+| `show [DATASET]` | 输出一个数据集或完整 registry 契约；`--out PATH` 写文件而非打印 |
+| `validate [PATH]` | 校验文件；省略 PATH 时校验当前 registry。文件加 `--against-registry` 做精确同步检查 |
+| `diff OLD [NEW]` | 比较两个契约；省略 NEW 时比较当前 registry。默认发现 breaking 时退出 1，检查报告可加 `--allow-breaking` |
+
+diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别为 breaking；新增
+列和新增数据集为 compatible。
+
+> `cne contract export` 已并入 `cne contract show --out`——两者本来就是同一份文档，
+> 只差写不写文件。
+
+---
+
+## cne profile
+
+查看版本化的研究 universe 画像（`cnequity.domain.universe_profiles` 注册表）。
+
+| 子命令 | 说明 |
+|--------|------|
+| `list` | 输出注册表记录；`--official-only` 排除 legacy 兼容画像 |
+| `show NAME` | 输出单个画像及其 `scope_hash`；`--symbol` 可重复，绑定具体标的并附 `concrete_scope_hash` |
+
+画像绑定交易所/板块、CDR/ETF、ST/停牌、退市与 PIT 证据规则。研究读取用
+`load(..., profile="cn_a_sh_sz_research_v1")`，并把 `name` / `version` / `scope_hash`
+一起记进产出。详见 [universe 画像](universe-profiles.md)。
 
 ---
 
@@ -191,28 +233,24 @@ cne backfill sector_bars --config configs/cnequity.toml --retry-failed
 
 ## cne delisted
 
-重建退市宇宙（幸存者偏差修复）。
+读退市目录，并拉它点名的那些行情。**重建**目录（扫码空间、核对终点、修 instruments、
+覆盖门禁）是一次性工程，在 [`scripts/delisted_ops.py`](../operations/scripts.md#delisted_opspy)。
 
 | 子命令 | 说明 |
 |--------|------|
-| `discover [--limit N]` | 扫 issued code space，分类为曾上市 / 从未发行（可续跑） |
 | `status [--since]` | 目录摘要：数量、年份、尚未 ingest |
-| `coverage [--start] [--end]` | **只读严格门禁**：验证发现完整性、窗口重叠、末根有效成交和 instruments 身份；未通过时退出码为 1 |
-| `reconcile [--apply]` | 默认只读核对目录终点；`--apply` 仅修正被正式退市日、交易日历和正成交量行情共同证伪的终点，并生成备份及 SHA-256 回执 |
-| `repair [--since]` | **不重新拉行情**：用已有 `daily_bars` 跨度写 `instruments.delist_date`，并清掉 `认购款` 占位 |
 | `backfill [--since]` | 对目录中尚未有行情的退市股拉 Sina 历史并 compact |
 
-推荐顺序：`discover` → `reconcile`（先 dry-run，确认后 `--apply`）→ `repair`
-（bars 已在湖里时）→ `backfill`（补缺口）→ `coverage`。
+推荐顺序（跨 CLI 和脚本）：
 
 ```bash
-cne delisted status
-cne delisted reconcile
-cne delisted reconcile --apply   # 仅在没有 active ingestion run 时执行
-cne delisted coverage --start 2016-01-01 --end 2025-12-31 --universe all_a_sh_sz
-cne delisted repair
-cne delisted backfill --since 2016-01-01
-cne delisted discover --limit 500   # 扩大 band 后的续扫
+cne delisted status                                   # 已知多少
+python scripts/delisted_ops.py discover --limit 500   # 扫码空间，可续跑
+cne delisted backfill --since 2016-01-01              # 拉扫到的行情
+python scripts/delisted_ops.py repair                 # bars 已在湖里时写 delist_date
+python scripts/delisted_ops.py reconcile              # 先 dry-run
+python scripts/delisted_ops.py reconcile --apply      # 仅在没有 active ingestion run 时
+python scripts/delisted_ops.py coverage --start 2016-01-01 --universe all_a_sh_sz
 ```
 
 `coverage` 的通过声明刻意很窄：它证明退市目录已扫完，且已知与窗口重叠的退市标的具备一致的末根有效成交和证券主数据；它不证明两端之间每个交易日都连续。数据源在停牌或正式摘牌前可能保留零成交占位行，门禁不会把它们误当成末次交易。目录末日晚于窗口、但窗口内又没有行情可证明已经上市的标的会进入 `unknown_overlap`，不会被静默排除。
@@ -222,27 +260,6 @@ cne delisted discover --limit 500   # 扩大 band 后的续扫
 正式退市日之后或非交易日，才允许自动修改。命令检测到任何 active ingestion run
 都会拒绝执行；修改前的目录保存在 `meta/state/history/`，质量回执写入
 `meta/quality/`，并记录修改前备份和修改后目录的 SHA-256。
-
----
-
-## cne repartition [dataset]
-
-| 选项 | 说明 |
-|------|------|
-| `--all` | 改写所有布局与配置不一致的数据集 |
-| `--dry-run` | 只报告效果，不落盘 |
-
-把历史分区改写成 `DatasetSpec.partition_granularity` 配的周期
-（见 [分区粒度](../architecture/lake-layout.md#分区粒度)）。不带参数则列出待改写的数据集。
-
-读路径按目录形状自解析，改粒度本身**不需要**迁移；这条命令只是把碎文件收回来。
-写入是先建临时目录、逐分区写完并核对总行数，再一次 rename 换上去，中途挂掉不动原数据；
-重复执行是幂等的。
-
-```bash
-cne repartition --all --dry-run   # 先看影响
-cne repartition trading_calendar  # 单个数据集
-```
 
 ---
 
@@ -275,19 +292,53 @@ cne derive trading_status --start 2001-01-01 --end 2001-12-31
 
 ---
 
+## cne verify
+
+| 选项 | 说明 |
+|------|------|
+| `--dataset` | 只查这些数据集（逗号分隔）；默认全部已注册数据集 |
+| `--repair` | 对可修复的缺口跑回填，按数据集从新到旧 |
+| `--kind` | 只看这些缺口类型：`empty,stale,interior,shallow` |
+
+**和 `cne audit`问的不是同一件事。** `audit` 问「落下来的数据对不对」，`verify` 问
+「该落的有没有落」——后者是一个 step 一碰就抛异常时产生的故障。没有它，一个数据集可以
+连续数周每次 run 都失败，而每次 run 只记录一个 failed batch，湖级看不出来。
+
+**缺口按「能不能补」分开，而不是按大小。** `by_date` 数据集缺一个交易日是故障；
+`snapshot` 数据集缺一个交易日是它本来的形状，任何回填都不可能诚实地补上它
+（补了就是伪造行）。`--repair` 只跑前者。
+
+```bash
+cne verify                                  # 全表体检
+cne verify --dataset daily_bars,adj_factors
+cne verify --kind interior --repair         # 只补内部空洞
+```
+
+---
+
 ## cne status
 
 | 选项 | 说明 |
 |------|------|
 | `--datasets` | 逐数据集新鲜度表；有 STALE 退出 1 |
+| `--run <id\|latest>` | 指定 run（默认 `latest`）；摘要含每个数据集 stage 的 `dataset_results` 与聚合 `dataset_status` |
+| `--run-id <id>` | `--run` 的显式 id 别名；两者不能同时给 |
 
-无选项：输出最近 run 的 JSON 摘要。
+无选项：输出最近 run 的 JSON 摘要。run 为 `degraded`（核心正常、研究/建议层降级）退出 2，
+核心失败退出 1。
 
 ---
 
-## cne retry --run-id \<id\>
+## cne retry
 
 重试失败 batch / 补 init 缺失 step。init run 走 `resume_init`。
+
+| 选项 | 说明 |
+|------|------|
+| `--run-id <id>` | 重试指定 run |
+| `--failed-groups` | 逐个独立进程重试每个 `daily:*` 分组最新的失败 run；若该分组已有更新的成功 run，则跳过旧失败 |
+
+两项必须且只能选择一项。
 
 成功退出 0；`RunLockError` 报错退出。
 
@@ -302,12 +353,6 @@ cne derive trading_status --start 2001-01-01 --end 2001-12-31
 | `--dry-run` | 仅报告可删 staging |
 | `--orphan-retention-days` | 无 manifest 的 orphan 保留天数（默认 7） |
 | `--force` | 也删尚未 cleanup-ready 的 staging（incomplete / 未 compact）；成功 fetch batch 会被 demote，`cne retry` 全量重抓。**不要**对 success-without-compact 用 force——先 `cne compact --run-id` |
-
----
-
-## cne catalog
-
-JSON 列出 curated 各数据集文件数与行数。每次都全扫；固定的度量走 `cne stats`。
 
 ---
 
@@ -358,30 +403,27 @@ cne serve
 | 选项 | 说明 |
 |------|------|
 | `--dataset` | 只重建这些数据集（可重复）；**其余数据集保留原有行**，不会被删 |
+| `--if-stale` | 只在「湖动过了」时才重建，否则空转返回。放定时器上用这个 |
 | `--json` | 结果输出 JSON |
 
 全量重建：参考湖（1.5GB / 6600 万行 / 21k 分区）约 6 秒——只读 `source`、`data_version`、`fetched_at` 三列。增量刷新是可行的（跑批动过的分区可以从 `ingestion_batches.window_start/window_end` 反推），但没到需要的规模。
 
-### cne stats refresh
-
-只在「湖动过了」时才重建，否则空转返回。
-
-| 选项 | 说明 |
-|------|------|
-| `--force` | 即使是最新的也重建 |
-
-**判据是 run id，不是时钟。** 改变湖的是采集，所以建于最后一个 run 之后的表无论多旧都是当前的，建于之前的无论多新都是过期的——`stats-latest.json` 的 `latest_run_id` 和 manifest 的最新 run 比对即可，只读一个小 JSON 加一行 SQLite。
+**`--if-stale` 的判据是 run id，不是时钟。** 改变湖的是采集，所以建于最后一个 run 之后的表无论多旧都是当前的，建于之前的无论多新都是过期的——`stats-latest.json` 的 `latest_run_id` 和 manifest 的最新 run 比对即可，只读一个小 JSON 加一行 SQLite。
 
 并发用非阻塞锁收敛：面板请求、cron、夜间跑批同时想重建时只有一个真做，抢不到锁的直接返回而不是排队——把 web 请求堵在一次全扫后面比多看一个 run 的旧数字更糟。
+
+`--if-stale` 判的是全湖水位，所以不能和 `--dataset` 同用，命令会直接报错而不是二选一地猜。
 
 刷新策略（`meta/stats` 不会自己刷新）：
 
 ```bash
 # 兜底：定时器上跑，没变化就是空转
-cne stats refresh
+cne stats rebuild --if-stale
 ```
 
-面板（M2）走 `stats_freshness()` 判过期 + 后台线程调 `refresh_stats_if_stale()`；线程策略留在调用方，模块本身是同步的。`cne run daily && cne stats rebuild` 也可以，但 `refresh` 更省。
+面板（M2）走 `stats_freshness()` 判过期 + 后台线程调 `refresh_stats_if_stale()`；线程策略留在调用方，模块本身是同步的。
+
+> `cne stats refresh` 已并入 `cne stats rebuild --if-stale`；原 `--force` 就是不加 `--if-stale` 的默认行为。
 
 ### cne stats show
 
@@ -389,8 +431,13 @@ cne stats refresh
 |------|------|
 | `--dataset` | 单个数据集的逐分区明细 |
 | `--by-source` | 改看 source / data_version 分布 |
+| `--json` | 机器可读输出 |
 
-无 stats 时报错并提示先 `cne stats rebuild`。
+**无 stats 表时直扫 curated 回退**（原 `cne catalog`）：只给 dataset / files / rows，没有字节数、
+源分布和逐分区明细，但一个从没跑过 `stats rebuild` 的湖不该先做一次构建才能回答「里面有什么」。
+`--dataset` / `--by-source` 是 stats 表独有的视图，回退时直接报错而不是降级回答另一个问题。
+
+> `cne catalog` 已并入本命令的回退路径；`--json` 就是它原来的输出。
 
 ---
 
@@ -442,6 +489,20 @@ cne mcp --config /abs/path/cnequity.toml --live
 
 ## cne sources
 
+数据源这一面的全部：`probe` 实时探测，其余三个从已存证据算派生结论、**不联网**。
+
+| 子命令 | 说明 |
+|--------|------|
+| `probe` | 探测公开数据源，报告写进湖里 |
+| `slo` | 把 `meta/source_health` 历史样本按 probe/vantage 聚成可用性 SLO，并写去重事故载荷。`--window-days`（默认 30）、`--minimum-observations`（默认 10）、`--enforce`（关键源不达标退出 1） |
+| `resilience` | 从注册表算源集中度、failure-domain 爆炸半径和核心数据集独立备源门禁。`--out PATH` 落 JSON，`--enforce`（有核心表缺独立备源则退出 1） |
+| `policy [SOURCE]` | 查 `sources/SOURCES.yml` 的来源使用策略。省略 SOURCE 输出全部；给 SOURCE 加 `--profile personal\|commercial\|cache\|redistribution` 做保守判断，未知权限一律 fail-closed（退出 1） |
+
+> 原为 `cne sources`（探测）+ `cne source <sub>`（派生结论）——两个顶层条目差一个字母，
+> 且 `cne source --help` 不得不用一句话把自己和邻居区分开。现在收敛成一个名词。
+
+### cne sources probe
+
 探测本湖依赖的公开数据源。每个源发**一个**请求，断言响应体（不是状态行），串行且尊重各源限速。
 
 | 选项 | 说明 |
@@ -452,7 +513,7 @@ cne mcp --config /abs/path/cnequity.toml --live
 | `--out` | JSON 报告路径。默认写进湖里的 `meta/source_health/<vantage>.json`，也就是 `cne serve` 读的位置 |
 
 ```bash
-cne sources --vantage cn
+cne sources probe --vantage cn
 cne serve                    # → http://127.0.0.1:8787/source-health
 ```
 
@@ -468,9 +529,55 @@ cne serve                    # → http://127.0.0.1:8787/source-health
 
 ---
 
-## cne servers test
+## cne snapshot
 
-测试 TDX 连接（并行探测主机池，返回首个能出数的服务器）。
+把选定数据集复制成不可变、带校验和的可移植快照，用于冻结可复现实验依赖的 Parquet。
+
+| 子命令 | 说明 |
+|--------|------|
+| `create NAME --dataset D [--dataset D ...]` | 建快照；manifest 固化每个 Parquet 的大小/SHA-256、数据集 state、契约指纹和运行 lineage |
+| `verify NAME` | 逐文件校验大小与哈希；不通过退出 1 |
+| `restore NAME TARGET` | 恢复到新目录或空目录（拒绝活动湖根、不覆盖已有文件）。恢复后对 TARGET 跑 `cne status --datasets` 再切换 |
+| `export NAME [DEST]` | 打成一个可移植 tar 归档。`--compression auto` 有 zstd 就用 `tar.zst`，否则退到 `tar.gz`；先写同目录 `.part`，压缩器正常收尾后才原子改名 |
+| `import ARCHIVE` | 先校验后落地：逐个 tar member 拒绝绝对路径、`..`、重名、软硬链接和设备节点，解出的目录先按 manifest 全量校验，再原子改目录名发布。`--name` 覆盖快照名（默认取归档文件名），`--overwrite` 只在校验通过后才替换同名快照 |
+
+`--config` / `--snapshot-root` 各子命令通用；默认根为 `meta/snapshots`。
+
+### 增量包 `cne snapshot delta`
+
+整湖快照适合冻结实验依赖；**日常同步一个已有的湖用增量包**——只搬动变化的文件，
+且带足够的前置条件让"应用到错误的基线上"变成一次失败而不是一次静默污染。
+
+| 子命令 | 说明 |
+|--------|------|
+| `delta create NAME --from A --to B` | 把两个**数据根**（不是 `curated` 根）逐字节比对成不可变的 add/replace/delete 包。`--to` 默认当前配置的活动湖；`--dataset` 可重复，省略时取两根共有的数据集 |
+| `delta create NAME --from-revision N` | 以已提交的 revision 号作前置条件。revision receipt 记的是变更文件、不是旧湖副本，所以这一模式发的是带 `allow_missing` 的 `replace`；需要严格的旧文件哈希前置就用上面的双根模式 |
+| `delta verify NAME` | 校验每个 add/replace 载荷哈希与每条变更路径的语义 |
+| `delta apply NAME TARGET` | 应用到**非空**的 TARGET 湖根。`--dry-run` 只验前置条件不落盘 |
+
+`delta-create` 是 `delta create` 的兼容别名。
+
+apply 的安全边界值得单独说：add/replace/delete 逐条对基线指纹（revision 增量则对
+各数据集 revision）核验，写入走同目录临时文件，每个被覆盖的文件在整包变更与
+应用后的目标指纹都通过之前一直留着备份；中途抛异常会把已做的逐条回滚——调用方
+不会观察到一个已知的半成品状态。可写路径也被收窄到 `curated/`、`derived/` 和
+`meta/` 下的白名单，增量包无法借此在目标根里写任意文件。
+
+---
+
+## cne stability
+
+从权威 `trading_calendar` 取最近窗口，按 logical trade date 选最新 `daily:core` attempt，验证连续交易日运行证据。
+
+| 选项 | 说明 |
+|------|------|
+| `--days` | 需连续通过的交易日数（默认 20） |
+| `--as-of` | 含当日的 `YYYY-MM-DD` 截止 |
+| `--enforce` | 门禁未过则退出 1 |
+
+缺 run、核心 stage 失败、或只有旧 `warning` 且无 dataset receipt 都算失败。报告写
+`meta/stability/latest.json` 与不可变历史目录。日更脚本每天跑但不 `--enforce`；
+release 治理在第 20 天 enforce。
 
 ---
 
@@ -485,7 +592,8 @@ cne serve                    # → http://127.0.0.1:8787/source-health
 | 码 | 场景 |
 |----|------|
 | 0 | 成功、非交易日跳过、健康检查通过 |
-| 1 | 运行失败、UNHEALTHY、STALE、校验失败 |
+| 1 | 核心运行失败、UNHEALTHY、STALE、校验失败、门禁未过 |
+| 2 | run 可用但降级（`degraded`）——核心 spine 正常，研究/建议层有失败（`run daily` / `run daily --stale-only` / `init` / `retry` / `status`） |
 
 ---
 

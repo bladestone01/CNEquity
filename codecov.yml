@@ -1,7 +1,22 @@
 # Vendored upstream (tdxpy, MIT). Measured for importability by test_tdx_decoupling,
-# not line-exercised — same rationale as ruff's extend-exclude for this tree.
+# not line-exercised — same rationale, and the same file-level boundary, as ruff's
+# extend-exclude and coverage's omit in pyproject.toml. `_wire/__init__.py` and the
+# two transaction parsers are ours, not tdxpy's, so they are not listed here.
 ignore:
-  - "src/cnequity/adapters/tdx_protocol/_wire/**/*"
+  - "src/cnequity/adapters/tdx_protocol/_wire/constants.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/exceptions.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/heartbeat.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/helper.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/logger.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/socket_client.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/parser/base.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/parser/raw_parser.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/parser/setup_commands.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_index_bars.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_security_bars.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_security_count.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_security_list.py"
+  - "src/cnequity/adapters/tdx_protocol/_wire/parser/std/get_xdxr_info.py"
 
 coverage:
   status:

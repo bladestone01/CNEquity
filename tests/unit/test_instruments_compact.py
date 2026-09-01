@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import date, datetime, timezone
 
 import polars as pl
@@ -259,6 +260,46 @@ def test_compact_instruments_removes_stale_siblings(tmp_path):
     )
 
     assert [p.name for p in canonical.parent.rglob("*.parquet")] == ["part-merged.parquet"]
+
+
+def test_compact_instruments_does_not_rewrite_mutable_file_for_immutable_base_refresh(tmp_path):
+    """An immutable generation is a merge base, not a mutable fragment."""
+
+    cfg = Config(data_root=tmp_path / "data")
+    writer = StagingWriter(cfg.staging_root)
+    first = _instrument("600519.SH", list_date=date(2001, 8, 27))
+    writer.write_batch("instruments", "run-instruments-v1", "batch-0", pl.DataFrame([first]))
+    changed: list = []
+    compact_instruments(
+        cfg.staging_root,
+        cfg.curated_root,
+        "run-instruments-v1",
+        date(2024, 6, 28),
+        changed_files=changed,
+    )
+    mutable = cfg.curated_root / "instruments" / "part-merged.parquet"
+    immutable = tmp_path / "immutable"
+    immutable.mkdir(parents=True)
+    shutil.copy2(mutable, immutable / mutable.name)
+
+    refreshed = dict(first)
+    refreshed["fetched_at"] = datetime(2024, 6, 29, tzinfo=timezone.utc)
+    writer.write_batch("instruments", "run-instruments-v2", "batch-0", pl.DataFrame([refreshed]))
+    before_bytes = mutable.read_bytes()
+    before_mtime = mutable.stat().st_mtime_ns
+    second_changed: list = []
+    compact_instruments(
+        cfg.staging_root,
+        cfg.curated_root,
+        "run-instruments-v2",
+        date(2024, 6, 29),
+        changed_files=second_changed,
+        base_root=immutable,
+    )
+
+    assert second_changed == []
+    assert mutable.read_bytes() == before_bytes
+    assert mutable.stat().st_mtime_ns == before_mtime
 
 
 def test_compact_instruments_preserves_rows_from_nested_legacy_fragments(tmp_path):
@@ -591,6 +632,24 @@ def test_tdx_instrument_frame_marks_etf_asset_type():
     assert sz_types == {"000001.SZ": "stock", "159915.SZ": "etf"}
 
 
+def test_tdx_instrument_frame_rejects_unlisted_pre_close_sentinel():
+    from cnequity.adapters.tdx_protocol.client import _filter_instrument_frame
+
+    sentinel = 5.877471754111438e-39
+    out = _filter_instrument_frame(
+        pl.DataFrame(
+            {
+                "code": ["600519", "601123", "510300", "588999"],
+                "name": ["Moutai", "IPO applicant", "HS300", "Fund applicant"],
+                "pre_close": [1418.0, sentinel, 4.2, sentinel],
+            }
+        ),
+        "SH",
+    )
+
+    assert out["symbol"].to_list() == ["600519.SH", "510300.SH"]
+
+
 def test_enrich_instrument_list_dates_fills_nulls(tmp_path, monkeypatch):
     from cnequity.adapters.eastmoney import instruments as em_inst
 
@@ -627,7 +686,7 @@ def test_fetch_list_date_map_closes_owned_client_on_success(monkeypatch):
     monkeypatch.setattr(
         em_inst,
         "fetch_clist_pages",
-        lambda client, fields: [{"f12": "600519", "f13": 1, "f26": "20010827"}],
+        lambda client, fields, fs=None: [{"f12": "600519", "f13": 1, "f26": "20010827"}],
     )
     assert em_inst.fetch_list_date_map() == {"600519.SH": date(2001, 8, 27)}
     assert created[0].closed is True
@@ -639,7 +698,7 @@ def test_fetch_list_date_map_infers_exchange_when_clist_market_is_missing(monkey
     monkeypatch.setattr(
         em_inst,
         "fetch_clist_pages",
-        lambda client, fields: [
+        lambda client, fields, fs=None: [
             {"f12": "600519", "f13": 0, "f26": "20010827"},
             {"f12": "000001", "f13": "0", "f26": "19910403"},
             {"f12": "920001", "f13": "bad", "f26": "20240701"},
@@ -658,7 +717,7 @@ def test_fetch_list_date_map_skips_nonfinite_list_date(monkeypatch):
     monkeypatch.setattr(
         em_inst,
         "fetch_clist_pages",
-        lambda client, fields: [
+        lambda client, fields, fs=None: [
             {"f12": "600519", "f13": 1, "f26": "inf"},
             {"f12": "000001", "f13": 0, "f26": "19910403"},
         ],
@@ -675,7 +734,7 @@ def test_fetch_list_date_map_skips_invalid_eight_digit_date(monkeypatch):
     monkeypatch.setattr(
         em_inst,
         "fetch_clist_pages",
-        lambda client, fields: [
+        lambda client, fields, fs=None: [
             {"f12": "600519", "f13": 1, "f26": "20241340"},
             {"f12": "000001", "f13": 0, "f26": "19910403"},
         ],
@@ -684,6 +743,29 @@ def test_fetch_list_date_map_skips_invalid_eight_digit_date(monkeypatch):
     assert em_inst.fetch_list_date_map(client=object()) == {
         "000001.SZ": date(1991, 4, 3),
     }
+
+
+def test_fetch_list_date_map_includes_etf_board(monkeypatch):
+    from cnequity.adapters.eastmoney import instruments as em_inst
+
+    def _pages(client, fields, fs=None):
+        if "MK" in (fs or ""):
+            return [{"f12": "588200", "f13": 1, "f26": "20221026"}]
+        return [{"f12": "600519", "f13": 1, "f26": "20010827"}]
+
+    monkeypatch.setattr(em_inst, "fetch_clist_pages", _pages)
+    assert em_inst.fetch_list_date_map(client=object()) == {
+        "600519.SH": date(2001, 8, 27),
+        "588200.SH": date(2022, 10, 26),
+    }
+
+
+def test_symbol_from_clist_etf_infers_exchange_from_prefix():
+    from cnequity.adapters.eastmoney import common as em_common
+
+    assert em_common.symbol_from_clist_etf("588200", 0) == "588200.SH"
+    assert em_common.symbol_from_clist_etf("159915", 0) == "159915.SZ"
+    assert em_common.symbol_from_clist_etf("600519", 1) is None
 
 
 def test_fetch_list_date_map_closes_owned_client_on_error(monkeypatch):
@@ -704,7 +786,7 @@ def test_fetch_list_date_map_closes_owned_client_on_error(monkeypatch):
 
     monkeypatch.setattr(em_inst, "EastMoneyClient", _factory)
 
-    def _boom(client, fields):
+    def _boom(client, fields, fs=None):
         raise RuntimeError("clist failed")
 
     monkeypatch.setattr(em_inst, "fetch_clist_pages", _boom)

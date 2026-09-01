@@ -28,7 +28,9 @@ import polars as pl
 
 from cnequity.adapters.eastmoney.corporate_actions_migration import _code_mapping
 from cnequity.config import Config
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import parse_symbol
+from cnequity.domain.trading_status import STATUS_NORMAL
 from cnequity.query.parquet_scan import scan_parquet_root
 
 __all__ = ["TUSHARE_ST_DIRECT_FLOOR", "TUSHARE_ST_HISTORY_FLOOR", "fetch_st_history"]
@@ -47,6 +49,7 @@ _OUTPUT_SCHEMA = {
     "trade_date": pl.Date,
     "is_trading": pl.Boolean,
     "status": pl.Utf8,
+    "risk_warning": pl.Boolean,
 }
 
 
@@ -71,12 +74,11 @@ def _post_json(
     backoff = float(config.retry_backoff_seconds) if config is not None else 0.0
     last_error: Exception | None = None
     for attempt in range(attempts):
-        if config is not None:
-            config.rate_limit("tushare")
         try:
-            response = client.post(TUSHARE_API_URL, json=payload)
-            response.raise_for_status()
-            return response.json()
+            with source_request(config, "tushare"):
+                response = client.post(TUSHARE_API_URL, json=payload)
+                response.raise_for_status()
+                return response.json()
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code if exc.response is not None else None
             if status not in {408, 429} and not (status is not None and 500 <= status <= 599):
@@ -401,7 +403,12 @@ def fetch_st_history(
                         "symbol": symbol,
                         "trade_date": trade_date,
                         "is_trading": True,
-                        "status": "st" if trade_date in st_dates else "normal",
+                        "status": STATUS_NORMAL,
+                        # `kind` above distinguishes ST from *ST, but no other
+                        # source feeding this dataset does, so the finer
+                        # designation has never survived into curated. It stays
+                        # in the exchange 简称 via instruments.name.
+                        "risk_warning": trade_date in st_dates,
                     }
                     for trade_date in traded_dates
                 )

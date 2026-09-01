@@ -474,15 +474,16 @@ def test_cli_repair_does_not_claim_success_when_the_step_failed(tmp_path, monkey
     said 全部修复完成 immediately under it."""
     from click.testing import CliRunner
 
-    from cnequity.cli import main as cli_main
+    from cnequity.cli import quality_cmds
+    from cnequity.cli.main import cli
 
     monkeypatch.setattr(
-        cli_main,
+        quality_cmds,
         "_run_backfill",
         lambda cfg, ds, start, end: {"status": "failed", "rows_written": 0},
     )
     res = CliRunner().invoke(
-        cli_main.cli,
+        cli,
         ["verify", "--config", str(_cli_lake(tmp_path)), "--dataset", "daily_bars", "--repair"],
     )
     assert res.exit_code == 1
@@ -494,15 +495,16 @@ def test_cli_repair_says_so_when_the_window_is_genuinely_empty(tmp_path, monkeyp
     """Succeeded but wrote nothing is not a repair — re-running will not help."""
     from click.testing import CliRunner
 
-    from cnequity.cli import main as cli_main
+    from cnequity.cli import quality_cmds
+    from cnequity.cli.main import cli
 
     monkeypatch.setattr(
-        cli_main,
+        quality_cmds,
         "_run_backfill",
         lambda cfg, ds, start, end: {"status": "success", "rows_written": 0},
     )
     res = CliRunner().invoke(
-        cli_main.cli,
+        cli,
         ["verify", "--config", str(_cli_lake(tmp_path)), "--dataset", "daily_bars", "--repair"],
     )
     assert res.exit_code == 0

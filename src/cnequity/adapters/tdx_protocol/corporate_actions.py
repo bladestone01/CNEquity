@@ -10,10 +10,43 @@ from datetime import date
 
 import polars as pl
 
-from cnequity.adapters.tdx_protocol.session import TDX_SESSION_LOCK, close_quotes_client
-from cnequity.domain.rate_limit import RateLimitSpec, wait_spec
+from cnequity.adapters.tdx_protocol.session import close_quotes_client
+from cnequity.domain.rate_limit import RateLimitSpec, source_request_slot_spec, wait_spec
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive, begin_capture
 
 logger = logging.getLogger(__name__)
+
+
+def _configured_archive(
+    config,
+    dataset: str,
+    *,
+    run_id: str | None = None,
+    request_scope: str | None = None,
+) -> RawPayloadArchive | None:
+    """Build a strict archive for an explicitly governed source adapter."""
+    if config is None or not hasattr(config, "meta_root"):
+        return None
+    should_archive = getattr(config, "should_archive_raw", None)
+    if callable(should_archive) and not should_archive(dataset):
+        return None
+    if not bool(getattr(config, "raw_archive_enabled", True)):
+        return None
+    scope = str(request_scope or f"dataset:{dataset}")
+    nonce = begin_capture(config, dataset, run_id, source="tdx_protocol", request_scope=scope)
+    return RawPayloadArchive(
+        config.meta_root,
+        enabled=True,
+        datasets=[dataset],
+        compression=getattr(config, "raw_archive_compression", "gzip"),
+        max_payload_bytes=getattr(config, "raw_archive_max_payload_bytes", None),
+        capture_owner=config,
+        capture_run_id=run_id,
+        capture_source="tdx_protocol",
+        capture_scope=scope,
+        capture_nonce=nonce,
+    )
+
 
 _ACTION_TYPES = {
     "cash_dividend": "cash_dividend",
@@ -127,6 +160,10 @@ def fetch_xdxr_for_symbol(
     rate_limit: RateLimitSpec | None = None,
     on_date: date | None = None,
     strict: bool = False,
+    archive: RawPayloadArchive | None = None,
+    archive_dataset: str = "corporate_actions",
+    archive_run_id: str | None = None,
+    request_scope: str | None = None,
 ) -> pl.DataFrame:
     wait_spec(rate_limit)
     code, _, exch = symbol.partition(".")
@@ -140,12 +177,42 @@ def fetch_xdxr_for_symbol(
     # bars — the fix here is applying that same pattern to xdxr.
     market = 1 if exch == "SH" else (0 if exch == "SZ" else 2)
     try:
-        raw = client.xdxr(symbol=code, market=market)
+        with source_request_slot_spec(rate_limit):
+            raw = client.xdxr(symbol=code, market=market)
     except Exception as exc:
         logger.debug("TDX xdxr failed for %s: %s", symbol, exc)
+        if archive is not None and archive.enabled:
+            raise RawArchiveError(
+                f"TDX corporate_actions {symbol}: exact wire response unavailable"
+            ) from exc
         if strict:
             raise RuntimeError(f"TDX xdxr failed for {symbol}") from exc
         return pl.DataFrame()
+
+    if archive is not None and archive.enabled:
+        wire = getattr(client, "last_response_wire", None)
+        if isinstance(wire, bytearray):
+            wire = bytes(wire)
+        elif isinstance(wire, memoryview):
+            wire = wire.tobytes()
+        if not isinstance(wire, bytes):
+            raise RawArchiveError(
+                f"TDX corporate_actions {symbol}: response has no exact wire bytes"
+            )
+        archive.archive(
+            archive_dataset,
+            wire,
+            source="tdx_protocol",
+            request_params={"symbol": code, "market": market},
+            run_id=archive_run_id,
+            payload_format="bytes",
+            http_metadata={"wire_exact": True, "protocol": "tdx", "compressed_frame": True},
+            observation_id=(
+                f"{archive_run_id or 'anonymous'}:xdxr:{symbol}:"
+                f"scope={request_scope or 'scope-unknown'}"
+            ),
+            request_scope=request_scope,
+        )
 
     if raw is None or len(raw) == 0:
         return pl.DataFrame()
@@ -168,37 +235,55 @@ def fetch_corporate_actions_tdx(
     rate_limit: RateLimitSpec | None = None,
     strict: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
+    config=None,
+    run_id: str | None = None,
+    archive: RawPayloadArchive | None = None,
+    request_scope: str | None = None,
 ) -> pl.DataFrame:
+    if archive is None:
+        archive = _configured_archive(
+            config,
+            "corporate_actions",
+            run_id=run_id,
+            request_scope=request_scope,
+        )
+    if archive is not None and archive.enabled and not run_id:
+        raise RawArchiveError("TDX corporate_actions archive requires a non-empty run_id")
     client = None
     frames: list[pl.DataFrame] = []
     on_date = None if backfill else trade_date
     total = len(symbols)
     started_at = time.monotonic()
     try:
-        with TDX_SESSION_LOCK:
-            client = client_factory()
-            for index, sym in enumerate(symbols, start=1):
-                df = fetch_xdxr_for_symbol(
-                    client,
-                    sym,
-                    rate_limit=rate_limit,
-                    on_date=on_date,
-                    strict=strict,
+        # ``client_factory`` returns a client owned by this invocation.  The
+        # socket is touched by one thread only, so no global session lock is
+        # needed; holding one would block unrelated daily/minute lanes.
+        client = client_factory()
+        for index, sym in enumerate(symbols, start=1):
+            df = fetch_xdxr_for_symbol(
+                client,
+                sym,
+                rate_limit=rate_limit,
+                on_date=on_date,
+                strict=strict,
+                archive=archive,
+                archive_run_id=run_id,
+                request_scope=request_scope,
+            )
+            if df.height:
+                frames.append(df)
+            if on_progress is not None:
+                on_progress(index, total)
+            if index == 1 or index % 100 == 0 or index == total:
+                elapsed = time.monotonic() - started_at
+                remaining = (elapsed / index) * (total - index) if index else 0.0
+                logger.info(
+                    "corporate_actions TDX xdxr %d/%d symbols · %.1fs elapsed · ~%.1fs left",
+                    index,
+                    total,
+                    elapsed,
+                    remaining,
                 )
-                if df.height:
-                    frames.append(df)
-                if on_progress is not None:
-                    on_progress(index, total)
-                if index == 1 or index % 100 == 0 or index == total:
-                    elapsed = time.monotonic() - started_at
-                    remaining = (elapsed / index) * (total - index) if index else 0.0
-                    logger.info(
-                        "corporate_actions TDX xdxr %d/%d symbols · %.1fs elapsed · ~%.1fs left",
-                        index,
-                        total,
-                        elapsed,
-                        remaining,
-                    )
     finally:
         close_quotes_client(client)
 

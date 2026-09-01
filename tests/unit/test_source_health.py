@@ -324,7 +324,9 @@ def test_probe_writes_into_the_lake_by_default(config, monkeypatch, tmp_path):
     cfg_path = tmp_path / "c.toml"
     cfg_path.write_text(f'[data]\nroot = "{path_for_toml(config.data_root)}"\n')
 
-    result = CliRunner().invoke(cli, ["sources", "--config", str(cfg_path), "--vantage", "cn"])
+    result = CliRunner().invoke(
+        cli, ["sources", "probe", "--config", str(cfg_path), "--vantage", "cn"]
+    )
     assert result.exit_code == 0, result.output
     written = config.meta_root / "source_health" / "cn.json"
     assert written.exists()
@@ -344,6 +346,6 @@ def test_probe_exits_zero_when_a_source_is_down(config, monkeypatch, tmp_path):
     cfg_path = tmp_path / "c.toml"
     cfg_path.write_text(f'[data]\nroot = "{path_for_toml(config.data_root)}"\n')
 
-    result = CliRunner().invoke(cli, ["sources", "--config", str(cfg_path)])
+    result = CliRunner().invoke(cli, ["sources", "probe", "--config", str(cfg_path)])
     assert result.exit_code == 0
     assert "down" in result.output

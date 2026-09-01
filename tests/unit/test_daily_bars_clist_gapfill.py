@@ -1,4 +1,4 @@
-"""TDX tip gaps route through EastMoney clist (ADR-0005), not per-symbol kline."""
+"""TDX tip gaps use clist first, then bounded kline recovery (ADR-0005)."""
 
 from __future__ import annotations
 
@@ -319,6 +319,73 @@ def test_tip_tdx_fail_clist_recovers_step(tmp_path, monkeypatch):
     assert manifest.get_batch(run_id, "tdx-batch-0")["status"] == "success"
 
 
+def test_clean_primary_tip_still_captures_daily_peer_snapshot(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg.failover_datasets[0].snapshot_cadence = "daily"
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 7, 24)
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-batch-0", _bar_frame(["600519.SH"], tip)
+    )
+    calls = []
+    monkeypatch.setattr(
+        "cnequity.quality.failover.snapshot_daily_bars_clist",
+        lambda *args, **kwargs: calls.append(kwargs) or pl.DataFrame(),
+    )
+
+    result = _finish_daily_bars(
+        cfg,
+        tip,
+        run_id,
+        start=tip,
+        end=tip,
+        expected_tdx_symbols=["600519.SH"],
+        tdx_result={"rows_read": 1, "rows_written": 1},
+        sina_result=None,
+    )
+
+    assert result["rows_written"] == 1
+    assert calls and calls[0]["symbols"] == ["600519.SH"]
+    finding = next(
+        item
+        for item in result["context_updates"]["audit_findings"]
+        if item["check"] == "backup_snapshot_unavailable"
+    )
+    assert finding["peer_unavailable"] is True
+    assert finding["retryable"] is True
+
+
+def test_peer_snapshot_failure_is_observable_but_does_not_invalidate_primary(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg.failover_datasets[0].snapshot_cadence = "daily"
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 7, 24)
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars", run_id, "tdx-batch-0", _bar_frame(["600519.SH"], tip)
+    )
+    monkeypatch.setattr(
+        "cnequity.quality.failover.snapshot_daily_bars_clist",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("peer down")),
+    )
+
+    result = _finish_daily_bars(
+        cfg,
+        tip,
+        run_id,
+        start=tip,
+        end=tip,
+        expected_tdx_symbols=["600519.SH"],
+        tdx_result={"rows_read": 1, "rows_written": 1},
+        sina_result=None,
+    )
+
+    findings = result["context_updates"]["audit_findings"]
+    finding = next(item for item in findings if item["check"] == "backup_snapshot_unavailable")
+    assert finding["severity"] == "warning"
+    assert finding["peer_unavailable"] is True
+    assert finding["retryable"] is True
+
+
 def test_historical_tip_backfill_validates_staged_end_not_job_as_of(tmp_path, monkeypatch):
     """A weekend/as-of date must not hide a successfully staged past session."""
     cfg = _cfg(tmp_path)
@@ -345,6 +412,99 @@ def test_historical_tip_backfill_validates_staged_end_not_job_as_of(tmp_path, mo
     )
 
     assert result["rows_written"] == 1
+
+
+def test_tip_clist_leftover_uses_kline(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    tip = date(2026, 8, 18)
+    expected = ["600519.SH", "161728.SZ"]
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
+        lambda *args, **kwargs: _bar_frame([expected[0]], tip),
+    )
+    kline_calls: list[list[str]] = []
+
+    def kline(symbols, start, end, **kwargs):
+        kline_calls.append(list(symbols))
+        return _bar_frame(list(symbols), tip)
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", kline)
+
+    result = _finish_daily_bars(
+        cfg,
+        tip,
+        run_id,
+        start=tip,
+        end=tip,
+        expected_tdx_symbols=expected,
+        tdx_result={
+            "rows_read": 0,
+            "rows_written": 0,
+            "had_error": True,
+            "failed_symbols": expected,
+        },
+        sina_result=None,
+    )
+
+    assert kline_calls == [[expected[1]]]
+    assert result["rows_written"] == 2
+    assert _staged_daily_bar_symbols(cfg, run_id, tip) == set(expected)
+
+
+def test_historical_tip_retry_uses_kline_not_live_clist(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core")
+    historical = date(2026, 8, 18)
+    current = date(2026, 8, 19)
+    batch_id = "2026-08-18_2026-08-18-batch-0"
+    manifest.start_batch(
+        run_id,
+        batch_id,
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=["161728.SZ"],
+        window_start=historical.isoformat(),
+        window_end=historical.isoformat(),
+    )
+    manifest.finish_batch(run_id, batch_id, "failed", error_message="TDX empty")
+
+    calls: list[tuple] = []
+
+    def no_clist(*args, **kwargs):
+        calls.append(("clist", args, kwargs))
+        return pl.DataFrame()
+
+    def kline(symbols, start, end, **kwargs):
+        calls.append(("kline", list(symbols), start, end))
+        return _bar_frame(list(symbols), historical)
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist", no_clist)
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", kline)
+
+    result = _finish_daily_bars(
+        cfg,
+        current,
+        run_id,
+        start=historical,
+        end=historical,
+        expected_tdx_symbols=["161728.SZ"],
+        tdx_result={
+            "rows_read": 0,
+            "rows_written": 0,
+            "had_error": True,
+            "failed_symbols": ["161728.SZ"],
+        },
+        sina_result=None,
+    )
+
+    assert "clist" not in [call[0] for call in calls]
+    assert ("kline", ["161728.SZ"], historical, historical) in calls
+    assert result["rows_written"] == 1
+    assert _staged_daily_bar_symbols(cfg, run_id, historical) == {"161728.SZ"}
+    assert manifest.get_batch(run_id, batch_id)["status"] == "success"
 
 
 def test_retry_routes_non_tdx_symbols_to_fallback(tmp_path, monkeypatch):
@@ -388,6 +548,10 @@ def test_tip_total_loss_still_raises(tmp_path, monkeypatch):
         "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
         lambda trade_date, symbols=None, client=None, config=None: pl.DataFrame(),
     )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
     with pytest.raises(RuntimeError, match="produced no staged tip rows"):
         _finish_daily_bars(
             cfg,
@@ -406,14 +570,22 @@ def test_tip_total_loss_still_raises(tmp_path, monkeypatch):
         )
 
 
-def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, monkeypatch):
-    # A symbol can still be legitimately missing after both TDX and the clist
-    # gap-fill had a shot at it (e.g. a trading halt/suspension). That must
-    # not fail the whole market-wide tip — regression test for a check that
-    # used to raise on any single missing key, every day some symbol halted.
+def test_tip_partial_miss_after_gapfill_stays_strict_for_unknown_symbol(tmp_path, monkeypatch):
+    # A market-sized response cannot prove that one remaining symbol had no
+    # data.  Without listing/status/source-empty evidence the unknown key must
+    # keep the checkpoint blocked; there is no market-level 5% allowance.
     cfg = _cfg(tmp_path)
-    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily:core")
     tip = date(2026, 7, 24)
+    manifest.start_batch(
+        run_id,
+        "tdx-partial",
+        task_id="daily_bars",
+        dataset="daily_bars",
+        symbols=["600519.SH", "000001.SZ"],
+    )
+    manifest.finish_batch(run_id, "tdx-partial", "failed", error_message="TDX partial")
     monkeypatch.setattr(
         "cnequity.adapters.eastmoney.bars.fetch_daily_bars_clist",
         lambda trade_date, symbols=None, client=None, config=None: pl.DataFrame(
@@ -429,27 +601,27 @@ def test_tip_partial_miss_after_gapfill_warns_instead_of_failing_step(tmp_path, 
             }
         ),
     )
-    result = _finish_daily_bars(
-        cfg,
-        tip,
-        run_id,
-        start=tip,
-        end=tip,
-        expected_tdx_symbols=["600519.SH", "000001.SZ"],
-        tdx_result={
-            "rows_read": 0,
-            "rows_written": 0,
-            "had_error": True,
-            "failed_symbols": ["600519.SH", "000001.SZ"],
-        },
-        sina_result=None,
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
     )
-    assert result["rows_written"] == 1
-    findings = result["context_updates"]["audit_findings"]
-    assert any(
-        f["check"] == "daily_bars_tip_missing_symbols" and "000001.SZ" in f["message"]
-        for f in findings
-    )
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            tip,
+            run_id,
+            start=tip,
+            end=tip,
+            expected_tdx_symbols=["600519.SH", "000001.SZ"],
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": ["600519.SH", "000001.SZ"],
+            },
+            sina_result=None,
+        )
+    assert manifest.get_batch(run_id, "tdx-partial")["status"] == "failed"
 
 
 def test_tip_large_partial_miss_blocks_checkpoint(tmp_path, monkeypatch):
@@ -471,6 +643,10 @@ def test_tip_large_partial_miss_blocks_checkpoint(tmp_path, monkeypatch):
                 "amount": [1000.0],
             }
         ),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
     )
     with pytest.raises(RuntimeError, match="refusing to checkpoint"):
         _finish_daily_bars(
@@ -559,6 +735,161 @@ def test_multiday_uses_kline_not_clist(tmp_path, monkeypatch):
     assert clist_calls == []
     assert kline_calls == [["600519.SH"]]
     assert result["rows_written"] == 7
+
+
+def test_multiday_partial_miss_after_gapfill_stays_strict_for_unknown_symbol(tmp_path, monkeypatch):
+    # Even a large multi-day response cannot certify one unresolved symbol
+    # without symbol-level metadata/status/empty evidence.
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    start, end = date(2024, 6, 20), date(2024, 6, 21)
+    days = [date(2024, 6, 20), date(2024, 6, 21)]
+    expected = [f"600{i:03d}.SH" for i in range(20)]
+    missing = expected[-1]
+
+    def _kline(symbols, s, e, **k):
+        rows = [
+            {
+                "symbol": symbol,
+                "trade_date": day,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1,
+                "amount": 1.0,
+            }
+            for symbol in symbols
+            if symbol != missing
+            for day in days
+        ]
+        return pl.DataFrame(rows)
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": len(expected),
+            "failed_symbol_names": expected,
+            "empty_symbol_names": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            end,
+            run_id,
+            start=start,
+            end=end,
+            expected_tdx_symbols=expected,
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": expected,
+            },
+            sina_result=None,
+        )
+
+
+def test_multiday_single_symbol_scope_still_raises(tmp_path, monkeypatch):
+    # The tolerance above must not apply to a narrow explicit scope — a
+    # scoped backfill or a `cne retry` batch of just one or two symbols,
+    # where every symbol is the whole ask and "tolerate at least 1" would
+    # make the run silently report success with nothing staged.
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    start, end = date(2024, 6, 20), date(2024, 6, 21)
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.bars.fetch_daily_bars",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": 1,
+            "failed_symbol_names": ["600519.SH"],
+            "empty_symbol_names": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            end,
+            run_id,
+            start=start,
+            end=end,
+            expected_tdx_symbols=["600519.SH"],
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": ["600519.SH"],
+            },
+            sina_result=None,
+        )
+
+
+def test_multiday_large_partial_miss_blocks_checkpoint(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    start, end = date(2024, 6, 20), date(2024, 6, 21)
+    days = [date(2024, 6, 20), date(2024, 6, 21)]
+    expected = [f"600{i:03d}.SH" for i in range(10)]
+
+    def _kline(symbols, s, e, **k):
+        rows = [
+            {
+                "symbol": symbol,
+                "trade_date": day,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1,
+                "amount": 1.0,
+            }
+            for symbol in symbols
+            if symbol == expected[0]
+            for day in days
+        ]
+        return pl.DataFrame(rows)
+
+    monkeypatch.setattr("cnequity.adapters.eastmoney.bars.fetch_daily_bars", _kline)
+    monkeypatch.setattr(
+        "cnequity.steps.bars.fetch_bars_via_sina",
+        lambda *args, **kwargs: {
+            "rows_read": 0,
+            "rows_written": 0,
+            "failed_symbols": len(expected),
+            "failed_symbol_names": expected,
+            "empty_symbol_names": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to checkpoint"):
+        _finish_daily_bars(
+            cfg,
+            end,
+            run_id,
+            start=start,
+            end=end,
+            expected_tdx_symbols=expected,
+            tdx_result={
+                "rows_read": 0,
+                "rows_written": 0,
+                "had_error": True,
+                "failed_symbols": expected,
+            },
+            sina_result=None,
+        )
 
 
 def test_multiday_accepts_explicit_no_data_from_fallback(tmp_path, monkeypatch):

@@ -21,6 +21,8 @@ import math
 import re
 from datetime import date
 
+from cnequity.domain.rate_limit import source_request
+
 logger = logging.getLogger(__name__)
 
 BASE = "https://www.pbc.gov.cn"
@@ -54,15 +56,17 @@ def client():
     return cr
 
 
-def get_text(url: str) -> str:
-    resp = client().get(url, impersonate="chrome", timeout=TIMEOUT_SECONDS)
+def get_text(url: str, *, config=None, source: str = "pboc") -> str:
+    with source_request(config, source):
+        resp = client().get(url, impersonate="chrome", timeout=TIMEOUT_SECONDS)
     resp.raise_for_status()
     resp.encoding = "utf-8"
     return resp.text
 
 
-def get_bytes(url: str) -> bytes:
-    resp = client().get(url, impersonate="chrome", timeout=TIMEOUT_SECONDS)
+def get_bytes(url: str, *, config=None, source: str = "pboc") -> bytes:
+    with source_request(config, source):
+        resp = client().get(url, impersonate="chrome", timeout=TIMEOUT_SECONDS)
     resp.raise_for_status()
     return resp.content
 
@@ -71,19 +75,32 @@ def absolute(href: str) -> str:
     return href if href.startswith("http") else f"{BASE}{href}"
 
 
-def year_sections(index_html: str | None = None) -> dict[int, str]:
+def year_sections(
+    index_html: str | None = None, *, config=None, source: str = "pboc"
+) -> dict[int, str]:
     """Map year → that year's statistics section URL."""
-    html = index_html if index_html is not None else get_text(STATS_INDEX)
+    if index_html is None:
+        html = get_text(STATS_INDEX, config=config, source=source)
+    else:
+        html = index_html
     return {int(year): absolute(href) for href, year in _YEAR_SECTION_RE.findall(html)}
 
 
-def workbook_url(year_section_url: str, *, topic: str, table_label: str) -> str | None:
+def workbook_url(
+    year_section_url: str,
+    *,
+    topic: str,
+    table_label: str,
+    config=None,
+    source: str = "pboc",
+) -> str | None:
     """Walk a year section → topic page → the workbook beside ``table_label``."""
     topic_re = re.compile(r"""href=["']([^"']+)["'][^>]*>\s*""" + re.escape(topic) + r"""\s*</a>""")
-    match = topic_re.search(get_text(year_section_url))
+    section_html = get_text(year_section_url, config=config, source=source)
+    match = topic_re.search(section_html)
     if not match:
         return None
-    topic_html = get_text(absolute(match.group(1)))
+    topic_html = get_text(absolute(match.group(1)), config=config, source=source)
     label_at = topic_html.find(table_label)
     if label_at < 0:
         return None
@@ -177,7 +194,10 @@ def fetch_yearly_series(
     the dataset watermark.
     """
     try:
-        sections = year_sections()
+        if config is None:
+            sections = year_sections()
+        else:
+            sections = year_sections(config=config, source=source_name)
     except Exception as exc:
         logger.warning("PBOC statistics index unavailable: %s", exc)
         if strict:
@@ -188,16 +208,27 @@ def fetch_yearly_series(
     rows: list[dict] = []
     failures: dict[int, str] = {}
     for year in sorted((y for y in sections if y >= start_year), reverse=True):
-        if config is not None:
-            config.rate_limit(source_name)
         try:
-            url = workbook_url(sections[year], topic=topic, table_label=table_label)
+            if config is None:
+                url = workbook_url(sections[year], topic=topic, table_label=table_label)
+            else:
+                url = workbook_url(
+                    sections[year],
+                    topic=topic,
+                    table_label=table_label,
+                    config=config,
+                    source=source_name,
+                )
             if url is None:
                 reason = f"no {table_label} workbook link found"
                 failures[year] = reason
                 logger.warning("PBOC %s: %s", year, reason)
                 continue
-            year_rows = parse_month_column(get_bytes(url), value_column, unit=unit)
+            if config is None:
+                content = get_bytes(url)
+            else:
+                content = get_bytes(url, config=config, source=source_name)
+            year_rows = parse_month_column(content, value_column, unit=unit)
         except Exception as exc:
             failures[year] = str(exc)
             logger.warning("PBOC %s %s skipped: %s", year, table_label, exc)

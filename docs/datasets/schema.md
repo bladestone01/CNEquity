@@ -72,6 +72,15 @@ cnequity 的 curated 数据集统一带溯源列，并声明明确主键。
 | data_version | string | |
 | fetched_at | timestamp | |
 
+PIT 的双时态扩展列是可选列，旧 Parquet 没有这些列仍可读取：
+
+| 列 | 类型 | 说明 |
+|--------|------|-------|
+| available_at | timestamp, nullable | 该事实在源端可用的时间；未知时必须为 null，不能用回填时的报告期代替 |
+| source_published_at | timestamp, nullable | 源端实际发布时间；当前东财历史回填通常未知 |
+| observed_at | timestamp, nullable | 湖实际观察到该行的时间；旧文件由 `fetched_at` 兼容补出 |
+| revision_id | string, nullable | 稳定的事实/版本身份；读侧可由业务字段和溯源确定性补出 |
+
 #### trading_calendar
 
 | 列 | 类型 | 说明 |
@@ -89,10 +98,33 @@ cnequity 的 curated 数据集统一带溯源列，并声明明确主键。
 | symbol | string | |
 | trade_date | date | |
 | is_trading | bool | |
-| status | string | normal/suspended/st/*st |
-| source | string | |
+| status | string | **交易状态**：`normal` / `suspended` / `delisted` |
+| risk_warning | bool | **风险警示（ST/*ST）**，与 status 正交；可为 null（无证据） |
+| source | string | 退市行由 `instruments` 判定，标 `derived_delisted` |
 | data_version | string | |
 | fetched_at | timestamp | |
+
+`status` 与 `risk_warning` 是两件正交的事，必须分两列。旧版把两者塞进一个
+`status`，写入端用 `if 停牌 / elif ST` 解决冲突，结果**停牌会把 ST 标记冲掉**：
+000711.SZ（ST京蓝）2026-08-27 是 `st`、08-28 变 `suspended`，公司没摘帽，只是停牌，
+但那天的 ST 标识在库里没了。`derive/market_breadth.py` 正是靠它选 ±5% / ±10% 涨跌幅
+基准，所以停牌的 ST 股一直按 ±10% 算。
+
+`delisted` 是同一个问题的另一半。旧写入端把「既不停牌、又不在 ST 板」的标的一律写成
+`normal / is_trading=true`，没有退市概念——实测 2026-08-28 有 **611 只带 `delist_date`
+的标的**（最早一只 1999-07-12 退市）每天都被发布成正常交易。现在这些标的不再向行情板
+询问（板本来就答不了），而是由 `instruments` 直接判定，`risk_warning` 取自最终简称
+（如 `*ST精伦`）。
+
+**读旧湖不会出错。** 旧行把 ST 编码成 `status="st"`，`validate_dataframe` 在读入时
+自动升级（见 `cnequity/domain/trading_status.py`）。把物理 schema 统一过来跑：
+
+```bash
+scripts/migrate_trading_status_risk_warning.py --config configs/cnequity.toml --apply
+```
+
+迁移**不会**给历史补 `delisted` 行：某一天的状态是当时观测到的事实，用今天的退市日期
+倒填会凭空造出当时并不存在的 point-in-time 事实。要修某段历史，重跑那段日更即可。
 
 #### daily_bars
 
@@ -326,9 +358,11 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
   或改用 `bps`（每股净资产）× 股本。
 - `capex` 取「购建固定资产、无形资产和其他长期资产支付的现金」，是代理量而非严格资本开支。
 - **回填值是修订后的**：东财只提供某期财务数据的*当前*版本。回填拿到的是修订值，
-  但配的是首次披露日（statement 报表自带的 `NOTICE_DATE` 是「最后一次重述日」，
-  往往晚 1–2 年，直接用会让基本面在 PIT 查询里整体迟到）。因此存在小幅前视：
-  修订后的数字在首次披露日其实还不知道。只有日更逐日累积的版本才是严格 PIT。
+  但配的是首次披露日，因此注册表将 `financial_statement_items` 标为
+  `pit_quality="reconstructed"`（旧别名 `pit_grade="partial"`），而不是严格 PIT。
+  `load(..., pit_mode="strict")` 会拒绝这类行；`pit_mode="best_effort"` 可以读取，
+  但必须检查返回的 `pit_is_exact` / `pit_quality`。只有逐日累积、同时保存真实
+  `available_at`/`observed_at` 的版本才可称为严格 PIT。
 - **历史深度**：`cne backfill financial_statement_items` 默认走东财报告期自 **2001** 起
   （可用 `--start` / `--end` 分块）；不走 baostock。盘上实际起点见 `list_datasets().coverage_start`。
 

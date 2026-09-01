@@ -12,15 +12,184 @@ a registered step.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
 from cnequity.domain.partitions import Granularity, partition_value
 
+# Re-export the storage contract from the registry module for callers that
+# already use ``domain.datasets`` as their metadata entry point.
+from cnequity.domain.pit import (  # noqa: F401
+    PIT_MODES,
+    PIT_QUALITIES,
+    PIT_STORAGE_COLUMNS,
+    PIT_STORAGE_DTYPES,
+    PitMode,
+    PitQuality,
+)
+
 FetchSemantics = Literal["by_date", "snapshot"]
 HistoryMode = Literal["by_date", "snapshot_with_backfill", "snapshot_only"]
 Layer = Literal["curated", "derived"]
+
+# These fields deliberately use small, serialisable values.  They are kept on
+# ``DatasetSpec`` (rather than in a second registry) so a caller that already
+# imports the public registry can discover the complete data contract without
+# learning about another configuration file.  The aliases are intentionally
+# open-ended at runtime: downstream applications may carry a newer contract
+# level while still reading an older cnequity release.  ``domain.contracts``
+# performs the strict validation for the values understood by this release.
+ContractLevel = str
+# ``PitMode`` controls a query; ``PitQuality`` describes the evidence carried
+# by a row/dataset.  ``PitGrade`` is retained as a 0.x contract alias below.
+PitGrade = str
+CompatibilityContract = str | Mapping[str, str]
+UnitContract = str | Mapping[str, str]
+
+DEFAULT_SCHEMA_VERSION = 1
+DEFAULT_CONTRACT_LEVEL = "stable"
+DEFAULT_COMPATIBILITY = "additive"
+
+# The unit strings are identifiers, not prose.  A mapping is used where a
+# dataset has more than one numeric dimension; a scalar is enough when the
+# dataset has no numeric values whose interpretation needs an explicit unit.
+# These defaults are intentionally conservative: ``source_native`` means that
+# the value has not been silently rescaled by the canonical adapter.
+_UNIT_CONTRACT_DEFAULTS: dict[str, UnitContract] = {
+    "daily_bars": {
+        "price": "CNY/share",
+        "volume": "share",
+        "amount": "CNY",
+    },
+    "index_bars": {
+        "price": "index_point",
+        "volume": "source_native",
+        "amount": "source_native",
+    },
+    "minute_bars": {
+        "price": "CNY/share",
+        "volume": "share",
+        "amount": "CNY",
+    },
+    "minute_bars_5m": {
+        "price": "CNY/share",
+        "volume": "share",
+        "amount": "CNY",
+    },
+    "trade_ticks": {
+        "price": "CNY/share",
+        "volume": "share",
+        "direction": "inferred_tick_rule",
+    },
+    "commodity_bars": {
+        "price": "source_native",
+        "volume": "contract",
+        "amount": "source_native",
+        "open_interest": "contract",
+    },
+    "corporate_actions": {
+        "cash_dividend": "CNY/share",
+        "bonus_ratio": "share/share",
+        "transfer_ratio": "share/share",
+        "allotment_ratio": "share/share",
+        "allotment_price": "CNY/share",
+    },
+    "financial_statement_items": {"item_value": "source_native"},
+    "share_structure": {
+        "total_shares": "share",
+        "float_shares": "share",
+        "restricted_shares": "share",
+        "free_float_shares": "share",
+    },
+    "shareholder_counts": {
+        "holder_count": "holder",
+        "avg_float_shares": "share",
+        "avg_holding_value": "CNY",
+        "holder_count_change_pct": "percent",
+    },
+    "top_holders": {"holding_shares": "share", "holding_pct": "fraction"},
+    "fund_flow": {
+        "main_net_inflow": "CNY",
+        "super_large_net_inflow": "CNY",
+        "large_net_inflow": "CNY",
+        "medium_net_inflow": "CNY",
+        "small_net_inflow": "CNY",
+    },
+    "margin_trading": {
+        "margin_balance": "CNY",
+        "margin_buy": "CNY",
+        "short_balance": "CNY",
+        "short_sell_volume": "share",
+    },
+    "northbound_holdings": {
+        "holding_shares": "share",
+        "holding_mv": "CNY",
+        "holding_ratio": "fraction",
+    },
+    "northbound_flows": {"net_buy": "CNY", "buy_amount": "CNY", "sell_amount": "CNY"},
+    "valuation_metrics": {
+        "pe_ttm": "ratio",
+        "pb": "ratio",
+        "ps_ttm": "ratio",
+        "total_mv": "CNY",
+        "float_mv": "CNY",
+    },
+    "block_trades": {
+        "price": "CNY/share",
+        "volume": "share",
+        "amount": "CNY",
+        "premium_ratio": "fraction",
+    },
+    "index_constituents": {"weight": "fraction"},
+    "macro_indicators": {"value": "source_native"},
+    "share_unlock_schedule": {"unlock_shares": "share", "unlock_ratio": "fraction"},
+    "institutional_holdings": {
+        "holding_shares": "share",
+        "holding_ratio": "fraction",
+        "holding_mv": "CNY",
+    },
+    "analyst_consensus": {
+        "eps_forecast": "CNY/share",
+        "target_price": "CNY/share",
+        "pe_forecast": "ratio",
+        "analyst_count": "analyst",
+    },
+    "sentiment_scores": {"sentiment_score": "normalized[-1,1]", "headline_count": "headline"},
+    "sector_bars": {
+        "price": "index_point",
+        "volume": "source_native",
+        "amount": "source_native",
+    },
+    "sector_fund_flow": {
+        "main_net_inflow": "CNY",
+        "change_pct": "percent",
+        "turnover_pct": "percent",
+    },
+    "economic_calendar": {"value": "source_native"},
+    "industry_index": {"ret": "fraction", "amount": "source_native"},
+    "delisting_events": {
+        "final_close": "CNY/share",
+        "worst_final_return": "fraction",
+        "final_window_return": "fraction",
+    },
+}
+
+
+def _default_unit_contract(name: str) -> UnitContract:
+    """Return a detached unit declaration for *name*.
+
+    Most event/identity tables have no numeric field whose unit can be
+    inferred from the registry.  ``canonical`` still makes that fact explicit
+    in the exported contract and, importantly, gives diff tooling a stable
+    value to compare when a future release adds a unit declaration.
+    """
+
+    declared = _UNIT_CONTRACT_DEFAULTS.get(name)
+    return deepcopy(declared) if declared is not None else "canonical"
+
 
 # Research-use classification, orthogonal to ``Layer`` (which is a storage
 # location). L0 is the reference spine everything joins on and L8 the risk
@@ -220,9 +389,143 @@ class DatasetSpec:
     # source is queried; event and announcement feeds are still sparse.
     coverage_mode: Literal["sparse", "session_dense"] = "sparse"
 
+    # ------------------------------------------------------------------
+    # Public data-contract metadata.
+    #
+    # These fields are appended after the original fields on purpose.  A few
+    # integrations construct DatasetSpec positionally, and adding them here
+    # keeps every old positional call valid.  The defaults describe the
+    # long-standing behaviour of the registry; they do not change how rows
+    # are fetched or written.
+    # ------------------------------------------------------------------
+    schema_version: int = DEFAULT_SCHEMA_VERSION
+    contract_level: ContractLevel = DEFAULT_CONTRACT_LEVEL
+    # ``None`` means infer the honest grade from ``pit``.  A PIT dataset is
+    # strict by default; a non-PIT dataset is explicitly ``none``.  Keeping
+    # the optional input allows a future release to add a partial PIT grade
+    # without making old callers pass a new value.
+    pit_grade: PitGrade | None = None
+    # ``None`` means infer from the query/date axis (or ``list_date`` for the
+    # merge-style instruments table and ``announce_date`` for PIT tables).
+    availability_col: str | None = None
+    # ``additive`` is the compatibility policy used by the existing curated
+    # schemas: adding a nullable column is safe; removing/changing a column,
+    # primary key, unit, PIT, or history meaning is not.
+    compatibility: CompatibilityContract = DEFAULT_COMPATIBILITY
+    # A scalar is useful for identity/event datasets, while mappings name the
+    # units of individual measures (prices, shares, amounts, ratios, ...).
+    unit_contract: UnitContract | None = None
+    # Canonical PIT evidence quality.  ``reconstructed`` is used for the
+    # current historical backfill, whose values are today's restated snapshot
+    # paired with an older report/disclosure date.  ``snapshot_only`` denotes
+    # a live snapshot with no honest PIT replay.  ``pit_grade`` remains as the
+    # legacy none/strict/partial spelling in exported 0.x contracts.
+    pit_quality: PitQuality | None = None
+    # Number of already-covered observations to reconcile on every
+    # incremental run. A non-zero value deliberately re-reads the tail
+    # instead of assuming a source will never revise a settled row. The
+    # default keeps legacy append-only behaviour for sparse/event datasets.
+    reconciliation_lookback_days: int = 0
+    # ``trading_day`` counts exchange sessions through the watermark; the
+    # calendar form is useful for feeds whose date axis is not a market
+    # session. The name says ``days`` for API compatibility, but the unit is
+    # explicit so a weekend cannot accidentally consume a reconciliation slot.
+    reconciliation_lookback_mode: Literal["calendar", "trading_day"] = "calendar"
+    # Whether a source promises immutable rows once observed.  This is kept
+    # separate from the schema ``compatibility`` policy: a schema can be
+    # additive while the upstream still revises a settled business key.  A
+    # true value permits append-oriented consumers to skip a reconciliation
+    # sweep; all datasets whose source can correct/restate rows leave it false.
+    append_only: bool = False
+    # Default TTL for source-empty evidence when a caller has no more specific
+    # deployment setting. Config.negative_evidence_ttl_days overrides it.
+    negative_evidence_ttl_days: int = 7
+
+    def __post_init__(self) -> None:
+        """Materialise inferred contract fields without changing old APIs.
+
+        Inference lives here rather than in the exporter so code that consumes
+        ``DATASETS`` directly sees exactly the same machine-readable metadata
+        as code that loads a JSON contract.  Mappings are copied because the
+        dataclass is frozen but a plain dict remains a mutable object.
+        """
+
+        if self.schema_version < 1:
+            raise ValueError("schema_version must be >= 1")
+        if self.reconciliation_lookback_days < 0:
+            raise ValueError("reconciliation_lookback_days must be >= 0")
+        if self.reconciliation_lookback_mode not in {"calendar", "trading_day"}:
+            raise ValueError("reconciliation_lookback_mode must be 'calendar' or 'trading_day'")
+        if not isinstance(self.append_only, bool):
+            raise ValueError("append_only must be a bool")
+        if self.append_only and self.reconciliation_lookback_days:
+            raise ValueError("append_only datasets cannot have a reconciliation lookback")
+        if self.negative_evidence_ttl_days < 0:
+            raise ValueError("negative_evidence_ttl_days must be >= 0")
+
+        if self.pit_quality is None:
+            if self.pit_grade == "partial":
+                quality: PitQuality = "reconstructed"
+            elif self.pit:
+                quality = "strict"
+            elif self.fetch_semantics == "snapshot" and not self.backfill_source:
+                quality = "snapshot_only"
+            else:
+                # Non-PIT by-date data has no PIT quality claim; ``strict`` is
+                # reserved for an exact PIT source, but keeping a concrete
+                # value makes the public contract total and deterministic.
+                quality = "strict"
+            object.__setattr__(self, "pit_quality", quality)
+
+        if self.pit_quality not in PIT_QUALITIES:
+            raise ValueError(
+                f"pit_quality must be one of {PIT_QUALITIES}, got {self.pit_quality!r}"
+            )
+
+        if self.pit_grade is None:
+            legacy_grade = (
+                "partial"
+                if self.pit_quality == "reconstructed"
+                else "strict"
+                if self.pit
+                else "none"
+            )
+            object.__setattr__(self, "pit_grade", legacy_grade)
+
+        if self.availability_col is None:
+            if self.pit:
+                # All current PIT schemas carry the first-known/disclosure
+                # timestamp under this canonical name.
+                availability = "announce_date"
+            elif self.query_date_col is not None:
+                availability = self.query_date_col
+            elif self.name == "instruments":
+                availability = "list_date"
+            else:
+                availability = None
+            object.__setattr__(self, "availability_col", availability)
+
+        if self.unit_contract is None:
+            object.__setattr__(self, "unit_contract", _default_unit_contract(self.name))
+        elif isinstance(self.unit_contract, Mapping):
+            object.__setattr__(self, "unit_contract", dict(self.unit_contract))
+
+        if isinstance(self.compatibility, Mapping):
+            object.__setattr__(self, "compatibility", dict(self.compatibility))
+
     @property
     def query_date_col(self) -> str | None:
         return self.date_col or self.partition_col
+
+    @property
+    def reconciliation_lookback(self) -> int:
+        """Compatibility alias for callers that omit the ``_days`` suffix."""
+        return self.reconciliation_lookback_days
+
+    @property
+    def reconciliation_lookback_basis(self) -> str:
+        """Compatibility alias for the explicit lookback unit."""
+        return self.reconciliation_lookback_mode
 
     def earliest_available(self, today: date, *, trading_days_per_year: int = 242) -> date | None:
         """Rough calendar date before which the source serves nothing.
@@ -291,6 +594,8 @@ _SPECS = [
         backup_source="eastmoney",
         tier="L1",
         partition_col="trade_date",
+        reconciliation_lookback_days=5,
+        reconciliation_lookback_mode="trading_day",
         coverage_mode="session_dense",
     ),
     DatasetSpec(
@@ -300,6 +605,8 @@ _SPECS = [
         tier="L1",
         partition_col="trade_date",
         partition_granularity="year",
+        reconciliation_lookback_days=5,
+        reconciliation_lookback_mode="trading_day",
         coverage_mode="session_dense",
     ),
     # 1-minute bars. Day partitions: ~240 bars × the configured scope, which is
@@ -325,6 +632,8 @@ _SPECS = [
         history_horizon_days=95,
         # Tip-paged: chunk by symbol, not by date (see backfill_chunk_symbols).
         backfill_chunk_symbols=200,
+        reconciliation_lookback_days=2,
+        reconciliation_lookback_mode="trading_day",
         intraday_frequency="1m",
         row_grain="1m",
     ),
@@ -358,6 +667,8 @@ _SPECS = [
         # Same tip-paged contract as 1m; 200 symbols × 48 bars × 491 days ≈
         # 4.7M rows per sub-run — comparable compact memory to 1m's chunk.
         backfill_chunk_symbols=200,
+        reconciliation_lookback_days=2,
+        reconciliation_lookback_mode="trading_day",
         intraday_frequency="5m",
         row_grain="5m",
     ),
@@ -392,6 +703,7 @@ _SPECS = [
         # today's tip and a date slice re-fetches everything newer than it.
         # 5 days × 200 symbols × ~2,700 rows ≈ 2.7M rows per sub-run.
         backfill_chunk_days=5,
+        append_only=True,
         # Intraday, but not a bar frequency — see DatasetSpec.row_grain for why
         # this is not `intraday_frequency`.
         row_grain="tick",
@@ -423,6 +735,7 @@ _SPECS = [
         partition_col="ex_date",
         partition_granularity="year",
         backfill_source="tdx_protocol",
+        reconciliation_lookback_days=30,
     ),
     DatasetSpec(
         "announcement_index",
@@ -430,6 +743,7 @@ _SPECS = [
         tier="L2",
         partition_col="announce_date",
         pit=True,
+        reconciliation_lookback_days=30,
     ),
     # Current-state timetable (revisions overwrite scheduled_date; not PIT).
     DatasetSpec(
@@ -439,6 +753,7 @@ _SPECS = [
         partition_col="report_period",
         partition_granularity="quarter",
         watermark=False,
+        reconciliation_lookback_days=120,
     ),
     # L3 fundamentals
     DatasetSpec(
@@ -449,6 +764,16 @@ _SPECS = [
         partition_granularity="quarter",
         watermark=False,
         pit=True,
+        # Historical EastMoney backfill returns today's current/restated
+        # value while borrowing the first-disclosure date from LICO.  It is
+        # useful for exploratory reads but cannot be advertised as exact PIT.
+        pit_quality="reconstructed",
+        pit_grade="partial",
+        # Daily ingestion is keyed by NOTICE_DATE while storage is keyed by
+        # report period.  Re-read the recent disclosure window so late
+        # filings/restatements are captured; the adapter's period backfill
+        # remains the source of truth for older reports.
+        reconciliation_lookback_days=30,
     ),
     # Shareholder structure — the dimensions the long-format statement table
     # cannot hold. `top_holders` is a ranked repeating group of ten, which no
@@ -470,6 +795,9 @@ _SPECS = [
         history_floor_date=date(1990, 1, 1),
         watermark=False,
         pit=True,
+        pit_quality="reconstructed",
+        pit_grade="partial",
+        reconciliation_lookback_days=30,
     ),
     DatasetSpec(
         "shareholder_counts",
@@ -482,6 +810,9 @@ _SPECS = [
         history_floor_date=date(1992, 1, 1),
         watermark=False,
         pit=True,
+        pit_quality="reconstructed",
+        pit_grade="partial",
+        reconciliation_lookback_days=30,
     ),
     DatasetSpec(
         "top_holders",
@@ -500,6 +831,9 @@ _SPECS = [
         history_floor_date=date(2003, 1, 1),
         watermark=False,
         pit=True,
+        pit_quality="reconstructed",
+        pit_grade="partial",
+        reconciliation_lookback_days=240,
     ),
     DatasetSpec(
         "valuation_metrics",
@@ -508,6 +842,7 @@ _SPECS = [
         partition_col="trade_date",
         fetch_semantics="snapshot",
         backfill_source="baostock",
+        # Snapshot values are allowed to settle/retry on the same session.
     ),
     DatasetSpec(
         "analyst_consensus",
@@ -539,6 +874,7 @@ _SPECS = [
         tier="L4",
         partition_col="trade_date",
         max_staleness_days=100,
+        reconciliation_lookback_days=5,
     ),
     DatasetSpec(
         "northbound_flows",
@@ -555,6 +891,7 @@ _SPECS = [
         # are dropped rather than zero-filled. The lake holds everything that
         # exists, so this is not staleness and no backfill can change it.
         source_retired_date=date(2024, 8, 16),
+        reconciliation_lookback_days=3,
     ),
     DatasetSpec(
         "dragon_tiger",
@@ -718,6 +1055,7 @@ _SPECS = [
         tier="L8",
         partition_col="event_date",
         partition_granularity="year",
+        reconciliation_lookback_days=30,
     ),
     # derived — ``layer`` is where the parquet lives, ``tier`` what the data is
     # for, so these carry the tier of the question they answer, not "derived".

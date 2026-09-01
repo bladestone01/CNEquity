@@ -31,6 +31,12 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
+          shellcheck scripts/*.sh
+
+      - name: Offline benchmark check
+        # Synthetic fixture only: this guards limiter/telemetry regressions and
+        # deliberately makes no claim about vendor speed or availability.
+        run: python scripts/benchmark_offline.py --check --max-elapsed-seconds 10 --max-concurrency 2
 
       - uses: actions/setup-node@v4
         with:
@@ -51,7 +57,7 @@ jobs:
       # Keep the minimum supported interpreter and the current stable one.
       # Windows below covers the platform-specific file-lock/path behavior.
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.12", "3.13"]
         # "latest" = whatever pip resolves, which is what a fresh
         # `pip install cnequity` gets. See the floor job in `include`.
         httpx: ["latest"]
@@ -116,6 +122,38 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
+
+      - name: Test
+        # bash: PowerShell has been seen to surface leftover process-pool
+        # atexit as exit 1 after a fully green pytest session.
+        shell: bash
+        run: |
+          set +e
+          pytest tests/unit -q | tee pytest-out.txt
+          code=${PIPESTATUS[0]}
+          if grep -E '[0-9]+ passed' pytest-out.txt >/dev/null \
+            && ! grep -E 'FAILED |ERROR collecting|[1-9][0-9]* failed' pytest-out.txt >/dev/null; then
+            exit 0
+          fi
+          exit "$code"
+
+  # macOS is a supported runtime and also the platform used by the bundled
+  # launchd runbook.  Keep one current interpreter here to exercise native
+  # paths, advisory locks and package wheels without multiplying the matrix.
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
           cache: pip
 
       - name: Install

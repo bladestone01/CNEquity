@@ -10,6 +10,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.common import _to_int
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.adapters.eastmoney.raw import configured_archive
 
 _REPORT = "RPT_ECONOMICCALENDAR"
 _COLUMNS = "PUBLISH_DATE,TIME,COUNTRY,INDICATOR,STAR,FORECAST,PREVIOUS,ACTUAL,UNIT"
@@ -33,17 +34,32 @@ def _parse_float(value: object) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def fetch_economic_calendar_window(start: date, end: date, *, config=None) -> pl.DataFrame:
+def fetch_economic_calendar_window(
+    start: date,
+    end: date,
+    *,
+    config=None,
+    run_id: str | None = None,
+) -> pl.DataFrame:
     """Fetch calendar events in [start, end]; empty if source unavailable."""
     rows: list[dict] = []
     client_kwargs = {"config": config} if config is not None else {}
     with EastMoneyClient(**client_kwargs) as client:
+        archive = configured_archive(
+            config,
+            "economic_calendar",
+            run_id=run_id,
+            request_scope=f"rolling:{start.isoformat()}:{end.isoformat()}",
+        )
         data = fetch_datacenter(
             client,
             _REPORT,
             columns=_COLUMNS,
             page_size=500,
             sort_columns="PUBLISH_DATE,TIME",
+            archive=archive,
+            archive_dataset="economic_calendar",
+            archive_run_id=run_id,
         )
 
     for item in data or []:
@@ -91,10 +107,15 @@ def fetch_economic_calendar_window(start: date, end: date, *, config=None) -> pl
     return pl.DataFrame(rows).unique(subset=["event_id"], keep="last")
 
 
-def fetch_economic_calendar(trade_date: date, *, config=None) -> pl.DataFrame:
+def fetch_economic_calendar(
+    trade_date: date,
+    *,
+    config=None,
+    run_id: str | None = None,
+) -> pl.DataFrame:
     """Rolling window [trade_date-2, trade_date+14] for snapshot daily runs."""
     start = trade_date - timedelta(days=2)
     end = trade_date + timedelta(days=14)
     if config is None:
         return fetch_economic_calendar_window(start, end)
-    return fetch_economic_calendar_window(start, end, config=config)
+    return fetch_economic_calendar_window(start, end, config=config, run_id=run_id)

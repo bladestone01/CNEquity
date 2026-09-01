@@ -1,11 +1,26 @@
-"""Shared TDX session primitives (lock + teardown)."""
+"""Shared TDX session primitives.
+
+The vendored wire client owns a socket (and, when enabled, a heartbeat
+thread), so a client must never be shared between threads.  Earlier versions
+used ``TDX_SESSION_LOCK`` around every fetch.  That made the macOS thread
+pool merely a serial queue even though every lane could safely own a separate
+client.  The only process-local mutable state that needs coordination is the
+server discovery/cache; request traffic is deliberately *not* protected by a
+global lock.
+"""
 
 from __future__ import annotations
 
 import threading
 
-# The TDX wire client is not thread-safe (shared socket + heartbeat thread).
-# All Quotes sessions must be serialized across orchestrator parallel steps.
+# Protects server discovery/cache publication only.  It is intentionally not
+# held while a socket request is in flight.
+TDX_DISCOVERY_LOCK = threading.Lock()
+
+# Compatibility name for integrations that imported the old symbol.  Internal
+# adapters no longer acquire this lock around network calls.  Keep it as a
+# separate lock rather than aliasing ``TDX_DISCOVERY_LOCK`` so an old caller
+# cannot accidentally serialize discovery with request traffic.
 TDX_SESSION_LOCK = threading.Lock()
 
 

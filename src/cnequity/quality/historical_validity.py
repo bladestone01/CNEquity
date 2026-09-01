@@ -7,6 +7,11 @@ from datetime import date
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.universe_profiles import (
+    UniverseProfile,
+    UniverseProfileError,
+    resolve_universe_profile,
+)
 from cnequity.quality.st_coverage import st_evidence_coverage_report
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.query.universe import (
@@ -93,6 +98,7 @@ def historical_universe_validity(
     *,
     sample: int = 15,
     universe: str = "all_a",
+    profile: str | UniverseProfile | None = None,
 ) -> dict:
     """Return a strict, read-only historical-universe validity manifest.
 
@@ -100,6 +106,17 @@ def historical_universe_validity(
     catalogued delistings. Adjustment-factor exactness, PIT fundamentals and
     strategy-specific feature coverage remain downstream responsibilities.
     """
+    resolved_profile = None
+    if profile is not None:
+        try:
+            resolved_profile = resolve_universe_profile(profile)
+        except UniverseProfileError as exc:
+            raise ValueError(str(exc)) from exc
+        if universe != "all_a" and universe != resolved_profile.legacy_universe:
+            raise ValueError(
+                f"universe={universe!r} conflicts with profile={resolved_profile.name!r}"
+            )
+        universe = resolved_profile.legacy_universe
     if universe not in SUPPORTED_UNIVERSES:
         raise ValueError(
             f"unsupported historical universe: {universe!r} "
@@ -326,14 +343,14 @@ def historical_universe_validity(
                         f"{counts.get('invalid_delist_date', 0)} invalid delist dates"
                     ),
                     "remediation": (
-                        "Run `cne delisted coverage` for samples, then complete discovery and "
+                        "Run `scripts/delisted_ops.py coverage` for samples, then complete discovery and "
                         "repair the reported catalogue, bars, or instruments gaps."
                     ),
                 }
             )
 
     universe_ready = window_valid and not daily_bar_missing and st_valid and survivorship_valid
-    return {
+    result = {
         "schema_version": 1,
         "claim": f"historical_{universe}_universe_validity",
         "universe": universe,
@@ -373,3 +390,14 @@ def historical_universe_validity(
             "Does not verify point-in-time semantics of fundamentals used by a strategy.",
         ],
     }
+    if resolved_profile is not None:
+        # Keep the legacy fields above for old consumers, while binding a
+        # profile-aware caller to the exact version and scope rules it asked
+        # for.  The profile's strict evidence requirements are represented by
+        # the existing historical ST/delisting checks in this report.
+        result["profile"] = resolved_profile.to_dict()
+        result["profile_name"] = resolved_profile.name
+        result["profile_version"] = resolved_profile.version
+        result["scope_hash"] = resolved_profile.scope_hash
+        result["claim"] = f"historical_{resolved_profile.name}_universe_validity"
+    return result

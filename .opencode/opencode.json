@@ -1,0 +1,61 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "duckdb": {
+      "type": "local",
+      "command": [
+        "mcp-server-duckdb",
+        "--db-path",
+        "/Users/bladestone/devspace/gitcode/stockagent/datalake/data/cnequity/duckdb/browse.duckdb",
+        "--readonly"
+      ],
+      "enabled": true
+    }
+  },
+  "command": {
+    "opsx:apply": {
+      "description": "Apply an OpenSpec change: implement tasks from openspec/changes/<name>/",
+      "template": "Read .agents/commands/opsx/apply.md and execute its workflow for the given change. $ARGUMENTS"
+    },
+    "opsx:archive": {
+      "description": "Archive a completed OpenSpec change",
+      "template": "Read .agents/commands/opsx/archive.md and execute its workflow. $ARGUMENTS"
+    },
+    "opsx:explore": {
+      "description": "Explore mode: clarify requirements and compare options before a change",
+      "template": "Read .agents/commands/opsx/explore.md and enter explore mode. $ARGUMENTS"
+    },
+    "opsx:extract": {
+      "description": "Extract knowledge from an archived OpenSpec change into docs/ and rules/",
+      "template": "Read .agents/commands/opsx/extract.md and execute its workflow. $ARGUMENTS"
+    },
+    "opsx:list": {
+      "description": "List all OpenSpec changes and their status",
+      "template": "Read .agents/commands/opsx/list.md and execute its workflow. $ARGUMENTS"
+    },
+    "opsx:propose": {
+      "description": "Propose a new OpenSpec change with all artifacts in one step",
+      "template": "Read .agents/commands/opsx/propose.md and execute its workflow. $ARGUMENTS"
+    },
+    "opsx:note": {
+      "description": "从会话/素材捕获讨论结论为 notes 暂存条目",
+      "template": "Read .agents/commands/opsx/note.md and execute its workflow. $ARGUMENTS"
+    },
+    "opsx:ship": {
+      "description": "Ship a change: code review → commit → push → PR → archive",
+      "template": "Read .agents/commands/opsx/ship.md and execute its workflow. $ARGUMENTS"
+    },
+    "opsx:triage": {
+      "description": "整理 notes：提升/折叠/失效/清理 archive",
+      "template": "Read .agents/commands/opsx/triage.md and execute its workflow. $ARGUMENTS"
+    },
+    "git-commit": {
+      "description": "Execute git commit with conventional commit message analysis, intelligent staging, message generation, and automatic push",
+      "template": "Read .agents/skills/git-commit/SKILL.md and execute its workflow. Do not commit or push unless the user asks. $ARGUMENTS"
+    },
+    "graphify": {
+      "description": "Turn the codebase into a persistent knowledge graph (HTML/JSON/report) and query it",
+      "template": "Read .agents/skills/graphify/SKILL.md and follow it exactly (version pin in .graphify_version, references in references/). If graphify-out/graph.json already exists and the request is a natural-language codebase question, use the fast path: graphify query \"<question>\". Only produce graphify-out/ artifacts; never modify the scanned source tree. $ARGUMENTS"
+    }
+  }
+}

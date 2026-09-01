@@ -22,6 +22,7 @@ from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 from cnequity.adapters.exchange.st_lists import is_st_name
 from cnequity.config import Config
 from cnequity.domain.symbols import parse_symbol
+from cnequity.domain.trading_status import risk_warning_expr
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
@@ -685,11 +686,11 @@ def _iso(value) -> str:
 
 
 def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]:
-    """Flag exchanges whose stocks largely have no adjustment factor.
+    """Flag exchanges whose priced symbols largely lack adjustment factors.
 
-    See ``ADJ_COVERAGE_WARN_RATIO``. Scoped to ``asset_type='stock'``: ETFs and
-    LOFs legitimately have no hfq factor series and would otherwise bury the
-    signal this exists to raise.
+    See ``ADJ_COVERAGE_WARN_RATIO``. Scoped to ``asset_type`` in
+    (``stock``, ``etf``): stocks and ETFs/LOFs both carry Sina hfq factor
+    series, so a missing factor is a real coverage gap for either.
     """
     bars_root = config.curated_root / "daily_bars"
     fac_root = config.derived_root / "adj_factors"
@@ -704,8 +705,10 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     )
     if "asset_type" not in instruments.columns:
         return []
-    stocks = set(instruments.filter(pl.col("asset_type") == "stock")["symbol"].to_list())
-    if not stocks:
+    priced_assets = set(
+        instruments.filter(pl.col("asset_type").is_in(["stock", "etf"]))["symbol"].to_list()
+    )
+    if not priced_assets:
         return []
 
     bar_dates = _canonical_traded_bars(
@@ -713,7 +716,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
             bars_root,
             partition_col="trade_date",
             end=trade_date,
-            symbols=sorted(stocks),
+            symbols=sorted(priced_assets),
         )
     ).select("symbol", "trade_date")
     bar_summary = (
@@ -732,7 +735,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
             fac_root,
             partition_col="trade_date",
             end=trade_date,
-            symbols=sorted(stocks),
+            symbols=sorted(priced_assets),
         ),
         "adj_factors",
     )
@@ -771,7 +774,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
     )
     findings: list[dict] = []
     by_exchange: dict[str, list[str]] = {}
-    for symbol in stocks & set(spans["symbol"].to_list()):
+    for symbol in priced_assets & set(spans["symbol"].to_list()):
         by_exchange.setdefault(symbol.rsplit(".", 1)[-1], []).append(symbol)
 
     for exchange, symbols in sorted(by_exchange.items()):
@@ -803,7 +806,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                     "exchange": exchange,
                     "message": (
                         f"{exchange}: {len(known_source_unavailable)} formally delisted "
-                        "stock(s) have an explicit source-unavailable factor evidence; "
+                        "priced symbol(s) have explicit source-unavailable factor evidence; "
                         "no exact adjusted history is currently reconstructable"
                     ),
                     "symbols_unavailable": len(known_source_unavailable),
@@ -837,7 +840,7 @@ def adj_factor_coverage_findings(config: Config, trade_date: date) -> list[dict]
                 "check": "adj_factor_coverage",
                 "exchange": exchange,
                 "message": (
-                    f"{exchange}: {missing} of {total} priced stocks lack a complete "
+                    f"{exchange}: {missing} of {total} priced symbols lack a complete "
                     f"adjustment-factor span ({ratio:.0%} covered; "
                     f"{without_factor} with no factor, {partial} partial, "
                     f"{internal_gaps} with internal gaps). "
@@ -1331,7 +1334,7 @@ def _curated_closes(config: Config, trade_date: date, symbols: list[str]) -> dic
     return {r["symbol"]: float(r["close"]) for r in df.iter_rows(named=True)}
 
 
-def _sina_closes(symbols: list[str], trade_date: date) -> dict[str, float]:
+def _sina_closes(symbols: list[str], trade_date: date, *, config=None) -> dict[str, float]:
     import httpx
 
     from cnequity.adapters.sina.bars import fetch_daily_bars_sina
@@ -1340,7 +1343,12 @@ def _sina_closes(symbols: list[str], trade_date: date) -> dict[str, float]:
     with httpx.Client(timeout=20.0) as client:
         for sym in symbols:
             df = fetch_daily_bars_sina(
-                sym, start=trade_date, end=trade_date, datalen=30, client=client
+                sym,
+                start=trade_date,
+                end=trade_date,
+                datalen=30,
+                client=client,
+                config=config,
             )
             if not df.is_empty():
                 out[sym] = float(df["close"][0])
@@ -1374,7 +1382,10 @@ def daily_bars_close_crosscheck_findings(
 
     fetch = reference_closes or _sina_closes
     try:
-        theirs = fetch(symbols, trade_date)
+        if reference_closes is None:
+            theirs = fetch(symbols, trade_date, config=config)
+        else:
+            theirs = fetch(symbols, trade_date)
     except Exception as exc:  # noqa: BLE001 — a dead vendor must not fail the audit
         return [
             {
@@ -1500,18 +1511,18 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
     if by_name is None:
         return []
 
+    status = dedupe_lazy_by_primary_key(
+        scan_parquet_root(
+            status_root,
+            partition_col="trade_date",
+            start=trade_date,
+            end=trade_date,
+        ),
+        "trading_status",
+    )
     labeled = (
-        dedupe_lazy_by_primary_key(
-            scan_parquet_root(
-                status_root,
-                partition_col="trade_date",
-                start=trade_date,
-                end=trade_date,
-            ),
-            "trading_status",
-        )
-        .filter(pl.col("trade_date") == pl.lit(trade_date))
-        .filter(pl.col("status").is_in(["st", "*st"]))
+        status.filter(pl.col("trade_date") == pl.lit(trade_date))
+        .filter(risk_warning_expr(status.collect_schema().names()))
         .select("symbol")
         .unique()
         .collect(engine="streaming")

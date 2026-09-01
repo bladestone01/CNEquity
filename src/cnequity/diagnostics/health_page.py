@@ -172,7 +172,7 @@ def render_page(reports: list[HealthReport]) -> str:
         "<main>",
         "<h1>A 股公开数据源健康度</h1>",
         '<p class="sub">这些源是 AkShare、各类取数 skill、以及你自己的爬虫共同依赖的那十几个端点。'
-        "本页读的是 <code>cne sources</code> 最近一次写进湖里的报告——不是实时探测，"
+        "本页读的是 <code>cne sources probe</code> 最近一次写进湖里的报告——不是实时探测，"
         "刷新页面不会重新请求任何人。</p>",
         '<div class="vantages">',
     ]
@@ -250,8 +250,8 @@ def render_page(reports: list[HealthReport]) -> str:
 
     footer = [
         "<footer>",
-        f"页面生成于 {_e(generated)} · 数据由 <code>cne sources</code> 写入 "
-        "<code>meta/source_health/</code> · 重新探测：<code>cne sources --vantage cn</code>",
+        f"页面生成于 {_e(generated)} · 数据由 <code>cne sources probe</code> 写入 "
+        "<code>meta/source_health/</code> · 重新探测：<code>cne sources probe --vantage cn</code>",
         "</footer>",
         "</main>",
     ]

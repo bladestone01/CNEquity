@@ -117,7 +117,7 @@ instruments 每次日更从代码空间扫描的「在市但缺失」桶补齐�
 - 已落盘的单个交易日可用 `cne backfill daily_bars --start <日> --end <日>
   --symbols <BJ列表> --bse-tip-repair` 定向补写；该模式只读取已有 OHLCV，
   不重新请求新浪历史，也不会用成交额反推价格或成交量
-- 新上市的北交所票要等下一次 `cne delisted discover` 扫到才会进 instruments，
+- 新上市的北交所票要等下一次 `scripts/delisted_ops.py discover` 扫到才会进 instruments，
   不是当天自动出现
 
 ---
@@ -135,7 +135,10 @@ items = load(
 )
 ```
 
-- 过滤 `announce_date <= as_of`，且只使用在 `as_of` 当日或之前已写入湖的财报行（`fetched_at.date() <= as_of`）
+- `pit_mode="strict"` 过滤 `announce_date`、已知 `available_at`/
+  `source_published_at` 和 `fetched_at`/`observed_at` 均不晚于 `as_of`，并排除
+  `reconstructed` 回填行；`pit_mode="best_effort"` 可保留它们，但返回
+  `pit_is_exact=False`。
 - 同一 `(symbol, report_period, item)` 取 `announce_date` 最新一行
 - 禁止用 `end=` 代替 `as_of` 做财报对齐
 
@@ -157,10 +160,11 @@ load(
 ).select("report_period", "announce_date", "item_value")
 ```
 
-注意：回填行以 `source=eastmoney_backfill` 标记，并按实际 `fetched_at`
-设定可见起点；因此当前/重述值不会因为首发日较早而泄漏到采集之前的历史回测。
-日更逐日累积的版本同时满足公告日与采集日边界（见
-[schema](schema.md#financial_statement_items)）。
+注意：回填行以 `source=eastmoney_backfill` 标记，并视为
+`pit_quality="reconstructed"`。默认省略 `pit_mode` 是 0.x 兼容模式：仍按
+`fetched_at` 截止，但不提供严格 PIT 保证；研究代码请显式传
+`pit_mode="strict"` 并记录该选择。日更逐日累积、保存真实双时态列的版本才满足
+严格模式（见 [schema](schema.md#financial_statement_items)）。
 回填默认自 2001 起（东财）；`list_datasets()` 的 `coverage_start` 为盘上实际起点。
 
 ---

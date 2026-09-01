@@ -1,4 +1,4 @@
-"""One-command mini demo: real TDX fetch for a handful of liquid names.
+"""One-command mini demos: real TDX data or a deterministic offline sample.
 
 Designed for first-run / star-seeker UX — not a substitute for ``cne init``.
 Writes into a separate data root so a later full-market init is not poisoned
@@ -63,6 +63,30 @@ enabled = true
 allow_mock = false
 min_interval_ms = 100
 servers = "auto"
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_sample_toml(path: Path, data_root: Path) -> None:
+    """Persist a read-only config for the generated, explicitly synthetic lake."""
+    from cnequity.config.bootstrap import path_for_toml
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    root = path_for_toml(data_root)
+    path.write_text(
+        f"""# Auto-written by `cne demo --sample`.
+# The rows are synthetic and carry source=mock. Never use this lake for research.
+[data]
+root = "{root}"
+
+[orchestrator]
+workers = 1
+batch_size = 50
+
+[tdx_protocol]
+enabled = false
+allow_mock = false
 """,
         encoding="utf-8",
     )
@@ -150,7 +174,7 @@ def _write_demo_instruments(cfg: Config, symbols: list[str]) -> list[str]:
     if kept.is_empty():
         raise click.ClickException(
             "None of the demo symbols were returned by TDX. "
-            "Check connectivity with `cne servers test` or pass --symbols."
+            "Check connectivity with `cne sources probe --only tdx_protocol` or pass --symbols."
         )
     df = validate_dataframe(
         with_provenance(kept, source="tdx_protocol", data_version="v1"),
@@ -349,6 +373,164 @@ def _run_intraday_demo(cfg: Config, engine, symbols: list[str], end: date, days:
         "full_sessions": full,
         "start": start.isoformat(),
         "end": end.isoformat(),
+    }
+
+
+def _sample_sessions(end: date, days: int) -> list[date]:
+    sessions: list[date] = []
+    cursor = end
+    while len(sessions) < days:
+        if cursor.weekday() < 5:
+            sessions.append(cursor)
+        cursor -= timedelta(days=1)
+    return sorted(sessions)
+
+
+def _sample_frames(symbols: list[str], sessions: list[date]) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Create stable sample rows that exercise the real schemas and query layer."""
+    from cnequity.domain.schemas import MOCK_SOURCE, data_version_for
+
+    names = {
+        "600519.SH": "贵州茅台（样例）",
+        "000001.SZ": "平安银行（样例）",
+        "000858.SZ": "五粮液（样例）",
+        "300750.SZ": "宁德时代（样例）",
+        "601318.SH": "中国平安（样例）",
+    }
+    instruments = pl.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "name": names.get(symbol, f"{symbol}（样例）"),
+                "exchange": symbol.rsplit(".", 1)[-1],
+                "asset_type": "stock",
+                "list_date": date(2010, 1, 1),
+                "delist_date": None,
+                "prev_symbol": None,
+            }
+            for symbol in symbols
+        ]
+    )
+    instruments = validate_dataframe(
+        with_provenance(instruments, source=MOCK_SOURCE, data_version="v1"),
+        "instruments",
+    )
+
+    rows: list[dict[str, object]] = []
+    for symbol_index, symbol in enumerate(symbols):
+        base = 10.0 + symbol_index * 23.0
+        for day_index, session in enumerate(sessions):
+            drift = day_index * (0.06 + symbol_index * 0.01)
+            wave = ((day_index % 5) - 2) * 0.03
+            open_price = round(base + drift + wave, 2)
+            close = round(open_price + ((day_index % 3) - 1) * 0.08, 2)
+            high = round(max(open_price, close) + 0.18, 2)
+            low = round(min(open_price, close) - 0.16, 2)
+            volume = 1_000_000 + symbol_index * 100_000 + day_index * 10_000
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "trade_date": session,
+                    "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": volume,
+                    "amount": round(close * volume, 2),
+                }
+            )
+    bars = validate_dataframe(
+        with_provenance(
+            pl.DataFrame(rows),
+            source=MOCK_SOURCE,
+            data_version=data_version_for("daily_bars"),
+        ),
+        "daily_bars",
+    )
+    return instruments, bars
+
+
+def run_sample_demo(
+    *,
+    symbols: list[str],
+    days: int,
+    data_root: Path,
+    trade_date: date | None = None,
+    config_out: Path | None = None,
+    intraday: bool = False,
+    research: bool = False,
+) -> dict:
+    """Write a deterministic no-network lake for installation and query checks."""
+    from cnequity.domain.schemas import MOCK_SOURCE
+    from cnequity.query.views import ensure_duckdb_views
+
+    if intraday or research:
+        raise click.ClickException("--sample cannot be combined with --intraday or --research")
+    symbols = [s.strip().upper() for s in symbols if s.strip()]
+    if not symbols:
+        raise click.ClickException("--symbols must list at least one symbol")
+    if days < 1 or days > 366:
+        raise click.ClickException("--days must be between 1 and 366 in sample mode")
+    if any(data_root.rglob("*.parquet")):
+        raise click.ClickException(
+            f"Sample target already contains Parquet files: {data_root}. "
+            "Choose an empty --data-root to avoid mixing synthetic and real rows."
+        )
+
+    config_out = config_out or Path("configs/cnequity.demo.toml")
+    end = trade_date or date(2024, 6, 28)
+    sessions = _sample_sessions(end, days)
+
+    _banner("1/3", f"Prepare offline sample lake at {data_root}")
+    click.echo("OFFLINE SAMPLE: generated synthetic prices, not market data.")
+    _write_sample_toml(config_out, data_root)
+    cfg = _demo_config(data_root, config_path=config_out.resolve())
+    cfg.tdx_enabled = False
+    init_data_layout(cfg)
+
+    _banner("2/3", f"Write {len(symbols)} symbols × {len(sessions)} sessions")
+    instruments, bars = _sample_frames(symbols, sessions)
+    write_parquet_atomic(
+        cfg.curated_root / "instruments" / "part-sample.parquet",
+        instruments,
+        compression="zstd",
+    )
+    for (session,), frame in bars.partition_by("trade_date", as_dict=True).items():
+        out = cfg.curated_root / "daily_bars" / f"trade_date={session.isoformat()}"
+        write_parquet_atomic(out / "part-sample.parquet", frame, compression="zstd")
+    ensure_duckdb_views(cfg)
+
+    _banner("3/3", "Query the sample through the public API")
+    sample_symbol = symbols[0]
+    sample = _sample_query(cfg, sample_symbol)
+    with pl.Config(tbl_rows=10, tbl_cols=-1, fmt_str_lengths=24):
+        click.echo(sample.select("symbol", "trade_date", "close", "volume", "source"))
+    click.echo(
+        f"""
+Offline sample ready: {cfg.data_root}
+Config written to:    {config_out}
+All rows use source={MOCK_SOURCE}; never use them for research or production.
+
+Next:
+  cne query --config {config_out} --sql "
+    SELECT symbol, trade_date, close, volume, source
+    FROM daily_bars
+    ORDER BY trade_date DESC
+    LIMIT 10
+  "
+
+When network access is available, run `cne demo` for real TDX data.
+"""
+    )
+    return {
+        "data_root": str(cfg.data_root),
+        "config": str(config_out),
+        "symbols": symbols,
+        "start": sessions[0].isoformat(),
+        "end": sessions[-1].isoformat(),
+        "sample_symbol": sample_symbol,
+        "sample_rows": sample.height,
+        "source": MOCK_SOURCE,
     }
 
 

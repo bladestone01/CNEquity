@@ -25,6 +25,7 @@ from datetime import date
 import polars as pl
 
 from cnequity.adapters.baostock._session import _login, import_baostock
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import (
     format_symbol,
     is_cdr_symbol,
@@ -85,7 +86,7 @@ def _asset_type(code: str, exchange: str, bs_type: str) -> str | None:
     return "stock"
 
 
-def fetch_instrument_basics(*, bs=None, sleep=time.sleep) -> pl.DataFrame:
+def fetch_instrument_basics(*, bs=None, sleep=time.sleep, config=None) -> pl.DataFrame:
     """Every code baostock knows — listed *and* delisted — as instruments rows.
 
     ``delist_date`` is baostock's ``outDate`` and is set only for ``status='0'``
@@ -98,9 +99,10 @@ def fetch_instrument_basics(*, bs=None, sleep=time.sleep) -> pl.DataFrame:
     if bs is None:
         bs = import_baostock()
 
-    _login(bs, sleep=sleep)
+    _login(bs, sleep=sleep, config=config)
     try:
-        rs = bs.query_stock_basic()
+        with source_request(config, "baostock"):
+            rs = bs.query_stock_basic()
         error_code = getattr(rs, "error_code", "0")
         if error_code != "0":
             raise RuntimeError(
@@ -137,7 +139,8 @@ def fetch_instrument_basics(*, bs=None, sleep=time.sleep) -> pl.DataFrame:
             )
     finally:
         try:
-            bs.logout()
+            with source_request(config, "baostock"):
+                bs.logout()
         except Exception:  # noqa: BLE001 — logout on a dead socket may raise
             pass
 

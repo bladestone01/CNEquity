@@ -1,13 +1,16 @@
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import polars as pl
 
 import cnequity.steps  # noqa: F401
-from cnequity.config import Config
+from cnequity.config import Config, FailoverDatasetSpec
 from cnequity.orchestrator.compact_gate import compact_allowed, datasets_with_incomplete_batches
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.steps.finalize import step_audit, step_compact
 from cnequity.storage import StagingWriter
+from cnequity.storage.revisions import RevisionStore
+from cnequity.storage.source_snapshots import SnapshotStore
 from cnequity.storage.state import StateStore
 
 
@@ -25,6 +28,21 @@ def _daily_bar_row(symbol: str, trade_date: date) -> dict:
         "data_version": "v1",
         "fetched_at": f"{trade_date.isoformat()}T00:00:00+00:00",
     }
+
+
+def _gate_bar_frame(trade_date: date, close: float, source: str) -> pl.DataFrame:
+    row = _daily_bar_row("600519.SH", trade_date)
+    row.update(
+        {
+            "open": close - 10.0,
+            "high": close + 10.0,
+            "low": close - 20.0,
+            "close": close,
+            "amount": close * 1000.0,
+            "source": source,
+        }
+    )
+    return pl.DataFrame([row])
 
 
 def test_compact_skips_dataset_with_failed_batches(tmp_path):
@@ -113,6 +131,90 @@ def test_compact_advances_watermark_when_all_batches_succeed(tmp_path):
     assert (
         cfg.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
     ).exists()
+
+
+def test_source_diff_gate_rolls_back_mutable_candidate_before_next_partition(tmp_path):
+    root = tmp_path / "data"
+    cfg = Config(
+        data_root=root,
+        failover_enabled=True,
+        failover_datasets=[
+            FailoverDatasetSpec(
+                name="daily_bars",
+                primary="tdx_protocol",
+                backup="eastmoney",
+                compare_fields=["close"],
+                price_tolerance_bps=10.0,
+                snapshot_cadence="daily",
+                revision_gate=True,
+            )
+        ],
+    )
+    manifest = Manifest(cfg.manifest_path)
+    writer = StagingWriter(cfg.staging_root)
+    backup = SnapshotStore(cfg.meta_root)
+
+    def stage(run_id: str, batch_id: str, day: date, frame: pl.DataFrame) -> None:
+        manifest.start_batch(run_id, batch_id, "daily_bars", "daily_bars", symbols=["600519.SH"])
+        manifest.finish_batch(run_id, batch_id, "success", rows_written=frame.height)
+        writer.write_batch("daily_bars", run_id, batch_id, frame)
+
+    def backup_day(run_id: str, day: date, close: float) -> None:
+        backup.write(
+            "daily_bars",
+            _gate_bar_frame(day, close, "eastmoney"),
+            source="eastmoney",
+            data_version="v1",
+            run_id=run_id,
+            trade_date=day,
+        )
+
+    day_one = date(2024, 6, 28)
+    day_bad = date(2024, 7, 1)
+    day_next = date(2024, 7, 2)
+    stage("run-good", "batch-good", day_one, _gate_bar_frame(day_one, 1800.0, "tdx_protocol"))
+    backup_day("backup-good", day_one, 1800.0)
+    first = step_compact(cfg, day_one, "run-good", {})
+    assert first["dataset_revisions"]["daily_bars"]["revision"] == 1
+
+    # The candidate contains the prior good partition plus this bad one.  The
+    # gate must quarantine the whole mutable candidate and restore the pointer
+    # generation, rather than leave day_bad to contaminate the next merge.
+    stage("run-bad", "batch-bad", day_bad, _gate_bar_frame(day_bad, 1800.0, "tdx_protocol"))
+    backup_day("backup-bad", day_bad, 1802.0)
+    blocked = step_compact(cfg, day_bad, "run-bad", {})
+    skipped = blocked["context_updates"]["compact_skipped_datasets"]
+    assert skipped[0]["reason"] == "source_diff_gate"
+    quarantine = Path(skipped[0]["quarantine"])
+    assert quarantine.is_dir()
+    assert list(quarantine.rglob("trade_date=2024-07-01/*.parquet"))
+
+    revisions = RevisionStore(cfg.meta_root, cfg.curated_root)
+    pointer = revisions.current_pointer("daily_bars")
+    published = revisions.current_root("daily_bars")
+    assert pointer is not None and pointer["revision"] == 1
+    assert published is not None
+    assert list(published.rglob("trade_date=2024-07-01/*.parquet")) == []
+    mutable = cfg.curated_root / "daily_bars"
+    assert list(mutable.rglob("trade_date=2024-07-01/*.parquet")) == []
+    assert pl.read_parquet(next(published.rglob("*.parquet")))["trade_date"].to_list() == [day_one]
+
+    # A later good partition must merge from the restored immutable revision,
+    # not from the quarantined candidate.
+    stage("run-next", "batch-next", day_next, _gate_bar_frame(day_next, 1805.0, "tdx_protocol"))
+    backup_day("backup-next", day_next, 1805.0)
+    next_result = step_compact(cfg, day_next, "run-next", {})
+    assert next_result["dataset_revisions"]["daily_bars"]["revision"] == 2
+    current = revisions.current_root("daily_bars")
+    assert current is not None
+    assert list(current.rglob("trade_date=2024-07-01/*.parquet")) == []
+    assert sorted(
+        pl.read_parquet(path)["trade_date"][0] for path in current.rglob("*.parquet")
+    ) == [
+        day_one,
+        day_next,
+    ]
+    assert list(mutable.rglob("trade_date=2024-07-01/*.parquet")) == []
 
 
 def test_compact_snapshot_watermark_uses_run_date_not_max_partition(tmp_path):

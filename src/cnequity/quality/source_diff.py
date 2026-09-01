@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 
@@ -33,6 +34,7 @@ def _compare_numeric_fields(
     dataset: str,
     primary_source: str,
     backup_source: str,
+    blocking: bool = False,
 ) -> list[dict]:
     diffs: list[dict] = []
     for field in fields:
@@ -54,6 +56,11 @@ def _compare_numeric_fields(
                         "backup_source": backup_source,
                         "primary_value": left,
                         "backup_value": right,
+                        # Individual field findings are diagnostic only.  The
+                        # configured fraction gate below is the single source
+                        # of release-blocking truth; otherwise one row would
+                        # block a candidate even when it is within tolerance.
+                        "blocks_revision": False,
                         **{k: row.get(k) for k in pk if k in row},
                     }
                 )
@@ -77,6 +84,7 @@ def _compare_numeric_fields(
                     "backup_source": backup_source,
                     "primary_value": float(left),
                     "backup_value": float(right),
+                    "blocks_revision": False,
                     **{k: row.get(k) for k in pk if k in row},
                 }
             )
@@ -175,19 +183,30 @@ def diff_dataset(
     *,
     trade_date: date | None = None,
     sample_limit: int = 500,
+    candidate_root: Path | None = None,
 ) -> list[dict]:
     curated_root = config.curated_root / spec.name
     from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
-    curated_has_data = dataset_has_parquet(curated_root)
+    read_root = Path(candidate_root) if candidate_root is not None else curated_root
+    committed = candidate_root is None
+    curated_has_data = dataset_has_parquet(
+        read_root,
+        dataset=spec.name,
+        meta_root=config.meta_root,
+        committed=committed,
+    )
 
     date_col = _date_column(spec.name)
     if curated_has_data:
         lf = scan_parquet_root(
-            curated_root,
+            read_root,
             partition_col=date_col,
             start=trade_date,
             end=trade_date,
+            dataset=spec.name,
+            meta_root=config.meta_root,
+            committed=committed,
         )
         if "source" in lf.collect_schema().names():
             lf = lf.filter(pl.col("source") == spec.primary)
@@ -216,6 +235,9 @@ def diff_dataset(
                     f"primary rows available for comparison: {primary.height}"
                 ),
                 "primary_rows": primary.height,
+                "snapshot_cadence": getattr(spec, "snapshot_cadence", "on_demand"),
+                "peer_unavailable": True,
+                "retryable": True,
             }
         ]
 
@@ -245,12 +267,20 @@ def diff_dataset(
                 "backup_unique_keys": 0,
                 "backup_snapshot_rows": backup_rows_before_date_filter,
                 "snapshot_cadence": "on_demand",
+                "peer_unavailable": False,
+                "retryable": True,
             }
         ]
 
     pk = PRIMARY_KEYS.get(spec.name, [])
     if not pk:
         return []
+
+    # A backup snapshot may legitimately repeat a key (for example an
+    # overlapping page or correction observation).  Compare business keys, not
+    # transport duplicates, so one legal duplicate cannot inflate the drift
+    # denominator or produce an accidental gate.
+    backup = dedupe_by_primary_key(backup, spec.name)
 
     join_keys = [
         k for k in pk if k in backup.columns and (k in primary.columns or primary.is_empty())
@@ -277,18 +307,34 @@ def diff_dataset(
     if coverage:
         findings.append(coverage)
 
-    # Deterministic spread sample: hashing the join keys picks rows across the
-    # whole universe instead of always the first N symbols in file order.
-    if primary.height > sample_limit:
-        primary = (
-            primary.with_columns(
-                pl.concat_str([pl.col(k).cast(pl.Utf8) for k in join_keys])
-                .hash(seed=0)
-                .alias("_sample_key")
-            )
-            .sort("_sample_key")
-            .head(sample_limit)
-            .drop("_sample_key")
+    # Deterministic stratified sampling: hash within each exchange so a small
+    # sample cannot accidentally contain only Shanghai or Shenzhen symbols.
+    effective_sample_limit = spec.sample_limit if sample_limit == 500 else sample_limit
+    if effective_sample_limit > 0 and primary.height > effective_sample_limit:
+        strata = (
+            pl.col("symbol").str.split(".").list.last().alias("_source_diff_stratum")
+            if "symbol" in primary.columns
+            else pl.lit("all").alias("_source_diff_stratum")
+        )
+        primary = primary.with_columns(
+            strata,
+            pl.concat_str([pl.col(k).cast(pl.Utf8) for k in join_keys])
+            .hash(seed=0)
+            .alias("_sample_key"),
+        )
+        groups = primary.partition_by("_source_diff_stratum", as_dict=True)
+        strata_items = sorted(groups.items(), key=lambda item: str(item[0]))
+        selected: list[pl.DataFrame] = []
+        remaining = effective_sample_limit
+        for index, (_stratum, group) in enumerate(strata_items):
+            if remaining <= 0:
+                break
+            reserve = min(len(strata_items) - index - 1, max(0, remaining - 1))
+            slots = max(1, min(group.height, remaining - reserve))
+            selected.append(group.sort("_sample_key").head(slots))
+            remaining -= slots
+        primary = pl.concat(selected, how="diagonal_relaxed").drop(
+            ["_sample_key", "_source_diff_stratum"]
         )
     joined = primary.join(
         backup.select([*join_keys, *[c for c in backup.columns if c not in join_keys]]),
@@ -299,17 +345,52 @@ def diff_dataset(
     if joined.is_empty():
         return findings
 
-    findings.extend(
-        _compare_numeric_fields(
-            joined,
-            spec.compare_fields,
-            pk=pk,
-            tolerance_bps=spec.price_tolerance_bps,
-            dataset=spec.name,
-            primary_source=spec.primary,
-            backup_source=spec.backup,
+    compare_fields = list(spec.compare_fields)
+    if spec.name == "daily_bars" and spec.revision_gate:
+        # OHLCV is the core integrity spine. Explicit fields remain additive,
+        # while missing optional columns are skipped by the comparator.
+        compare_fields = list(
+            dict.fromkeys(["open", "high", "low", "close", "volume", *compare_fields])
         )
+    drift_findings = _compare_numeric_fields(
+        joined,
+        compare_fields,
+        pk=pk,
+        tolerance_bps=spec.price_tolerance_bps,
+        dataset=spec.name,
+        primary_source=spec.primary,
+        backup_source=spec.backup,
+        blocking=spec.revision_gate,
     )
+    findings.extend(drift_findings)
+    if spec.revision_gate and drift_findings:
+        drift_keys = {
+            tuple(item.get(key) for key in pk)
+            for item in drift_findings
+            if all(key in item for key in pk)
+        }
+        comparable_key_columns = [key for key in pk if key in joined.columns]
+        comparable_keys = joined.select(comparable_key_columns).unique().height
+        drift_fraction = len(drift_keys) / max(1, comparable_keys)
+        if drift_fraction > spec.max_drift_fraction:
+            findings.append(
+                {
+                    "dataset": spec.name,
+                    "check": "source_diff_gate",
+                    "severity": "error",
+                    "message": (
+                        f"{len(drift_keys)}/{comparable_keys} comparable key(s) exceed source "
+                        f"tolerance ({drift_fraction:.2%} > {spec.max_drift_fraction:.2%})"
+                    ),
+                    "primary_source": spec.primary,
+                    "backup_source": spec.backup,
+                    "drift_keys": len(drift_keys),
+                    "comparable_keys": comparable_keys,
+                    "drift_fraction": drift_fraction,
+                    "max_drift_fraction": spec.max_drift_fraction,
+                    "blocks_revision": True,
+                }
+            )
     return findings
 
 
@@ -359,3 +440,14 @@ def run_source_diffs(
         default=str,
     )
     return all_diffs
+
+
+def source_diff_blocks_revision(findings: list[dict]) -> bool:
+    """Whether source-diff evidence explicitly rejects a candidate release."""
+    # ``source_diff_gate`` is deliberately the only blocking finding.  Field
+    # observations remain useful audit diagnostics, but max_drift_fraction
+    # must decide whether the aggregate disagreement is release material.
+    return any(
+        bool(item.get("blocks_revision")) and item.get("check") == "source_diff_gate"
+        for item in findings
+    )

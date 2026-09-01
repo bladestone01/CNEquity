@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import os
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -54,6 +56,61 @@ _WIN_BUSY_ERRNOS = frozenset(
     )
     if code is not None
 )
+
+
+# ``run_lock(meta_root, "compact")`` and ``lake_mutation_lock(meta_root)``
+# intentionally share one lock file.  A compact step can therefore call a
+# revision helper while already holding that file.  ``flock`` does not make a
+# second descriptor in the same thread re-entrant, so keep a tiny thread-local
+# ownership marker: the specialised lake lock can reuse the outer handle,
+# while an accidental nested ``exclusive_lock`` still fails immediately.
+_LOCK_STATE = threading.local()
+
+
+def _lock_key(path: Path | str) -> str:
+    return os.path.abspath(os.fspath(path))
+
+
+def _held_count(path: Path | str) -> int:
+    held = getattr(_LOCK_STATE, "held", None)
+    if not held:
+        return 0
+    key = _lock_key(path)
+    entry = held.get(key)
+    if entry is None:
+        return 0
+    pid, count = entry
+    # A fork copies thread-local state into the child, but not the logical
+    # owner of this process-local marker.  Discard inherited entries there;
+    # the kernel lock remains the authority across processes.
+    if pid != os.getpid():
+        held.pop(key, None)
+        return 0
+    return count
+
+
+def _mark_held(path: Path | str) -> None:
+    held = getattr(_LOCK_STATE, "held", None)
+    if held is None:
+        held = {}
+        _LOCK_STATE.held = held
+    key = _lock_key(path)
+    _pid, count = held.get(key, (os.getpid(), 0))
+    held[key] = (os.getpid(), count + 1)
+
+
+def _unmark_held(path: Path | str) -> None:
+    held = getattr(_LOCK_STATE, "held", None)
+    if not held:
+        return
+    key = _lock_key(path)
+    entry = held.get(key)
+    if entry is None or entry[0] != os.getpid():
+        return
+    if entry[1] <= 1:
+        held.pop(key, None)
+    else:
+        held[key] = (entry[0], entry[1] - 1)
 
 
 class LockUnavailable(RuntimeError):
@@ -144,16 +201,24 @@ def exclusive_lock(
     blocking acquire polls until the deadline and then raises the same error.
     """
     path = Path(path)
+    if _held_count(path):
+        # Do not let an accidental nested generic lock deadlock this thread.
+        # ``lake_mutation_lock`` handles the one intentional nested case below.
+        raise LockUnavailable(str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     # "a+" creates without truncating. Truncation matters on Windows, where the
     # locks are mandatory: opening "w" against a file whose byte 0 another
     # process holds fails outright instead of politely queueing.
     with open(path, "a+", encoding="utf-8") as handle:
         _acquire(handle, blocking=blocking, timeout=timeout)
+        _mark_held(path)
         try:
             yield handle
         finally:
-            _release(handle)
+            try:
+                _release(handle)
+            finally:
+                _unmark_held(path)
 
 
 def is_locked(path: Path | str) -> bool:
@@ -185,5 +250,12 @@ def lake_mutation_lock(meta_root: Path, *, blocking: bool = True) -> Iterator[IO
     maintenance and derive code participate without importing the orchestrator
     package (which would introduce a dependency cycle).
     """
-    with exclusive_lock(meta_root / "locks" / "compact.lock", blocking=blocking) as handle:
+    path = meta_root / "locks" / "compact.lock"
+    if _held_count(path):
+        # ``run_lock(..., "compact")`` uses the same path.  Reuse that outer
+        # process-local lock; other threads/processes still contend in the
+        # kernel through ``exclusive_lock``.
+        yield None
+        return
+    with exclusive_lock(path, blocking=blocking) as handle:
         yield handle

@@ -155,6 +155,50 @@ def test_demo_help_lists_command():
     assert "--symbols" in result.output
     assert "--days" in result.output
     assert "--research" in result.output
+    assert "--sample" in result.output
+
+
+def test_cne_demo_sample_needs_no_network(tmp_path, monkeypatch):
+    def fail_on_network(*args, **kwargs):
+        raise AssertionError("sample mode must not touch TDX")
+
+    monkeypatch.setattr("cnequity.cli.demo._probe_tdx", fail_on_network)
+    data_root = tmp_path / "sample-lake"
+    config_out = tmp_path / "sample.toml"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "demo",
+            "--sample",
+            "--symbols",
+            "600519.SH,000001.SZ",
+            "--days",
+            "5",
+            "--data-root",
+            str(data_root),
+            "--config-out",
+            str(config_out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "OFFLINE SAMPLE" in result.output
+    assert "source=mock" in result.output
+    assert config_out.exists()
+    bars = pl.read_parquet(list((data_root / "curated" / "daily_bars").glob("**/*.parquet")))
+    assert bars.height == 10
+    assert bars["source"].unique().to_list() == ["mock"]
+
+
+def test_cne_demo_sample_rejects_live_only_modes(tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        ["demo", "--sample", "--research", "--data-root", str(tmp_path / "lake")],
+    )
+
+    assert result.exit_code != 0
+    assert "cannot be combined" in result.output
 
 
 def test_return_summary_compares_raw_and_adjusted_series():

@@ -24,6 +24,7 @@ def load(
     strict_adj: bool = False,
     strict_universe: bool = False,
     all_vintages: bool = False,
+    pit_mode: Literal["strict", "best_effort"] | None = None,
     config: Config | None = None,
     data_root: str | Path | None = None,
 ) -> pl.DataFrame
@@ -43,11 +44,15 @@ def load(
 | `strict_adj` | True 时缺复权因子抛 `ReaderError` |
 | `strict_universe` | True 时支持的 universe 缺少 instruments、逐日 trading_status 覆盖或版本化历史 ST 证据收据会抛错；适合研究读取 |
 | `all_vintages` | True 时返回 `as_of` 前的**全部**版本（研究财报修订用）；截面选股勿开，会重复计同一事实 |
+| `pit_mode` | PIT 证据模式：`strict` 排除 reconstructed 回填；`best_effort` 保留但返回 `pit_is_exact=False`。省略值为 0.x 兼容模式，仍按 `fetched_at` 截止，不代表严格 PIT |
 | `config` / `data_root` | 湖位置；默认读 `configs/cnequity.toml` |
 
 ### 返回
 
 - 未复权数据集：原始列
+- PIT `load()` 还会返回可选双时态列 `available_at`、`source_published_at`、
+  `observed_at`、`revision_id`，以及 `pit_is_exact` / `pit_quality` 质量标记；
+  旧 Parquet 缺列时读侧补齐
 - `adjust` 非空：附加 `adj_open`, `adj_high`, `adj_low`, `adj_close`, `adj_is_exact`
 
 ### 异常
@@ -91,7 +96,7 @@ def list_datasets(
 ) -> pl.DataFrame
 ```
 
-列：`dataset`, `layer`, `date_col`, `fetch_semantics`, `history_mode`, `backfill_source`, `pit`, `has_data`, `coverage_start`, `coverage_end`, `watermarked`, `watermark`
+列：`dataset`, `layer`, `date_col`, `fetch_semantics`, `history_mode`, `backfill_source`, `pit`, `pit_quality`, `pit_storage_columns`, `has_data`, `coverage_start`, `coverage_end`, `watermarked`, `watermark`
 
 `history_mode` ∈ `by_date` / `snapshot_with_backfill` / `snapshot_only`；与 `coverage_*` 一起构成可用起点合同。
 

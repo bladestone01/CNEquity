@@ -7,7 +7,8 @@ from datetime import date
 import pytest
 from click.testing import CliRunner
 
-from cnequity.cli.main import QUICK_PROFILE_YEARS, _init_history_start, cli
+from cnequity.cli.main import cli
+from cnequity.cli.setup_cmds import QUICK_PROFILE_YEARS, _init_history_start
 from cnequity.config import Config
 from cnequity.config.bootstrap import path_for_toml
 from cnequity.domain.market_time import shanghai_today

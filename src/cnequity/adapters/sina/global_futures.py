@@ -18,6 +18,7 @@ import httpx
 import polars as pl
 
 from cnequity.adapters.numeric import finite_int64
+from cnequity.domain.rate_limit import source_request
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ def fetch_offshore_commodity_bars_range(
     *,
     contracts: tuple[tuple[str, str, str, str], ...] | None = None,
     client: httpx.Client | None = None,
+    config=None,
     strict: bool = False,
 ) -> pl.DataFrame:
     """Fetch offshore continuous daily OHLC for [*start*, *end*] (inclusive)."""
@@ -146,7 +148,8 @@ def fetch_offshore_commodity_bars_range(
     try:
         for symbol, sina_sym, name, exchange in universe:
             try:
-                resp = client.get(_URL, params={"symbol": sina_sym})
+                with source_request(config, "sina"):
+                    resp = client.get(_URL, params={"symbol": sina_sym})
                 resp.raise_for_status()
                 payload = resp.json()
                 if not isinstance(payload, list):
@@ -200,8 +203,9 @@ def fetch_offshore_commodity_bars(
     start: date | None = None,
     end: date | None = None,
     client: httpx.Client | None = None,
+    config=None,
 ) -> pl.DataFrame:
     """Single-day or explicit range entry (Sina always returns full history)."""
     s = start or trade_date
     e = end or trade_date
-    return fetch_offshore_commodity_bars_range(s, e, client=client)
+    return fetch_offshore_commodity_bars_range(s, e, client=client, config=config)

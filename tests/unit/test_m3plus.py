@@ -207,6 +207,38 @@ def test_index_constituents_carries_forward_member_effective_dates():
     assert df["as_of_date"].to_list() == [date(2024, 6, 28)]
 
 
+def test_index_constituents_ignores_future_and_invalid_effective_dates():
+    client = FakeDatacenterClient(
+        {
+            "RPT_INDEX_CONSTITUENT": [
+                {
+                    "INDEX_CODE": "000300",
+                    "SECURITY_CODE": "600519",
+                    "TRADE_DATE": "2024-01-10",
+                },
+                {
+                    "INDEX_CODE": "000300",
+                    "SECURITY_CODE": "000001",
+                    "TRADE_DATE": "2024-07-01",
+                },
+                {
+                    "INDEX_CODE": "000300",
+                    "SECURITY_CODE": "000002",
+                    "TRADE_DATE": "",
+                },
+            ]
+        }
+    )
+
+    df = fetch_index_constituents(
+        date(2024, 6, 28),
+        indices=["000300.SH"],
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert df["symbol"].to_list() == ["600519.SH"]
+
+
 def test_index_constituents_rejects_an_empty_requested_index():
     class _Client:
         def get(self, url, **kwargs):

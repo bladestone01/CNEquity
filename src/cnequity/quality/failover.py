@@ -131,7 +131,12 @@ def snapshot_corporate_actions_backup(
     spec = failover_spec(config, "corporate_actions")
     if spec is None or not config.sources.get(spec.backup, True):
         return
-    df = fetch_corporate_actions_eastmoney(trade_date, backfill=backfill, config=config)
+    df = fetch_corporate_actions_eastmoney(
+        trade_date,
+        backfill=backfill,
+        config=config,
+        run_id=run_id,
+    )
     if df.is_empty():
         return
     df = with_provenance(df, source=spec.backup, data_version="v1")
@@ -153,11 +158,11 @@ def snapshot_corporate_actions_tdx_backup(
     symbols: list[str],
     run_id: str,
     rate_limit,
-) -> None:
+) -> bool:
     """Snapshot TDX xdxr for ex-date symbols when EastMoney is daily canonical."""
     spec = failover_spec(config, "corporate_actions")
     if spec is None or not symbols or not config.tdx_enabled:
-        return
+        return False
     from cnequity.adapters.tdx_protocol.client import quotes_client_factory
     from cnequity.adapters.tdx_protocol.corporate_actions import (
         fetch_corporate_actions_tdx,
@@ -169,9 +174,11 @@ def snapshot_corporate_actions_tdx_backup(
         backfill=False,
         client_factory=quotes_client_factory(config),
         rate_limit=rate_limit,
+        config=config,
+        run_id=run_id,
     )
     if tdx_df.is_empty():
-        return
+        return False
     tdx_df = with_provenance(tdx_df, source=spec.backup, data_version="v1")
     write_backup_snapshot(
         config,
@@ -182,3 +189,4 @@ def snapshot_corporate_actions_tdx_backup(
         source=spec.backup,
         trade_date=trade_date,
     )
+    return True

@@ -29,7 +29,7 @@ import shutil
 import tempfile
 import time
 from collections import Counter
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -39,6 +39,7 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.canonical import dedupe_lazy_by_primary_key
+from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import is_all_a_symbol, is_cdr_symbol, issued_code_space, parse_symbol
 from cnequity.query.universe import coverage_end_date
 from cnequity.steps.common import (
@@ -116,12 +117,28 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
         raise
 
 
-def _run_sina_with_retry(operation, *, symbol: str, operation_name: str, config: Config):
-    """Run one Sina recovery request with its own pacing and bounded retries."""
+def _run_sina_with_retry(
+    operation,
+    *,
+    symbol: str,
+    operation_name: str,
+    config: Config,
+    request_managed: bool = False,
+):
+    """Run one Sina recovery operation with bounded retries.
+
+    Injected operations are guarded here for callers that do not expose the
+    adapter's request boundary. The built-in probe/fetch functions pass the
+    config through to ``sina.bars`` instead, where each HTTP call gets its own
+    lease (a symbol probe can make two independent calls). Holding another
+    lease around those operations would deadlock at a cap of one and would
+    count the two wire requests as one QPS event.
+    """
     for attempt in range(_SINA_FETCH_ATTEMPTS):
-        config.rate_limit("sina_bars")
         try:
-            return operation()
+            context = nullcontext() if request_managed else source_request(config, "sina_bars")
+            with context:
+                return operation()
         except Exception as exc:  # noqa: BLE001 — classify transport response below
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
             retryable = status_code in _SINA_RETRY_STATUS_CODES
@@ -269,7 +286,8 @@ def discover_delisted(
     """
     from cnequity.adapters.sina.bars import symbol_exists
 
-    probe = probe or (lambda sym, client: symbol_exists(sym, client=client))
+    default_probe = probe is None
+    probe = probe or (lambda sym, client: symbol_exists(sym, client=client, config=config))
     todo = pending_codes(config)
     if limit is not None:
         todo = todo[:limit]
@@ -286,6 +304,7 @@ def discover_delisted(
                     symbol=symbol,
                     operation_name="discovery probe",
                     config=config,
+                    request_managed=default_probe,
                 )
             except Exception as exc:  # noqa: BLE001 — never misfile an outage
                 logger.warning("delisted discovery: probe failed for %s: %s", symbol, exc)
@@ -1373,10 +1392,16 @@ def backfill_delisted_bars(
     end = end or _reference_date(config)
     if start > end:
         raise ValueError("delisted recovery start must be on or before end")
+    default_fetch = fetch is None
+    default_probe = probe_last is None
     fetch = fetch or (
-        lambda symbol, client: fetch_daily_bars_sina(symbol, start=start, end=end, client=client)
+        lambda symbol, client: fetch_daily_bars_sina(
+            symbol, start=start, end=end, client=client, config=config
+        )
     )
-    probe_last = probe_last or (lambda symbol, client: symbol_exists(symbol, client=client))
+    probe_last = probe_last or (
+        lambda symbol, client: symbol_exists(symbol, client=client, config=config)
+    )
     targets = delisted_recovery_targets(config, start, end)
     scope = _recovery_scope(start, end, targets)
     checkpoint = _load_recovery_checkpoint(config, scope)
@@ -1487,6 +1512,7 @@ def backfill_delisted_bars(
                     symbol=symbol,
                     operation_name="bars",
                     config=config,
+                    request_managed=default_fetch,
                 )
             except Exception as exc:  # noqa: BLE001 — one dead symbol must not stop the sweep
                 logger.warning("delisted bars: fetch failed for %s: %s", symbol, exc)
@@ -1502,6 +1528,7 @@ def backfill_delisted_bars(
                         symbol=symbol,
                         operation_name="terminal probe",
                         config=config,
+                        request_managed=default_probe,
                     )
                 except Exception as exc:  # noqa: BLE001 — unresolved stays retryable
                     logger.warning("delisted bars: terminal probe failed for %s: %s", symbol, exc)

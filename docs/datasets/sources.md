@@ -20,8 +20,8 @@
 | 备源 | baostock（仅 `--backfill`，补退市标的） |
 | 频率 | 每日；历史回填默认从 2001-01-01 起，支持 `--start` 缩小窗口 |
 | 主键 | symbol |
-| 股票池 | SH/SZ/BJ 前缀白名单 60/68/00/30/92 |
-| 已知限制 | 快照中消失时推断 `delist_date`；东财补充 `list_date` |
+| 股票池 | 研究股票池使用 SH/SZ/BJ 前缀白名单 60/68/00/30/92；ETF/LOF 使用独立前缀 51/52/56/58/15/16，保留在 instruments/daily_bars |
+| 已知限制 | 快照中消失时推断 `delist_date`；东财分别从 A 股与 ETF/LOF clist 补充 `list_date`；ETF/LOF 保留在 instruments/daily_bars，但不进入 `all_a` 研究池 |
 
 #### trading_calendar
 
@@ -43,6 +43,9 @@
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
 | 历史 ST 回补 | Baostock 覆盖 SH/SZ；可选 Tushare Pro `bak_basic`（2016）+ `stock_st`（2017-01-01 起）覆盖 BJ，需 token；缺少源端覆盖时审计保持 warning |
+| 列语义 | `status` 只表示交易状态（`normal`/`suspended`/`delisted`），ST/*ST 在独立列 `risk_warning`。两者正交：一只 ST 股停牌时两个字段同时成立 |
+| 退市标的 | 不向行情板询问（板答不了），由 `instruments.delist_date` 判定，写 `status=delisted`、`is_trading=false`、`source=derived_delisted`，`risk_warning` 取自最终简称 |
+| 已知限制 | ST 与 *ST 不做区分（喂本数据集的源都没有这个区分：Baostock 只有 `isST` 布尔，Tushare adapter 早已把 `ST`/`*ST` 归一）。更细的标识在交易所简称，经 `instruments.name` 获取 |
 
 #### daily_bars
 
@@ -51,10 +54,10 @@
 | 波次 | `daily_bars`（Wave 1，依赖 corporate_actions） |
 | 主源 | tdx_protocol（未复权，SH/SZ） |
 | 备源 / 路由 | tip 缺口：eastmoney **clist**（分钟级）；多日窗口：eastmoney **kline**；BJ：sina |
-| 频率 | 每日增量；init 时全量回填 |
+| 频率 | 每日增量；init 时全量回填；深历史由同花顺按上市年份回补（股票与 ETF/LOF 均支持） |
 | 主键 | (symbol, trade_date) |
 | 重拉 | 当日 `corporate_actions` 的除权日对应标的 |
-| 已知限制 | TDX 限速；建议 workers ≤ 8；clist 只有当日快照，须用 run 的 `trade_date` 打戳（ADR-0005 routing） |
+| 已知限制 | TDX 限速；建议 workers ≤ 8；clist 只有当日快照，须用 run 的 `trade_date` 打戳（ADR-0005 routing）；ETF/LOF 无上市日期时按未上市占位符处理，不盲抓深历史 |
 
 #### index_bars
 
@@ -124,7 +127,7 @@
 | 频率 | compact 之后每日 |
 | 主键 | (symbol, trade_date, adjust_type) |
 | 说明 | 外部累计因子对齐 daily_bars；`adj_close = close * factor` |
-| **已知缺口** | 新浪**确实覆盖北交所**（`bj430017` 等都能取到）。过去曾出现过因 derive 只从水位向前追加而导致的 BJ 因子缺口；现已修复该路径。新上市未交易、已退市或源端无因子的标的仍可能缺失，具体数量以最新 `adj_factor_coverage` / `adj_factor_source_unavailable` finding 和 `meta/quality/health-latest.json` 为准。对正式退市且新浪明确返回空序列的标的，派生会写入 `meta/state/adj_factors.json.source_unavailable_symbols`，停止无效重试但不会伪造因子。 |
+| **已知缺口** | 股票从 Sina 的 `f` 字段取因子，ETF/LOF 从 `s` 字段取因子（hfq 直接使用 `s`，qfq 使用 `1/s`）。新浪**确实覆盖北交所**（`bj430017` 等都能取到）。过去曾出现过因 derive 只从水位向前追加而导致的因子缺口；现已修复该路径。新上市未交易、已退市或源端无因子的标的仍可能缺失，具体数量以最新 `adj_factor_coverage` / `adj_factor_source_unavailable` finding 和 `meta/quality/health-latest.json` 为准。对正式退市且新浪明确返回空序列的标的，派生会写入 `meta/state/adj_factors.json.source_unavailable_symbols`，停止无效重试但不会伪造因子。 |
 | **查询侧后果** | `load(adjust="hfq")` 默认 `strict_adj=False`，缺因子的行按 `factor=1.0` 返回，即**未复权价出现在复权结果里**，只由 `adj_is_exact=False` 标记。实际不精确行数随查询窗口、标的范围和最新因子覆盖变化；请以结果中的 `adj_is_exact=False` 以及最新 `meta/quality/health-latest.json` 的 `adj_factor_coverage` finding 为准。|
 | **怎么办** | 要严格失败而不是静默降级：`load(..., strict_adj=True)`。**它不是默认值**：新上市的票在拿到第一个因子前必然缺，所以严格模式会让 `universe="all_a"` 的 hfq 查询长期抛错。默认容忍 + `adj_is_exact` 标记 + 审计告警，是在「不静默污染」和「查询可用」之间的取舍 |
 | **自愈** | `derive_adj_factors` 每次增量运行都会找出「有 bar 但因子够不到」的标的并重排其完整历史，单次上限 500 只。所以 `cne backfill daily_bars` 补的历史会在随后的日更里自动补上因子，无需 `--full` |
@@ -167,8 +170,11 @@
 | 项 | 值 |
 |------|-------|
 | 分组 | capital@17:00 |
-| 主源 | eastmoney |
+| 主源 | exchange（上交所 `queryMargin` + 深交所 `1837_xxpl` tab2 融资融券交易明细） |
+| 备选 | eastmoney（`[margin_trading] source = "eastmoney"`，仅由人工切换） |
 | 主键 | (symbol, trade_date) |
+| 已知限制 | **上交所不公布融券余额**，SH 行 `short_balance` 为 null（不做本地推算）；深交所比上交所晚一个交易日发布，两边都发布后才写入该日，因此比东财路径滞后约一个交易日 |
+| 校验 | 2026-08-26 与东财 curated 逐字段比对：3,522 个共同标的四个字段全部完全一致（0 bps），且交易所侧覆盖 4,100 只 vs 东财 3,857 只 |
 
 #### valuation_metrics
 
@@ -235,7 +241,7 @@
 | ingestion_batches | manifest.db |
 | quality_findings | meta/quality/findings/ |
 | source_diffs | meta/quality/source_diffs/ |
-| data_catalog | 由 `cne catalog` 生成 |
+| data_catalog | 由 `cne stats show --json`（无 stats 表时的直扫回退）生成 |
 
 ---
 

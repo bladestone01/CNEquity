@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import warnings
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -18,7 +20,18 @@ from cnequity.domain.datasets import (
     intraday_dataset_names,
     pit_dataset_names,
 )
+from cnequity.domain.pit import (
+    PIT_STORAGE_COLUMNS,
+    PitMode,
+    classify_pit_rows,
+    normalize_pit_storage_columns,
+)
 from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS, validate_dataframe
+from cnequity.domain.universe_profiles import (
+    UniverseProfile,
+    UniverseProfileError,
+    resolve_universe_profile,
+)
 from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.query.parquet_scan import (
     collect_parquet_root,
@@ -32,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 AdjustType = Literal["qfq", "hfq"]
 UniverseType = Literal["all_a", "all_a_sh_sz"]
+UniverseProfileLike = str | UniverseProfile
+RevisionRef = int | str
+RevisionSelection = RevisionRef | Mapping[str, RevisionRef]
 
 # All derived from the DatasetSpec registry (domain/datasets.py).
 CURATED_DATASETS = curated_dataset_names()
@@ -57,6 +73,164 @@ ADJUSTABLE_DATASETS = {"daily_bars", "trade_ticks"} | set(intraday_dataset_names
 
 class ReaderError(ValueError):
     """Raised when load() arguments or dataset state are invalid."""
+
+
+def _merge_revision_selection(
+    revision: RevisionSelection | None,
+    revision_map: Mapping[str, RevisionRef] | None,
+) -> RevisionSelection | None:
+    """Combine the scalar compatibility argument with an explicit map.
+
+    A scalar revision historically identified the dataset being loaded.  An
+    adjusted read touches a second independently versioned dataset, however,
+    so treating that same integer as ``adj_factors`` is incorrect.  Callers
+    can pin each dataset with ``revision={"daily_bars": 7,
+    "adj_factors": 12}`` (or the ``revision_map=`` alias); retaining a scalar
+    here keeps old unadjusted reads source-compatible.
+    """
+
+    if revision_map is None:
+        return revision
+    if revision is None:
+        return dict(revision_map)
+    if isinstance(revision, Mapping):
+        merged = dict(revision)
+        overlap = set(merged) & set(revision_map)
+        for key in overlap:
+            if merged[key] != revision_map[key]:
+                raise ReaderError(f"revision and revision_map disagree for dataset {key!r}")
+        merged.update(revision_map)
+        return merged
+    # A scalar is the legacy selection for the primary dataset.  Keep it in a
+    # distinguished key so a revision map can add (for example) the factor
+    # vintage without accidentally applying the scalar to every dataset.
+    merged = dict(revision_map)
+    merged.setdefault("__primary__", revision)
+    return merged
+
+
+def _revision_for_dataset(
+    selection: RevisionSelection | None,
+    dataset: str,
+    *,
+    fallback_primary: bool = True,
+) -> RevisionRef | None:
+    """Resolve one dataset's revision from a scalar or per-dataset map."""
+
+    if selection is None:
+        return None
+    if not isinstance(selection, Mapping):
+        return selection
+    # Accept both the compact map and a serialized research-manifest shape.
+    nested = selection.get("datasets")
+    if isinstance(nested, Mapping) and dataset in nested:
+        return nested[dataset]
+    if dataset in selection:
+        return selection[dataset]
+    wildcard = selection.get("*")
+    if wildcard is not None and not isinstance(wildcard, Mapping):
+        return wildcard
+    global_selection = selection.get("global")
+    if isinstance(global_selection, Mapping) and dataset in global_selection:
+        return global_selection[dataset]
+    if global_selection is not None and not isinstance(global_selection, Mapping):
+        return global_selection
+    if fallback_primary and dataset != "__primary__":
+        return selection.get("__primary__")
+    return None
+
+
+def _resolve_reader_scope(
+    *,
+    universe: UniverseType | str | None,
+    profile: UniverseProfileLike | None,
+    universe_profile: UniverseProfileLike | None,
+    strict_universe: bool,
+) -> tuple[str | None, UniverseProfile | None, bool]:
+    """Resolve profile/universe compatibility arguments for one read.
+
+    The old ``universe`` argument remains a permissive compatibility path.  A
+    named profile is an explicit research contract and enables its strict
+    evidence requirements automatically.  ``universe_profile`` is accepted as
+    a spelling used by integrations; supplying both profile spellings is only
+    valid when they resolve to the same registry record.
+    """
+
+    selected = profile
+    if profile is not None and universe_profile is not None:
+        try:
+            if resolve_universe_profile(profile) != resolve_universe_profile(universe_profile):
+                raise ReaderError("profile and universe_profile refer to different profiles")
+        except UniverseProfileError as exc:
+            raise ReaderError(str(exc)) from exc
+    elif selected is None:
+        selected = universe_profile
+
+    if selected is not None:
+        try:
+            resolved = resolve_universe_profile(selected)
+        except UniverseProfileError as exc:
+            raise ReaderError(str(exc)) from exc
+        if universe is not None and universe != resolved.legacy_universe:
+            raise ReaderError(
+                f"universe={universe!r} conflicts with profile={resolved.name!r} "
+                f"(profile uses {resolved.legacy_universe!r})"
+            )
+        return resolved.legacy_universe, resolved, bool(strict_universe or resolved.strict_research)
+
+    if universe == "all_a":
+        warnings.warn(
+            "universe='all_a' is a deprecated compatibility alias; choose an explicit "
+            "versioned profile such as 'cn_a_sh_sz_research_v1' or "
+            "'cn_a_all_experimental_v1'",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    return universe, None, strict_universe
+
+
+def _require_profile_delisting_evidence(
+    config: Config,
+    frame: pl.DataFrame,
+    profile: UniverseProfile,
+) -> None:
+    """Fail closed when a strict profile cannot prove survivorship coverage."""
+    if not profile.strict_research or frame.is_empty() or "trade_date" not in frame.columns:
+        return
+    if not any(
+        requirement.startswith("historical_delisting_coverage")
+        for requirement in profile.evidence_requirements
+    ):
+        return
+    from cnequity.steps.delisted import delisted_coverage_report
+
+    start = frame["trade_date"].min()
+    end = frame["trade_date"].max()
+    report = delisted_coverage_report(
+        config,
+        start,
+        end,
+        universe=profile.legacy_universe,
+    )
+    if not report.get("verified"):
+        counts = report.get("counts") or {}
+        unresolved = sum(
+            int(counts.get(key, 0) or 0)
+            for key in (
+                "pending_probe",
+                "missing_bars",
+                "unknown_overlap",
+                "terminal_mismatch",
+                "missing_instrument",
+                "invalid_delist_date",
+                "recent_quarantined",
+                "formal_unresolved",
+            )
+        )
+        raise ReaderError(
+            f"profile={profile.name!r} requires complete historical delisting evidence for "
+            f"{start.isoformat()}..{end.isoformat()} (unresolved={unresolved})"
+        )
 
 
 def _parse_date(value: str | date | None) -> date | None:
@@ -105,7 +279,15 @@ def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None,
     """
     spec = DATASETS[dataset]
     root = _dataset_root(config, dataset)
-    if not dataset_has_parquet(root) or spec.partition_col is None:
+    if (
+        not dataset_has_parquet(
+            root,
+            dataset=dataset,
+            meta_root=config.meta_root,
+            revision=None,
+        )
+        or spec.partition_col is None
+    ):
         return None, None
 
     from cnequity.query.parquet_scan import list_partitions
@@ -134,6 +316,8 @@ def _catalog_coverage_bounds(config: Config, dataset: str) -> tuple[date | None,
             partition_col=spec.partition_col,
             hive=day_hive,
             traded_only=dataset == "daily_bars",
+            dataset=dataset,
+            meta_root=config.meta_root,
         )
         if date_col not in lf.collect_schema().names():
             return None, None
@@ -163,11 +347,17 @@ def _read_dataset(
     start: date | None = None,
     end: date | None = None,
     symbols: list[str] | None = None,
-    universe: UniverseType | None = None,
+    universe: UniverseType | str | None = None,
     strict_universe: bool = False,
+    revision: RevisionRef | None = None,
 ) -> pl.DataFrame:
     root = _dataset_root(config, dataset)
-    if not dataset_has_parquet(root):
+    if not dataset_has_parquet(
+        root,
+        dataset=dataset,
+        meta_root=config.meta_root,
+        revision=revision,
+    ):
         raise ReaderError(
             f"no parquet data for dataset {dataset!r} under {root} (data_root={config.data_root})"
         )
@@ -180,6 +370,9 @@ def _read_dataset(
             start=start,
             end=end,
             symbols=symbols,
+            dataset=dataset,
+            meta_root=config.meta_root,
+            revision=revision,
         )
     except FileNotFoundError as exc:
         raise ReaderError(
@@ -210,7 +403,19 @@ def _read_dataset(
                 df = df.filter(usable)
 
     if dataset in DATASET_SCHEMAS:
+        # Bitemporal PIT columns are an additive, optional storage contract.
+        # ``validate_dataframe`` intentionally returns the canonical schema
+        # and therefore drops unknown columns; preserve and normalise these
+        # four columns around validation so mixed legacy/new Parquet remains
+        # readable while the writer schema is still backwards compatible.
+        pit_columns = (
+            normalize_pit_storage_columns(df, dataset).select(PIT_STORAGE_COLUMNS)
+            if dataset in PIT_DATASETS
+            else None
+        )
         df = validate_dataframe(df, dataset)
+        if pit_columns is not None:
+            df = df.hstack(pit_columns)
         return dedupe_by_primary_key(df, dataset)
     return df
 
@@ -310,11 +515,18 @@ def _apply_adjustment(
     end: date | None,
     *,
     strict_adj: bool = False,
+    revision: RevisionRef | None = None,
 ) -> pl.DataFrame:
     if bars.is_empty():
         return bars
 
-    factors = _read_dataset(config, "adj_factors", start=start, end=end)
+    factors = _read_dataset(
+        config,
+        "adj_factors",
+        start=start,
+        end=end,
+        revision=revision,
+    )
     if factors.is_empty():
         out = bars.with_columns(
             *[pl.col(c).alias(f"adj_{c}") for c in PRICE_COLS if c in bars.columns],
@@ -364,22 +576,23 @@ def _apply_pit_filters(
     as_of: date,
     items: list[str] | None,
     all_vintages: bool,
+    pit_mode: PitMode,
+    legacy_cutoff: bool = False,
 ) -> pl.DataFrame:
-    if df.is_empty():
-        return df
-    if "announce_date" not in df.columns:
-        raise ReaderError(f"{dataset} requires announce_date column (PIT contract)")
-    df = df.filter(pl.col("announce_date") <= as_of)
-    # A historical backfill can only prove that its current/restated value was
-    # available when the lake fetched it, not on the original announcement date.
-    # The collection cutoff is applied to every FSI row, including legacy rows
-    # whose source marker predates the backfill marker. This is conservative for
-    # a late-ingested daily disclosure, but never lets an unversioned value leak
-    # into an earlier PIT slice.
-    if dataset == "financial_statement_items" and {"source", "fetched_at"} <= set(df.columns):
-        df = df.filter(pl.col("fetched_at").dt.date() <= as_of)
+    try:
+        df = classify_pit_rows(
+            df,
+            dataset,
+            as_of=as_of,
+            pit_mode=pit_mode,
+            legacy_cutoff=legacy_cutoff,
+        )
+    except ValueError as exc:
+        raise ReaderError(str(exc)) from exc
     if items and "item_code" in df.columns:
         df = df.filter(pl.col("item_code").is_in(items))
+    if df.is_empty():
+        return df
     if all_vintages or df.is_empty():
         return df
 
@@ -390,7 +603,10 @@ def _apply_pit_filters(
     key = [c for c in PRIMARY_KEYS.get(dataset, []) if c != "announce_date"]
     if not key or not all(c in df.columns for c in key):
         return df
-    return df.sort("announce_date").group_by(key, maintain_order=True).last()
+    order = [column for column in ("announce_date", "observed_at", "fetched_at") if column in df]
+    if order:
+        df = df.sort(order)
+    return df.group_by(key, maintain_order=True).last()
 
 
 def load(
@@ -400,14 +616,19 @@ def load(
     end: str | date | None = None,
     adjust: AdjustType | None = None,
     universe: UniverseType | None = None,
+    profile: UniverseProfileLike | None = None,
+    universe_profile: UniverseProfileLike | None = None,
     as_of: str | date | None = None,
     items: list[str] | None = None,
     symbols: list[str] | None = None,
     strict_adj: bool = False,
     strict_universe: bool = False,
     all_vintages: bool = False,
+    pit_mode: PitMode | None = None,
     config: Config | None = None,
     data_root: str | Path | None = None,
+    revision: RevisionSelection | None = None,
+    revision_map: Mapping[str, RevisionRef] | None = None,
 ) -> pl.DataFrame:
     """Load a curated dataset with optional adjustment, universe, and PIT filters.
 
@@ -438,6 +659,13 @@ def load(
         requested window has complete ``trading_status`` rows and a versioned
         historical ST evidence receipt. Dates before that evidence coverage
         are not filtered in permissive mode; strict research reads fail closed.
+    profile / universe_profile:
+        Explicit versioned :class:`cnequity.domain.UniverseProfile` name (or
+        object). Profiles bind exchange/board, CDR/ETF, ST/suspension,
+        delisting and PIT-evidence rules and persist a stable ``scope_hash``.
+        A strict profile enables strict evidence checks even when
+        ``strict_universe`` is omitted. ``universe_profile`` is a spelling
+        compatibility alias; pass only one of the two profile arguments.
     as_of:
         Point-in-time date for ``financial_statement_items``. Keeps only facts
         announced on or before this date, and — because a restatement stores a
@@ -450,6 +678,16 @@ def load(
         the one current then. For studying revisions (a restatement's size and
         direction is itself a signal); not for cross-sectional screens, where
         multiple vintages of one fact would double-count it.
+    pit_mode:
+        ``"strict"`` keeps only vintages whose source disclosure,
+        publication/availability, and lake observation are all provably no
+        later than ``as_of``. Rows from the current historical backfill are
+        reconstructed and are excluded. ``"best_effort"`` keeps those rows
+        for exploratory work and adds ``pit_is_exact=False``/
+        ``pit_quality="reconstructed"``. When omitted, the 0.x compatibility
+        path behaves like best-effort but retains the old ``fetched_at``
+        cutoff; it is deprecated and emits no exactness guarantee. Choose the
+        mode explicitly in research manifests.
     symbols:
         Restrict to these symbols when the dataset has a ``symbol`` column.
     strict_universe:
@@ -460,12 +698,28 @@ def load(
     config, data_root:
         Lake location; auto-detects ``configs/cnequity.toml`` when omitted.
         Raises ``ReaderError`` if config or dataset parquet files are missing.
+    revision:
+        Optional committed dataset revision number or revision id.  When
+        supplied, the query reads that retained immutable generation rather
+        than whatever is current at collection time; omitted reads pin the
+        current pointer when the LazyFrame is constructed.
     """
     cfg = resolve_config(config=config, data_root=data_root)
+    revision_selection = _merge_revision_selection(revision, revision_map)
+    effective_universe, resolved_profile, effective_strict_universe = _resolve_reader_scope(
+        universe=universe,
+        profile=profile,
+        universe_profile=universe_profile,
+        strict_universe=strict_universe,
+    )
     if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
         raise ReaderError(f"unknown dataset {dataset!r}")
+    legacy_pit_mode = pit_mode is None
+    effective_pit_mode: PitMode = "best_effort" if legacy_pit_mode else pit_mode
+    if effective_pit_mode not in ("strict", "best_effort"):
+        raise ReaderError(f"unsupported pit_mode {pit_mode!r}; use 'strict' or 'best_effort'")
 
-    if universe and dataset != "daily_bars":
+    if (effective_universe or resolved_profile) and dataset != "daily_bars":
         raise ReaderError(
             f"universe filter applies to daily_bars only; it is not supported for {dataset}"
         )
@@ -481,8 +735,21 @@ def load(
     if dataset in PIT_DATASETS:
         if as_of_d is None:
             raise ReaderError(f"{dataset} requires as_of= for point-in-time queries")
-        df = _read_dataset(cfg, dataset, symbols=symbols)
-        df = _apply_pit_filters(df, dataset, as_of=as_of_d, items=items, all_vintages=all_vintages)
+        df = _read_dataset(
+            cfg,
+            dataset,
+            symbols=symbols,
+            revision=_revision_for_dataset(revision_selection, dataset),
+        )
+        df = _apply_pit_filters(
+            df,
+            dataset,
+            as_of=as_of_d,
+            items=items,
+            all_vintages=all_vintages,
+            pit_mode=effective_pit_mode,
+            legacy_cutoff=legacy_pit_mode,
+        )
         df = _apply_pit_date_range(df, dataset, start_d, end_d)
         df = _apply_symbol_filter(df, symbols)
         sort_cols = [
@@ -496,9 +763,12 @@ def load(
         start=start_d,
         end=end_d,
         symbols=symbols,
-        universe=universe,
-        strict_universe=strict_universe,
+        universe=effective_universe,
+        strict_universe=effective_strict_universe,
+        revision=_revision_for_dataset(revision_selection, dataset),
     )
+    if resolved_profile is not None and dataset == "daily_bars":
+        _require_profile_delisting_evidence(cfg, df, resolved_profile)
 
     # Intraday datasets join on (symbol, trade_date) like the daily bars do: a
     # corporate action applies to a whole session, so every bar in a day shares
@@ -506,7 +776,28 @@ def load(
     # reason daily ones are — the factor series can be recomputed, a price
     # written adjusted cannot be undone.
     if adjust and dataset in ADJUSTABLE_DATASETS:
-        df = _apply_adjustment(df, cfg, adjust, start_d, end_d, strict_adj=strict_adj)
+        df = _apply_adjustment(
+            df,
+            cfg,
+            adjust,
+            start_d,
+            end_d,
+            strict_adj=strict_adj,
+            # A scalar revision belongs to the primary dataset.  Adjustment
+            # factors have their own revision sequence; absent an explicit
+            # map, use their current committed generation for backwards
+            # compatibility instead of interpreting (say) daily revision 7 as
+            # factor revision 7.  Research callers can pin both explicitly.
+            revision=(
+                _revision_for_dataset(
+                    revision_selection,
+                    "adj_factors",
+                    fallback_primary=False,
+                )
+                if isinstance(revision_selection, Mapping)
+                else None
+            ),
+        )
 
     # Intraday rows sort by symbol then timestamp: trade_date alone would leave
     # a session's 240 bars in whatever order the pages arrived, and grouping by
@@ -536,6 +827,8 @@ def scan(
     symbols: list[str] | None = None,
     config: Config | None = None,
     data_root: str | Path | None = None,
+    revision: RevisionSelection | None = None,
+    revision_map: Mapping[str, RevisionRef] | None = None,
 ) -> pl.LazyFrame:
     """Return a LazyFrame over a dataset with hive partition pruning.
 
@@ -544,10 +837,16 @@ def scan(
     the partition scan.
     """
     cfg = resolve_config(config=config, data_root=data_root)
+    revision_selection = _merge_revision_selection(revision, revision_map)
     if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
         raise ReaderError(f"unknown dataset {dataset!r}")
     root = _dataset_root(cfg, dataset)
-    if not dataset_has_parquet(root):
+    if not dataset_has_parquet(
+        root,
+        dataset=dataset,
+        meta_root=cfg.meta_root,
+        revision=_revision_for_dataset(revision_selection, dataset),
+    ):
         raise ReaderError(
             f"no parquet data for dataset {dataset!r} under {root} (data_root={cfg.data_root})"
         )
@@ -557,6 +856,9 @@ def scan(
         start=_parse_date(start),
         end=_parse_date(end),
         symbols=symbols,
+        dataset=dataset,
+        meta_root=cfg.meta_root,
+        revision=_revision_for_dataset(revision_selection, dataset),
     )
 
 
@@ -589,8 +891,13 @@ def list_datasets(
     state = StateStore(cfg.meta_root)
     rows = []
     for name, spec in sorted(DATASETS.items()):
+        state_payload = state.get_payload(name)
         root = (cfg.derived_root if spec.layer == "derived" else cfg.curated_root) / name
-        has_data = dataset_has_parquet(root)
+        has_data = dataset_has_parquet(
+            root,
+            dataset=name,
+            meta_root=cfg.meta_root,
+        )
         first_part = last_part = None
         if has_data and spec.partition_col:
             try:
@@ -609,6 +916,8 @@ def list_datasets(
                 "fetch_semantics": spec.fetch_semantics,
                 "history_mode": history_mode_for(spec),
                 "backfill_source": spec.backfill_source,
+                "pit_quality": spec.pit_quality,
+                "pit_storage_columns": list(PIT_STORAGE_COLUMNS) if spec.pit else [],
                 # None = unbounded. A number means the source itself serves only
                 # that many trading days back, so anything earlier is
                 # unreachable rather than merely un-backfilled.
@@ -619,6 +928,19 @@ def list_datasets(
                 "coverage_end": last_part,
                 "watermarked": spec.watermark,
                 "watermark": state.get_date(name) if spec.watermark else None,
+                # Snapshot-only feeds have no PIT watermark.  This capture
+                # marker records when the rolling live window was last
+                # observed so stale scheduling can recover a missed day
+                # without pretending that a future event is historical data.
+                "snapshot_date": (
+                    state.get_date(name, field="last_snapshot_date")
+                    if not spec.watermark and spec.fetch_semantics == "snapshot"
+                    else None
+                ),
+                "revision": state_payload.get("revision"),
+                "revision_id": state_payload.get("revision_id"),
+                "schema_version": state_payload.get("schema_version"),
+                "contract_fingerprint": state_payload.get("contract_fingerprint"),
             }
         )
     return pl.DataFrame(rows)

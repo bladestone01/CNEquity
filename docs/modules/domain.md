@@ -11,7 +11,8 @@
 | 文件 | 职责 |
 |------|------|
 | `schemas.py` | Polars schema、`PRIMARY_KEYS`、`validate_dataframe()`、`with_provenance()` |
-| `datasets.py` | `DatasetSpec` 注册表 `DATASETS` |
+| `datasets.py` | `DatasetSpec` 注册表 `DATASETS` 与数据集元数据 |
+| `contracts.py` | 稳定 JSON 契约、fingerprint、验证和 breaking diff |
 | `symbols.py` | `parse_symbol()`, `is_all_a_symbol()`, CDR/ETF 分类 |
 | `rate_limit.py` | 跨平台文件锁 + JSON 时隙状态的跨进程 `RateLimiter` |
 | `sentiment.py` | 公告关键词 + 可选 SnowNLP 打分 |
@@ -76,6 +77,14 @@
 | `intraday_frequency` | bar 频率（`1m` / `5m`）。**行为字段**：设了就会被 audit 的会话检查、reader 的复权集合、`cne backfill --symbols` 认领 |
 | `row_grain` | 一行覆盖多久（`1m` / `5m` / `tick`）。**纯描述**，不驱动任何行为 |
 | `coverage_mode` | `session_dense` 表示覆盖区间内每个交易日都应有数据；`sparse` 表示事件/公告等允许空交易日 |
+| `schema_version` | 列形状版本；默认 `1`，新增列保持向后兼容 |
+| `contract_level` | 契约成熟度；当前注册表默认为 `stable` |
+| `pit_grade` | 0.x 兼容别名：`none` / `strict` / `partial`；历史回填为 `partial` |
+| `pit_quality` | `strict` / `reconstructed` / `snapshot_only`；描述当前证据质量 |
+| `availability_col` | 信息可用日期列；PIT 默认 `announce_date`，其他表默认查询日期列 |
+| `pit_storage_columns` | 可选双时态列：`available_at`、`source_published_at`、`observed_at`、`revision_id` |
+| `compatibility` | 兼容策略；现有表默认 `additive` |
+| `unit_contract` | 数值字段的机器可读单位声明 |
 
 **两组容易混的字段：**
 
@@ -93,6 +102,10 @@ pit_dataset_names() -> frozenset[str]
 fetch_semantics(dataset) -> Literal["by_date", "snapshot"]
 is_stale(dataset, mark, anchor) -> bool
 ```
+
+完整 JSON 契约及演进比较见 [`datasets/contract.md`](../datasets/contract.md)。
+程序化入口为 `dataset_contract()`、`build_contract()`、`contract_fingerprint()`、
+`validate_contract()` 和 `diff_contracts()`。
 
 **新增数据集必须**：在此添加 `DatasetSpec` + 在 `schemas.py` 添加 schema/PK。`tests/unit/test_dataset_registry.py` 强制同步。
 

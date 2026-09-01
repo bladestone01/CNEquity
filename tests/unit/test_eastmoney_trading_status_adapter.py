@@ -199,9 +199,27 @@ def test_fetch_trading_status_eastmoney_labels_suspended_st_and_normal(monkeypat
     rows = {r["symbol"]: r for r in df.iter_rows(named=True)}
     assert rows["600519.SH"]["status"] == "suspended"
     assert rows["600519.SH"]["is_trading"] is False
-    assert rows["000002.SZ"]["status"] == "st"
+    assert rows["000002.SZ"]["status"] == "normal"
+    assert rows["000002.SZ"]["risk_warning"] is True
     assert rows["000002.SZ"]["is_trading"] is True
     assert rows["000001.SZ"]["status"] == "normal"
+    assert rows["000001.SZ"]["risk_warning"] is False
+
+
+def test_a_halted_st_name_keeps_both_facts(monkeypatch):
+    """The regression this split exists for: halting must not clear ST.
+
+    The old if/elif wrote `status="suspended"` and the designation was gone —
+    seen live on 000711.SZ, which was `st` on 2026-08-27 and `suspended` on
+    2026-08-28 without leaving risk warning.
+    """
+    monkeypatch.setattr(ts, "_fetch_st_symbols", lambda client: {"000711.SZ"})
+    monkeypatch.setattr(ts, "_fetch_suspended_symbols", lambda client, trade_date: {"000711.SZ"})
+    df = ts.fetch_trading_status_eastmoney(["000711.SZ"], date(2026, 8, 28), client=_FakeClient())
+    row = df.to_dicts()[0]
+    assert row["status"] == "suspended"
+    assert row["is_trading"] is False
+    assert row["risk_warning"] is True
 
 
 def test_fetch_trading_status_eastmoney_dedupes_input_symbols(monkeypatch):

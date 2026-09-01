@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.trading_status import risk_warning_expr
 from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.query.parquet_scan import collect_parquet_root
 
@@ -81,12 +82,18 @@ def _read_trading_status(root: Path, trade_date: date) -> pl.DataFrame:
     if not required.issubset(df.columns):
         return pl.DataFrame()
     df = dedupe_by_primary_key(df, "trading_status")
-    return df.select(["symbol", "trade_date", "status"])
+    # The ±5% band follows the *risk-warning* designation, which is why this
+    # reads `risk_warning` rather than `status`: an ST name that halted used to
+    # be stored as merely "suspended", and every one of its sessions was then
+    # measured against the ±10% band.
+    return df.select(
+        ["symbol", "trade_date", "status", risk_warning_expr(df.columns).alias("risk_warning")]
+    )
 
 
-def _limit_threshold(symbol: str, status: str | None) -> float:
+def _limit_threshold(symbol: str, risk_warning: bool | None) -> float:
     """Return a conservative daily limit threshold for a symbol."""
-    if str(status or "").strip().lower() in {"st", "*st"}:
+    if risk_warning:
         return 0.045
     code, _, exchange = str(symbol).partition(".")
     if exchange == "BJ":
@@ -130,14 +137,14 @@ def compute_market_breadth(config: Config, trade_date: date) -> pl.DataFrame:
     )
     status = _read_trading_status(config.curated_root / "trading_status", trade_date)
     if status.is_empty():
-        joined = joined.with_columns(pl.lit(None, dtype=pl.Utf8).alias("status"))
+        joined = joined.with_columns(pl.lit(None, dtype=pl.Boolean).alias("risk_warning"))
     else:
-        joined = joined.join(status.select(["symbol", "status"]), on="symbol", how="left")
+        joined = joined.join(status.select(["symbol", "risk_warning"]), on="symbol", how="left")
     joined = joined.with_columns(
         ((pl.col("close") - pl.col("prev_close")) / pl.col("prev_close")).alias("pct"),
-        pl.struct(["symbol", "status"])
+        pl.struct(["symbol", "risk_warning"])
         .map_elements(
-            lambda row: _limit_threshold(row["symbol"], row["status"]),
+            lambda row: _limit_threshold(row["symbol"], row["risk_warning"]),
             return_dtype=pl.Float64,
         )
         .alias("limit_threshold"),

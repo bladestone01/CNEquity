@@ -9,6 +9,7 @@ normal full-report daily/backfill path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Mapping
@@ -26,10 +27,45 @@ from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 from cnequity.config import Config
 from cnequity.domain.symbols import parse_symbol
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive, begin_capture
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["fetch_corporate_actions_eastmoney_migrated_bj"]
+__all__ = [
+    "fetch_corporate_actions_eastmoney_migrated_bj",
+    "migrated_bj_request_scope",
+]
+
+
+def _configured_archive(
+    config,
+    dataset: str,
+    *,
+    run_id: str | None = None,
+    request_scope: str | None = None,
+    source: str = "eastmoney",
+) -> RawPayloadArchive | None:
+    if config is None or not hasattr(config, "meta_root"):
+        return None
+    should_archive = getattr(config, "should_archive_raw", None)
+    if callable(should_archive) and not should_archive(dataset):
+        return None
+    if not bool(getattr(config, "raw_archive_enabled", True)):
+        return None
+    scope = str(request_scope or f"dataset:{dataset}")
+    nonce = begin_capture(config, dataset, run_id, source=source, request_scope=scope)
+    return RawPayloadArchive(
+        config.meta_root,
+        enabled=True,
+        datasets=[dataset],
+        compression=getattr(config, "raw_archive_compression", "gzip"),
+        max_payload_bytes=getattr(config, "raw_archive_max_payload_bytes", None),
+        capture_owner=config,
+        capture_run_id=run_id,
+        capture_source=source,
+        capture_scope=scope,
+        capture_nonce=nonce,
+    )
 
 
 _OUTPUT_SCHEMA = {
@@ -77,6 +113,13 @@ def _empty() -> pl.DataFrame:
     return pl.DataFrame(schema=_OUTPUT_SCHEMA)
 
 
+def migrated_bj_request_scope(symbols: list[str], start: date, end: date) -> str:
+    """Return the stable scope for one migrated-code repair request."""
+    symbols_scope = ",".join(sorted({str(symbol) for symbol in symbols}))
+    symbols_scope = hashlib.sha256(symbols_scope.encode("utf-8")).hexdigest()[:16]
+    return f"repair:eastmoney_bj:{start.isoformat()}:{end.isoformat()}:{symbols_scope}"
+
+
 def fetch_corporate_actions_eastmoney_migrated_bj(
     symbols: list[str],
     start: date,
@@ -85,11 +128,28 @@ def fetch_corporate_actions_eastmoney_migrated_bj(
     config: Config | None = None,
     symbol_windows: Mapping[str, tuple[date, date]] | None = None,
     client: EastMoneyClient | None = None,
+    run_id: str | None = None,
+    archive: RawPayloadArchive | None = None,
+    request_scope: str | None = None,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Fetch actions for legacy BJ symbols through current 920xxx identities."""
     owns_client = client is None
     if client is None:
         client = EastMoneyClient(config=config)
+    if archive is None:
+        if request_scope is None:
+            request_scope = migrated_bj_request_scope(symbols, start, end)
+        archive = _configured_archive(
+            config,
+            "corporate_actions",
+            run_id=run_id,
+            request_scope=request_scope,
+            source="eastmoney_migrated_bj",
+        )
+    if archive is not None and archive.enabled and not run_id:
+        raise RawArchiveError(
+            "EastMoney migrated corporate_actions archive requires a non-empty run_id"
+        )
 
     rows: list[dict] = []
     failed: list[str] = []
@@ -106,19 +166,26 @@ def fetch_corporate_actions_eastmoney_migrated_bj(
             if window[0] > window[1]:
                 continue
             try:
-                raw = fetch_datacenter(
-                    client,
-                    "RPT_SHAREBONUS_DET",
-                    _COLUMNS,
-                    filter_expr=f'(SECURITY_CODE="{current_code}")',
-                    page_size=500,
-                    sort_columns="EX_DIVIDEND_DATE",
-                    sort_types="1",
-                    max_retries=config.max_retries if config is not None else 3,
-                    retry_backoff_seconds=(
+                datacenter_kwargs = {
+                    "filter_expr": f'(SECURITY_CODE="{current_code}")',
+                    "page_size": 500,
+                    "sort_columns": "EX_DIVIDEND_DATE",
+                    "sort_types": "1",
+                    "max_retries": config.max_retries if config is not None else 3,
+                    "retry_backoff_seconds": (
                         float(config.retry_backoff_seconds) if config is not None else 5.0
                     ),
-                )
+                }
+                if archive is not None:
+                    datacenter_kwargs.update(
+                        {
+                            "archive": archive,
+                            "archive_dataset": "corporate_actions",
+                            "archive_run_id": run_id,
+                            "archive_source": "eastmoney_migrated_bj",
+                        }
+                    )
+                raw = fetch_datacenter(client, "RPT_SHAREBONUS_DET", _COLUMNS, **datacenter_kwargs)
                 for item in raw:
                     for parsed in _parse_rows(item):
                         if not (window[0] <= parsed["ex_date"] <= window[1]):
@@ -126,6 +193,8 @@ def fetch_corporate_actions_eastmoney_migrated_bj(
                         parsed["symbol"] = symbol
                         rows.append(parsed)
             except Exception as exc:  # noqa: BLE001 — preserve other symbols for retry
+                if isinstance(exc, RawArchiveError):
+                    raise
                 failed.append(symbol)
                 logger.warning(
                     "eastmoney migrated corporate_actions: failed for %s/%s: %s",

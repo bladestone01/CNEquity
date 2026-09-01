@@ -62,7 +62,7 @@ cli → orchestrator → steps → adapters
 |----------|--------|
 | 新数据集 | `domain/schemas.py` + `datasets.py` + `steps/<layer>.py` + adapter |
 | 新数据源 | `adapters/<source>/` + `configs` sources 段 |
-| 新 CLI 命令 | `cli/main.py` |
+| 新 CLI 命令 | `cli/<group>_cmds.py`（按用途选文件，见 [cli 模块](cli.md#源码地图)） |
 | 新质量检查 | `quality/dataset_checks.py` 或 `cross_checks.py` |
 | 调度变更 | `configs/cnequity.toml` waves/groups |
 

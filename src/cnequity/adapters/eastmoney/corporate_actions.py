@@ -15,6 +15,7 @@ from cnequity.adapters.eastmoney.datacenter import (
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
 from cnequity.domain.symbols import format_symbol, is_all_a_symbol
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive, begin_capture
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,8 @@ def fetch_corporate_actions_eastmoney(
     backfill: bool = False,
     client: EastMoneyClient | None = None,
     config: Config | None = None,
+    run_id: str | None = None,
+    request_scope: str | None = None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
@@ -231,17 +234,54 @@ def fetch_corporate_actions_eastmoney(
     try:
         try:
             rate_limit_if_unconfigured(client, config)
-            raw = fetch_datacenter(
-                client,
-                _REPORT,
-                _COLUMNS,
-                filter_expr=date_filter,
-                sort_columns=_EX_DATE_COL,
-                sort_types="-1",
-                max_retries=retries,
-                retry_backoff_seconds=backoff,
-                stop_after=stop_after,
-            )
+            archive = None
+            if config is not None and hasattr(config, "meta_root"):
+                archive_dataset = "corporate_actions"
+                should_archive = getattr(config, "should_archive_raw", None)
+                if should_archive is None or should_archive(archive_dataset):
+                    capture_scope = request_scope or (
+                        f"{'backfill' if backfill else 'daily'}:{trade_date.isoformat()}"
+                    )
+                    nonce = begin_capture(
+                        config,
+                        archive_dataset,
+                        run_id,
+                        source="eastmoney",
+                        request_scope=capture_scope,
+                    )
+                    archive = RawPayloadArchive(
+                        config.meta_root,
+                        enabled=getattr(config, "raw_archive_enabled", False),
+                        datasets=[archive_dataset],
+                        compression=getattr(config, "raw_archive_compression", "gzip"),
+                        max_payload_bytes=getattr(config, "raw_archive_max_payload_bytes", None),
+                        capture_owner=config,
+                        capture_run_id=run_id,
+                        capture_source="eastmoney",
+                        capture_scope=capture_scope,
+                        capture_nonce=nonce,
+                    )
+            if archive is not None and archive.enabled and not run_id:
+                raise RawArchiveError(
+                    "EastMoney corporate_actions archive requires a non-empty run_id"
+                )
+            datacenter_kwargs = {
+                "filter_expr": date_filter,
+                "sort_columns": _EX_DATE_COL,
+                "sort_types": "-1",
+                "max_retries": retries,
+                "retry_backoff_seconds": backoff,
+                "stop_after": stop_after,
+            }
+            if archive is not None:
+                datacenter_kwargs.update(
+                    {
+                        "archive": archive,
+                        "archive_dataset": "corporate_actions",
+                        "archive_run_id": run_id,
+                    }
+                )
+            raw = fetch_datacenter(client, _REPORT, _COLUMNS, **datacenter_kwargs)
         except EastMoneyDatacenterError:
             raise
         except Exception as exc:

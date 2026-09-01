@@ -23,7 +23,12 @@ from cnequity.config import Config
 from cnequity.orchestrator.registry import register_step
 from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.steps.common import BACKFILL_START, list_trading_dates
-from cnequity.steps.http_common import run_incremental_fetched, write_fetched
+from cnequity.steps.http_common import (
+    call_with_run_id,
+    run_incremental_fetched,
+    verify_raw_archive,
+    write_fetched,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +136,14 @@ def step_sector_members(config: Config, trade_date: date, run_id: str, context: 
 
     def _fetch(d: date) -> pl.DataFrame:
         return _validate_daily_membership_snapshot(
-            fetch_sector_members(d, config=config),
+            call_with_run_id(
+                fetch_sector_members,
+                d,
+                pipeline_config=config,
+                dataset="sector_members",
+                run_id=run_id,
+                config=config,
+            ),
             "sector_members",
             min_count=_MIN_DAILY_SECTOR_MEMBER_ROWS,
             count_columns=["symbol", "sector_code", "as_of_date"],
@@ -146,6 +158,13 @@ def step_sector_members(config: Config, trade_date: date, run_id: str, context: 
         _fetch,
         source="eastmoney",
         date_col="as_of_date",
+        raw_archive_evidence_factory=lambda: verify_raw_archive(
+            config,
+            "sector_members",
+            run_id,
+            source="eastmoney",
+            request_scope=f"snapshot:{trade_date.isoformat()}",
+        ),
     )
 
 
@@ -208,7 +227,14 @@ def _backfill_index_constituents(config: Config, trade_date: date, run_id: str) 
     frames: list[pl.DataFrame] = []
     failed_indices: list[str] = []
     for index_symbol in CNI_BACKFILL_INDICES:
-        adj = fetch_cni_index_adjustments(index_symbol)
+        try:
+            adj = fetch_cni_index_adjustments(index_symbol, config=config)
+        except TypeError as exc:
+            # Keep narrow test/integration doubles written before the optional
+            # config argument working without swallowing parser TypeErrors.
+            if "unexpected keyword argument 'config'" not in str(exc):
+                raise
+            adj = fetch_cni_index_adjustments(index_symbol)
         if adj.is_empty():
             failed_indices.append(index_symbol)
             continue
@@ -356,7 +382,14 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
             "eastmoney_as_of_dates": len(have),
         }
 
-    intervals = fetch_sw_industry_intervals()
+    try:
+        intervals = fetch_sw_industry_intervals(config=config)
+    except TypeError as exc:
+        # Backwards-compatible with small injected fetchers that predate the
+        # optional config argument; real adapter calls remain rate-limited.
+        if "unexpected keyword argument 'config'" not in str(exc):
+            raise
+        intervals = fetch_sw_industry_intervals()
     df = expand_sw_industry_as_of(intervals, todo)
     if df.is_empty():
         raise RuntimeError("industry_members backfill: Shenwan expansion produced 0 rows")

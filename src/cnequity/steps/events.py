@@ -3,6 +3,7 @@ earnings_disclosure_schedule."""
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from datetime import date
@@ -10,10 +11,15 @@ from datetime import date
 import polars as pl
 
 from cnequity.adapters.baostock.corporate_actions import fetch_corporate_actions_baostock
-from cnequity.adapters.cninfo.announcements import fetch_announcement_index
+from cnequity.adapters.cninfo.announcements import (
+    CNINFO_SOURCE_REVISION,
+    fetch_announcement_index,
+    fetch_announcement_index_range,
+)
 from cnequity.adapters.eastmoney.corporate_actions import fetch_corporate_actions_eastmoney
 from cnequity.adapters.eastmoney.corporate_actions_migration import (
     fetch_corporate_actions_eastmoney_migrated_bj,
+    migrated_bj_request_scope,
 )
 from cnequity.adapters.eastmoney.earnings_disclosure import (
     _backfill_report_dates,
@@ -29,6 +35,7 @@ from cnequity.domain.schemas import with_provenance
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.registry import register_step
 from cnequity.quality.failover import (
+    failover_spec,
     snapshot_corporate_actions_backup,
     snapshot_corporate_actions_tdx_backup,
 )
@@ -36,18 +43,186 @@ from cnequity.steps.common import (
     fetch_incremental_daily,
     instrument_metadata,
     load_symbols,
-    write_simple,
 )
-from cnequity.steps.http_common import run_incremental_fetched, write_fetched
+from cnequity.steps.http_common import run_incremental_fetched, verify_raw_archive, write_fetched
 
 # TDX xdxr is per-symbol (backfill); EastMoney datacenter supports ex-date filter (daily).
 _CANONICAL_BACKFILL = "tdx_protocol"
 _CANONICAL_DAILY = "eastmoney"
 _CORPORATE_ACTIONS_CHUNK_TASK = "corporate_actions_chunk"
 _MIN_EARNINGS_SCHEDULE_SYMBOLS_PER_PERIOD = 100
+_CNINFO_CHECKPOINT_TTL_DAYS = 7
 
 
 logger = logging.getLogger(__name__)
+
+
+def _cninfo_checkpoint(config: Config, dataset: str):
+    """Stable checkpoint path for a resumable CNINFO backfill."""
+    return config.meta_root / "checkpoints" / f"{dataset}.json"
+
+
+def _record_cninfo_metrics(config: Config, run_id: str, dataset: str, metrics: dict) -> None:
+    """Persist source/page metrics in the run manifest without making them a gate."""
+    try:
+        manifest = Manifest(config.manifest_path)
+        manifest.record_performance_metrics(run_id, dataset, metrics)
+    except Exception as exc:  # noqa: BLE001 — telemetry must not lose data
+        logger.warning("%s: unable to persist CNINFO metrics: %s", dataset, exc)
+
+
+def _cninfo_checkpoint_options(config: Config, dataset: str) -> dict:
+    """Resolve the production checkpoint policy for one CNINFO feed.
+
+    Running checkpoints are useful only when they are tied to the provider
+    contract and bounded in age.  Keep the defaults here (rather than relying
+    on adapter call defaults) so production step calls cannot accidentally
+    omit the source revision/TTL when a new adapter is introduced.
+    """
+    ttl = getattr(config, "cninfo_checkpoint_ttl_days", _CNINFO_CHECKPOINT_TTL_DAYS)
+    if ttl is not None:
+        ttl = int(ttl)
+        if ttl < 0:
+            raise ValueError("cninfo_checkpoint_ttl_days must be >= 0")
+    configured_revision = getattr(config, "cninfo_source_revision", None)
+    options = {
+        "checkpoint_ttl_days": ttl,
+        "source_revision": str(configured_revision or CNINFO_SOURCE_REVISION),
+        # A normal run refreshes completed slices so same-date corrections are
+        # observed; an explicit config override can opt into a resume cache.
+        "refresh": bool(getattr(config, "cninfo_checkpoint_refresh", True)),
+    }
+    if getattr(config, "meta_root", None) is not None:
+        options["checkpoint_path"] = _cninfo_checkpoint(config, dataset)
+    return options
+
+
+def _fetch_cninfo_single(
+    fetcher,
+    day: date,
+    config: Config,
+    metrics: dict,
+    *,
+    dataset: str = "announcement_index",
+) -> pl.DataFrame:
+    """Call a CNINFO adapter with metrics while keeping lightweight test doubles compatible."""
+    try:
+        parameters = inspect.signature(fetcher).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_var_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+    options = {**_cninfo_checkpoint_options(config, dataset), "config": config, "metrics": metrics}
+    label = "announcement" if dataset == "announcement_index" else "regulatory"
+    options.update(
+        {
+            "run_id": metrics.get("run_id"),
+            "request_scope": f"range:{label}:{day.isoformat()}:{day.isoformat()}",
+        }
+    )
+    kwargs = {
+        key: value for key, value in options.items() if accepts_var_kwargs or key in parameters
+    }
+    return fetcher(day, **kwargs)
+
+
+def _cninfo_range_backfill(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    dataset: str,
+    fetch_range,
+    *,
+    date_col: str,
+    floor: date,
+) -> dict:
+    """Use one range-aware CNINFO walk behind the normal day-stage helper.
+
+    ``walk_day_backfill`` still skips already-curated sessions and flushes
+    staged rows in bounded chunks. The adapter call is made once per run so a
+    busy disclosure day can recursively split its date range instead of
+    repeating a fragile deep page walk for every session.
+    """
+    from cnequity.steps.common import walk_day_backfill
+
+    start = getattr(config, "_backfill_start", None) or floor
+    end = min(getattr(config, "_backfill_end", None) or trade_date, trade_date)
+    metrics: dict = {"run_id": run_id}
+    cached: dict[str, pl.DataFrame] = {}
+    label = "announcement" if dataset == "announcement_index" else "regulatory"
+    request_scope = f"range:{label}:{start.isoformat()}:{end.isoformat()}"
+
+    def fetch_one(day: date) -> pl.DataFrame:
+        if "frame" not in cached:
+            # Keep the source observation tied to this run even when a
+            # lightweight range adapter accepts an explicit run_id instead of
+            # reading it from the metrics object.  Signature filtering below
+            # preserves narrow offline doubles for archive-disabled tests.
+            options = {
+                "config": config,
+                "metrics": metrics,
+                "run_id": run_id,
+                "request_scope": request_scope,
+            }
+            options.update(_cninfo_checkpoint_options(config, dataset))
+            try:
+                parameters = inspect.signature(fetch_range).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            accepts_var_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+            )
+            if not accepts_var_kwargs:
+                options = {key: value for key, value in options.items() if key in parameters}
+            cached["frame"] = fetch_range(start, end, **options)
+            _record_cninfo_metrics(config, run_id, dataset, metrics)
+        frame = cached["frame"]
+        if frame.is_empty() or date_col not in frame.columns:
+            return pl.DataFrame()
+        return frame.filter(pl.col(date_col) == day)
+
+    def publish(part: pl.DataFrame, batch_id: str) -> object:
+        # CNINFO range adapters archive each POST response before returning the
+        # normalized frame.  Verification happens immediately before the
+        # writer boundary; a missing/captureless receipt therefore leaves no
+        # staging artifact to be mistaken for a resumable success.
+        evidence = (
+            verify_raw_archive(
+                config,
+                dataset,
+                run_id,
+                source="cninfo",
+                request_scope=request_scope,
+            )
+            if config.should_archive_raw(dataset)
+            else None
+        )
+        return write_fetched(
+            config,
+            run_id,
+            dataset,
+            part,
+            source="cninfo",
+            batch_id=batch_id,
+            raw_archive_evidence=evidence,
+        )
+
+    result = walk_day_backfill(
+        config,
+        trade_date,
+        run_id,
+        dataset,
+        fetch_one,
+        source="cninfo",
+        date_col=date_col,
+        floor=floor,
+        calendar_days=True,
+        publish_fn=publish,
+    )
+    if metrics:
+        result["metrics"] = metrics
+    return result
 
 
 def _delisted_windows(
@@ -189,6 +364,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             chunk = remaining_symbols[chunk_index : chunk_index + batch_size]
             chunk_number = chunk_index // batch_size
             chunk_batch_id = f"{batch_id or 'batch-0'}-chunk-{chunk_number:04d}"
+            chunk_scope = f"chunk:{chunk_batch_id}"
             try:
                 df_chunk = fetch_corporate_actions(
                     trade_date,
@@ -198,11 +374,13 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                     allow_mock=config.tdx_allow_mock,
                     primary_only=True,
                     config=config,
+                    run_id=run_id,
                     on_progress=lambda done, total, offset=chunk_index: on_progress(
                         offset + done, len(remaining_symbols)
                     ),
                     fail_loud=True,
                     allow_empty=True,
+                    request_scope=chunk_scope,
                 )
             except Exception as exc:  # noqa: BLE001 — preserve completed chunks for retry
                 failed_symbols.extend(chunk)
@@ -225,12 +403,24 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                     source=_CANONICAL_BACKFILL,
                     data_version="v1",
                 )
-                write_simple(
+                write_fetched(
                     config,
                     run_id,
                     "corporate_actions",
                     staged_chunk,
+                    source=_CANONICAL_BACKFILL,
                     batch_id=chunk_batch_id,
+                    raw_archive_evidence=(
+                        verify_raw_archive(
+                            config,
+                            "corporate_actions",
+                            run_id,
+                            source=_CANONICAL_BACKFILL,
+                            request_scope=chunk_scope,
+                        )
+                        if config.should_archive_raw("corporate_actions")
+                        else None
+                    ),
                 )
                 manifest.start_batch(
                     run_id,
@@ -280,6 +470,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 repair_end,
             )
             repair_symbols = sorted(repair_windows)
+            repair_scope = f"repair:baostock:{repair_start.isoformat()}:{repair_end.isoformat()}"
             logger.info(
                 "corporate_actions: Baostock repair scoped to %d delisted SH/SZ symbol(s)",
                 len(repair_symbols),
@@ -290,7 +481,9 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                     repair_start,
                     repair_end,
                     config=config,
+                    run_id=run_id,
                     symbol_windows=repair_windows,
+                    request_scope=repair_scope,
                 )
             else:
                 repair_df, repair_failed = pl.DataFrame(), []
@@ -299,12 +492,24 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 repair_df = with_provenance(repair_df, source="baostock", data_version="v1")
                 if manifest is not None:
                     repair_batch_id = f"{batch_id or 'batch-0'}-baostock-repair"
-                    write_simple(
+                    write_fetched(
                         config,
                         run_id,
                         "corporate_actions",
                         repair_df,
+                        source="baostock",
                         batch_id=repair_batch_id,
+                        raw_archive_evidence=(
+                            verify_raw_archive(
+                                config,
+                                "corporate_actions",
+                                run_id,
+                                source="baostock",
+                                request_scope=repair_scope,
+                            )
+                            if config.should_archive_raw("corporate_actions")
+                            else None
+                        ),
                     )
                     manifest.start_batch(
                         run_id,
@@ -337,6 +542,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             repair_end = getattr(config, "_backfill_end", None) or trade_date
             repair_windows = _delisted_bj_windows(config, symbols, repair_start, repair_end)
             repair_symbols = sorted(repair_windows)
+            repair_scope = f"repair:ths:{repair_start.isoformat()}:{repair_end.isoformat()}"
             logger.info(
                 "corporate_actions: THS repair scoped to %d delisted BJ symbol(s)",
                 len(repair_symbols),
@@ -347,7 +553,9 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                     repair_start,
                     repair_end,
                     config=config,
+                    run_id=run_id,
                     symbol_windows=repair_windows,
+                    request_scope=repair_scope,
                 )
             else:
                 repair_df, repair_failed = pl.DataFrame(), []
@@ -356,12 +564,24 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 repair_df = with_provenance(repair_df, source="ths", data_version="v1")
                 if manifest is not None:
                     repair_batch_id = f"{batch_id or 'batch-0'}-ths-repair"
-                    write_simple(
+                    write_fetched(
                         config,
                         run_id,
                         "corporate_actions",
                         repair_df,
+                        source="ths",
                         batch_id=repair_batch_id,
+                        raw_archive_evidence=(
+                            verify_raw_archive(
+                                config,
+                                "corporate_actions",
+                                run_id,
+                                source="ths",
+                                request_scope=repair_scope,
+                            )
+                            if config.should_archive_raw("corporate_actions")
+                            else None
+                        ),
                     )
                     manifest.start_batch(
                         run_id,
@@ -396,6 +616,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             repair_end = getattr(config, "_backfill_end", None) or trade_date
             repair_windows = _delisted_bj_windows(config, symbols, repair_start, repair_end)
             repair_symbols = sorted(repair_windows)
+            repair_scope = migrated_bj_request_scope(repair_symbols, repair_start, repair_end)
             logger.info(
                 "corporate_actions: EastMoney migrated-code repair scoped to %d delisted BJ symbol(s)",
                 len(repair_symbols),
@@ -406,7 +627,9 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                     repair_start,
                     repair_end,
                     config=config,
+                    run_id=run_id,
                     symbol_windows=repair_windows,
+                    request_scope=repair_scope,
                 )
             else:
                 repair_df, repair_failed = pl.DataFrame(), []
@@ -417,12 +640,24 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 )
                 if manifest is not None:
                     repair_batch_id = f"{batch_id or 'batch-0'}-eastmoney-bj-repair"
-                    write_simple(
+                    write_fetched(
                         config,
                         run_id,
                         "corporate_actions",
                         repair_df,
+                        source="eastmoney_migrated_bj",
                         batch_id=repair_batch_id,
+                        raw_archive_evidence=(
+                            verify_raw_archive(
+                                config,
+                                "corporate_actions",
+                                run_id,
+                                source="eastmoney_migrated_bj",
+                                request_scope=repair_scope,
+                            )
+                            if config.should_archive_raw("corporate_actions")
+                            else None
+                        ),
                     )
                     manifest.start_batch(
                         run_id,
@@ -463,21 +698,77 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             config,
             "corporate_actions",
             trade_date,
-            lambda d: fetch_corporate_actions_eastmoney(d, backfill=False, config=config),
+            lambda d: fetch_corporate_actions_eastmoney(
+                d,
+                backfill=False,
+                config=config,
+                run_id=run_id,
+                request_scope=f"daily:{d.isoformat()}",
+            ),
             allow_empty=True,
             date_col="ex_date",
         )
         canonical_source = _CANONICAL_DAILY
-        if config.failover_enabled and df.height:
-            ex_today = df.filter(pl.col("ex_date") == trade_date)
-            if ex_today.height:
-                snapshot_corporate_actions_tdx_backup(
-                    config,
-                    trade_date=trade_date,
-                    symbols=ex_today["symbol"].unique().to_list(),
-                    run_id=run_id,
-                    rate_limit=rl,
+        if config.failover_enabled:
+            failover = failover_spec(config, "corporate_actions")
+            if failover is not None and failover.snapshot_cadence == "daily":
+                ex_today = (
+                    df.filter(pl.col("ex_date") == trade_date) if df.height else pl.DataFrame()
                 )
+                # A clean primary day is still an observation that must be
+                # checked by the independent TDX peer.  The caller may supply
+                # a constrained universe (tests/repair runs); otherwise the
+                # normal instrument universe is the only way to distinguish
+                # "no actions" from an unqueried peer.
+                backup_symbols = list(context.get("symbols") or [])
+                if not backup_symbols:
+                    backup_symbols = (
+                        ex_today["symbol"].unique().to_list()
+                        if ex_today.height
+                        else load_symbols(config)
+                    )
+                try:
+                    backup_captured = snapshot_corporate_actions_tdx_backup(
+                        config,
+                        trade_date=trade_date,
+                        symbols=backup_symbols,
+                        run_id=run_id,
+                        rate_limit=rl,
+                    )
+                    if not backup_captured:
+                        findings.append(
+                            {
+                                "dataset": "corporate_actions",
+                                "severity": "warning",
+                                "check": "backup_snapshot_unavailable",
+                                "message": (
+                                    "corporate_actions independent TDX backup snapshot returned "
+                                    "no rows; primary data was not marked erroneous"
+                                ),
+                                "peer_unavailable": True,
+                                "retryable": True,
+                            }
+                        )
+                except Exception as exc:  # noqa: BLE001 — peer is best-effort
+                    logger.warning(
+                        "corporate_actions: independent TDX backup snapshot unavailable "
+                        "(%s: %s); primary result remains valid and will be retried",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    findings.append(
+                        {
+                            "dataset": "corporate_actions",
+                            "severity": "warning",
+                            "check": "backup_snapshot_unavailable",
+                            "message": (
+                                "corporate_actions independent backup snapshot was unavailable; "
+                                "primary data was not marked erroneous"
+                            ),
+                            "peer_unavailable": True,
+                            "retryable": True,
+                        }
+                    )
 
     if backfill and not df.is_empty():
         start = getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
@@ -501,6 +792,18 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     if findings:
         context_updates["audit_findings"] = findings
     if df.is_empty():
+        # Even an empty critical observation must have a source receipt.  It
+        # is not staged, but rejecting a captureless adapter here keeps an
+        # enabled archive policy from silently treating "no rows" as proof of
+        # a complete source response.
+        if not backfill and config.should_archive_raw("corporate_actions"):
+            verify_raw_archive(
+                config,
+                "corporate_actions",
+                run_id,
+                source=_CANONICAL_DAILY,
+                request_scope=f"daily:{trade_date.isoformat()}",
+            )
         result = {"rows_read": 0, "rows_written": 0, "context_updates": context_updates}
         if backfill and failed_symbols:
             result["failed_symbols"] = failed_symbols
@@ -522,7 +825,24 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             "rows_written": df.height,
         }
     else:
-        result = write_simple(config, run_id, "corporate_actions", df)
+        result = write_fetched(
+            config,
+            run_id,
+            "corporate_actions",
+            df,
+            source=canonical_source,
+            raw_archive_evidence=(
+                verify_raw_archive(
+                    config,
+                    "corporate_actions",
+                    run_id,
+                    source=canonical_source,
+                    request_scope=f"daily:{trade_date.isoformat()}",
+                )
+                if config.should_archive_raw("corporate_actions")
+                else None
+            ),
+        )
     if backfill and failed_symbols:
         result["failed_symbols"] = failed_symbols
         result["status"] = "failed"
@@ -593,24 +913,39 @@ def step_announcement_index(config: Config, trade_date: date, run_id: str, conte
     if not config.sources.get("cninfo", True):
         raise RuntimeError("announcement_index: cninfo source disabled in config")
     if getattr(config, "_backfill", False):
-        from cnequity.steps.common import walk_day_backfill
-
-        return walk_day_backfill(
+        return _cninfo_range_backfill(
             config,
             trade_date,
             run_id,
             "announcement_index",
-            lambda d: fetch_announcement_index(d, config=config),
-            source="cninfo",
+            fetch_announcement_index_range,
             date_col="announce_date",
             floor=date(2010, 1, 1),
         )
-    return run_incremental_fetched(
+    metrics: dict = {"run_id": run_id}
+    result = run_incremental_fetched(
         config,
         trade_date,
         run_id,
         "announcement_index",
-        lambda d: fetch_announcement_index(d, config=config),
+        lambda d: _fetch_cninfo_single(
+            fetch_announcement_index,
+            d,
+            config,
+            metrics,
+            dataset="announcement_index",
+        ),
         source="cninfo",
         date_col="announce_date",
+        raw_archive_evidence_factory=lambda: verify_raw_archive(
+            config,
+            "announcement_index",
+            run_id,
+            source="cninfo",
+            request_scope=f"range:announcement:{trade_date.isoformat()}:{trade_date.isoformat()}",
+        ),
     )
+    if len(metrics) > 1:
+        _record_cninfo_metrics(config, run_id, "announcement_index", metrics)
+    result["metrics"] = metrics
+    return result

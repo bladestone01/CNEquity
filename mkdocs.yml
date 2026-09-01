@@ -8,14 +8,22 @@ exclude_docs: "/README.md"
 
 theme:
   name: material
+  custom_dir: docs/overrides
   language: zh
+  font: false
+  icon:
+    logo: material/chart-box-outline
   features:
     - navigation.instant
     - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.top
+    - navigation.footer
     - search.highlight
     - search.suggest
     - content.code.copy
+    - content.code.annotate
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -30,6 +38,9 @@ theme:
 
 plugins:
   - search
+
+extra_css:
+  - stylesheets/extra.css
 
 # The repository also keeps links to root-level contributor/legal files and
 # source paths that are intentionally outside the published docs tree. MkDocs
@@ -68,7 +79,9 @@ nav:
   - 数据与查询:
       - 数据集目录: datasets/catalog.md
       - Schema: datasets/schema.md
+      - 数据契约: datasets/contract.md
       - 查询指南: datasets/query-guide.md
+      - Universe 画像: reference/universe-profiles.md
       - Python API: reference/python-api.md
       - MCP: reference/mcp.md
   - 运维:
@@ -84,8 +97,10 @@ nav:
       - 开发约定: development/conventions.md
       - 测试: development/testing.md
       - 新增数据集: development/adding-dataset.md
+      - 版本与数据契约治理: development/release-governance.md
       - 引用项目: citation.md
       - 数据许可: legal-and-data-sources.md
+      - 来源合规矩阵: legal/source-matrix.md
 
 extra:
   social:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import date
@@ -58,11 +59,26 @@ def _strip_subscription_placeholders(df: pl.DataFrame) -> pl.DataFrame:
     return df.filter(pl.Series(keep))
 
 
+def _business_digest(df: pl.DataFrame) -> str:
+    """Hash instrument business content while ignoring fetch provenance churn."""
+    volatile = {"source", "data_version", "fetched_at", "run_id", "capture_id"}
+    columns = [column for column in df.columns if column not in volatile]
+    if not columns:
+        return hashlib.sha256(b"[]").hexdigest()
+    canonical = df.select(columns).sort(columns)
+    encoded = json.dumps(
+        canonical.to_dicts(), sort_keys=True, separators=(",", ":"), default=str
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def compact_instruments(
     staging_root: Path,
     curated_root: Path,
     run_id: str,
     trade_date: date,
+    changed_files: list[Path] | None = None,
+    base_root: Path | None = None,
 ) -> tuple[int, list[dict]]:
     """Merge staging instruments into curated, retaining symbols missing from TDX."""
     staging = StagingWriter(staging_root)
@@ -78,13 +94,26 @@ def compact_instruments(
     incoming = dedupe_by_primary_key(incoming, "instruments")
 
     out_path = curated_root / "instruments" / "part-merged.parquet"
-    curated_files = sorted(out_path.parent.rglob("*.parquet")) if out_path.parent.exists() else []
+    read_dir = Path(base_root) if base_root is not None else out_path.parent
+    curated_files = sorted(read_dir.rglob("*.parquet")) if read_dir.exists() else []
+    # ``base_root`` is an immutable revision generation used as the merge
+    # input.  Its canonical parquet path is necessarily different from the
+    # mutable output path, but that does not make the generation a stale
+    # fragment.  Treat only files discovered directly in the mutable curated
+    # directory as fragments; otherwise a provenance-only refresh rewrites the
+    # mutable parquet on every compact.
+    had_fragments = base_root is None and any(path != out_path for path in curated_files)
+    had_duplicate_rows = False
+    had_removed_rows = False
     if curated_files:
         existing = pl.concat(
             [validate_dataframe(pl.read_parquet(path), "instruments") for path in curated_files],
             how="diagonal_relaxed",
         )
+        raw_existing_height = existing.height
         existing = _strip_subscription_placeholders(existing)
+        had_removed_rows = existing.height != raw_existing_height
+        had_duplicate_rows = existing.height != existing.select("symbol").n_unique()
         existing = dedupe_by_primary_key(existing, "instruments")
     else:
         existing = pl.DataFrame(schema=INSTRUMENTS_SCHEMA)
@@ -190,12 +219,29 @@ def compact_instruments(
     merged = pl.concat([incoming, preserved], how="diagonal_relaxed")
     merged = dedupe_by_primary_key(merged, "instruments")
 
-    write_parquet_atomic(out_path, merged, compression="zstd")
-    # Instruments is merge-style, so there is no partition writer to clean up
-    # stale fragments. Keep one canonical file; readers and whole-lake audits
-    # must not see an old ``part-*.parquet`` beside it.
-    for stale in out_path.parent.rglob("*.parquet"):
-        if stale != out_path:
-            stale.unlink()
+    before_business_digest = _business_digest(existing) if curated_files else None
+    after_business_digest = _business_digest(merged)
+    business_changed = before_business_digest != after_business_digest
+    # A same-business-content refresh (for example only a new fetched_at or
+    # source label) is a true no-op.  Avoid rewriting the canonical file so
+    # downstream revision logic and file mtimes remain quiet.  Fragments are
+    # still consolidated when present, but that cleanup alone is not a new
+    # business revision.
+    if (
+        business_changed
+        or had_fragments
+        or had_duplicate_rows
+        or had_removed_rows
+        or not out_path.is_file()
+    ):
+        write_parquet_atomic(out_path, merged, compression="zstd")
+        # Instruments is merge-style, so there is no partition writer to clean
+        # up stale fragments. Keep one canonical file; readers and whole-lake
+        # audits must not see an old ``part-*.parquet`` beside it.
+        for stale in out_path.parent.rglob("*.parquet"):
+            if stale != out_path:
+                stale.unlink()
+    if changed_files is not None and business_changed:
+        changed_files.append(out_path)
     _save_absence_state(absence_path, absence_state)
     return merged.height, findings

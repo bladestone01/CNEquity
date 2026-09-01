@@ -271,6 +271,9 @@ def test_a_clean_run_still_leaves_evidence(monkeypatch, tmp_path):
     assert payload["checks"] == {
         "macro_pmi_vs_nbs": "agreed",
         "st_labels_vs_exchange": "agreed",
+        # This lake carries no daily_bars, so the bar comparison records that it
+        # had nothing to compare rather than claiming a clean result.
+        "daily_bars_vs_exchange": "skipped_no_curated",
     }
 
 
@@ -302,6 +305,7 @@ def test_audit_stays_offline_when_the_sources_are_off(tmp_path, flag):
     assert payload["checks"] == {
         "macro_pmi_vs_nbs": "skipped_disabled",
         "st_labels_vs_exchange": "skipped_disabled",
+        "daily_bars_vs_exchange": "skipped_disabled",
     }
 
 
@@ -318,4 +322,170 @@ def test_publisher_check_records_missing_curated_state(monkeypatch, tmp_path):
     assert payload["checks"] == {
         "macro_pmi_vs_nbs": "skipped_no_curated",
         "st_labels_vs_exchange": "skipped_no_curated",
+        "daily_bars_vs_exchange": "skipped_no_curated",
     }
+
+
+# --- daily_bars vs the exchanges ---------------------------------------------
+
+BARS_DATE = date(2026, 8, 28)
+
+
+def _bars_lake(tmp_path, rows: list[dict]) -> Config:
+    root = tmp_path / "data"
+    part = root / "curated" / "daily_bars" / f"trade_date={BARS_DATE.isoformat()}"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": [r["symbol"] for r in rows],
+            "trade_date": [BARS_DATE] * len(rows),
+            "open": [r.get("open", r["close"]) for r in rows],
+            "high": [r.get("high", r["close"]) for r in rows],
+            "low": [r.get("low", r["close"]) for r in rows],
+            "close": [r["close"] for r in rows],
+            "volume": [float(r.get("volume", 1000.0)) for r in rows],
+            "amount": [float(r.get("amount", 10000.0)) for r in rows],
+            "source": ["tdx_protocol"] * len(rows),
+            "data_version": ["v1"] * len(rows),
+            "fetched_at": [datetime.now(timezone.utc)] * len(rows),
+        }
+    ).write_parquet(part / "p.parquet")
+    cfg = Config(data_root=root)
+    cfg.sources = {"exchange": True}
+    return cfg
+
+
+def _publish_quotes(monkeypatch, rows: list[dict], *, covered=("sse", "szse")):
+    import cnequity.adapters.exchange.daily_quotes as dq
+
+    quotes = dq._finish(
+        [
+            {
+                "symbol": r["symbol"],
+                "trade_date": BARS_DATE,
+                "open": r.get("open", r["close"]),
+                "high": r.get("high", r["close"]),
+                "low": r.get("low", r["close"]),
+                "close": r["close"],
+                "volume": float(r.get("volume", 1000.0)),
+                "amount": float(r.get("amount", 10000.0)),
+            }
+            for r in rows
+        ]
+    )
+    monkeypatch.setattr(
+        dq,
+        "fetch_exchange_daily_quotes",
+        lambda *a, **k: dq.ExchangeQuotesResult(
+            quotes=quotes, covered=frozenset(covered), failures={}
+        ),
+    )
+
+
+def test_bars_matching_the_exchange_are_silent(monkeypatch, tmp_path):
+    rows = [{"symbol": "600000.SH", "close": 9.0}, {"symbol": "000001.SZ", "close": 11.65}]
+    _publish_quotes(monkeypatch, rows)
+    outcome = ac._daily_bars_vs_exchange_outcome(_bars_lake(tmp_path, rows), BARS_DATE)
+    assert outcome.status == "agreed"
+    assert outcome.findings == []
+
+
+def test_a_szse_only_comparison_is_not_reported_as_full_coverage(monkeypatch, tmp_path):
+    """SSE serves only the session it is publishing; SH may be uncomparable."""
+    rows = [{"symbol": "000001.SZ", "close": 11.65}]
+    _publish_quotes(monkeypatch, rows, covered=("szse",))
+    outcome = ac._daily_bars_vs_exchange_outcome(_bars_lake(tmp_path, rows), BARS_DATE)
+    assert outcome.status == "agreed_partial"
+
+
+def test_a_close_that_disagrees_with_the_exchange_is_an_error(monkeypatch, tmp_path):
+    curated = [{"symbol": "600000.SH", "close": 9.0}, {"symbol": "000001.SZ", "close": 11.65}]
+    _publish_quotes(
+        monkeypatch,
+        [{"symbol": "600000.SH", "close": 9.0}, {"symbol": "000001.SZ", "close": 11.42}],
+    )
+    findings = ac.daily_bars_vs_exchange(_bars_lake(tmp_path, curated), BARS_DATE)
+    assert [f["check"] for f in findings] == ["daily_bars_vs_exchange"]
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["disagreeing_symbols"] == 1
+    assert findings[0]["compared_symbols"] == 2
+    assert findings[0]["symbols"] == ["000001.SZ"]
+
+
+def test_a_traded_symbol_with_no_curated_bar_is_an_error(monkeypatch, tmp_path):
+    curated = [{"symbol": "600000.SH", "close": 9.0}]
+    _publish_quotes(
+        monkeypatch,
+        curated + [{"symbol": "000001.SZ", "close": 11.65, "volume": 8_385_190.0}],
+    )
+    findings = ac.daily_bars_vs_exchange(_bars_lake(tmp_path, curated), BARS_DATE)
+    assert [f["check"] for f in findings] == ["daily_bars_missing_vs_exchange"]
+    assert findings[0]["symbols"] == ["000001.SZ"]
+
+
+def test_a_suspended_symbol_with_no_curated_bar_is_not_a_gap(monkeypatch, tmp_path):
+    """SZSE lists a suspended security at zero volume; a quote feed emits no bar.
+
+    Measured 2026-08-27 this was the whole of the difference, so counting it
+    would report the convention as a defect every single day.
+    """
+    curated = [{"symbol": "600000.SH", "close": 9.0}]
+    _publish_quotes(
+        monkeypatch,
+        curated + [{"symbol": "000016.SZ", "close": 2.33, "volume": 0.0, "amount": 0.0}],
+    )
+    assert ac.daily_bars_vs_exchange(_bars_lake(tmp_path, curated), BARS_DATE) == []
+
+
+def test_turnover_below_the_divergent_share_stays_quiet(monkeypatch, tmp_path):
+    # One of four names short on volume: 25% — under the 30% set here.
+    curated = [{"symbol": f"60000{i}.SH", "close": 9.0, "volume": 1000.0} for i in range(4)]
+    official = list(curated)
+    official[0] = {**official[0], "volume": 2000.0, "amount": 20000.0}
+    _publish_quotes(monkeypatch, official)
+    cfg = _bars_lake(tmp_path, curated)
+    cfg.exchange_audit_turnover_max_fraction = 0.30
+    assert ac.daily_bars_vs_exchange(cfg, BARS_DATE) == []
+
+
+def test_a_widening_turnover_gap_is_a_warning(monkeypatch, tmp_path):
+    curated = [{"symbol": f"60000{i}.SH", "close": 9.0, "volume": 1000.0} for i in range(4)]
+    official = [{**r, "volume": 2000.0, "amount": 20000.0} for r in curated]
+    _publish_quotes(monkeypatch, official)
+    findings = ac.daily_bars_vs_exchange(_bars_lake(tmp_path, curated), BARS_DATE)
+    assert [f["check"] for f in findings] == ["daily_bars_turnover_vs_exchange"]
+    assert findings[0]["severity"] == "warning"
+    assert findings[0]["divergent_fraction"] == 1.0
+
+
+def test_a_zero_on_either_side_is_not_relative_drift(monkeypatch, tmp_path):
+    """A suspended day carries zeros; a ratio against zero is meaningless."""
+    curated = [{"symbol": "600000.SH", "close": 0.0, "volume": 0.0, "amount": 0.0}]
+    _publish_quotes(monkeypatch, [{"symbol": "600000.SH", "close": 9.0, "volume": 1000.0}])
+    assert ac.daily_bars_vs_exchange(_bars_lake(tmp_path, curated), BARS_DATE) == []
+
+
+def test_bars_check_is_off_without_the_source_flag(monkeypatch, tmp_path):
+    rows = [{"symbol": "600000.SH", "close": 9.0}]
+    _publish_quotes(monkeypatch, [{"symbol": "600000.SH", "close": 5.0}])
+    cfg = _bars_lake(tmp_path, rows)
+    cfg.sources = {}
+    outcome = ac._daily_bars_vs_exchange_outcome(cfg, BARS_DATE)
+    assert outcome.status == "skipped_disabled"
+    assert outcome.findings == []
+
+
+def test_an_unreachable_exchange_is_not_a_disagreement(monkeypatch, tmp_path):
+    import cnequity.adapters.exchange.daily_quotes as dq
+
+    rows = [{"symbol": "600000.SH", "close": 9.0}]
+    monkeypatch.setattr(
+        dq,
+        "fetch_exchange_daily_quotes",
+        lambda *a, **k: dq.ExchangeQuotesResult(
+            quotes=dq._EMPTY_QUOTES.clone(), covered=frozenset(), failures={"sse": "timeout"}
+        ),
+    )
+    outcome = ac._daily_bars_vs_exchange_outcome(_bars_lake(tmp_path, rows), BARS_DATE)
+    assert outcome.status == "unavailable"
+    assert outcome.findings == []

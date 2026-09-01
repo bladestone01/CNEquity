@@ -11,6 +11,7 @@ from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS, DatasetSpec
 from cnequity.domain.partitions import uses_hive
 from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
+from cnequity.storage.revisions import resolve_committed_root
 
 
 def _duckdb_type(dtype: pl.DataType) -> str:
@@ -45,13 +46,31 @@ def _view_glob(data_root: str, spec: DatasetSpec) -> tuple[str, bool]:
     # read_parquet glob accepts `/` on every platform, and backslashes would
     # either escape the SQL string or fail to match files on Windows.
     layer_dir = "derived" if spec.layer == "derived" else "curated"
+    logical = Path(data_root) / layer_dir / spec.name
+    # DuckDB views are another public read path. Resolve the pointer before
+    # constructing the glob so a refresh that rewrites several partitions
+    # never leaves a view over a mixed mutable layout.
+    # Keep path-only callers (including Windows-style paths inspected on a
+    # POSIX host) purely lexical.  Resolving through RevisionStore would turn
+    # ``C:/...`` into a cwd-relative POSIX path and would also create metadata
+    # directories as a side effect when no pointer exists.
+    pointer = Path(data_root) / "meta" / "revisions" / spec.name / "current.json"
+    dataset_root = (
+        resolve_committed_root(
+            logical,
+            dataset=spec.name,
+            meta_root=Path(data_root) / "meta",
+        )
+        if pointer.is_file()
+        else logical
+    )
     if spec.partition_col is None:
-        return f"{data_root}/{layer_dir}/{spec.name}/**/*.parquet", False
+        return f"{dataset_root.as_posix()}/**/*.parquet", False
     # Hive parsing only for day granularity: a `trade_date=2024` directory
     # cannot be read as the DATE column it sits beside. The real column is in
     # the file either way, so the view is identical apart from pruning.
     return (
-        f"{data_root}/{layer_dir}/{spec.name}/**/*.parquet",
+        f"{dataset_root.as_posix()}/**/*.parquet",
         uses_hive(spec.partition_granularity),
     )
 

@@ -6,6 +6,277 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Checks against the bodies that publish the numbers, not a second vendor.**
+  Every price arbiter in the lake compared one redistributor against another,
+  which can show that two feeds do not differ but never that either is right.
+  Three checks now reach past them (ADR-0006):
+  - `daily_bars_vs_exchange` compares curated OHLC and turnover against the
+    closes the SSE and SZSE publish themselves. Measured 2026-08-28: OHLC
+    matched **exactly** on all 5,212 shared symbols, so the price tolerance is
+    tight (10 bps) and a breach is an error. Turnover carries a one-directional
+    definitional gap — the exchange daily total folds in trading a
+    continuous-auction bar excludes — so it is judged on the share of the
+    universe that diverges rather than per symbol. Suspension placeholders,
+    which SZSE publishes at zero volume and a quote feed omits, are excluded
+    from the missing-bar check.
+  - `adj_factor_corporate_action_divergence` recomputes every hfq factor step
+    from curated `corporate_actions` (a different vendor) using the ex-rights
+    continuity identity, and reports where the stored series disagrees. This
+    catches a step of the wrong size or on the wrong day; the existing
+    continuity tripwire only saw breaks above 20x. Configured under
+    `[adj_factors] crosscheck_*`.
+  - `adj_factor_action_implies_nonpositive_price` flags action rows whose own
+    terms cannot be right (a dividend exceeding the entire prior close).
+- **`margin_trading` now reads from the exchanges that compile it.** The SSE
+  and SZSE aggregate 融资融券 from member-firm reports and publish the
+  per-security detail; EastMoney could only copy that file. Verified against
+  the curated EastMoney day for 2026-08-26: all four fields matched exactly
+  over 3,522 shared symbols, with 4,100 securities against EastMoney's 3,857.
+  `[margin_trading] source` selects the owner and still accepts `"eastmoney"`;
+  the switch is an operator's, never automatic.
+- **Machine-readable dataset contracts.** `DatasetSpec` now carries
+  `schema_version`, `contract_level`, `pit_quality`, `availability_col`,
+  `unit_contract` and a compatibility policy, inferred so existing positional
+  constructors are unaffected. `cne contract show/export/validate/diff` (and
+  `cnequity.domain.contracts`) render the registry, schemas and primary keys
+  into a deterministic fingerprinted JSON document; `diff` classifies column
+  drops, type and primary-key changes, and unit/PIT/history changes as
+  breaking. See `docs/datasets/contract.md`.
+- **Point-in-time query mode.** `load(..., pit_mode="strict")` returns only
+  vintages whose disclosure, publication/availability and lake observation are
+  all provably on or before `as_of`, and excludes reconstructed backfill rows;
+  `"best_effort"` keeps them and adds `pit_is_exact` / `pit_quality`. Four
+  optional bitemporal columns (`available_at`, `source_published_at`,
+  `observed_at`, `revision_id`) are filled on read, and
+  `scripts/migrate_pit_vintages.py` writes them into old files in place.
+- **Versioned universe profiles.** `cnequity.domain.universe_profiles` is a
+  registry of reproducible research scopes (`cn_a_sh_sz_research_v1`,
+  `cn_a_all_experimental_v1`, plus legacy records) with a stable `scope_hash`.
+  `load(profile=...)` binds exchange/board, CDR/ETF, ST and delisting-evidence
+  rules and enables the strict checks. `cne profile list/show`. See
+  `docs/reference/universe-profiles.md`.
+- **Committed dataset revisions and portable snapshots.** Compaction now
+  commits a monotonic `revision` plus a content digest and per-file hashes
+  when curated files change, exposed through `StateStore` and
+  `cnequity.query.dataset_state` so a cache invalidates on a repair that never
+  moves the watermark. `cne snapshot create/verify/restore` produces
+  checksummed, immutable lake snapshots that also carry the contract
+  fingerprint and run lineage.
+- **Portable snapshot archives and incremental lake packages.** `cne snapshot
+  export/import` streams a snapshot to one `tar.zst` (gzip fallback) and back,
+  verifying the manifest before an atomic publish; every tar member is checked
+  first, so absolute paths, `..`, duplicates, links and device nodes are
+  rejected rather than extracted. `cne snapshot delta create/verify/apply`
+  moves only what changed between two lake roots — a whole-lake snapshot is the
+  wrong tool for a daily sync. A delta carries add/replace/delete preconditions
+  (byte hashes for a two-root delta, the committed revision number for
+  `--from-revision`), so applying one to the wrong baseline fails instead of
+  silently corrupting the target. `apply` backs up every overwritten file until
+  the full change set and the post-apply fingerprint both pass and rolls back on
+  any error, and delta paths are confined to `curated/`, `derived/` and an
+  allow-list under `meta/`.
+- **Run-level dataset receipts.** A `dataset_results` table records one row
+  per logical dataset and stage (fetch/stage/compact/derive/audit/
+  publish_revision) with core/research/advisory criticality, with an additive
+  migration for hand-copied manifests. `cne status --run <id|latest>` reports
+  it.
+- **Source-use policy register.** `sources/SOURCES.yml` records access type,
+  terms-review status and a conservative use conclusion per source label; an
+  unreviewed permission is the literal `unknown` and never satisfies an allow
+  check. `cnequity.compliance.source_policy` and `cne sources policy` evaluate
+  it and fail closed. See `docs/legal/source-matrix.md`.
+- **Source SLO, resilience and stability gates.** `cne sources slo` turns
+  stored probe history into per-source availability SLOs and de-duplicated
+  incident payloads; `cne sources resilience` derives source concentration,
+  failure domains and a fail-closed backup gate for the core datasets from the
+  registry with no network calls; `cne stability` checks consecutive clean
+  trading days without filling gaps. Each supports `--enforce`.
+- **Run provenance on receipts.** Revision and snapshot receipts carry
+  non-secret code and config identity (package version, git commit, config
+  fingerprint) via `cnequity.provenance`.
+- **Supply-chain CI.** A new `security.yml` workflow runs `pip-audit` and
+  emits a CycloneDX SBOM on dependency changes and weekly. `docs/development/
+  release-governance.md` records the version and data-contract policy.
+
+### Changed
+
+- **`trading_status` splits `status` from a new `risk_warning` column
+  (ADR-0007).** `status` used to carry both the trading state and the ST / *ST
+  designation, resolved by an `if/elif` in which halting won — so a halted ST
+  name lost its designation in stored history. Seen live: 000711.SZ was `st` on
+  2026-08-27 and `suspended` on 2026-08-28 without leaving risk warning, and
+  `market_breadth` consequently priced that session against the ±10% band
+  instead of ±5%. `status` is now the trading state alone
+  (`normal`/`suspended`/`delisted`) and `risk_warning` is its own nullable
+  boolean. Reads accept both encodings, so an existing lake stays correct;
+  `scripts/migrate_trading_status_risk_warning.py` makes the physical schema
+  uniform (dry-run by default).
+  ST and *ST are still not distinguished — no source feeding this dataset ever
+  did — and the finer designation remains in the exchange 简称.
+- **`margin_trading` trails by about one session under the new default.** SZSE
+  publishes a business day after SSE, and a day is written only once both have
+  — a half-market day would advance the watermark and strand the other half.
+- **`short_balance` is null on SH rows under the exchange source.** The SSE
+  does not publish 融券余额 (its `rqylje` field is null for every row). It is
+  reconstructible as 融券余量 × close, but stamping local arithmetic with
+  `source="exchange"` would attribute it to the exchange. Select
+  `[margin_trading] source = "eastmoney"` if the field is required.
+- **Run status contract.** A step-level `warning` is now reported as
+  `degraded` at run level. `cne status` and the run commands
+  (`run daily`, `run --stale-only`, `init`, `retry`) exit `2` for a degraded
+  run — the core spine completed, research/advisory work did not — and `1`
+  only for a core failure; a bare `cne status` previously always exited `0`.
+- **Research-source failures no longer fail the run.** An `adj_factors` or
+  `industry_index` derive whose source is unavailable degrades a run and keeps
+  the committed raw `daily_bars` revision, instead of marking the whole run
+  failed.
+- **`list_datasets()` gains columns** `pit_quality`, `pit_storage_columns`,
+  `revision`, `revision_id`, `schema_version` and `contract_fingerprint`.
+- **PyYAML is now a direct runtime dependency** (used to parse
+  `sources/SOURCES.yml`) and ships as a wheel data file.
+- **The CLI surface is 33 commands, down from 43.** An audit found 58% of it was
+  reachable from neither the README nor any automation — one-off tooling that a
+  published CLI turns into a permanent compatibility obligation. Nothing lost a
+  capability:
+    - `cne servers test` (a deprecated, hidden alias) is **removed**; use
+      `cne sources --only tdx_protocol`, which asserts real bars came back.
+    - `cne stats refresh` → `cne stats rebuild --if-stale`. Its `--force` was
+      already what plain `rebuild` does. `--if-stale` cannot be combined with
+      `--dataset`: it decides on the whole lake's watermark.
+    - `cne contract export` → `cne contract show --out PATH`. Same document,
+      differing only in whether it was written to a file.
+    - `cne catalog` → the no-stats fallback of `cne stats show`, with `--json`
+      as its output. A lake that has never built its stats tables should not
+      need a build step to answer what is in it.
+    - `cne run catchup` → `scripts/run_catchup.py`; `cne repartition` →
+      `scripts/repartition.py`; `cne delisted discover/reconcile/repair/coverage`
+      → `scripts/delisted_ops.py`. Composition and one-off migrations, which is
+      what `scripts/` is for. `cne delisted status` and `cne delisted backfill`
+      stayed.
+- **`cne sources` is now a group; the probe is `cne sources probe`.** This is
+  the one breaking rename here: `cne sources` has shipped since the source
+  health board landed, and scripts calling it need the extra word. The `slo`,
+  `resilience` and `policy` subcommands join it under the same plural noun —
+  they were added earlier in this same unreleased cycle as `cne source <sub>`
+  and never shipped under the singular, so nothing that exists in a release is
+  affected by that half.
+
+  The reason: `source` and `sources` were two top-level entries one letter
+  apart, and typing the wrong one runs a different command rather than erroring.
+  `cne source --help` had to spend a sentence saying which was which, which is
+  what a naming defect looks like. Renamed before 1.0 deliberately — afterwards
+  it would need a deprecation cycle.
+- **`cli/main.py` is split by what a command does.** One 2,828-line module
+  became `setup_cmds`, `run_cmds`, `backfill_cmds`, `maintain_cmds`,
+  `quality_cmds`, `govern_cmds`, `consume_cmds` and `delisted_cmds`, with the
+  group in `_root` and shared pieces in `_shared`; `main` only imports them to
+  register. `--config`, hand-written 34 times, is now one `config_option`
+  decorator. Tests patch the module that binds the name — `main` deliberately
+  no longer re-exports internals, so a stale patch target raises instead of
+  silently patching a name nothing reads.
+- **The vendored TDX tree is excluded file by file, not wholesale.** Ruff,
+  `coverage` and Codecov skipped everything under `adapters/tdx_protocol/_wire`
+  on the rationale that it is upstream code kept byte-close for re-syncing. Two
+  of those files are ports that fix three tdxpy defects and return raw prices,
+  and `_wire/__init__.py` (`TdxWireClient`, the page caps, the heartbeat choice)
+  never existed upstream at all — and tdxpy, unmaintained since 2024, is why the
+  tree is vendored, so there is nothing to re-sync from. Those three are now
+  linted and measured like the rest of the package; the genuinely untouched
+  files are still listed and still skipped.
+
+### Deprecated
+
+- **`universe="all_a"` in the query layer.** It still resolves and keeps its
+  permissive legacy semantics but emits a `DeprecationWarning`; choose an
+  explicit profile such as `cn_a_sh_sz_research_v1`.
+- **`load()` without an explicit `pit_mode` for PIT datasets.** The omitted
+  case keeps the old `fetched_at` cutoff and makes no exactness guarantee.
+  Research code should pass `pit_mode` and record the choice.
+
+### Fixed
+
+- **Python 3.10 could not import the CNINFO adapter.** `datetime.UTC` is 3.11+;
+  announcements and its tests now use `timezone.utc`, as the rest of the tree
+  already does. That import is on the package path, so 3.10 CI never reached
+  collection.
+- **Windows refused the raw-archive symlink-boundary fixture.** POSIX
+  `rename()` replaces an empty destination directory; Windows raises
+  `FileExistsError`. The test now moves the dataset directory onto a path that
+  does not already exist.
+- **Windows CI flaked the cross-process rate-limiter assertion.** `time.sleep`
+  returned at 48% of a 50ms interval; the floor is now 30% of 100ms — still
+  several times a no-op wait.
+- **Windows CI aborted the unit suite with `KeyboardInterrupt` after the
+  process-pool rate-limiter tests.** A worker exiting on Windows can inject
+  `CTRL_C_EVENT` into the parent's console group (CPython 33725); the session
+  now ignores that signal. A leftover worker atexit can still flip a fully
+  green run to exit code 1 — CI now reaps those processes and keeps pytest's
+  status.
+
+- **A frame with no columns gained a row when it was stamped.** `pl.DataFrame()`
+  is the codebase's "nothing to report" value, and polars broadcasts a literal
+  against a zero-*column* frame to length one — so stamping provenance onto it
+  fabricated a row carrying only the literals. That row has no primary key, so
+  a strict validate rejects it, but a `pl.concat(..., how="diagonal_*")` with a
+  real day's rows runs first in several paths, fills its keys with nulls, and
+  launders it into the lake. Hit live in `step_trading_status`, where a session
+  with an empty vendor universe produced a row with no symbol and no
+  `trade_date` that then failed the *next* session's date check and blamed the
+  wrong day. `with_provenance` (28 call sites) and `normalize_pit_storage_columns`
+  now no-op on such a frame, `cnequity.domain.frames.with_columns_unless_blank`
+  covers the remaining literal stamps, and
+  `scripts/probe_blank_frame_broadcast.py` is a pytest plugin that sweeps the
+  suite for new occurrences — currently zero outside polars itself.
+- **Delisted securities were published as normally trading, every session.**
+  The daily writer classified anything neither halted nor on the risk board as
+  `normal` with `is_trading=True`, and had no notion of delisting. Measured on
+  a full lake for 2026-08-28, that was **611 symbols carrying a `delist_date`**
+  — the oldest delisted 1999-07-12 — none of which had a bar that day. A vendor
+  board cannot report on a security that has left the market, so these rows now
+  come from `instruments` as `status=delisted`, `is_trading=False`,
+  `source=derived_delisted`, with `risk_warning` read from the final 简称; the
+  symbols are dropped from the board request entirely. The migration does not
+  back-fill history — re-run the daily step over a window to correct it.
+- **`cne snapshot`'s three subcommands had no help text at all.** `create`,
+  `verify` and `restore` listed as bare names with no description and no option
+  help — the only commands in the CLI with none.
+- **`cne stability` and `cne sources policy` had no CLI test.** Both are
+  fail-closed gates whose exit code is the entire point, and `stability` runs in
+  `scripts/daily_pipeline.sh` every day. A wrapper that stopped raising would
+  have reported the failure and still exited 0.
+- **The two TDX transaction parsers had no test.** `trade_ticks` is a
+  single-source dataset whose prices are delta-encoded per page, so one
+  mis-read field corrupts every later row — and the only verification was a
+  one-off byte comparison against a live server that CI cannot repeat.
+  `tests/unit/test_tdx_tick_parsers.py` now pins the wire layout both parsers
+  assume: field order, the four filler bytes only the historical response
+  carries, the absent per-record trade count, integer quantities, and undivided
+  prices.
+- **The vendored tree described itself as keeping "the five calls this project
+  makes"** after the two transaction commands brought it to seven.
+  `test_tdx_decoupling` now pins the kept set, so the count is a contract rather
+  than a comment.
+- **ETF/LOF adjustment factors and deep history are now complete.** Sina's
+  fund payloads use `s` (while `f` is only a placeholder); the adapter now maps
+  fund hfq directly from `s` and derives qfq as `1/s`. ETF/LOF symbols are
+  included in factor self-healing and coverage audits, EastMoney supplies their
+  listing dates, and the THS pre-2016 raw-history plan includes them while
+  continuing to exclude undated subscription placeholders.
+- **TDX instrument discovery excludes unlisted exchange placeholders.** SH/SZ
+  security lists can advertise IPO and fund-application codes with a positive
+  sub-tick `pre_close` sentinel. Those rows are now excluded before they enter
+  the instrument universe and generate guaranteed-empty daily-bar batches.
+- **Transient worker failures consume a durable, bounded retry budget.** Batch
+  restarts no longer reset `retry_count`; one retry/resume invocation repeats
+  network-failed worker batches with configured pacing until they recover or
+  reach `max_retries`, and reports exhausted batches explicitly.
+- **Retry dispatch follows logical task identity.** Steps that write into a
+  different physical dataset, including historical bar backfills, resume by
+  `task_id` while retaining a compatibility fallback for older auxiliary
+  receipts.
+
 ## [0.7.3] — 2026-08-23
 
 ### Added

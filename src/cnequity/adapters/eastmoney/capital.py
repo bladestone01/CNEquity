@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 from datetime import date
@@ -17,8 +18,10 @@ from cnequity.adapters.eastmoney.common import (
 )
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
+from cnequity.adapters.eastmoney.raw import configured_archive
 from cnequity.config import Config
 from cnequity.domain.symbols import infer_exchange_from_code
+from cnequity.storage.raw_archive import RawArchiveError, captured_records
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +141,55 @@ def fetch_fund_flow(
     *,
     client: EastMoneyClient | None = None,
     config: Config | None = None,
+    run_id: str | None = None,
 ) -> pl.DataFrame:
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
     try:
-        rows_raw = fetch_clist_pages(client, fields=_FUND_FLOW_FIELDS)
+        archive = configured_archive(
+            config,
+            "fund_flow",
+            run_id=run_id,
+            request_scope=f"daily:{trade_date.isoformat()}",
+        )
+        capture_required = False
+        if archive is None:
+            rows_raw = fetch_clist_pages(client, fields=_FUND_FLOW_FIELDS)
+        else:
+            try:
+                parameters = inspect.signature(fetch_clist_pages).parameters.values()
+            except (TypeError, ValueError):
+                parameters = ()
+            supports_archive = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+            ) or any(parameter.name == "archive" for parameter in parameters)
+            if not supports_archive:
+                raise RawArchiveError(
+                    "fund_flow: archive is required but the pagination helper cannot "
+                    "provide exact wire capture"
+                )
+            capture_required = True
+            rows_raw = fetch_clist_pages(
+                client,
+                fields=_FUND_FLOW_FIELDS,
+                archive=archive,
+                archive_dataset="fund_flow",
+                archive_run_id=run_id,
+            )
+        if capture_required:
+            archived = captured_records(
+                config,
+                "fund_flow",
+                str(run_id or ""),
+                source="eastmoney",
+                request_scope=f"daily:{trade_date.isoformat()}",
+            )
+            if not archived:
+                raise RawArchiveError(
+                    "fund_flow: archive is required but the EastMoney adapter produced "
+                    "no exact wire observation"
+                )
         mapped_rows = clist_rows_to_symbols(rows_raw)
         if len(mapped_rows) != len(rows_raw):
             logger.warning(

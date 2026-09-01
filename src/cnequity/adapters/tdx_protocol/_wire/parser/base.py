@@ -55,6 +55,13 @@ class BaseParser:
         self.rsp_header = None
         self.rsp_body = None
 
+        # The normalized parser result is intentionally not replayable.  Keep
+        # the exact response frame (protocol header plus the bytes received on
+        # the socket, before optional zlib decompression) on the owning client
+        # so critical adapters can archive the observation without rebuilding
+        # a synthetic JSON/row payload.
+        self.last_response_wire = None
+
         self.client = client
         self.lock = lock or None
 
@@ -180,6 +187,12 @@ class BaseParser:
                     if not buf or len_buf == 0 or len(body_buf) == zip_size:
                         logger.debug("接收数据到结束")
                         break
+
+                self.last_response_wire = bytes(head_buf) + bytes(body_buf)
+                try:
+                    self.client.last_response_wire = self.last_response_wire
+                except Exception:  # pragma: no cover - tiny test doubles
+                    pass
 
                 self.client.last_api_recv_bytes = last_api_recv_bytes
 

@@ -81,7 +81,8 @@ def test_emits_explicit_normal_rows_and_maps_legacy_bj_code():
         "873001.BJ",
         "920001.BJ",
     }
-    assert df.sort("trade_date")["status"].to_list() == ["normal", "st"]
+    assert df.sort("trade_date")["status"].to_list() == ["normal", "normal"]
+    assert df.sort("trade_date")["risk_warning"].to_list() == [False, True]
     assert df["symbol"].unique().to_list() == ["873001.BJ"]
 
 
@@ -118,7 +119,8 @@ def test_bak_basic_name_covers_2016_and_stock_st_covers_2017():
     )
 
     assert failed == []
-    assert df.sort("trade_date")["status"].to_list() == ["st", "st"]
+    assert df.sort("trade_date")["status"].to_list() == ["normal", "normal"]
+    assert df.sort("trade_date")["risk_warning"].to_list() == [True, True]
     assert [call["api_name"] for call in client.calls] == ["bak_basic", "stock_st", "stock_st"]
 
 
@@ -186,4 +188,5 @@ def test_retries_transient_timeout_before_emitting_evidence(tmp_path):
 
     assert failed == []
     assert client.transient_failures == 0
-    assert df["status"].to_list() == ["st"]
+    assert df["status"].to_list() == ["normal"]
+    assert df["risk_warning"].to_list() == [True]

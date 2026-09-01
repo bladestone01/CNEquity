@@ -25,6 +25,9 @@ cne status --datasets            # 探针：有 STALE 才继续
   └─ sleep CNE_STALE_RETRY_DELAY_SEC
      cne run daily --stale-only  # 只重抓仍落后的
 health_notify.sh
+cne sources probe --vantage $CNE_SOURCE_VANTAGE
+cne sources slo                    # 累积报告，日更不 enforce
+cne stability --days 20           # 累积报告，日更不 enforce
 backup_meta.sh
 cne clean
 ```
@@ -36,6 +39,9 @@ cne clean
 `CNE_SOFT_FAIL_OK`（默认 `1`：gate OK 时 soft 失败 exit 0；`0`=仍 exit 1）、
 `CNE_STALE_RETRY`（默认 `1`；`0` 关闭收尾补抓）、
 `CNE_STALE_RETRY_DELAY_SEC`（默认 `1800`）、
+`CNE_SOURCE_HEALTH`（默认 `1`；`0` 关闭每日源探测）、
+`CNE_SOURCE_VANTAGE`（默认 `local`；应设为稳定且真实的出口标签，如 `cn` 或
+`overseas`）、
 `CNE_TRADE_DATE`、
 `CNE_BIN`（覆盖 `cne` 路径；供用 stub 跑通控制流的测试用）。
 
@@ -46,6 +52,8 @@ cne clean
 ### install_scheduler.sh / uninstall_scheduler.sh
 
 从 `scripts/launchd/com.cnequity.daily.plist.template` 生成用户 launchd plist，加载 `daily_pipeline.sh`。
+安装时用 `CNE_SOURCE_VANTAGE=cn scripts/install_scheduler.sh` 固化真实出口标签；省略时
+使用 `local`。标签仅允许字母、数字、点、下划线和连字符，防止生成无效 plist。
 
 ---
 
@@ -62,9 +70,29 @@ cne status --datasets
 
 ### backup_meta.sh
 
-打包 `meta/manifest.db`、`meta/state/`、`meta/quality/` 为 `meta-YYYYMMDD-HHMMSS.tar.gz`，按保留天数清理旧包。
+打包 `meta/manifest.db`、`state/`、`quality/`、`revisions/`、`source_snapshots/`、
+`source_health/` 和 `stability/` 为 `meta-YYYYMMDD-HHMMSS.tar.gz`，按保留天数清理旧包。
+因此磁盘故障不会让 revision receipt、PIT 源快照或已积累的验收窗口归零。
 
 参数：`backup_meta.sh [config_path] [backup_dir] [retention_days]`
+
+### run_catchup.py
+
+**用途**：漏跑 / 周末之后把门禁补齐——`daily:core`，再 `market_breadth` + `compact`
+（`--core-only` 时跳过后者）。不传 `--backfill`（全量 CA 扫描在海外出口上很脆）。
+
+```bash
+python scripts/run_catchup.py                          # 最近一个交易日
+python scripts/run_catchup.py --trade-date 2026-07-17
+python scripts/run_catchup.py --trade-date 2026-07-17 --all-groups
+```
+
+**退出码看门禁，不看附加组**：core 或 market_breadth 失败 exit 1；`--extra-group` /
+`--all-groups` 里的组失败只报告不改退出码——东财重的组在海外出口上本来就时好时坏。
+水位已经到目标日的部分直接 `skipped_already_fresh`，不重跑。
+
+原为 `cne run catchup`。它是编排而非能力（每一步都是 `cne run daily` 打一个 schedule
+group），和 `daily_pipeline.sh` 是同一类东西，所以放在这里而不是发布的 CLI 里。
 
 ---
 
@@ -91,7 +119,62 @@ python scripts/accept_backfill.py check --compare /tmp/counts.json
 
 ---
 
+### delisted_ops.py
+
+重建退市宇宙（幸存者偏差修复）的四个子命令。**读**目录和拉行情留在 CLI
+（`cne delisted status` / `cne delisted backfill`）——那两个有日常形态；这四个没有。
+
+| 子命令 | 说明 |
+|--------|------|
+| `discover [--limit N]` | 扫 issued code space，分类为曾上市 / 从未发行；可续跑，探测失败的码保持 pending 而不会被记成「从未发行」 |
+| `reconcile [--apply]` | 默认只读核对目录终点；`--apply` 只修正被正式退市日、交易日历和正成交量行情共同证伪的终点，并生成备份及 SHA-256 回执 |
+| `repair [--since]` | **不重新拉行情**：用已有 `daily_bars` 跨度写 `instruments.delist_date`，并清掉 `认购款` 占位 |
+| `coverage [--start] [--end]` | **只读严格门禁**：验证发现完整性、窗口重叠、末根有效成交和 instruments 身份；未通过退出 1 |
+
+```bash
+cne delisted status                                   # 已知多少
+python scripts/delisted_ops.py discover --limit 500
+cne delisted backfill --since 2016-01-01
+python scripts/delisted_ops.py repair
+python scripts/delisted_ops.py reconcile
+python scripts/delisted_ops.py reconcile --apply
+python scripts/delisted_ops.py coverage --start 2016-01-01 --universe all_a_sh_sz
+```
+
+只有 `coverage` 是门禁：未验证通过时退出 1，所以任何声称「幸存者安全」的流程都应该先过它。
+
+`coverage` 的通过声明刻意很窄：它证明退市目录已扫完，且已知与窗口重叠的退市标的具备一致的
+末根有效成交和证券主数据；它不证明两端之间每个交易日都连续。数据源在停牌或正式摘牌前可能保留
+零成交占位行，门禁不会把它们误当成末次交易。目录末日晚于窗口、但窗口内又没有行情可证明已经
+上市的标的会进入 `unknown_overlap`，不会被静默排除。
+
+`reconcile --apply` 不以单一供应商返回的「最后一条记录」为真相：必须有 curated 正成交量终点，
+且该终点不晚于 `instruments.delist_date`，同时旧目录日期还必须落在正式退市日之后或非交易日，
+才允许自动修改。检测到任何 active ingestion run 都会拒绝执行；修改前的目录保存在
+`meta/state/history/`，质量回执写入 `meta/quality/`。
+
+原为 `cne delisted discover / reconcile / repair / coverage`。
+
+---
+
 ## 一次性迁移
+
+### repartition.py
+
+把历史分区改写成 `DatasetSpec.partition_granularity` 配的周期
+（见 [分区粒度](../architecture/lake-layout.md#分区粒度)）。不带参数只列出待改写的数据集，
+所以列表形式随时可跑。
+
+```bash
+python scripts/repartition.py                        # 待改写的数据集
+python scripts/repartition.py --all --dry-run        # 先看影响
+python scripts/repartition.py trading_calendar       # 单个数据集
+```
+
+读路径按目录形状自解析，改粒度本身**不需要**迁移；这只是把碎文件收回来。写入是先建临时目录、
+逐分区写完并核对总行数，再一次 rename 换上去，中途挂掉不动原数据；重复执行幂等。
+
+原为 `cne repartition`。触发它的是 registry 粒度在既有湖之下变了——那是迁移，不是日常运维。
 
 ### migrate_daily_bars_volume_v2.py
 
@@ -126,7 +209,7 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
 `scripts/launchd/com.cnequity.daily.plist.template`
 
 - `ProgramArguments` 指向 `daily_pipeline.sh`
-- `StartCalendarInterval`：Hour=11, Minute=15（Europe/Helsinki；夏令时 16:15 CST、冬令时 17:15 CST）
+- `StartCalendarInterval`：Hour=11, Minute=15（本机时区；UTC+2/+3 机器约合 16:15/17:15 CST，均在收盘后）
 - 标准输出/错误重定向到 `{data.root}/logs/launchd.*.log`
 
 ---
