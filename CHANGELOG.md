@@ -8,6 +8,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **日历日公告增量抓取容空（非交易日容忍零行）。** `announcement_index` 等日历日披露数据集在增量抓取时感知日历属性：周日或法定节假日无公告时允许 0 行跳过并记录日志，正常交易日返回 0 行继续严格抛出 `RuntimeError`（守住数据源故障的 Fail-Loud 警报防护）。
 - **CNINFO 公告按类别分桶分页。** 公告索引和监管事件改用 26 个公告类别分桶，跨桶去重；遇到服务端 100 页截断时保留可达数据并记录 `cninfo_truncation_at_100_pages` 审计告警，真实传输失败仍保持失败。
 - **Checks against the bodies that publish the numbers, not a second vendor.**
   Every price arbiter in the lake compared one redistributor against another,
