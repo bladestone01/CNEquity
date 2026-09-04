@@ -5,3 +5,4 @@
 | daily-bars-symbol-granularity | docs/notes/20260822-daily-bars-symbol-granularity.md | promising | 20260822 | 失败归因到符号×日期缺口；完整性保障是 manifest failed 批→compact gate，而非抛异常 |
 | instruments-master | docs/notes/20260822-instruments-master.md | promising | 20260822 | instruments 是证券主数据地基；list_date 为 null 会让"未上市/停牌前"豁免全部失效 |
 | step-status-channel-failures | docs/notes/20260822-step-status-channel-failures.md | promising | 20260822 | 预期业务失败走 step 状态通道（status="failed"+结构化载荷），异常只留给真正的 bug |
+| daily-bars-batch-failover | docs/notes/20260904-daily-bars-batch-failover.md | promising | 20260904 | worker_pool 进度中的 (100 symbols FAILED) 仅为单个批次异常隔离，系统自动触发备源快照与收尾 gap-fill/停牌豁免，不代表任务整体失败 |
