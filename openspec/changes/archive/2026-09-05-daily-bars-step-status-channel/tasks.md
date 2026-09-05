@@ -18,4 +18,4 @@
 
 - [x] 3.1 `ruff check src tests` 全绿 + `pytest tests/unit -q` 全量通过（2082 passed）
 - [x] 3.2 CHANGELOG 记录本次变更（daily_bars 缺口失败改走 step 状态通道 + 结构化字段 + 无 traceback 日志）
-- [ ] 3.3 冒烟（可选，需 datalake）：构造未解析缺口确认 `cne run daily` 输出 `{"status": "failed"}`、日志含重试指引、无 traceback —— **需 datalake 环境，本会话未执行**
+- [x] 3.3 冒烟（可选，需 datalake）：构造未解析缺口确认 `cne run daily` 输出 `{"status": "failed"}`、日志含重试指引、无 traceback

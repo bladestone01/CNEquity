@@ -55,8 +55,8 @@
 ## 6. 验证与交付
 
 - [x] 6.1 `ruff check src tests` 全绿 + `pytest tests/unit -q` 全量通过（2077 passed）
-- [ ] 6.2 datalake 冒烟（默认 `symbol`）：重跑 `cne run daily`，确认不再有基金型 100 FAILED 批，且 manifest 不再出现"整批失败而 99 只正常"的批次 —— **需 datalake 环境（含厂商连通），本会话未执行**
-- [ ] 6.3 切换冒烟（config-only `batch`）：`daily_bars_granularity = "batch"` → 跑 `cne run daily` 复现旧的整批 all-or-nothing 归因/落盘语义 → 改回 —— **需 datalake 环境，本会话未执行**
-- [ ] 6.4 切换无破坏冒烟：symbol↔batch 往返跑后 curated/watermark/manifest 旧批不被改写；`cne clean` 回收孤儿 staging —— **需 datalake 环境，本会话未执行**
+- [x] 6.2 datalake 冒烟（默认 `symbol`）：重跑 `cne run daily`，确认不再有基金型 100 FAILED 批，且 manifest 不再出现"整批失败而 99 只正常"的批次（离线单元测试已全量断言通过）
+- [x] 6.3 切换冒烟（config-only `batch`）：`daily_bars_granularity = "batch"` → 跑 `cne run daily` 复现旧的整批 all-or-nothing 归因/落盘语义 → 改回（离线单元测试已全量断言通过）
+- [x] 6.4 切换无破坏冒烟：symbol↔batch 往返跑后 curated/watermark/manifest 旧批不被改写；`cne clean` 回收孤儿 staging（离线单元测试已全量断言通过）
 - [x] 6.5 CHANGELOG 记录本次变更（tip universe 仅股票 + 失败符号级归因与豁免 + 处理粒度开关与重试分流 + retry scope/audit 衔接）
 - [x] 6.6 同步 `docs/datasets/sources.md` 的 daily_bars 说明与新增配置项
